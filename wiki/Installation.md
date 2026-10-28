@@ -39,6 +39,9 @@ Installing through the **Home Assistant Community Store (HACS)** guarantees auto
    ```
 4. Set the **Category** dropdown to **Integration** and click **Add**.
 5. Once added, search the HACS catalog for **Otis AI Companion** and click **Download**.
+
+<!-- IMAGE PLACEHOLDER: [Searching for 'Otis AI Companion' in the HACS integrations store and clicking Download] -->
+
 6. **Restart Home Assistant** to load the custom component files.
 
 ---
@@ -71,11 +74,17 @@ Once Home Assistant has restarted:
 1. Navigate to **Settings → Devices & Services**.
 2. Click **Add Integration** in the bottom right corner.
 3. Search for **Otis AI Companion** and select it.
+
+<!-- IMAGE PLACEHOLDER: [Home Assistant Settings > Devices & Services > Add Integration dialog with Otis AI Companion selected] -->
+
 4. The integration initiates its asynchronous discovery engine:
    * Discovers all configured Areas, Devices, and Entities.
    * Auto-infers the initial **Spatial Adjacency Graph**.
    * Mounts the Lovelace frontend card resource at `/otis_ai_card/otis-companion-card.js`.
    * Automatically creates the Admin-only **Otis AI** dashboard at `/otis-ai`.
+
+<!-- IMAGE PLACEHOLDER: [Initial setup modal for Otis AI Companion prompting for Google Gemini API key and primary floorplan room list] -->
+
 5. Click **Finish**.
 
 > [!NOTE]
@@ -89,6 +98,9 @@ Once Home Assistant has restarted:
 To verify that all components are functioning normally:
 
 1. **Check the Sidebar**: Look for the **Otis AI** icon in your Home Assistant sidebar. Opening it will reveal the companion interface in full-width Panel Mode.
+
+<!-- IMAGE PLACEHOLDER: [Home Assistant sidebar showing the newly mounted Otis AI icon leading to the /otis-ai full-width dashboard] -->
+
 2. **Inspect Integration Diagnostics**:
    Go to **Developer Tools → Services** and run:
    ```yaml

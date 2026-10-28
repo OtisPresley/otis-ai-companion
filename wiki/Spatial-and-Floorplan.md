@@ -8,27 +8,9 @@ Otis AI Companion includes a topological spatial engine and a multimodal video w
 
 Traditional smart home platforms treat rooms as isolated metadata tags. Otis AI models your home as an **undirected adjacency graph** where nodes represent physical areas and edges represent physical pathways (doors, open transitions, hallways, staircases).
 
-```
-                      +-------------------+
-                      |   Front Driveway  |
-                      +-------------------+
-                                │ (Door)
-                                ▼
-+----------------+       +-------------+       +----------------+
-|  Study / Office|<─────>|    Foyer    |<─────>|   Great Room   |
-+----------------+ (Open)+-------------+ (Open)| (Living/Kitchen|
-                                │              |  Breakfast)    |
-                                ▼              +----------------+
-                         +-------------+                │
-                         | Hall & Stairs|<──────────────┘
-                         +-------------+
-                                │ (Stairs)
-                                ▼
-                       +-----------------+
-                       | Upper Hallway   |
-                       | (Suites & Gym)  |
-                       +-----------------+
-```
+<p align="center">
+  <img alt="Spatial Adjacency Graph" src="https://raw.githubusercontent.com/wiki/OtisPresley/otis-ai-companion/images/spatial-adjacency-graph.png" width="850" />
+</p>
 
 ### Key Graph Capabilities:
 * **Breadth-First Search (BFS) Pathfinding**: Determines the exact transit path between any two rooms in your home.
@@ -43,28 +25,9 @@ Traditional smart home platforms treat rooms as isolated metadata tags. Otis AI 
 
 Instead of manually drawing SVG vectors or aligning complex CAD files, Otis AI creates your floor plan through multimodal video analysis:
 
-```
-[ Smartphone Video (.mp4 / .mov) ]
-               │
-               ▼
-   [ /usr/bin/ffmpeg Audio Extraction ]
-               │
-               ▼
-[ Google Gemini Multimodal Audio Transcription ]
-               │ Spoken Room Sequence: "Foyer -> Kitchen -> Deck..."
-               ▼
- [ Spatial Graph Manager: Connection Topology ]
-               │
-               ▼
-  [ FloorplanParser: Architectural SVG Engine ]
-  • Contiguous Wall Boundaries & Doorways
-  • Open-Concept Great Room (Living • Kitchen • Nook)
-  • Upper Level Suites & Stairwell Connections
-  • Outdoor Perimeter (Driveway, Deck, Pool)
-               │
-               ▼
- [ Interactive Lovelace picture-elements YAML ]
-```
+<p align="center">
+  <img alt="Walkthrough Video-to-FloorPlan Pipeline" src="https://raw.githubusercontent.com/wiki/OtisPresley/otis-ai-companion/images/walkthrough-pipeline.png" width="850" />
+</p>
 
 ---
 
@@ -85,6 +48,9 @@ To ensure high-accuracy layout synthesis:
 2. Switch to the **Floor Plan** tab.
 3. If no walkthrough has been processed, click **Upload Walkthrough**.
 4. Drag and drop your video file(s) into the modal window.
+
+<!-- IMAGE PLACEHOLDER: [Walkthrough video upload modal showing drag-and-drop video dropzone and spoken room sequence override field] -->
+
 5. *(Optional)* Provide a spoken room order override if you wish to enforce an explicit sequence.
 6. Click **Process Walkthrough**.
 7. Live progress badges indicate:
@@ -93,6 +59,8 @@ To ensure high-accuracy layout synthesis:
    - `Transcribing room transitions with Gemini...`
    - `Generating contiguous vector SVG...`
    - `Floor plan updated successfully!`
+
+<!-- IMAGE PLACEHOLDER: [Live processing badges displaying progress through video upload, FFmpeg extraction, Gemini transcription, and SVG compilation] -->
 
 > [!TIP]
 > **Disk Space Conservation**  
@@ -124,7 +92,12 @@ The floor plan layout engine organizes your home into unified, contiguous archit
 
 ## 🎛️ Interactive SVG & Lovelace YAML Export
 
+<!-- IMAGE PLACEHOLDER: [Interactive vector SVG floor plan rendered in Lovelace, showing glowing clickable room light badges, boundary outlines, and zone selection pills] -->
+
 The generated SVG is fully interactive:
 * **Interactive Badges**: Light and switch entities rendered as clickable glowing badges. Tapping a badge toggles the physical entity immediately.
 * **Room Inspection Drawers**: Clicking any room boundary opens an inspection drawer showing all active devices, sensors, temperature readings, and occupancy states for that area.
+
+<!-- IMAGE PLACEHOLDER: [Room inspection drawer open after clicking an architectural room boundary, showing live temperature, occupancy sensors, and light switches] -->
+
 * **Copy Lovelace YAML**: Click the **Lovelace YAML** button in the card toolbar to copy a ready-to-paste `picture-elements` card definition for any custom dashboard.

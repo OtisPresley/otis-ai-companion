@@ -19,19 +19,9 @@ Otis AI solves this by executing read-only, index-assisted queries inside an asy
 
 Once state transitions are collected, the clustering algorithm identifies recurring multi-step user habits:
 
-```
-[ Day 1, 06:45 AM ] Master Motion -> Kitchen Light On -> Coffee Maker On
-[ Day 2, 06:48 AM ] Master Motion -> Kitchen Light On -> Coffee Maker On
-[ Day 3, 06:43 AM ] Master Motion -> Kitchen Light On -> Coffee Maker On
-[ Day 4, 06:50 AM ] Master Motion -> Kitchen Light On -> Coffee Maker On
-                          │
-                          ▼
-            [ Pattern Match Frequency: 95% ]
-                          │
-                          ▼
-           [ Proactive Routine Proposal Generated ]
-   "Morning Wakeup: Turn on Kitchen Lights & Coffee Maker"
-```
+<p align="center">
+  <img alt="Habit Mining and Synthesis Flow" src="https://raw.githubusercontent.com/wiki/OtisPresley/otis-ai-companion/images/habit-mining-pipeline.png" width="850" />
+</p>
 
 ### Safety & Integrity Gates:
 1. **Controllable Actuator Requirement**:
@@ -45,24 +35,9 @@ Once state transitions are collected, the clustering algorithm identifies recurr
 
 When upgrading or repairing existing automations, `automation_manager.py` enforces surgical precision:
 
-```
-+─────────────────────────────────────────────────────────────+
-|                     automations.yaml                        |
-+─────────────────────────────────────────────────────────────+
-| - id: "1710000001"                                          |
-|   alias: "Living Room Evening"                              |
-|   ...                                                       |
-|                                                             |
-| - id: "1710000002"  <─── TARGET AUTOMATION BLOCK ONLY       |
-|   alias: "Media Bridge Sync"                                |
-|   # Regex replacement strictly scoped to this block bounds  |
-|   # Line-wrapped strings repaired across newlines           |
-|   # Protected keywords (action:, trigger:, etc.) bypassed   |
-|                                                             |
-| - id: "1710000003"                                          |
-|   alias: "Security Night Alarm"                             |
-+─────────────────────────────────────────────────────────────+
-```
+<p align="center">
+  <img alt="YAML Repair Block Scoping" src="https://raw.githubusercontent.com/wiki/OtisPresley/otis-ai-companion/images/yaml-repair-scoping.png" width="850" />
+</p>
 
 ### 1. Scoped Target Block Replacement
 All replacements in `async_improve_automation()` are bound strictly between the target automation's `- id:` marker and the subsequent automation's start. This guarantees that repairs to one automation never inadvertently modify another.
@@ -92,6 +67,8 @@ Automations with multiple triggers configured in default `mode: single` risk dro
 ---
 
 ## ⚡ 1-Click Execution via Proactive Suggestions
+
+<!-- IMAGE PLACEHOLDER: [Proactive Suggestions Feed in the Lovelace card displaying a newly mined 'Morning Routine' habit card with priority badge, trigger summary, and 1-click 'Apply' button] -->
 
 All discovered routines, entity typo fixes, and automation repairs appear as interactive cards in the **Proactive Suggestions Feed**:
 * Each card shows the exact rationale, affected entities, and a one-click **Apply** button.

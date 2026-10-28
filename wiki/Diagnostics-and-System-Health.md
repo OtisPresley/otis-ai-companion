@@ -8,23 +8,15 @@ Otis AI Companion includes an autonomous system diagnostics engine that calculat
 
 The **Smart Home Maturity Score** measures how well-architected, unified, and resilient your Home Assistant installation is. It evaluates 5 core dimensions, each weighted equally:
 
-```
-[ SMART HOME MATURITY SCORE: 94 / 100 ]
-┌───────────────────────────┬───────┬────────────────────────────────────────┐
-│ Dimension                 │ Score │ Key Metrics Evaluated                  │
-├───────────────────────────┼───────┼────────────────────────────────────────┤
-│ 🗺️ Spatial Architecture    │ 20/20 │ Areas mapped, zero unassigned devices, │
-│                           │       │ floor registry linked, spatial graph.  │
-│ 🧹 Entity & Log Hygiene   │ 18/20 │ Zero orphaned entities, clean naming,  │
-│                           │       │ recorder batch commit optimizations.   │
-│ 🔄 Automation Quality     │ 19/20 │ Queued modes, zero broken entity refs, │
-│                           │       │ no template errors, habit routines.    │
-│ 🔒 Security & Presence    │ 19/20 │ Alarmo perimeter, lock/garage sync,    │
-│                           │       │ bedtime arming, away detection.        │
-│ 🔊 Media & Audio Topology │ 18/20 │ Presence speaker routing, matrix idle  │
-│                           │       │ guards, cinema coordination.           │
-└───────────────────────────┴───────┴────────────────────────────────────────┘
-```
+<!-- IMAGE PLACEHOLDER: [Smart Home Maturity Scorecard display showing circular 94/100 score gauge with drill-down dimension breakdown and recommendations] -->
+
+| Dimension | Score | Key Metrics Evaluated |
+| :--- | :---: | :--- |
+| 🗺️ **Spatial Architecture** | **20 / 20** | Areas mapped, zero unassigned devices, floor registry linked, spatial graph. |
+| 🧹 **Entity & Log Hygiene** | **18 / 20** | Zero orphaned entities, clean naming, recorder batch commit optimizations. |
+| 🔄 **Automation Quality** | **19 / 20** | Queued modes, zero broken entity refs, no template errors, habit routines. |
+| 🔒 **Security & Presence** | **19 / 20** | Alarmo perimeter, lock/garage sync, bedtime arming, away detection. |
+| 🔊 **Media & Audio Topology** | **18 / 20** | Presence speaker routing, matrix idle guards, cinema coordination. |
 
 ### 1-Click Area Auto-Assignment (`auto_assign_areas`)
 When unassigned devices or entities are discovered, Otis AI uses entity name tokens and parent device relationships to propose 1-click area assignments, instantly boosting your Spatial Maturity score.
@@ -45,6 +37,8 @@ Over time, adding and removing integrations, blueprints, or testing devices leav
 
 ### 1-Click Cleanup:
 Orphaned entities appear in the Proactive Feed with a single **Clean Up Orphans** button (`action_type: "cleanup_orphans"`), which purges invalid registry entries cleanly without needing manual JSON edits.
+
+<!-- IMAGE PLACEHOLDER: [Orphan Entity Cleanup suggestion card in the Lovelace card showing discovered stale entities with 'Clean Up Orphans' button] -->
 
 ---
 

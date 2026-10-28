@@ -1,5 +1,7 @@
 # 🤖 Otis AI Companion Documentation
 
+<!-- IMAGE PLACEHOLDER: [Hero screenshot of the Otis AI Companion card on a Home Assistant dashboard showing status badges, interactive floor plan, and active chat interface] -->
+
 Welcome to the comprehensive user guide and reference manual for **Otis AI Companion**—an autonomous smart home co-pilot, spatial intelligence engine, and self-healing system administrator for **Home Assistant**.
 
 This wiki is your complete documentation for:
@@ -31,30 +33,9 @@ Otis AI Companion replaces fragile Jinja2 templates, hardcoded entity mappings, 
 
 Otis AI Companion is architected as an asynchronous, non-blocking pipeline divided into specialized managers:
 
-```
-+-------------------------------------------------------------------------+
-|                       HOME ASSISTANT CORE ENGINE                        |
-+-------------------------------------------------------------------------+
-       │                             │                             │
-       ▼                             ▼                             ▼
-+─────────────────+         +─────────────────+         +─────────────────+
-| DiscoveryEngine |         | SpatialGraph    |         | Automation      |
-| • Area/Device/  |         | • Physical area |         |   Manager       |
-|   Entity scan   |         |   adjacencies   |         | • SQLite mining |
-| • Orphan detect |         | • BFS routing   |         | • YAML repairs  |
-| • Maturity score|         | • Walkthroughs  |         | • Mode upgrades |
-+─────────────────+         +─────────────────+         +─────────────────+
-       │                             │                             │
-       └─────────────────────────────┼─────────────────────────────┘
-                                     ▼
-                   +───────────────────────────────────+
-                   | DashboardManager & Frontend Card  |
-                   | • Panel Mode Admin UI (/otis-ai)  |
-                   | • 6 Theme Presets (ha_native)     |
-                   | • Interactive SVG Floor Plan      |
-                   | • Assist Co-Pilot with Live Mic   |
-                   +───────────────────────────────────+
-```
+<p align="center">
+  <img alt="Otis AI Architecture" src="https://raw.githubusercontent.com/wiki/OtisPresley/otis-ai-companion/images/system-architecture.png" width="850" />
+</p>
 
 ---
 

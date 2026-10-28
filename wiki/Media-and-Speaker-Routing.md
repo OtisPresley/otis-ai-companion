@@ -10,23 +10,11 @@ Standard Home Assistant TTS broadcasts announcements across all media players si
 
 Otis AI replaces this with **Dynamic Presence-Based Audio Routing** (`notify_router`):
 
-```
-                        [ Notification Event ]
-                       (e.g., Doorbell / Alert)
-                                  │
-                                  ▼
-                     [ Dynamic Presence Engine ]
-                     Scans active room occupancy:
-                     • Area Motion Sensors
-                     • mmWave Radar Presence
-                     • Bed Occupancy Sensors
-                                  │
-             ┌────────────────────┴────────────────────┐
-             ▼ Occupied Rooms Found                    ▼ Vacant / Away
-  [ Targeted Speaker Routing ]              [ Default Announcement Zone ]
-  Routes audio ONLY to active               Routes to central living
-  media players in occupied areas.          zones or designated speakers.
-```
+<p align="center">
+  <img alt="Presence-Aware Audio Routing Decision Flow" src="https://raw.githubusercontent.com/wiki/OtisPresley/otis-ai-companion/images/media-routing-flow.png" width="850" />
+</p>
+
+<!-- IMAGE PLACEHOLDER: [Presence-based audio routing panel in the Lovelace card showing active target speakers mapped to currently occupied rooms] -->
 
 ### Key Engineering Enhancements:
 1. **Defensive Boolean Handling**:

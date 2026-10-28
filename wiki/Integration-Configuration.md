@@ -13,37 +13,17 @@ To open the Options Flow:
 2. Locate the **Otis AI Companion** card.
 3. Click the **Configure** button.
 
+<!-- IMAGE PLACEHOLDER: [Otis AI Companion Options dialog showing primary and secondary AI conversation agent dropdowns, LLM context window slider, and habit confidence thresholds] -->
+
 ---
 
 ## 🧠 AI Provider & Conversation Cascade
 
 Otis AI integrates directly with Home Assistant's native `assist_pipeline` and `conversation` framework while offering autonomous multi-agent failover:
 
-```
-+─────────────────────────────────────────────────────────────+
-|                    USER VOICE / CHAT INPUT                  |
-+─────────────────────────────────────────────────────────────+
-                               │
-                               ▼
-        +──────────────────────────────────────────────+
-        | Primary Agent: Google Generative AI (Gemini) |
-        +──────────────────────────────────────────────+
-                               │ (Timeout / Rate Limit)
-                               ▼
-        +──────────────────────────────────────────────+
-        | Secondary Fallback: OpenAI Conversation / GPT|
-        +──────────────────────────────────────────────+
-                               │ (Offline / Token Exhaust)
-                               ▼
-        +──────────────────────────────────────────────+
-        | Local Fallback: Ollama / Local LLM Pipeline  |
-        +──────────────────────────────────────────────+
-                               │ (Fallback Complete)
-                               ▼
-        +──────────────────────────────────────────────+
-        | Native HA Intent Engine: conversation.home_..|
-        +──────────────────────────────────────────────+
-```
+<p align="center">
+  <img alt="AI Model Fallback Pipeline" src="https://raw.githubusercontent.com/wiki/OtisPresley/otis-ai-companion/images/ai-fallback-pipeline.png" width="850" />
+</p>
 
 ### Configuration Parameters:
 * **Primary Conversation Agent**: Select the primary agent (e.g. `conversation.google_generative_ai`). This agent is used for conversational intent parsing, walkthrough audio transcription, and habit routine synthesis.

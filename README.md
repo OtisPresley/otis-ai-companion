@@ -51,30 +51,9 @@ It replaces fragile Jinja2 templates, hardcoded entity mappings, and rigid autom
 
 Otis AI Companion is structured into modular, asynchronous subsystems:
 
-```
-+-------------------------------------------------------------------------+
-|                       HOME ASSISTANT CORE ENGINE                        |
-+-------------------------------------------------------------------------+
-       │                             │                             │
-       ▼                             ▼                             ▼
-+─────────────────+         +─────────────────+         +─────────────────+
-| DiscoveryEngine |         | SpatialGraph    |         | Automation      |
-| • Area/Device/  |         | • Physical area |         |   Manager       |
-|   Entity scan   |         |   adjacencies   |         | • SQLite mining |
-| • Orphan detect |         | • BFS routing   |         | • YAML repairs  |
-| • Maturity score|         | • Walkthroughs  |         | • Mode upgrades |
-+─────────────────+         +─────────────────+         +─────────────────+
-       │                             │                             │
-       └─────────────────────────────┼─────────────────────────────┘
-                                     ▼
-                   +───────────────────────────────────+
-                   | DashboardManager & Frontend Card  |
-                   | • Panel Mode Admin UI (/otis-ai)  |
-                   | • 6 Theme Presets (ha_native)     |
-                   | • Interactive SVG Floor Plan      |
-                   | • Assist Co-Pilot with Live Mic   |
-                   +───────────────────────────────────+
-```
+<p align="center">
+  <img alt="Otis AI Architecture" src="https://raw.githubusercontent.com/wiki/OtisPresley/otis-ai-companion/images/system-architecture.png" width="850" />
+</p>
 
 ---
 
@@ -82,27 +61,9 @@ Otis AI Companion is structured into modular, asynchronous subsystems:
 
 Otis AI models your home as an undirected adjacency graph where rooms connect via doors, open transitions, hallways, and stairs:
 
-```
-                      +-------------------+
-                      |   Front Driveway  |
-                      +-------------------+
-                                │ (Door)
-                                ▼
-+----------------+       +-------------+       +----------------+
-|  Study / Office|<─────>|    Foyer    |<─────>|   Great Room   |
-+----------------+ (Open)+-------------+ (Open)| (Living/Kitchen|
-                                │              |  Breakfast)    |
-                                ▼              +----------------+
-                         +-------------+                │
-                         | Hall & Stairs|<──────────────┘
-                         +-------------+
-                                │ (Stairs)
-                                ▼
-                       +-----------------+
-                       | Upper Hallway   |
-                       | (Suites & Gym)  |
-                       +-----------------+
-```
+<p align="center">
+  <img alt="Spatial Adjacency Graph" src="https://raw.githubusercontent.com/wiki/OtisPresley/otis-ai-companion/images/spatial-adjacency-graph.png" width="850" />
+</p>
 
 ### Multimodal Video Walkthrough
 1. **Record**: Walk through your home with your smartphone, speaking room names as you cross thresholds.

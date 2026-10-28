@@ -74,4 +74,6 @@ logger:
     custom_components.otis_ai: debug
 ```
 
+<!-- IMAGE PLACEHOLDER: [Home Assistant System Logs viewer filtered by 'custom_components.otis_ai' showing clean diagnostic log output] -->
+
 Reload logging or restart Home Assistant. You can view the live output in **Settings → System → Logs**.
