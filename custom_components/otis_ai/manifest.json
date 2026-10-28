@@ -1,6 +1,9 @@
 {
   "domain": "otis_ai",
   "name": "Otis AI Companion",
+  "after_dependencies": [
+    "lovelace"
+  ],
   "codeowners": [
     "@OtisPresley"
   ],
@@ -11,9 +14,6 @@
     "frontend",
     "http",
     "media_player"
-  ],
-  "after_dependencies": [
-    "lovelace"
   ],
   "documentation": "https://github.com/OtisPresley/otis-ai-companion",
   "integration_type": "service",
