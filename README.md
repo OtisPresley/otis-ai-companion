@@ -6,7 +6,7 @@
 [![Version](https://img.shields.io/badge/version-1.5.5-blue.svg)](https://github.com/OtisPresley/otis-ai-companion/blob/main/CHANGELOG.md)
 [![hassfest](https://img.shields.io/github/actions/workflow/status/OtisPresley/otis-ai-companion/hassfest.yaml?branch=main&label=hassfest)](https://github.com/OtisPresley/otis-ai-companion/actions/workflows/hassfest.yaml)
 [![HACS](https://img.shields.io/github/actions/workflow/status/OtisPresley/otis-ai-companion/hacs.yaml?branch=main&label=HACS)](https://github.com/OtisPresley/otis-ai-companion/actions/workflows/hacs.yaml)
-[![build](https://github.com/OtisPresley/otis-ai-companion/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/OtisPresley/otis-ai-companion/actions/workflows/ci.yaml)
+[![CI](https://img.shields.io/github/actions/workflow/status/OtisPresley/otis-ai-companion/ci.yaml?branch=main&event=push)](https://github.com/OtisPresley/otis-ai-companion/actions/workflows/ci.yaml)
 
 **Otis AI Companion** is an autonomous smart home co-pilot, spatial intelligence engine, and self-healing system administrator for **Home Assistant**.
 
