@@ -2,6 +2,16 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.5.4] - 2026-10-28
+
+### Fixed & Improved
+- **Robust Markdown Parsing & Code Token Protection (`otis-companion-card.js`)**:
+  - Rebuilt `_renderMarkdown()` with early inline code tokenization (`@@@OTIS_IC_*@@@`), preventing wildcards (e.g. `matrix amp1*`) and entity underscores (e.g. `alarm_control_panel`) inside backticks from triggering runaway italics or corrupting subsequent markdown syntax.
+  - Added multiline reconnect logic for standalone `###` heading markers followed by numbered/titled sections (`###\n1. Heading` → `### 1. Heading`), and converted orphaned `###` markers and double dashes (`--`) into clean `<hr>` dividers.
+  - Protected heading numbers from premature newline splitting, allowing `### 1. Title` to render cleanly as `<h3>1. Title</h3>`.
+  - Added support for markdown tables, blockquotes, checklist task items (`- [ ]`, `- [x]`), and word-boundary safe bold/italic formatting.
+  - Updated live chat input preview detection (`updateLivePreview`) to recognize all markdown elements (`#`, `-`, `*`, `+`, `1.`, `--`, `---`, ````, `>`, `|`) identically to the assistant chat bubble renderer.
+
 ## [1.5.3] - 2026-10-28
 
 ### Improved & Fixed

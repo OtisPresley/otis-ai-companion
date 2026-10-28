@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 1.5.3
+ * Version: 1.5.4
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -11,7 +11,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.5.3";
+const CARD_VERSION = "1.5.4";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -620,15 +620,10 @@ class OtisCompanionCard extends HTMLElement {
   }
 
   _renderMarkdown(text) {
-    if (!text) return "";
-    let src = String(text).replace(/\r\n/g, "\n");
+    if (text === undefined || text === null) return "";
+    let src = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 
-    // Preprocess: Fix compressed markdown sentences where headers/bullets lack clean newlines
-    src = src.replace(/([^\n])\s*(#{1,4}\s+)/g, "$1\n\n$2");
-    src = src.replace(/([^\n])\s*(\*\s+|\-\s+)/g, "$1\n- ");
-    src = src.replace(/([^\n])\s*(\d+\.\s+)/g, "$1\n$2");
-
-    // 1. Protect code blocks
+    // 1. Protect code blocks first
     const codeBlocks = [];
     src = src.replace(/```([a-zA-Z0-9_-]*)\n?([\s\S]*?)```/g, (match, lang, code) => {
       const idx = codeBlocks.length;
@@ -641,61 +636,111 @@ class OtisCompanionCard extends HTMLElement {
       codeBlocks.push(
         `<div class="code-block-wrapper">${langLabel}<pre><code>${escapedCode}</code></pre></div>`
       );
-      return `\n\n__CODE_BLOCK_${idx}__\n\n`;
+      return `\n\n@@@OTIS_CB_${idx}@@@\n\n`;
     });
 
-    // 2. Escape HTML
+    // 2. Protect inline code second (prevents asterisks/underscores in entity IDs or wildcards from breaking bold/italic)
+    const inlineCodes = [];
+    src = src.replace(/`([^`\n]+)`/g, (match, code) => {
+      const idx = inlineCodes.length;
+      const escapedCode = code
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+      inlineCodes.push(`<code>${escapedCode}</code>`);
+      return `@@@OTIS_IC_${idx}@@@`;
+    });
+
+    // 3. Escape raw HTML characters
     src = src
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
 
-    // 3. Inline code
-    src = src.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+    // 4. Normalize standalone headings and dividers
+    // Reconnect standalone ### followed by text on the next line (e.g., "###\n1. Heading" -> "### 1. Heading")
+    src = src.replace(/^[ \t]*(#{1,6})[ \t]*\n+([A-Za-z0-9*_\-].*)$/gm, "$1 $2");
+    // Standalone ### without following text becomes an hr divider
+    src = src.replace(/^[ \t]*#{1,6}[ \t]*$/gm, "<hr>");
+    // Horizontal rules (--, ---, ***, ___)
+    src = src.replace(/^[ \t]*(?:--{1,}|(?:-\s*){3,}|(?:\*\s*){3,}|(?:_\s*){3,})[ \t]*$/gm, "<hr>");
 
-    // 4. Headings
-    src = src.replace(/^#### (.*?)$/gm, "<h4>$1</h4>");
-    src = src.replace(/^### (.*?)$/gm, "<h3>$1</h3>");
-    src = src.replace(/^## (.*?)$/gm, "<h2>$1</h2>");
-    src = src.replace(/^# (.*?)$/gm, "<h1>$1</h1>");
+    // 5. Blockquotes
+    src = src.replace(/^[ \t]*&gt;[ \t]*(.*)$/gm, "<blockquote>$1</blockquote>");
 
-    // 5. Horizontal rules
-    src = src.replace(/^(?:---|\*\*\*|___)\s*$/gm, "<hr>");
+    // 6. Tables
+    src = src.replace(/(?:^[ \t]*\|[^\n]+\|[ \t]*(?:\n|$))+/gm, (tableMatch) => {
+      const rows = tableMatch.trim().split("\n").map((r) => r.trim()).filter(Boolean);
+      if (rows.length < 2) return tableMatch;
+      const isSep = /^\|(?:[ \t]*:?-+:?[ \t]*\|)+$/.test(rows[1]);
+      let html = '<div class="chat-table-wrapper"><table class="chat-table">';
+      let startIdx = 0;
+      if (isSep && rows.length >= 2) {
+        const headerCells = rows[0].replace(/^\|/, "").replace(/\|$/, "").split("|");
+        html += "<thead><tr>" + headerCells.map((c) => `<th>${c.trim()}</th>`).join("") + "</tr></thead>";
+        startIdx = 2;
+      }
+      html += "<tbody>";
+      for (let i = startIdx; i < rows.length; i++) {
+        if (/^\|(?:[ \t]*:?-+:?[ \t]*\|)+$/.test(rows[i])) continue;
+        const cells = rows[i].replace(/^\|/, "").replace(/\|$/, "").split("|");
+        html += "<tr>" + cells.map((c) => `<td>${c.trim()}</td>`).join("") + "</tr>";
+      }
+      html += "</tbody></table></div>\n";
+      return html;
+    });
 
-    // 6. Bold & Italic
-    src = src.replace(/\*\*\*([^*]+)\*\*\*/g, "<strong><em>$1</em></strong>");
-    src = src.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    src = src.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-    src = src.replace(/__([^_]+)__/g, "<strong>$1</strong>");
-    src = src.replace(/_([^_]+)_/g, "<em>$1</em>");
+    // 7. Headings
+    src = src.replace(/^[ \t]*######[ \t]+(.*)$/gm, "<h6>$1</h6>");
+    src = src.replace(/^[ \t]*#####[ \t]+(.*)$/gm, "<h5>$1</h5>");
+    src = src.replace(/^[ \t]*####[ \t]+(.*)$/gm, "<h4>$1</h4>");
+    src = src.replace(/^[ \t]*###[ \t]+(.*)$/gm, "<h3>$1</h3>");
+    src = src.replace(/^[ \t]*##[ \t]+(.*)$/gm, "<h2>$1</h2>");
+    src = src.replace(/^[ \t]*#[ \t]+(.*)$/gm, "<h1>$1</h1>");
 
-    // 7. Links
-    src = src.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-
-    // 8. Lists
-    src = src.replace(/(?:^[ \t]*[-*][ \t]+[^\n]+(?:\n|$))+/gm, (match) => {
+    // 8. Lists (Unordered & Ordered)
+    src = src.replace(/(?:^[ \t]*[-*+][ \t]+[^\n]+(?:\n|$))+/gm, (match) => {
       const items = match
         .trim()
         .split("\n")
-        .map((line) => line.replace(/^[ \t]*[-*][ \t]+/, "").trim())
+        .map((line) => line.replace(/^[ \t]*[-*+][ \t]+/, "").trim())
         .filter(Boolean)
-        .map((item) => `<li>${item}</li>`)
+        .map((item) => {
+          if (item.startsWith("[ ] ")) {
+            return `<li><input type="checkbox" disabled style="vertical-align:middle; margin-right:4px;"> ${item.slice(4)}</li>`;
+          }
+          if (item.startsWith("[x] ") || item.startsWith("[X] ")) {
+            return `<li><input type="checkbox" checked disabled style="vertical-align:middle; margin-right:4px;"> ${item.slice(4)}</li>`;
+          }
+          return `<li>${item}</li>`;
+        })
         .join("");
       return `<ul>${items}</ul>\n`;
     });
 
-    src = src.replace(/(?:^[ \t]*\d+\.[ \t]+[^\n]+(?:\n|$))+/gm, (match) => {
+    src = src.replace(/(?:^[ \t]*\d+[.)][ \t]+[^\n]+(?:\n|$))+/gm, (match) => {
       const items = match
         .trim()
         .split("\n")
-        .map((line) => line.replace(/^[ \t]*\d+\.[ \t]+/, "").trim())
+        .map((line) => line.replace(/^[ \t]*\d+[.)][ \t]+/, "").trim())
         .filter(Boolean)
         .map((item) => `<li>${item}</li>`)
         .join("");
       return `<ol>${items}</ol>\n`;
     });
 
-    // 9. Paragraphs & Line Breaks
+    // 9. Bold, Italic & Strikethrough (word-boundary safe)
+    src = src.replace(/\*\*\*([^*]+)\*\*\*/g, "<strong><em>$1</em></strong>");
+    src = src.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    src = src.replace(/(^|[\s\(\[{])\*([^*\n]+)\*(?=[\s\.,!?:;\)\]}]|$)/g, "$1<em>$2</em>");
+    src = src.replace(/__([^_]+)__/g, "<strong>$1</strong>");
+    src = src.replace(/(^|[\s\(\[{])_([^_\n]+)_(?=[\s\.,!?:;\)\]}]|$)/g, "$1<em>$2</em>");
+    src = src.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+
+    // 10. Links
+    src = src.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+
+    // 11. Paragraphs & Line Breaks
     const paragraphs = src.split(/\n{2,}/);
     src = paragraphs
       .map((p) => {
@@ -706,7 +751,9 @@ class OtisCompanionCard extends HTMLElement {
           p.startsWith("<ul") ||
           p.startsWith("<ol") ||
           p.startsWith("<hr") ||
-          p.startsWith("__CODE_BLOCK_")
+          p.startsWith("<blockquote") ||
+          p.startsWith('<div class="chat-table') ||
+          p.startsWith("@@@OTIS_CB_")
         ) {
           return p;
         }
@@ -715,8 +762,11 @@ class OtisCompanionCard extends HTMLElement {
       .filter(Boolean)
       .join("");
 
-    // 10. Restore code blocks
-    src = src.replace(/__CODE_BLOCK_(\d+)__/g, (match, idx) => {
+    // 12. Restore tokens
+    src = src.replace(/@@@OTIS_IC_(\d+)@@@/g, (match, idx) => {
+      return inlineCodes[Number(idx)] || "";
+    });
+    src = src.replace(/@@@OTIS_CB_(\d+)@@@/g, (match, idx) => {
       return codeBlocks[Number(idx)] || "";
     });
 
@@ -1508,10 +1558,55 @@ class OtisCompanionCard extends HTMLElement {
           white-space: pre;
         }
 
-        .chat-bubble hr {
+        .chat-bubble hr,
+        .chat-live-preview-body hr {
           border: none;
           border-top: 1px solid var(--otis-surface-border);
           margin: 10px 0;
+          opacity: 0.6;
+        }
+
+        .chat-bubble blockquote,
+        .chat-live-preview-body blockquote {
+          margin: 8px 0;
+          padding: 6px 12px;
+          border-left: 3px solid var(--otis-primary);
+          background: color-mix(in srgb, var(--otis-primary) 8%, transparent);
+          border-radius: 0 8px 8px 0;
+          color: var(--otis-text-muted);
+          font-style: italic;
+        }
+
+        .chat-table-wrapper {
+          margin: 8px 0;
+          overflow-x: auto;
+          border-radius: 8px;
+          border: 1px solid var(--otis-surface-border);
+        }
+
+        .chat-table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: 0.78rem;
+          text-align: left;
+        }
+
+        .chat-table th {
+          background: color-mix(in srgb, var(--otis-primary) 15%, transparent);
+          color: var(--otis-primary);
+          padding: 6px 10px;
+          font-weight: 700;
+          border-bottom: 1px solid var(--otis-surface-border);
+        }
+
+        .chat-table td {
+          padding: 6px 10px;
+          border-bottom: 1px solid color-mix(in srgb, var(--otis-surface-border) 40%, transparent);
+          color: var(--otis-text);
+        }
+
+        .chat-table tr:last-child td {
+          border-bottom: none;
         }
 
         .chat-bubble.user {
@@ -2976,8 +3071,8 @@ class OtisCompanionCard extends HTMLElement {
           return;
         }
 
-        // Detect Markdown syntax: headers (# ), lists (- or * or 1.), bold (**), italics (* or _), code (``` or `), hr (---), quotes (>)
-        const hasMarkdown = /(?:^|\n)\s*(?:#{1,6}\s+|[-*]\s+|\d+\.\s+|---|```|>\s+)|[*_`\[\]]/.test(val);
+        // Detect Markdown syntax: headers (#), lists (- or * or + or 1.), bold (**), italics (* or _), code (``` or `), hr (--, ---, ***, ___), quotes (>), tables (|)
+        const hasMarkdown = /(?:^|\n)\s*(?:#{1,6}(?:\s+|$)|[-*+](?:\s+|$)|--+|(?:\d+[.)])(?:\s+|$)|```|&gt;|>|\|.+\|)|[*_`~\[\]]/.test(val);
         if (hasMarkdown && previewContainer && previewBody) {
           previewContainer.style.display = "block";
           previewBody.innerHTML = this._renderMarkdown(val);
