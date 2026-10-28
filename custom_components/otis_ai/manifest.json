@@ -1,12 +1,23 @@
 {
   "domain": "otis_ai",
   "name": "Otis AI Companion",
-  "codeowners": ["@jamie"],
+  "codeowners": [
+    "@OtisPresley"
+  ],
   "config_flow": true,
-  "dependencies": ["assist_pipeline", "conversation", "media_player"],
+  "dependencies": [
+    "assist_pipeline",
+    "conversation",
+    "frontend",
+    "http",
+    "media_player"
+  ],
+  "after_dependencies": [
+    "lovelace"
+  ],
   "documentation": "https://github.com/OtisPresley/otis-ai-companion",
   "integration_type": "service",
   "iot_class": "local_polling",
-  "requirements": ["pyyaml>=6.0.3"],
-  "version": "1.5.4"
+  "issue_tracker": "https://github.com/OtisPresley/otis-ai-companion/issues",
+  "version": "1.5.5"
 }

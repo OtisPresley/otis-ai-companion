@@ -2,7 +2,18 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
-## [1.5.4] - 2026-10-28
+## [1.5.5] - 2026-10-28
+
+### Fixed & Improved
+- **HACS & Hassfest GitHub Action Compliance**:
+  - Added required `"issue_tracker"` URL to `manifest.json` for HACS validation.
+  - Added missing `"http"`, `"frontend"`, and `"lovelace"` component dependencies and after-dependencies to `manifest.json`.
+  - Removed core-supplied `pyyaml` from `manifest.json` `requirements` to comply with Home Assistant integration guidelines.
+  - Added `CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)` in `__init__.py` to satisfy Home Assistant configuration schema requirements.
+  - Updated `codeowners` to `@OtisPresley`.
+- **Automated CI Workflow**:
+  - Created `.github/workflows/ci.yaml` running Ruff linting, Python compilation (`compileall`), and 32-suite unit tests on push and pull requests, matching the `snmp-network-manager` CI pipeline.
+  - Configured `tests/` directory with `test_core_rebuilt.py` for automated test discovery.
 
 ### Fixed & Improved
 - **Robust Markdown Parsing & Code Token Protection (`otis-companion-card.js`)**:
