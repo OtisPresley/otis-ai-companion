@@ -1,0 +1,12 @@
+{
+  "domain": "otis_ai",
+  "name": "Otis AI Companion",
+  "codeowners": ["@jamie"],
+  "config_flow": true,
+  "dependencies": ["assist_pipeline", "conversation", "media_player"],
+  "documentation": "https://github.com/OtisPresley/otis-ai-companion",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "requirements": ["pyyaml>=6.0.3"],
+  "version": "1.5.3"
+}

@@ -1,0 +1,28 @@
+# Caches and logs
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+*.log
+
+# Databases and temporary files
+*.db
+*.db-shm
+*.db-wal
+backup.db
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Secret file protection & local HA configs
+config/
+decompiled/
+system_info.json
+ai_router_spatial_map.json

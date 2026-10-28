@@ -1,0 +1,38 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Otis AI Companion Settings",
+        "description": "Configure the Otis AI Companion smart co-pilot.",
+        "data": {
+          "conversation_agent": "AI Conversation Agent",
+          "spatial_map_path": "Spatial Map JSON Filename",
+          "theme_name": "Dynamic Theme Name"
+        }
+      },
+      "onboarding": {
+        "title": "Otis AI Companion Onboarding",
+        "description": "No active AI conversation agents (e.g. Gemini, OpenAI, Ollama) were found in your Home Assistant configuration.\n\nOtis AI Companion requires an AI provider for voice/text interaction, spatial mapping, and automation suggestions. We recommend configuring the **Google Generative AI** or **OpenAI** integration first.\n\nWould you like to proceed with limited local-only features?",
+        "data": {
+          "understand_limitations": "I understand and wish to proceed with limited features"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Only a single configuration of Otis AI Companion is allowed."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Otis AI Companion Options",
+        "description": "Update options for the Otis AI Companion.",
+        "data": {
+          "conversation_agent": "AI Conversation Agent",
+          "spatial_map_path": "Spatial Map JSON Filename",
+          "theme_name": "Dynamic Theme Name"
+        }
+      }
+    }
+  }
+}
