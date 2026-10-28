@@ -45,6 +45,10 @@ It replaces fragile Jinja2 templates, hardcoded entity mappings, and rigid autom
 - 🎛️ **Admin-Only Panel Mode Dashboard (`/otis-ai`)**: Automatically creates and synchronizes an Admin-only dashboard in full-width Panel Mode (`ha_native` theme default) with Home Assistant's live `DashboardsCollection`.
 - 💬 **Assist AI Co-Pilot with Real-Time Audio Streaming**: Interactive multi-turn chat co-pilot (`otis_ai.chat`) with direct Web Speech microphone input, 5-bar animated audio waveform visualizer, and instant Markdown live preview.
 
+<div align="center">
+  <img width="900" alt="image" src="https://github.com/user-attachments/assets/317266e6-1470-4d90-afa9-5f7f0432de53" />
+</div>div>
+
 ---
 
 ## 🏛️ Architectural Overview
