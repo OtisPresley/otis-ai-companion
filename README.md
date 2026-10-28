@@ -47,7 +47,7 @@ It replaces fragile Jinja2 templates, hardcoded entity mappings, and rigid autom
 
 <div align="center">
   <img width="900" alt="image" src="https://github.com/user-attachments/assets/317266e6-1470-4d90-afa9-5f7f0432de53" />
-</div>div>
+</div>
 
 ---
 
