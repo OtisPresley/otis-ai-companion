@@ -2401,8 +2401,8 @@ class TestSentinelManager(unittest.TestCase):
         self.assertIn("otis_floorplan.svg?v=1730225708", cards[0]["image"])
         self.assertGreater(len(cards[0]["elements"]), 0)
 
-        # Check room label navigation
-        labels = [e for e in cards[0]["elements"] if e["type"] == "state-label"]
+        # Check room icon navigation
+        labels = [e for e in cards[0]["elements"] if e["type"] == "icon"]
         self.assertGreater(len(labels), 0)
         nav_paths = [lbl["tap_action"]["navigation_path"] for lbl in labels]
         self.assertTrue(any(p.startswith("/command-center/area_") for p in nav_paths))

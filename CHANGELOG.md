@@ -2,6 +2,15 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.6.4] - 2026-10-29
+
+### Fixed
+- **Picture-Elements Floor Plan Configuration Errors (`dashboard_manager.py`, `test_core_rebuilt.py`)**:
+  - Resolved Home Assistant frontend `Configuration error: Entity required` validation errors across all rooms on the Floor Plan subviews (`/otis-ai/floorplan` and `/command-center/floorplan`).
+  - Home Assistant's native `picture-elements` card strictly requires an `entity` property on `type: state-label`. Replaced room navigation overlays with native `type: icon` elements using contextual room MDI icons (`_get_room_icon`) positioned in the upper right corner of each room (`rx + rw - 24`, `ry + 20`).
+  - Room icons now cleanly display the room name as a hover tooltip and route directly to the room subview (`/{dashboard_url}/area_{slug}`) on tap without requiring dummy entities or triggering Lovelace card validation exceptions.
+  - Updated test assertions in `tests/test_core_rebuilt.py` to validate room navigation elements under the compliant `type: icon` specification.
+
 ## [1.6.3] - 2026-10-29
 
 ### Fixed & Improved

@@ -920,23 +920,22 @@ class DashboardManager:
                         rw = float(r.get("width", 200))
                         rh = float(r.get("height", 140))
 
-                        center_left_pct = round(((rx + rw / 2.0) / 1300.0) * 100, 1)
-
-                        # Room Navigation Label
+                        # Room Navigation Icon (Valid picture-elements element without entity requirement)
                         slug = self._slugify(aid)
+                        room_icon = self._get_room_icon(r.get("name", ""), aid)
+                        top_pct = round((ry + 20) / canvas_h * 100, 1)
+                        left_pct = round((rx + rw - 24) / 1300.0 * 100, 1)
                         elements.append({
-                            "type": "state-label",
+                            "type": "icon",
+                            "icon": room_icon,
                             "title": r.get("name"),
                             "style": {
-                                "top": f"{round((ry + 22) / canvas_h * 100, 1)}%",
-                                "left": f"{center_left_pct}%",
-                                "color": "#e2e8f0",
-                                "font-size": "13px",
-                                "font-weight": "700",
-                                "letter-spacing": "0.5px",
+                                "top": f"{top_pct}%",
+                                "left": f"{left_pct}%",
+                                "color": "#94a3b8",
                                 "cursor": "pointer",
                                 "pointer-events": "auto",
-                                "text-shadow": "0 2px 4px rgba(0,0,0,0.8)",
+                                "--mdc-icon-size": "20px",
                             },
                             "tap_action": {
                                 "action": "navigate",
