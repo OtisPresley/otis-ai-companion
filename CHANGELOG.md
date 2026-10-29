@@ -2,6 +2,37 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.6.1] - 2026-10-29
+
+### Added & Improved
+- **Non-Admin User Command Center Dashboard (`dashboard_manager.py`)**:
+  - Automatically generates and synchronizes `/command-center` with `require_admin: false`, making Studios and Room views accessible to family members and non-admin users.
+  - Zero exposure to administrative features, AI conversation assistant, or blueprint editor.
+  - Features home launcher tiles for Studios (Floor Plan, Media Studio, Security Center, Climate & Pool) and dynamic room navigation cards.
+  - Registered service `otis_ai.create_command_center` to sync or regenerate on demand.
+- **Interactive Floor Plan User Control Surface (`otis-companion-card.js`, `dashboard_manager.py`)**:
+  - Re-architected `/otis-ai/floorplan` and `/command-center/floorplan` into a dedicated full-width **User Control View** (`mode: "floorplan_control"`).
+  - Tapping light or switch markers toggles devices with instant visual feedback.
+  - Tapping climate, media players, locks, or cameras triggers Home Assistant's native `hass-more-info` popup.
+  - Tapping a room boundary opens an interactive Room Control drawer with quick-toggles for room devices and navigation to the room subview.
+  - Hides walkthrough authoring banners and YAML export tools during control mode; Canvas Editor toggle is restricted exclusively to Admin/Owner accounts.
+- **Proactive Feed Priority Sorting Fix (`otis-companion-card.js`)**:
+  - Fixed rank sorting to place `CRITICAL` priority alerts strictly ahead of `HIGH` priority items (`critical: 0, high: 1, medium: 2, low: 3`).
+- **Eliminated False-Positive Diagnostic Setpoint Alerts (`sentinel_manager.py`)**:
+  - Completely generic heuristic filter strictly checks domain `sensor`, ignores entities with `entity_category in ("config", "diagnostic")` in the entity registry, and excludes setpoint/threshold keywords (`setpoint`, `threshold`, `limit`, `target`, `alarm`, `warning_level`, `shutdown`).
+  - Completely prevents configuration numbers (e.g., UPS Low battery setpoint) from being misclassified as low battery telemetry.
+- **Actionable Sentinel Alerts & Alert Muting (`sentinel_manager.py`, `otis-companion-card.js`)**:
+  - Replaced nonsensical "Apply with 1-Click" buttons on informational watchdog alerts with contextual options:
+    - `Ignore this alert`: Mutes the specific anomaly ID.
+    - `Ignore all low battery alerts` / `Ignore all offline node alerts`: Mutes the entire alert category across restarts.
+  - Added preference persistence in `.storage/otis_ai_sentinel_prefs` using Home Assistant's `Store`.
+  - Registered `otis_ai.ignore_sentinel_alert` service.
+- **Per-User Theme Profile Storage & Service Fixes (`theme_manager.py`, `__init__.py`, `otis-companion-card.js`)**:
+  - Changed all action services (`apply_theme`, `generate_theme`, `remediate_anomaly`, etc.) from `SupportsResponse.ONLY` to `SupportsResponse.OPTIONAL`, resolving the `"The action requires responses and must be called with return_response=True"` frontend toast error.
+  - Directly syncs applied themes to the logged-in user's profile via Home Assistant WebSocket `frontend/set_user_data` (`key: "theme"`).
+  - Added user scope selector in the Theme Studio modal ("Current User" vs "All Users"), allowing Admins to optionally sync themes across all household user profiles via `.storage/frontend.user_data_<uid>`.
+  - Enforced input, select, and surface background contrast variables on all dynamically synthesized themes to prevent white-on-white dropdown text.
+
 ## [1.6.0] - 2026-10-29
 
 ### Added & Improved

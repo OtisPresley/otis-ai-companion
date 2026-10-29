@@ -45,6 +45,8 @@ from .const import (
     SERVICE_RUN_SENTINEL_WATCHDOG,
     SERVICE_REMEDIATE_ANOMALY,
     SERVICE_GET_SENTINEL_TELEMETRY,
+    SERVICE_IGNORE_SENTINEL_ALERT,
+    SERVICE_CREATE_COMMAND_CENTER,
 )
 from .automation_manager import AutomationManager
 from .dashboard_manager import DashboardManager
@@ -348,6 +350,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         spatial_manager.async_load(),
         floorplan_parser.async_load(),
         dashboard_manager.async_ensure_admin_companion_dashboard(),
+        dashboard_manager.async_ensure_user_command_center_dashboard(),
+        sentinel_manager.async_load_preferences(),
     )
     engine = DiscoveryEngine(
         hass,
@@ -470,6 +474,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             _invalidate()
             return res
+
+        if action_type in ("ignore_sentinel_alert", "sentinel_alert_actions"):
+            aid = payload.get("anomaly_id", suggestion_id)
+            cat = payload.get("category")
+            if payload.get("all_in_category") and cat:
+                await sm.async_ignore_category(cat)
+                msg = f"All {cat} alerts muted."
+            elif aid:
+                await sm.async_ignore_anomaly(aid)
+                msg = "Alert muted."
+            else:
+                msg = "Alert dismissed."
+            _invalidate()
+            return {"success": True, "message": msg}
 
         if action_type == "create_automation":
             auto_id = await mgr.async_write_automation(payload)
@@ -826,11 +844,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Handle service call to apply a theme."""
         theme_name = call.data.get("name") or call.data.get("theme_name")
         mode = call.data.get("mode")
-        _LOGGER.debug("Service 'apply_theme' triggered for: %s (mode=%s)", theme_name, mode)
+        user_id = call.data.get("user_id")
+        all_users = call.data.get("all_users", False)
+        _LOGGER.debug(
+            "Service 'apply_theme' triggered for: %s (mode=%s, user_id=%s, all_users=%s)",
+            theme_name,
+            mode,
+            user_id,
+            all_users,
+        )
         if not theme_name:
             return {"success": False, "error": "Missing theme 'name' parameter"}
         _, _, _, _, tm, _ = _get_active_managers()
-        ok = await tm.async_apply_theme(theme_name, mode=mode)
+        ok = await tm.async_apply_theme(theme_name, mode=mode, user_id=user_id, all_users=all_users)
         return {"success": ok, "theme": theme_name}
 
     async def handle_list_themes(call) -> ServiceResponse:
@@ -881,96 +907,137 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         anomalies = sm.get_active_anomalies()
         return {"anomalies": anomalies, "count": len(anomalies)}
 
+    async def handle_ignore_sentinel_alert(call) -> ServiceResponse:
+        """Handle service call to ignore a Sentinel alert or entire alert category."""
+        anomaly_id = call.data.get("anomaly_id")
+        category = call.data.get("category")
+        all_in_category = call.data.get("all_in_category", False)
+        _LOGGER.debug(
+            "Service 'ignore_sentinel_alert' triggered: anomaly_id=%s, category=%s, all=%s",
+            anomaly_id,
+            category,
+            all_in_category,
+        )
+        eng, _, _, _, _, sm = _get_active_managers()
+        if sm:
+            if all_in_category and category:
+                await sm.async_ignore_category(category)
+            elif anomaly_id:
+                await sm.async_ignore_anomaly(anomaly_id)
+        if hasattr(eng, "invalidate_cache"):
+            eng.invalidate_cache()
+        return {"success": True, "anomaly_id": anomaly_id, "category": category}
+
+    async def handle_create_command_center(call) -> ServiceResponse:
+        """Handle service call to create or sync the User role Command Center dashboard."""
+        _LOGGER.debug("Service 'create_command_center' triggered")
+        eng, dm, _, _, _, _ = _get_active_managers()
+        cap_map = await eng.async_get_capability_map() if hasattr(eng, "async_get_capability_map") else {}
+        res = await dm.async_ensure_user_command_center_dashboard(cap_map)
+        return {"success": True, "dashboard": res}
+
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
         DOMAIN,
         SERVICE_GET_CAPABILITY_MAP,
         handle_get_capability_map,
-        supports_response=SupportsResponse.ONLY,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_GET_SUGGESTIONS,
         handle_get_suggestions,
-        supports_response=SupportsResponse.ONLY,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_APPLY_SUGGESTION,
         handle_apply_suggestion,
-        supports_response=SupportsResponse.ONLY,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_CHAT,
         handle_chat,
-        supports_response=SupportsResponse.ONLY,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_GET_SPATIAL_MAP,
         handle_get_spatial_map,
-        supports_response=SupportsResponse.ONLY,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_UPDATE_SPATIAL_MAP,
         handle_update_spatial_map,
-        supports_response=SupportsResponse.ONLY,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_GENERATE_FLOORPLAN,
         handle_generate_floorplan,
-        supports_response=SupportsResponse.ONLY,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_UPDATE_FLOORPLAN_LAYOUT,
         handle_update_floorplan_layout,
-        supports_response=SupportsResponse.ONLY,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_GENERATE_THEME,
         handle_generate_theme,
-        supports_response=SupportsResponse.ONLY,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_APPLY_THEME,
         handle_apply_theme,
-        supports_response=SupportsResponse.ONLY,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_LIST_THEMES,
         handle_list_themes,
-        supports_response=SupportsResponse.ONLY,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_DELETE_THEME,
         handle_delete_theme,
-        supports_response=SupportsResponse.ONLY,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_RUN_SENTINEL_WATCHDOG,
         handle_run_sentinel_watchdog,
-        supports_response=SupportsResponse.ONLY,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_REMEDIATE_ANOMALY,
         handle_remediate_anomaly,
-        supports_response=SupportsResponse.ONLY,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_GET_SENTINEL_TELEMETRY,
         handle_get_sentinel_telemetry,
-        supports_response=SupportsResponse.ONLY,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_IGNORE_SENTINEL_ALERT,
+        handle_ignore_sentinel_alert,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CREATE_COMMAND_CENTER,
+        handle_create_command_center,
+        supports_response=SupportsResponse.OPTIONAL,
     )
 
     _LOGGER.info("Otis AI Companion entry set up successfully")
@@ -1907,12 +1974,13 @@ class DiscoveryEngine:
         self._cache_ts = now
         self._cache_signature = current_sig
 
-        # Continuous Discovery Synchronization: keep companion dashboard subviews updated
+        # Continuous Discovery Synchronization: keep companion and user command center dashboard subviews updated
         if getattr(self, "dashboard_manager", None):
             try:
                 await self.dashboard_manager.async_ensure_admin_companion_dashboard(cap_map)
+                await self.dashboard_manager.async_ensure_user_command_center_dashboard(cap_map)
             except Exception as err:
-                _LOGGER.debug("Could not synchronize companion dashboard during discovery scan: %s", err)
+                _LOGGER.debug("Could not synchronize dashboards during discovery scan: %s", err)
 
         return cap_map
 

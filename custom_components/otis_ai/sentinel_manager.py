@@ -6,10 +6,14 @@ import time
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 
 _LOGGER = logging.getLogger(__name__)
 
-# Severity rank
+STORAGE_KEY = "otis_ai_sentinel_prefs"
+STORAGE_VERSION = 1
+
+# Severity rank (Strict: critical=0 > high=1 > medium=2 > low=3)
 SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 
 
@@ -19,18 +23,80 @@ class SentinelManager:
     def __init__(self, hass: HomeAssistant) -> None:
         """Initialize the Sentinel watchdog manager."""
         self.hass = hass
+        self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._anomalies: dict[str, dict[str, Any]] = {}
         self._last_scan_ts: float = 0.0
         self._remediation_history: list[dict[str, Any]] = []
+        self._ignored_anomaly_ids: set[str] = set()
+        self._ignored_categories: set[str] = set()
+        self._prefs_loaded: bool = False
+
+    async def async_load_preferences(self) -> None:
+        """Load persisted ignored anomaly IDs and categories."""
+        if self._prefs_loaded:
+            return
+        try:
+            data = await self._store.async_load()
+            if data and isinstance(data, dict):
+                self._ignored_anomaly_ids = set(data.get("ignored_anomaly_ids", []))
+                self._ignored_categories = set(data.get("ignored_categories", []))
+                _LOGGER.debug(
+                    "Otis Sentinel: Loaded preferences (%d ignored anomalies, %d ignored categories)",
+                    len(self._ignored_anomaly_ids),
+                    len(self._ignored_categories),
+                )
+        except Exception as err:
+            _LOGGER.debug("Could not load Sentinel preferences: %s", err)
+        finally:
+            self._prefs_loaded = True
+
+    async def async_save_preferences(self) -> None:
+        """Persist ignored anomaly IDs and categories to HA storage."""
+        try:
+            data = {
+                "ignored_anomaly_ids": list(self._ignored_anomaly_ids),
+                "ignored_categories": list(self._ignored_categories),
+            }
+            await self._store.async_save(data)
+            _LOGGER.debug("Otis Sentinel: Saved preferences successfully")
+        except Exception as err:
+            _LOGGER.warning("Could not save Sentinel preferences: %s", err)
+
+    async def async_ignore_anomaly(self, anomaly_id: str) -> None:
+        """Mute a specific anomaly from appearing in Proactive Feed."""
+        await self.async_load_preferences()
+        self._ignored_anomaly_ids.add(anomaly_id)
+        if anomaly_id in self._anomalies:
+            del self._anomalies[anomaly_id]
+        await self.async_save_preferences()
+
+    async def async_ignore_category(self, category: str) -> None:
+        """Mute an entire category of alerts (e.g., 'battery', 'offline_node')."""
+        await self.async_load_preferences()
+        self._ignored_categories.add(category)
+        if category == "battery":
+            self._anomalies = {k: v for k, v in self._anomalies.items() if v.get("anomaly_type") != "battery"}
+        elif category in ("offline_node", "offline_infrastructure"):
+            self._anomalies = {
+                k: v for k, v in self._anomalies.items()
+                if v.get("anomaly_type") not in ("offline_node", "offline_infrastructure")
+            }
+        await self.async_save_preferences()
 
     def get_active_anomalies(self) -> list[dict[str, Any]]:
-        """Return currently active anomalies sorted by severity."""
-        anomalies = list(self._anomalies.values())
-        anomalies.sort(key=lambda a: SEVERITY_RANK.get(a.get("severity", "medium"), 2))
+        """Return currently active anomalies sorted strictly by severity."""
+        anomalies = [
+            a for a in self._anomalies.values()
+            if a.get("id") not in self._ignored_anomaly_ids
+            and a.get("anomaly_type") not in self._ignored_categories
+            and a.get("domain") not in self._ignored_categories
+        ]
+        anomalies.sort(key=lambda a: SEVERITY_RANK.get(str(a.get("severity", "medium")).lower(), 2))
         return anomalies
 
     async def async_scan_all_anomalies(self) -> list[dict[str, Any]]:
         """Perform comprehensive system anomaly audit across all domains."""
+        await self.async_load_preferences()
         _LOGGER.debug("Otis Sentinel: Starting anomaly watchdog audit...")
         found: dict[str, dict[str, Any]] = {}
 
@@ -118,28 +184,75 @@ class SentinelManager:
         return anomalies
 
     def _audit_battery_anomalies(self) -> list[dict[str, Any]]:
-        """Detect critically low or anomalous battery sensors."""
+        """Detect critically low or anomalous battery sensors, strictly rejecting threshold/setpoint entities."""
+        if "battery" in self._ignored_categories:
+            return []
         anomalies: list[dict[str, Any]] = []
         if not hasattr(self.hass, "states") or not callable(getattr(self.hass.states, "async_all", None)):
             return anomalies
 
+        ent_reg = None
+        try:
+            from homeassistant.helpers import entity_registry as er
+            ent_reg = er.async_get(self.hass)
+        except Exception:
+            pass
+
+        # Exclude threshold, limit, alarm, or setpoint entities (e.g. UPS low battery setpoint)
+        setpoint_keywords = (
+            "setpoint", "threshold", "limit", "target", "alarm", "warning_level",
+            "shutdown", "cutoff", "level_low", "level_critical"
+        )
+
         for state in self.hass.states.async_all():
+            # Must strictly belong to domain 'sensor'
+            if not state.entity_id.startswith("sensor."):
+                continue
+
             attrs = state.attributes or {}
+            friendly_name = (attrs.get("friendly_name") or "").lower()
+            obj_id = state.object_id.lower()
+
+            # Filter out config / diagnostic category from registry
+            if ent_reg:
+                entry = ent_reg.async_get(state.entity_id)
+                if entry and entry.entity_category in ("config", "diagnostic"):
+                    continue
+
+            # Check if name or object_id indicates a threshold/setpoint
+            if any(kw in obj_id for kw in setpoint_keywords) or any(kw in friendly_name for kw in setpoint_keywords):
+                continue
+
+            # Must be battery device_class OR unit "%" with battery in id/name
             is_battery = (
                 attrs.get("device_class") == "battery"
-                or state.entity_id.endswith(("_battery", "_battery_level", "_bat"))
-                or attrs.get("unit_of_measurement") == "%"
-                and "battery" in state.entity_id
+                or (
+                    attrs.get("unit_of_measurement") == "%"
+                    and ("battery" in obj_id or "battery" in friendly_name)
+                )
             )
             if not is_battery:
                 continue
 
             try:
                 val = float(state.state)
+                # Ignore invalid battery percentages
+                if val < 0.0 or val > 100.0:
+                    continue
+
+                anomaly_id = (
+                    f"sentinel_battery_critical_{state.entity_id}"
+                    if val <= 5.0
+                    else f"sentinel_battery_low_{state.entity_id}"
+                )
+                if anomaly_id in self._ignored_anomaly_ids:
+                    continue
+
                 if val <= 10.0:
                     anomalies.append({
-                        "id": f"sentinel_battery_critical_{state.entity_id}",
+                        "id": anomaly_id,
                         "domain": "energy",
+                        "anomaly_type": "battery",
                         "severity": "critical" if val <= 5.0 else "high",
                         "entity_id": state.entity_id,
                         "title": f"Critical Battery: {attrs.get('friendly_name', state.entity_id)} ({int(val)}%)",
@@ -147,19 +260,20 @@ class SentinelManager:
                             f"Device battery is at {int(val)}% and may disconnect or drop offline imminently. "
                             "Immediate battery replacement recommended."
                         ),
-                        "remediation_action": "notify_battery_replacement",
-                        "remediation_payload": {"entity_id": state.entity_id, "battery_level": val},
+                        "remediation_action": "ignore_alert",
+                        "remediation_payload": {"anomaly_id": anomaly_id, "entity_id": state.entity_id},
                     })
                 elif val <= 20.0:
                     anomalies.append({
-                        "id": f"sentinel_battery_low_{state.entity_id}",
+                        "id": anomaly_id,
                         "domain": "energy",
+                        "anomaly_type": "battery",
                         "severity": "medium",
                         "entity_id": state.entity_id,
                         "title": f"Low Battery: {attrs.get('friendly_name', state.entity_id)} ({int(val)}%)",
                         "description": f"Battery is at {int(val)}%. Plan replacement within the week.",
-                        "remediation_action": "notify_battery_replacement",
-                        "remediation_payload": {"entity_id": state.entity_id, "battery_level": val},
+                        "remediation_action": "ignore_alert",
+                        "remediation_payload": {"anomaly_id": anomaly_id, "entity_id": state.entity_id},
                     })
             except (ValueError, TypeError):
                 continue
@@ -243,6 +357,8 @@ class SentinelManager:
 
     def _audit_offline_infrastructure(self) -> list[dict[str, Any]]:
         """Detect unavailable or unknown network and power infrastructure nodes."""
+        if "offline_node" in self._ignored_categories or "offline_infrastructure" in self._ignored_categories:
+            return []
         anomalies: list[dict[str, Any]] = []
         if not hasattr(self.hass, "states") or not callable(getattr(self.hass.states, "async_all", None)):
             return anomalies
@@ -255,16 +371,20 @@ class SentinelManager:
             attrs = state.attributes or {}
             # Focus on critical infrastructure: switches, cameras, routers, media bridges
             if any(k in eid for k in ("switch.", "camera.", "media_player.", "router", "bridge", "ap_")):
+                anomaly_id = f"sentinel_node_offline_{eid}"
+                if anomaly_id in self._ignored_anomaly_ids:
+                    continue
                 name = attrs.get("friendly_name", eid)
                 anomalies.append({
-                    "id": f"sentinel_node_offline_{eid}",
+                    "id": anomaly_id,
                     "domain": "system",
+                    "anomaly_type": "offline_node",
                     "severity": "medium",
                     "entity_id": eid,
                     "title": f"Offline Node: {name}",
                     "description": f"Infrastructure node '{name}' is currently {state.state}.",
-                    "remediation_action": "ping_or_reload_node",
-                    "remediation_payload": {"entity_id": eid},
+                    "remediation_action": "ignore_alert",
+                    "remediation_payload": {"anomaly_id": anomaly_id, "entity_id": eid},
                 })
                 # Cap at 5 infrastructure alerts to avoid spamming
                 if len(anomalies) >= 5:
@@ -362,18 +482,48 @@ class SentinelManager:
         """Convert current active anomalies into actionable Proactive Feed cards for the Lovelace companion card."""
         suggestions: list[dict[str, Any]] = []
         for a in self.get_active_anomalies():
-            suggestions.append({
-                "id": a["id"],
-                "title": f"🛡️ Sentinel Alert: {a['title']}",
-                "category": a.get("domain", "system"),
-                "priority": a.get("severity", "high"),
-                "icon": "mdi:shield-alert",
-                "description": a["description"],
-                "action_type": "remediate_sentinel_anomaly",
-                "action_payload": {
-                    "anomaly_id": a["id"],
-                    "action": a.get("remediation_action"),
-                },
-            })
+            atype = a.get("anomaly_type")
+            if atype in ("battery", "offline_node"):
+                cat_label = "low battery" if atype == "battery" else "offline node"
+                suggestions.append({
+                    "id": a["id"],
+                    "title": f"🛡️ Sentinel Alert: {a['title']}",
+                    "category": a.get("domain", "system"),
+                    "priority": a.get("severity", "high"),
+                    "icon": "mdi:shield-alert",
+                    "description": a["description"],
+                    "action_type": "sentinel_alert_actions",
+                    "anomaly_type": atype,
+                    "action_payload": {
+                        "anomaly_id": a["id"],
+                        "category": atype,
+                        "dismiss_single_label": "Ignore this alert",
+                        "dismiss_category_label": f"Ignore all {cat_label} alerts",
+                    },
+                })
+            else:
+                act = a.get("remediation_action")
+                btn_title = "⚡ Remediate"
+                if act == "secure_perimeter_entity":
+                    btn_title = "🔒 Secure Perimeter"
+                elif act == "adjust_climate_target":
+                    btn_title = "❄️ Adjust Temperature"
+                elif act == "reload_config_entry":
+                    btn_title = "🔄 Reload Integration"
+
+                suggestions.append({
+                    "id": a["id"],
+                    "title": f"🛡️ Sentinel Alert: {a['title']}",
+                    "category": a.get("domain", "system"),
+                    "priority": a.get("severity", "high"),
+                    "icon": "mdi:shield-alert",
+                    "description": a["description"],
+                    "action_type": "remediate_sentinel_anomaly",
+                    "action_payload": {
+                        "anomaly_id": a["id"],
+                        "action": act,
+                        "button_label": btn_title,
+                    },
+                })
         return suggestions
 

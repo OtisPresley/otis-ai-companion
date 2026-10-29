@@ -27,4 +27,12 @@ SERVICE_DELETE_THEME = "delete_theme"
 SERVICE_RUN_SENTINEL_WATCHDOG = "run_sentinel_watchdog"
 SERVICE_REMEDIATE_ANOMALY = "remediate_anomaly"
 SERVICE_GET_SENTINEL_TELEMETRY = "get_sentinel_telemetry"
+SERVICE_IGNORE_SENTINEL_ALERT = "ignore_sentinel_alert"
+SERVICE_CREATE_COMMAND_CENTER = "create_command_center"
+
+# Dashboard Constants
+COMMAND_CENTER_DASHBOARD_ID = "command-center"
+COMMAND_CENTER_DASHBOARD_URL_PATH = "command-center"
+COMMAND_CENTER_DASHBOARD_TITLE = "Command Center"
+COMMAND_CENTER_DASHBOARD_ICON = "mdi:view-dashboard"
 

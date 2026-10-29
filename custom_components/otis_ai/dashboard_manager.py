@@ -9,6 +9,13 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
+from .const import (
+    COMMAND_CENTER_DASHBOARD_ICON,
+    COMMAND_CENTER_DASHBOARD_ID,
+    COMMAND_CENTER_DASHBOARD_TITLE,
+    COMMAND_CENTER_DASHBOARD_URL_PATH,
+)
+
 _LOGGER = logging.getLogger(__name__)
 
 OTIS_DASHBOARD_ID = "otis_ai"
@@ -54,6 +61,188 @@ class DashboardManager:
             dashboard_config=dashboard_config,
             overwrite_config=True,
         )
+
+    async def async_ensure_user_command_center_dashboard(
+        self, capability_map: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Automatically create and register the User role Command Center dashboard accessible to all users."""
+        item = {
+            "id": COMMAND_CENTER_DASHBOARD_ID,
+            "url_path": COMMAND_CENTER_DASHBOARD_URL_PATH,
+            "title": COMMAND_CENTER_DASHBOARD_TITLE,
+            "icon": COMMAND_CENTER_DASHBOARD_ICON,
+            "require_admin": False,
+            "show_in_sidebar": True,
+            "mode": "storage",
+        }
+        dashboard_config = self._build_user_command_center_dashboard_config(capability_map)
+        return await self._async_register_and_save_dashboard(
+            item=item,
+            dashboard_config=dashboard_config,
+            overwrite_config=True,
+        )
+
+    def _build_user_command_center_dashboard_config(
+        self, capability_map: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Build the Lovelace config for the Non-Admin User Command Center dashboard."""
+        areas_map = capability_map.get("areas", {}) if capability_map else {}
+        entities_list = capability_map.get("entities", []) if capability_map else []
+        valid_eids = {
+            e["entity_id"]
+            for e in entities_list
+            if e.get("entity_id")
+            and not e.get("disabled_by")
+            and not e.get("hidden_by")
+            and e.get("state") not in ("unknown", "unavailable", None, "")
+        }
+        entities_by_id = {e["entity_id"]: e for e in entities_list}
+        entities_by_area: dict[str, list[dict[str, Any]]] = {}
+        for e in entities_list:
+            aid = e.get("area_id")
+            if aid:
+                entities_by_area.setdefault(aid, []).append(e)
+
+        active_areas = []
+        for aid, ainfo in sorted(areas_map.items(), key=lambda kv: str(kv[1].get("name", kv[0])).lower()):
+            room_entities = list(entities_by_area.get(aid, []))
+            if not room_entities and ainfo.get("entities"):
+                for eid in ainfo["entities"]:
+                    if eid in entities_by_id:
+                        room_entities.append(entities_by_id[eid])
+            has_active = any(
+                not e.get("disabled_by") and not e.get("hidden_by") and e.get("entity_id") in valid_eids
+                for e in room_entities
+            )
+            if has_active:
+                slug = self._slugify(aid)
+                active_areas.append({
+                    "id": aid,
+                    "name": ainfo.get("name") or aid.replace("_", " ").title(),
+                    "slug": slug,
+                    "entities": room_entities,
+                })
+
+        # Main Home View for Users
+        home_cards: list[dict[str, Any]] = [
+            {
+                "type": "markdown",
+                "content": "# 🏠 Home Command Center\nSelect a studio or room below for full interactive control.",
+            },
+            {
+                "type": "grid",
+                "title": "Studios",
+                "columns": 4,
+                "square": False,
+                "cards": [
+                    {
+                        "type": "button",
+                        "name": "Floor Plan",
+                        "icon": "mdi:floor-plan",
+                        "tap_action": {"action": "navigate", "navigation_path": "/command-center/floorplan"},
+                    },
+                    {
+                        "type": "button",
+                        "name": "Media Studio",
+                        "icon": "mdi:speaker-multiple",
+                        "tap_action": {"action": "navigate", "navigation_path": "/command-center/media"},
+                    },
+                    {
+                        "type": "button",
+                        "name": "Security Center",
+                        "icon": "mdi:shield-home",
+                        "tap_action": {"action": "navigate", "navigation_path": "/command-center/security"},
+                    },
+                    {
+                        "type": "button",
+                        "name": "Climate & Pool",
+                        "icon": "mdi:thermostat-box",
+                        "tap_action": {"action": "navigate", "navigation_path": "/command-center/climate"},
+                    },
+                ],
+            },
+        ]
+
+        if active_areas:
+            home_cards.append({
+                "type": "grid",
+                "title": "Rooms",
+                "columns": 3,
+                "square": False,
+                "cards": [
+                    {
+                        "type": "button",
+                        "name": area["name"],
+                        "icon": "mdi:home-floor-g",
+                        "tap_action": {"action": "navigate", "navigation_path": f"/command-center/area_{area['slug']}"},
+                    }
+                    for area in active_areas
+                ],
+            })
+
+        views: list[dict[str, Any]] = [
+            {
+                "title": "Home",
+                "path": "home",
+                "icon": "mdi:home-variant-outline",
+                "badges": [],
+                "cards": home_cards,
+            },
+            {
+                "title": "Floor Plan",
+                "path": "floorplan",
+                "icon": "mdi:floor-plan",
+                "subview": True,
+                "type": "panel",
+                "panel": True,
+                "badges": [],
+                "cards": [
+                    {
+                        "type": "custom:otis-companion-card",
+                        "mode": "floorplan_control",
+                        "default_tab": "floorplan",
+                        "show_stats": False,
+                        "show_suggestions": False,
+                        "show_chat": False,
+                        "title": "Interactive Floor Plan",
+                    }
+                ],
+            },
+            {
+                "title": "Media Studio",
+                "path": "media",
+                "icon": "mdi:speaker-multiple",
+                "subview": True,
+                "badges": [],
+                "cards": self._build_media_view_cards(capability_map),
+            },
+            {
+                "title": "Security Center",
+                "path": "security",
+                "icon": "mdi:shield-home",
+                "subview": True,
+                "badges": [],
+                "cards": self._build_security_view_cards(capability_map),
+            },
+            {
+                "title": "Climate & Pool",
+                "path": "climate",
+                "icon": "mdi:thermostat-box",
+                "subview": True,
+                "badges": [],
+                "cards": self._build_climate_view_cards(capability_map),
+            },
+        ]
+
+        for area in active_areas:
+            rview = self._build_room_subview(area["id"], {"name": area["name"]}, area["entities"], valid_eids)
+            if rview:
+                views.append(rview)
+
+        return {
+            "title": "Command Center",
+            "views": views,
+        }
 
     def _build_otis_companion_dashboard_config(
         self, capability_map: dict[str, Any] | None = None
@@ -114,20 +303,20 @@ class DashboardManager:
             "cards": climate_cards,
         })
 
-        # 4. Floor Plan Subview (Full-width Interactive Studio Canvas)
+        # 4. Floor Plan Subview (Full-width Interactive User Control Surface)
         floorplan_cards: list[dict[str, Any]] = [
             {
                 "type": "custom:otis-companion-card",
-                "mode": "floorplan_studio",
+                "mode": "floorplan_control",
                 "default_tab": "floorplan",
                 "show_stats": False,
                 "show_suggestions": False,
                 "show_chat": False,
-                "title": "Architectural Vector Floor Plan Studio",
+                "title": "Interactive Floor Plan",
             }
         ]
         views.append({
-            "title": "Floor Plan Studio",
+            "title": "Floor Plan",
             "path": "floorplan",
             "icon": "mdi:floor-plan",
             "subview": True,

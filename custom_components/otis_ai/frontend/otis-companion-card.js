@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 1.6.0
+ * Version: 1.6.1
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.6.0";
+const CARD_VERSION = "1.6.1";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -45,6 +45,7 @@ class OtisCompanionCard extends HTMLElement {
     // Phase 6: Floorplan & Walkthrough state
     this._floorplanModalOpen = false;
     this._themeModalOpen = false;
+    this._themeApplyScope = "current";
     this._generatingTheme = false;
     this._uploadingVideo = false;
     this._uploadProgressText = "";
@@ -845,13 +846,13 @@ class OtisCompanionCard extends HTMLElement {
   }
 
   _render() {
-    const priorityRank = { high: 0, medium: 1, low: 2 };
+    const priorityRank = { critical: 0, high: 1, medium: 2, low: 3 };
     const activeSuggestions = (this._suggestions || [])
       .filter((s) => !this._dismissedIds.has(s.id))
       .slice()
       .sort((a, b) => {
-        const rankA = priorityRank[String(a.priority || "medium").toLowerCase()] ?? 1;
-        const rankB = priorityRank[String(b.priority || "medium").toLowerCase()] ?? 1;
+        const rankA = priorityRank[String(a.priority || "medium").toLowerCase()] ?? 2;
+        const rankB = priorityRank[String(b.priority || "medium").toLowerCase()] ?? 2;
         return rankA - rankB;
       });
     const filteredSuggestions = activeSuggestions.filter((s) =>
@@ -890,7 +891,9 @@ class OtisCompanionCard extends HTMLElement {
 
     const preset = this._config.theme_preset || this._config.theme || "ha_native";
     const themeClass = `theme-${preset.replace(/_/g, "-")}`;
-    const isStudioMode = this._config.mode === "floorplan_studio";
+    const isControlMode = this._config.mode === "floorplan_control";
+    const isStudioMode = this._config.mode === "floorplan_studio" || isControlMode;
+    const isAdmin = Boolean(this._hass?.user?.is_admin || this._hass?.user?.is_owner);
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -2666,18 +2669,27 @@ class OtisCompanionCard extends HTMLElement {
           <!-- Studio Header (Full Width Blueprint Workspace) -->
           <div class="studio-header">
             <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
-              <button class="btn-toolbar" id="btn-back-dashboard" title="Return to Otis Co-Pilot Dashboard">
-                ← Back to Dashboard
+              <button class="btn-toolbar" id="btn-back-dashboard" title="Return to Dashboard">
+                ← Back
               </button>
               <div class="title-group">
-                <span class="main-title">🗺️ Architectural Floor Plan Studio</span>
+                <span class="main-title">🗺️ ${isControlMode ? "Interactive Floor Plan" : "Architectural Floor Plan Studio"}</span>
                 <span class="sub-title">
                   <span class="status-dot"></span>
-                  Interactive Blueprint Workspace • ${this._editorActive ? "Canvas Editor Mode Active" : "Interactive Blueprint Viewer"}
+                  ${this._editorActive ? "Canvas Editor Mode Active • Drag pins & resize rooms" : (isControlMode ? "Live Home Control Surface • Tap devices to control" : "Interactive Blueprint Viewer")}
                 </span>
               </div>
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
+              ${
+                isAdmin
+                  ? `
+                <button class="btn-toolbar ${this._editorActive ? 'active' : ''}" id="btn-toggle-editor" style="${this._editorActive ? 'background: var(--otis-primary); color: var(--otis-btn-text, #ffffff); border-color: var(--otis-primary);' : ''}">
+                  ${this._editorActive ? "🛠️ Exit Editor" : "✏️ Edit Blueprint"}
+                </button>
+              `
+                  : ""
+              }
               <button class="icon-btn" id="refresh-btn" title="Refresh floor plan">
                 ↻ Refresh
               </button>
@@ -2861,9 +2873,24 @@ class OtisCompanionCard extends HTMLElement {
                       <div class="suggestion-title">${s.title}</div>
                       <div class="suggestion-desc">${s.description}</div>
                       <div class="suggestion-actions">
-                        <button class="apply-btn" data-apply="${s.id}" ${isApplying ? "disabled" : ""}>
-                          ${isApplying ? `<div class="spinner"></div> Applying...` : btnLabel}
-                        </button>
+                        ${
+                          s.action_type === "sentinel_alert_actions"
+                            ? `
+                          <div style="display: flex; gap: 8px; flex-wrap: wrap; width: 100%;">
+                            <button class="btn-toolbar btn-ignore-alert" data-ignore-id="${s.id}" style="padding: 6px 12px; font-size: 0.76rem;">
+                              ${s.action_payload?.dismiss_single_label || "Ignore this alert"}
+                            </button>
+                            <button class="btn-toolbar btn-ignore-category" data-ignore-cat="${s.action_payload?.category || s.anomaly_type || 'battery'}" style="padding: 6px 12px; font-size: 0.76rem; color: var(--otis-primary); border-color: var(--otis-primary);">
+                              ${s.action_payload?.dismiss_category_label || "Ignore all alerts in this category"}
+                            </button>
+                          </div>
+                        `
+                            : `
+                          <button class="apply-btn" data-apply="${s.id}" ${isApplying ? "disabled" : ""}>
+                            ${isApplying ? `<div class="spinner"></div> Applying...` : btnLabel}
+                          </button>
+                        `
+                        }
                       </div>
                     </div>
                   `;
@@ -3123,6 +3150,9 @@ class OtisCompanionCard extends HTMLElement {
   }
 
   _renderFloorplanTab() {
+    const isControlOnly = this._config.mode === "floorplan_control";
+    const isAdmin = Boolean(this._hass?.user?.is_admin || this._hass?.user?.is_owner);
+
     return `
       <div class="floorplan-panel">
         <div class="floorplan-toolbar">
@@ -3133,25 +3163,37 @@ class OtisCompanionCard extends HTMLElement {
             <button class="zone-pill ${this._selectedFloorZone === "outdoor" ? "active" : ""}" data-zone="outdoor">Outdoor Only</button>
           </div>
           <div class="floorplan-actions">
-            <button class="btn-toolbar" id="btn-open-walkthrough" title="Record video walkthrough to generate or update floor plan">
-              📹 Walkthrough
-            </button>
-            <button 
-              class="btn-toolbar ${!this._hasWalkthrough ? 'disabled' : ''}" 
-              id="btn-copy-lovelace" 
-              ${!this._hasWalkthrough ? "disabled" : ""}
-              title="${this._hasWalkthrough ? 'Copy Lovelace Dashboard YAML for picture-elements card' : 'Complete a video walkthrough first to unlock Lovelace YAML export'}"
-            >
-              📋 Lovelace YAML
-            </button>
-            <button 
-              class="btn-toolbar ${this._editorActive ? 'active' : ''}" 
-              id="btn-toggle-editor"
-              style="${this._editorActive ? 'background: var(--otis-primary); color: var(--otis-btn-text, #ffffff); border-color: var(--otis-primary);' : ''}"
-              title="Toggle Interactive Canvas Editor to drag pins and adjust room boundaries"
-            >
-              ${this._editorActive ? "🛠️ Canvas Editor (Active)" : "✏️ Canvas Editor"}
-            </button>
+            ${
+              !isControlOnly
+                ? `
+              <button class="btn-toolbar" id="btn-open-walkthrough" title="Record video walkthrough to generate or update floor plan">
+                📹 Walkthrough
+              </button>
+              <button 
+                class="btn-toolbar ${!this._hasWalkthrough ? 'disabled' : ''}" 
+                id="btn-copy-lovelace" 
+                ${!this._hasWalkthrough ? "disabled" : ""}
+                title="${this._hasWalkthrough ? 'Copy Lovelace Dashboard YAML for picture-elements card' : 'Complete a video walkthrough first to unlock Lovelace YAML export'}"
+              >
+                📋 Lovelace YAML
+              </button>
+            `
+                : ""
+            }
+            ${
+              isAdmin
+                ? `
+              <button 
+                class="btn-toolbar ${this._editorActive ? 'active' : ''}" 
+                id="btn-toggle-editor"
+                style="${this._editorActive ? 'background: var(--otis-primary); color: var(--otis-btn-text, #ffffff); border-color: var(--otis-primary);' : ''}"
+                title="Toggle Interactive Canvas Editor to drag pins and adjust room boundaries"
+              >
+                ${this._editorActive ? "🛠️ Exit Editor" : "✏️ Canvas Editor"}
+              </button>
+            `
+                : ""
+            }
           </div>
         </div>
 
@@ -3180,7 +3222,7 @@ class OtisCompanionCard extends HTMLElement {
         }
 
         ${
-          !this._hasWalkthrough && this._floorplanSvg && !this._editorActive
+          !isControlOnly && !this._hasWalkthrough && this._floorplanSvg && !this._editorActive
             ? `
           <div class="walkthrough-pending-banner">
             <div class="walkthrough-pending-text">
@@ -3206,14 +3248,36 @@ class OtisCompanionCard extends HTMLElement {
             ${
               !this._editorActive && this._selectedRoomInfo
                 ? `
-              <div class="room-info-card">
-                <div>
-                  <div style="font-weight: 700; color: var(--otis-primary); font-size: 0.85rem;">${this._selectedRoomInfo.name}</div>
-                  <div style="font-size: 0.72rem; color: var(--otis-text-muted);">
-                    Zone: ${String(this._selectedRoomInfo.zone).toUpperCase()} • Entities: ${this._selectedRoomInfo.entities.length}
+              <div class="room-info-card" style="padding: 12px 16px; border-radius: 12px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); margin-top: 12px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                  <div>
+                    <div style="font-weight: 700; color: var(--otis-primary); font-size: 0.95rem;">📍 ${this._selectedRoomInfo.name}</div>
+                    <div style="font-size: 0.74rem; color: var(--otis-text-muted);">
+                      Zone: ${String(this._selectedRoomInfo.zone).toUpperCase()} • ${this._selectedRoomInfo.entities.length} Devices
+                    </div>
+                  </div>
+                  <div style="display: flex; gap: 8px;">
+                    ${this._selectedRoomInfo.slug ? `
+                    <button class="btn-toolbar btn-nav-room" data-room-path="/otis-ai/area_${this._selectedRoomInfo.slug}" style="padding: 4px 10px; font-size: 0.75rem;">
+                      Open Room Controls →
+                    </button>
+                    ` : ""}
+                    <button class="btn-toolbar" id="btn-close-room-info" style="padding: 4px 8px;">✕</button>
                   </div>
                 </div>
-                <button class="btn-toolbar" id="btn-close-room-info" style="padding: 2px 8px;">✕</button>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                  ${this._selectedRoomInfo.entities.slice(0, 10).map((eid) => {
+                    const st = this._hass?.states?.[eid];
+                    if (!st) return "";
+                    const isOn = st.state === "on";
+                    const icon = st.attributes?.icon || (eid.startsWith("light.") ? "💡" : eid.startsWith("switch.") ? "🔌" : eid.startsWith("climate.") ? "🌡️" : "⚡");
+                    return `
+                      <button class="subview-chip btn-quick-toggle" data-entity-id="${eid}" style="${isOn ? 'background: var(--otis-primary); color: #fff; border-color: var(--otis-primary);' : ''}">
+                        ${icon} ${st.attributes?.friendly_name || eid.split(".")[1]} (${st.state})
+                      </button>
+                    `;
+                  }).join("")}
+                </div>
               </div>
             `
                 : ""
@@ -3446,6 +3510,21 @@ class OtisCompanionCard extends HTMLElement {
             <button class="modal-close-btn" id="theme-modal-close-btn">✕</button>
           </div>
 
+          <!-- User Scope Selector -->
+          <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 8px; font-size: 0.78rem;">
+            <span style="color: var(--otis-text-muted); font-weight: 600;">Apply Scope:</span>
+            <div style="display: flex; gap: 14px;">
+              <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--otis-text);">
+                <input type="radio" name="theme-scope" id="scope-current" value="current" ${this._themeApplyScope !== "all" ? "checked" : ""} />
+                Current User (${this._escapeHtml(this._hass?.user?.name || "Me")})
+              </label>
+              <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--otis-text);">
+                <input type="radio" name="theme-scope" id="scope-all" value="all" ${this._themeApplyScope === "all" ? "checked" : ""} />
+                All Users (Global Profile Sync)
+              </label>
+            </div>
+          </div>
+
           <!-- AI Natural Language Generator Prompt -->
           <div class="guide-box" style="display: flex; flex-direction: column; gap: 8px;">
             <div style="font-weight: 700; font-size: 0.85rem; color: var(--otis-primary);">
@@ -3579,14 +3658,39 @@ class OtisCompanionCard extends HTMLElement {
     }
   }
 
-  async _applyThemeDirect(themeKey) {
+  async _applyThemeDirect(themeKey, targetUserId = null, applyAllUsers = false) {
     if (!this._hass || !themeKey) return;
     try {
-      // 1. Call backend services
-      await this._hass.callService("frontend", "set_theme", { name: themeKey });
-      await this._hass.callService("otis_ai", "apply_theme", { name: themeKey });
+      const isAll = applyAllUsers || this._themeApplyScope === "all";
 
-      // 2. Dispatch standard Home Assistant settheme event to update active browser session immediately
+      // 1. Call backend services
+      try {
+        await this._hass.callService("frontend", "set_theme", { name: themeKey });
+      } catch (_) {}
+
+      try {
+        const payload = { name: themeKey };
+        if (targetUserId) payload.user_id = targetUserId;
+        if (isAll) payload.all_users = true;
+        await this._hass.callService("otis_ai", "apply_theme", payload);
+      } catch (svcErr) {
+        console.warn("Could not call otis_ai.apply_theme:", svcErr);
+      }
+
+      // 2. Set user theme directly in Home Assistant per-user profile storage via WebSocket
+      if (this._hass.callWS) {
+        try {
+          await this._hass.callWS({
+            type: "frontend/set_user_data",
+            key: "theme",
+            value: { theme: themeKey },
+          });
+        } catch (wsErr) {
+          console.warn("Could not save theme to user profile via WebSocket:", wsErr);
+        }
+      }
+
+      // 3. Dispatch standard Home Assistant settheme events to update active browser session immediately
       const setthemeEvent = new CustomEvent("settheme", {
         detail: { theme: themeKey },
         bubbles: true,
@@ -3595,15 +3699,19 @@ class OtisCompanionCard extends HTMLElement {
       this.dispatchEvent(setthemeEvent);
       window.dispatchEvent(setthemeEvent);
       const ha = document.querySelector("home-assistant");
-      if (ha) ha.dispatchEvent(setthemeEvent);
+      if (ha) {
+        ha.dispatchEvent(setthemeEvent);
+        ha.dispatchEvent(new CustomEvent("settheme", { detail: themeKey, bubbles: true, composed: true }));
+      }
 
-      // 3. Update localStorage if HA tracks selected theme
+      // 4. Update localStorage if HA tracks selected theme
       try {
         const existing = JSON.parse(localStorage.getItem("selectedTheme") || "{}");
         localStorage.setItem("selectedTheme", JSON.stringify({ ...existing, theme: themeKey }));
       } catch (_) {}
 
-      this._showToast(`🎨 Active theme applied: ${themeKey}`);
+      const scopeDesc = isAll ? "for all users" : "for your profile";
+      this._showToast(`🎨 Theme applied ${scopeDesc}: ${themeKey}`);
     } catch (err) {
       console.error("Error applying theme:", err);
       this._showToast("Error applying theme", true);
@@ -3707,6 +3815,12 @@ class OtisCompanionCard extends HTMLElement {
       btn.onclick = () => {
         const pk = btn.getAttribute("data-preset-key");
         if (pk) this._generateThemeAi(`Generate ${pk} preset theme`, pk);
+      };
+    });
+
+    root.querySelectorAll("input[name='theme-scope']").forEach((radio) => {
+      radio.onchange = () => {
+        this._themeApplyScope = radio.value;
       };
     });
 
@@ -4196,9 +4310,21 @@ class OtisCompanionCard extends HTMLElement {
           badge.onclick = (e) => {
             e.stopPropagation();
             const entityId = badge.getAttribute("data-entity-id");
-            if (entityId && this._hass) {
+            if (!entityId || !this._hass) return;
+            const domain = entityId.split(".")[0];
+            if (domain === "light" || domain === "switch") {
               this._hass.callService("homeassistant", "toggle", { entity_id: entityId });
-              this._showToast(`Toggled ${entityId}`);
+              const st = this._hass.states[entityId];
+              const newState = st?.state === "on" ? "off" : "on";
+              this._showToast(`${st?.attributes?.friendly_name || entityId} turned ${newState}`);
+            } else {
+              const ev = new CustomEvent("hass-more-info", {
+                detail: { entityId },
+                bubbles: true,
+                composed: true,
+              });
+              this.dispatchEvent(ev);
+              window.dispatchEvent(ev);
             }
           };
         });
@@ -4209,9 +4335,11 @@ class OtisCompanionCard extends HTMLElement {
             const areaId = grp.getAttribute("data-area-id");
             const area = this._capabilityMap?.areas?.[areaId];
             if (area) {
+              const slug = areaId.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "room";
               this._selectedRoomInfo = {
                 areaId,
                 name: area.name || areaId,
+                slug,
                 zone: grp.getAttribute("data-zone") || "indoor",
                 entities: area.entities || [],
               };
@@ -4230,6 +4358,76 @@ class OtisCompanionCard extends HTMLElement {
         this._render();
       };
     }
+
+    // Room Info Quick Toggles & Navigation
+    root.querySelectorAll(".btn-quick-toggle").forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const eid = btn.getAttribute("data-entity-id");
+        if (!eid || !this._hass) return;
+        const domain = eid.split(".")[0];
+        if (domain === "light" || domain === "switch") {
+          this._hass.callService("homeassistant", "toggle", { entity_id: eid });
+          const st = this._hass.states[eid];
+          const newState = st?.state === "on" ? "off" : "on";
+          this._showToast(`${st?.attributes?.friendly_name || eid} turned ${newState}`);
+        } else {
+          const ev = new CustomEvent("hass-more-info", {
+            detail: { entityId: eid },
+            bubbles: true,
+            composed: true,
+          });
+          this.dispatchEvent(ev);
+          window.dispatchEvent(ev);
+        }
+      };
+    });
+
+    root.querySelectorAll(".btn-nav-room").forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const p = btn.getAttribute("data-room-path");
+        if (p) {
+          window.dispatchEvent(new CustomEvent("hass-navigate", { detail: { href: p }, bubbles: true, composed: true }));
+          window.history.pushState(null, "", p);
+          window.dispatchEvent(new CustomEvent("location-changed"));
+        }
+      };
+    });
+
+    // Sentinel Alert Ignore Actions
+    root.querySelectorAll(".btn-ignore-alert").forEach((btn) => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        const aId = btn.getAttribute("data-ignore-id");
+        if (!aId) return;
+        this._dismissSuggestion(aId);
+        try {
+          await this._hass.callService("otis_ai", "ignore_sentinel_alert", { anomaly_id: aId });
+          this._showToast("Alert ignored");
+        } catch (_) {}
+      };
+    });
+
+    root.querySelectorAll(".btn-ignore-category").forEach((btn) => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        const cat = btn.getAttribute("data-ignore-cat");
+        if (!cat) return;
+        (this._suggestions || []).forEach((s) => {
+          if (s.anomaly_type === cat || s.action_payload?.category === cat) {
+            this._dismissedIds.add(s.id);
+          }
+        });
+        this._render();
+        try {
+          await this._hass.callService("otis_ai", "ignore_sentinel_alert", { category: cat, all_in_category: true });
+          const catName = cat === "battery" ? "low battery" : cat === "offline_node" ? "offline node" : cat;
+          this._showToast(`All ${catName} alerts ignored`);
+          await this._fetchData();
+        } catch (_) {}
+      };
+    });
     const btnCloseInspector = root.querySelector("#btn-close-inspector");
     if (btnCloseInspector) {
       btnCloseInspector.onclick = () => {

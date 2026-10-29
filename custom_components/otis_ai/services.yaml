@@ -236,4 +236,31 @@ get_sentinel_telemetry:
   name: Get Sentinel Telemetry
   description: Retrieve live Sentinel anomaly monitoring status, active anomalies list, and remediation history.
 
+ignore_sentinel_alert:
+  name: Ignore Sentinel Alert
+  description: Mute a specific Sentinel alert or an entire alert category from the Proactive Feed.
+  fields:
+    anomaly_id:
+      name: Anomaly ID
+      description: Specific anomaly ID to mute (optional if all_in_category is true).
+      required: false
+      selector:
+        text:
+    category:
+      name: Alert Category
+      description: Category to mute (e.g. 'battery', 'offline_node').
+      required: false
+      selector:
+        text:
+    all_in_category:
+      name: Ignore All in Category
+      description: Set to true to mute all current and future alerts in this category.
+      required: false
+      selector:
+        boolean:
+
+create_command_center:
+  name: Create / Sync User Command Center
+  description: Generate or refresh the non-admin User Command Center dashboard (/command-center) connecting Studios and Room subviews for family members.
+
 

@@ -574,15 +574,30 @@ class ThemeManager:
 
         # 6. Synchronize input, surface, and interactive elements with theme palette
         p_col = theme_vars["primary-color"]
+        sec_bg = theme_vars.get("secondary-background-color", "#0f172a") if is_dark else "#f1f5f9"
+        txt_col = theme_vars.get("primary-text-color", "#ffffff") if is_dark else "#0f172a"
+        sec_txt = theme_vars.get("secondary-text-color", "#94a3b8") if is_dark else "#64748b"
+        card_bg = theme_vars.get("card-background-color", preview.get("card_bg", "#1e293b"))
+
         theme_vars["input-dropdown-icon-color"] = p_col
         theme_vars["input-hover-line-color"] = p_col
         theme_vars["mdc-select-dropdown-icon-color"] = p_col
         theme_vars["sidebar-selected-icon-color"] = p_col
         theme_vars["sidebar-selected-text-color"] = p_col
-        if "card-background-color" not in theme_vars:
-            theme_vars["card-background-color"] = preview.get("card_bg", "#1e293b")
-        if "mdc-theme-surface" not in theme_vars:
-            theme_vars["mdc-theme-surface"] = preview.get("card_bg", "#1e293b")
+
+        theme_vars["card-background-color"] = card_bg
+        theme_vars["mdc-theme-surface"] = card_bg
+        theme_vars["input-fill-color"] = sec_bg
+        theme_vars["input-ink-color"] = txt_col
+        theme_vars["input-label-ink-color"] = sec_txt
+        theme_vars["mdc-select-fill-color"] = sec_bg
+        theme_vars["mdc-select-ink-color"] = txt_col
+        theme_vars["mdc-select-label-ink-color"] = sec_txt
+        theme_vars["mdc-text-field-fill-color"] = sec_bg
+        theme_vars["mdc-text-field-ink-color"] = txt_col
+        theme_vars["mdc-text-field-label-ink-color"] = sec_txt
+        theme_vars["mdc-theme-text-primary-on-background"] = txt_col
+        theme_vars["mdc-theme-text-secondary-on-background"] = sec_txt
 
         # 7. Apply any direct caller custom variable overrides
         if custom_vars:
@@ -699,17 +714,47 @@ class ThemeManager:
             _LOGGER.warning("Could not reload frontend themes: %s", err)
         return False
 
-    async def async_apply_theme(self, theme_key: str, mode: str | None = None) -> bool:
-        """Call frontend.set_theme service to apply theme immediately."""
+    async def async_apply_theme(
+        self,
+        theme_key: str,
+        mode: str | None = None,
+        user_id: str | None = None,
+        all_users: bool = False,
+    ) -> bool:
+        """Call frontend.set_theme service to apply theme immediately and update user profiles if requested."""
         try:
             service_data: dict[str, Any] = {"name": theme_key}
             if mode:
                 service_data["mode"] = mode
             if self.hass.services.has_service("frontend", "set_theme"):
                 await self.hass.services.async_call("frontend", "set_theme", service_data, blocking=True)
-                _LOGGER.info("Applied theme %s (mode=%s)", theme_key, mode)
-                return True
-            _LOGGER.debug("frontend.set_theme service not found")
+                _LOGGER.info("Applied backend theme %s (mode=%s)", theme_key, mode)
+
+            # Persist theme to Home Assistant per-user profile storage
+            if user_id or all_users:
+                target_users = []
+                if all_users and hasattr(self.hass, "auth") and hasattr(self.hass.auth, "async_get_users"):
+                    users = await self.hass.auth.async_get_users()
+                    target_users = [u.id for u in users if getattr(u, "id", None)]
+                elif user_id:
+                    target_users = [user_id]
+
+                for uid in target_users:
+                    try:
+                        from homeassistant.helpers.storage import Store
+                        u_store = Store(self.hass, 1, f"frontend.user_data_{uid}")
+                        u_data = await u_store.async_load() or {}
+                        if not isinstance(u_data, dict):
+                            u_data = {}
+                        if "theme" not in u_data or not isinstance(u_data["theme"], dict):
+                            u_data["theme"] = {}
+                        u_data["theme"]["theme"] = theme_key
+                        await u_store.async_save(u_data)
+                        _LOGGER.debug("Updated user profile theme for user %s to %s", uid, theme_key)
+                    except Exception as err:
+                        _LOGGER.debug("Could not update profile theme for user %s: %s", uid, err)
+
+            return True
         except Exception as err:
             _LOGGER.warning("Could not apply theme %s: %s", theme_key, err)
         return False

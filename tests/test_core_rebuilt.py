@@ -2105,6 +2105,99 @@ class TestSentinelManager(unittest.TestCase):
         self.hass.services.async_call.assert_any_call("lock", "lock", {"entity_id": "lock.back_door"}, blocking=True)
         self.assertEqual(len(sm.get_active_anomalies()), 0)
 
+    def test_battery_filtering_rejects_setpoints_and_config(self):
+        """Verify diagnostic setpoints/thresholds are strictly filtered out of battery watchdog."""
+        from custom_components.otis_ai.sentinel_manager import SentinelManager
+
+        # Diagnostic UPS setpoint (should be ignored!)
+        s_ups_setpoint = MagicMock()
+        s_ups_setpoint.entity_id = "sensor.ups_theater_low_battery_setpoint"
+        s_ups_setpoint.object_id = "ups_theater_low_battery_setpoint"
+        s_ups_setpoint.state = "10"
+        s_ups_setpoint.attributes = {"unit_of_measurement": "%", "friendly_name": "Ups-Theater Low battery setpoint"}
+
+        # Number domain setpoint (should be ignored!)
+        s_number_setpoint = MagicMock()
+        s_number_setpoint.entity_id = "number.battery_cutoff_threshold"
+        s_number_setpoint.object_id = "battery_cutoff_threshold"
+        s_number_setpoint.state = "15"
+        s_number_setpoint.attributes = {"unit_of_measurement": "%", "friendly_name": "Battery Cutoff Threshold"}
+
+        # Actual device battery (should be detected as critical!)
+        s_real_battery = MagicMock()
+        s_real_battery.entity_id = "sensor.side_hose_timer_battery_level"
+        s_real_battery.object_id = "side_hose_timer_battery_level"
+        s_real_battery.state = "0"
+        s_real_battery.attributes = {"device_class": "battery", "unit_of_measurement": "%", "friendly_name": "Side Hose Timer Battery level"}
+
+        self.hass.states.async_all.return_value = [s_ups_setpoint, s_number_setpoint, s_real_battery]
+        self.hass.config_entries.async_entries.return_value = []
+
+        sm = SentinelManager(self.hass)
+        anomalies = asyncio.run(sm.async_scan_all_anomalies())
+        self.assertEqual(len(anomalies), 1)
+        self.assertEqual(anomalies[0]["entity_id"], "sensor.side_hose_timer_battery_level")
+        self.assertEqual(anomalies[0]["severity"], "critical")
+
+        # Verify proactive suggestions formatting
+        sugs = sm.convert_anomalies_to_proactive_suggestions()
+        self.assertEqual(len(sugs), 1)
+        self.assertEqual(sugs[0]["action_type"], "sentinel_alert_actions")
+        self.assertEqual(sugs[0]["anomaly_type"], "battery")
+
+    def test_sentinel_ignore_alert_and_category(self):
+        """Verify muting a single alert and muting all battery alerts."""
+        from custom_components.otis_ai.sentinel_manager import SentinelManager
+
+        s1 = MagicMock()
+        s1.entity_id = "sensor.lock_battery"
+        s1.object_id = "lock_battery"
+        s1.state = "5"
+        s1.attributes = {"device_class": "battery", "friendly_name": "Front Lock Battery"}
+
+        s2 = MagicMock()
+        s2.entity_id = "sensor.remote_battery"
+        s2.object_id = "remote_battery"
+        s2.state = "8"
+        s2.attributes = {"device_class": "battery", "friendly_name": "Remote Battery"}
+
+        self.hass.states.async_all.return_value = [s1, s2]
+        self.hass.config_entries.async_entries.return_value = []
+
+        sm = SentinelManager(self.hass)
+        anomalies = asyncio.run(sm.async_scan_all_anomalies())
+        self.assertEqual(len(anomalies), 2)
+
+        # Ignore single alert
+        anom_id = anomalies[0]["id"]
+        asyncio.run(sm.async_ignore_anomaly(anom_id))
+        self.assertEqual(len(sm.get_active_anomalies()), 1)
+
+        # Ignore entire category
+        asyncio.run(sm.async_ignore_category("battery"))
+        self.assertEqual(len(sm.get_active_anomalies()), 0)
+
+    def test_user_command_center_dashboard_generation(self):
+        """Verify non-admin user command center dashboard creation."""
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+
+        dm = DashboardManager(self.hass)
+        cap_map = {
+            "areas": {
+                "living_room": {"name": "Living Room", "entities": ["light.living_room"]},
+                "kitchen": {"name": "Kitchen", "entities": ["light.kitchen"]},
+            },
+            "entities": [
+                {"entity_id": "light.living_room", "area_id": "living_room", "state": "on", "domain": "light"},
+                {"entity_id": "light.kitchen", "area_id": "kitchen", "state": "off", "domain": "light"},
+            ],
+        }
+
+        res = asyncio.run(dm.async_ensure_user_command_center_dashboard(cap_map))
+        self.assertTrue(res["success"])
+        self.assertEqual(res["url_path"], "command-center")
+        self.assertFalse(res["require_admin"])
+
 
 if __name__ == "__main__":
     unittest.main()
