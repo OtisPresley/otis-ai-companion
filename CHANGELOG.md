@@ -2,6 +2,13 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.6.5] - 2026-10-29
+
+### Fixed
+- **Blocking File I/O in Async Event Loop (`dashboard_manager.py`)**:
+  - Resolved `homeassistant.util.loop` warning (`Detected blocking call to open with args ('/config/.storage/lovelace.otis_ai', 'r') inside the event loop`).
+  - Wrapped `_merge_dashboard_config_preserving_user_views` inside `hass.async_add_executor_job` so synchronous storage file reading/parsing is delegated to the worker threadpool.
+
 ## [1.6.4] - 2026-10-29
 
 ### Fixed

@@ -410,10 +410,28 @@ class DashboardManager:
         dash_id = item["id"]
         url_path = item["url_path"]
 
-        # Preserve user's card settings in view 0 before saving
-        merged_dashboard_config = self._merge_dashboard_config_preserving_user_views(
-            storage_dir, dash_id, dashboard_config
-        )
+        # Preserve user's card settings in view 0 before saving (run in executor to avoid blocking event loop)
+        merged_dashboard_config = dashboard_config
+        if storage_dir:
+            if hasattr(self.hass, "async_add_executor_job"):
+                res = self.hass.async_add_executor_job(
+                    self._merge_dashboard_config_preserving_user_views,
+                    storage_dir,
+                    dash_id,
+                    dashboard_config,
+                )
+                if hasattr(res, "__await__"):
+                    merged_dashboard_config = await res
+                elif isinstance(res, dict):
+                    merged_dashboard_config = res
+                else:
+                    merged_dashboard_config = self._merge_dashboard_config_preserving_user_views(
+                        storage_dir, dash_id, dashboard_config
+                    )
+            else:
+                merged_dashboard_config = self._merge_dashboard_config_preserving_user_views(
+                    storage_dir, dash_id, dashboard_config
+                )
 
         if storage_dir:
             res = self.hass.async_add_executor_job(
