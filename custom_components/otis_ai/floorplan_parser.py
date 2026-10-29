@@ -191,6 +191,64 @@ def classify_area_zone(area_key: str, area_name: str) -> str:
     return "main"
 
 
+def find_room_group_span(svg: str, area_id: str) -> tuple[int, int, str, str] | None:
+    """Find the start index, end index, open tag header, and inner markup for a room group."""
+    open_re = re.compile(
+        rf'<g\b[^>]*class="[^"]*room-group[^"]*"[^>]*data-area-id="{re.escape(area_id)}"[^>]*>'
+    )
+    m = open_re.search(svg)
+    if not m:
+        open_re_alt = re.compile(
+            rf'<g\b[^>]*data-area-id="{re.escape(area_id)}"[^>]*class="[^"]*room-group[^"]*"[^>]*>'
+        )
+        m = open_re_alt.search(svg)
+        if not m:
+            return None
+
+    start_idx = m.start()
+    header_end = m.end()
+    header = svg[start_idx:header_end]
+
+    depth = 1
+    pos = header_end
+    tag_re = re.compile(r'(<g\b|</g>)')
+    while depth > 0:
+        tag_m = tag_re.search(svg, pos)
+        if not tag_m:
+            break
+        if tag_m.group(1).startswith('<g'):
+            depth += 1
+        else:
+            depth -= 1
+        pos = tag_m.end()
+
+    if depth == 0:
+        end_idx = pos
+        inner = svg[header_end:end_idx - 4]
+        return start_idx, end_idx, header, inner
+    return None
+
+
+def sanitize_corrupted_svg_text(svg: str) -> str:
+    """Sanitize corrupted <text> elements where attributes leaked into inner content."""
+    def _fix_text(m: re.Match) -> str:
+        tag_str = m.group(0)
+        cls_name = m.group(1)
+        content = m.group(2)
+        xm = re.search(r'x="([0-9.]+)"', tag_str)
+        ym = re.search(r'y="([0-9.]+)"', tag_str)
+        x_val = xm.group(1) if xm else "40"
+        y_val = ym.group(1) if ym else "40"
+        clean_txt = re.sub(r'^(?:\s*(?:x|y)="[^"]*"[>\s]*)+', '', content).strip()
+        return f'<text x="{x_val}" y="{y_val}" class="{cls_name}">{clean_txt}</text>'
+
+    return re.sub(
+        r'<text\b[^>]*class="([^"]*(?:room-header|room-label|subzone-pill)[^"]*)"[^>]*>(.*?)</text>',
+        _fix_text,
+        svg,
+    )
+
+
 class FloorplanParser:
     """Parses video walkthroughs, audio callouts, and topological graphs into interactive SVG floorplans."""
 
@@ -719,6 +777,8 @@ class FloorplanParser:
                 return f.read()
 
         svg_content = await self.hass.async_add_executor_job(read_sync)
+        # Sanitize any existing corrupted <text> elements in the SVG
+        svg_content = sanitize_corrupted_svg_text(svg_content)
 
         # 0. Delete requested rooms/areas from SVG markup
         to_delete = set(deleted_rooms or [])
@@ -730,19 +790,23 @@ class FloorplanParser:
 
         deleted_rooms_count = 0
         for del_id in to_delete:
-            room_pattern = rf'\s*<g\b[^>]*class="[^"]*room-group[^"]*"[^>]*data-area-id="{re.escape(del_id)}"[^>]*>[\s\S]*?</g>\s*'
-            new_svg, count = re.subn(room_pattern, '\n', svg_content)
-            if count > 0:
-                svg_content = new_svg
-                deleted_rooms_count += count
+            while True:
+                span = find_room_group_span(svg_content, del_id)
+                if not span:
+                    break
+                s_idx, e_idx, _, _ = span
+                svg_content = svg_content[:s_idx] + svg_content[e_idx:]
+                deleted_rooms_count += 1
 
         # 1. Update device marker badges
         updated_badges = 0
+        explicit_badge_ids = set()
         if badges:
             for b in badges:
                 eid = b.get("entity_id")
                 if not eid or "x" not in b or "y" not in b:
                     continue
+                explicit_badge_ids.add(eid)
                 bx = round(float(b["x"]), 1)
                 by = round(float(b["y"]), 1)
                 # Match <g ... class="entity-badge" ... data-entity-id="eid" ... transform="...">
@@ -794,11 +858,10 @@ class FloorplanParser:
                 points = r.get("points")
                 rname = r.get("name")
 
-                # Match room group by data-area-id
-                room_pattern = rf'(<g\b[^>]*class="[^"]*room-group[^"]*"[^>]*data-area-id="{re.escape(rid)}"[^>]*>)([\s\S]*?)(</g>)'
-                match = re.search(room_pattern, svg_content)
-                if match:
-                    header, inner, footer = match.groups()
+                # Match room group by data-area-id using depth-aware parsing
+                span = find_room_group_span(svg_content, rid)
+                if span:
+                    s_idx, e_idx, header, inner = span
                     if points:
                         if '<polygon' in inner:
                             inner = re.sub(r'<polygon[^>]*class="room-polygon"[^>]*/>', f'<polygon points="{points}" class="room-polygon" />', inner)
@@ -816,15 +879,17 @@ class FloorplanParser:
                             inner,
                         )
 
-                    # Update text label position
+                    # Update text label position cleanly inside attributes
                     def _text_sub(tmatch: re.Match) -> str:
-                        tag_start = tmatch.group(1)
-                        content_txt = rname if rname else tmatch.group(2)
-                        tag_start = re.sub(r'\s+(?:x|y)="[^"]*"', '', tag_start)
-                        return f'{tag_start} x="{round(rx + 14, 1)}" y="{round(ry + 22, 1)}">{content_txt}</text>'
+                        orig_content = tmatch.group(1)
+                        cleaned_txt = re.sub(r'^(?:\s*(?:x|y)="[^"]*"[>\s]*)+', '', orig_content).strip()
+                        display_name = rname.strip() if (rname and str(rname).strip()) else cleaned_txt
+                        if not display_name:
+                            display_name = rid.replace('_', ' ').title()
+                        return f'<text x="{round(rx + 14, 1)}" y="{round(ry + 22, 1)}" class="room-header">{display_name}</text>'
 
                     inner = re.sub(
-                        r'(<text\b[^>]*class="[^"]*(?:room-header|room-label)[^"]*"[^>]*>)(.*?)(</text>)',
+                        r'<text\b[^>]*class="[^"]*(?:room-header|room-label)[^"]*"[^>]*>(.*?)</text>',
                         _text_sub,
                         inner,
                     )
@@ -834,15 +899,14 @@ class FloorplanParser:
 
                     def _pill_sub(pmatch: re.Match) -> str:
                         nonlocal pill_idx
-                        tag_start = pmatch.group(1)
-                        tag_txt = pmatch.group(2)
-                        tag_start = re.sub(r'\s+(?:x|y)="[^"]*"', '', tag_start)
+                        orig_txt = pmatch.group(1)
+                        clean_pill = re.sub(r'^(?:\s*(?:x|y)="[^"]*"[>\s]*)+', '', orig_txt).strip()
                         py = round(ry + 22 + 18 + pill_idx * 16, 1)
                         pill_idx += 1
-                        return f'{tag_start} x="{round(rx + 16, 1)}" y="{py}">{tag_txt}</text>'
+                        return f'<text x="{round(rx + 16, 1)}" y="{py}" class="subzone-pill">{clean_pill}</text>'
 
                     inner = re.sub(
-                        r'(<text\b[^>]*class="[^"]*subzone-pill[^"]*"[^>]*>)(.*?)(</text>)',
+                        r'<text\b[^>]*class="[^"]*subzone-pill[^"]*"[^>]*>(.*?)</text>',
                         _pill_sub,
                         inner,
                     )
@@ -852,16 +916,19 @@ class FloorplanParser:
 
                     def _badge_sub(bmatch: re.Match) -> str:
                         nonlocal b_idx
-                        tag_start = bmatch.group(1)
-                        tag_rest = bmatch.group(2)
-                        tag_start = re.sub(r'\s+transform="[^"]*"', '', tag_start)
+                        badge_full = bmatch.group(0)
+                        eid_match = re.search(r'data-entity-id="([^"]*)"', badge_full)
+                        if eid_match and eid_match.group(1) in explicit_badge_ids:
+                            b_idx += 1
+                            return badge_full
                         bx = round(rx + 16 + b_idx * 24, 1)
                         by = round(ry + rh - 18, 1)
                         b_idx += 1
-                        return f'{tag_start} transform="translate({bx}, {by})">{tag_rest}'
+                        badge_no_tr = re.sub(r'\s+transform="[^"]*"', '', badge_full)
+                        return re.sub(r'^(<g\b[^>]*?)>', rf'\1 transform="translate({bx}, {by})">', badge_no_tr, count=1)
 
                     inner = re.sub(
-                        r'(<g\b[^>]*class="[^"]*entity-badge[^"]*"[^>]*>)([\s\S]*?</g>)',
+                        r'<g\b[^>]*class="[^"]*entity-badge[^"]*"[^>]*>[\s\S]*?</g>',
                         _badge_sub,
                         inner,
                     )
@@ -887,7 +954,7 @@ class FloorplanParser:
                         _step_sub,
                         inner,
                     )
-                    svg_content = svg_content[:match.start()] + header + inner + footer + svg_content[match.end():]
+                    svg_content = svg_content[:s_idx] + header + inner + "</g>" + svg_content[e_idx:]
                     updated_rooms += 1
 
         # 3. Persist updated layout coordinates to metadata storage

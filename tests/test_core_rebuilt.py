@@ -1324,6 +1324,56 @@ class TestFloorplanParser(unittest.TestCase):
             self.assertNotIn('data-area-id="garage"', content)
             self.assertIn('data-area-id="foyer"', content)
 
+    def test_floorplan_svg_sanitization_and_subzone_sync(self):
+        """Verify FloorplanParser repairs corrupted SVG text and synchronizes subzone pills."""
+        from custom_components.otis_ai.floorplan_parser import (
+            FloorplanParser,
+            sanitize_corrupted_svg_text,
+            find_room_group_span,
+        )
+
+        corrupted_sample = (
+            '<svg><g class="room-group" data-area-id="frontyard">'
+            '<rect x="257.0" y="586.0" width="922.0" height="102.0" class="room-box outdoor-box" />'
+            '<text class="room-header"> x="271.0" y="608.0">Frontyard</text>'
+            '<text class="subzone-pill"> x="273.0" y="626.0">▪ Front Porch &amp; Doorbell Cam</text>'
+            '<g class="entity-badge" data-entity-id="light.front"><circle cx="0" cy="0" r="9" /><text>💡</text></g>'
+            '</g></svg>'
+        )
+
+        # 1. Verify sanitizer cleans corrupted tags into valid SVG attributes
+        repaired = sanitize_corrupted_svg_text(corrupted_sample)
+        self.assertIn('<text x="271.0" y="608.0" class="room-header">Frontyard</text>', repaired)
+        self.assertIn('<text x="273.0" y="626.0" class="subzone-pill">▪ Front Porch &amp; Doorbell Cam</text>', repaired)
+
+        # 2. Verify find_room_group_span matches the full room group despite nested entity-badge </g>
+        span = find_room_group_span(repaired, "frontyard")
+        self.assertIsNotNone(span)
+        start_idx, end_idx, header, inner = span
+        self.assertIn('data-entity-id="light.front"', inner)
+        self.assertTrue(repaired[start_idx:end_idx].endswith("</g>"))
+
+        # 3. Test async_update_floorplan_layout on corrupted SVG file
+        test_path = self.hass.config.path("test_corrupted_fp.svg")
+        with open(test_path, "w", encoding="utf-8") as f:
+            f.write(corrupted_sample)
+
+        parser = FloorplanParser(self.hass)
+        res = asyncio.run(
+            parser.async_update_floorplan_layout(
+                rooms=[{"id": "frontyard", "x": 260.0, "y": 590.0, "width": 900.0, "height": 110.0, "name": "Front Yard"}],
+                svg_relative_path="test_corrupted_fp.svg",
+            )
+        )
+        self.assertTrue(res["success"])
+        with open(test_path, "r", encoding="utf-8") as f:
+            updated_content = f.read()
+
+        # Check valid attributes and text placement
+        self.assertIn('<text x="274.0" y="612.0" class="room-header">Front Yard</text>', updated_content)
+        self.assertIn('<text x="276.0" y="630.0" class="subzone-pill">▪ Front Porch &amp; Doorbell Cam</text>', updated_content)
+        self.assertNotIn('> x="', updated_content)
+
     def test_proactive_floorplan_suggestion(self):
         """Verify that DiscoveryEngine suggests recording a walkthrough when no floorplan exists."""
         from custom_components.otis_ai import DiscoveryEngine

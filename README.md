@@ -3,7 +3,7 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-41BDF5?logo=home-assistant&logoColor=white&style=flat)](https://www.home-assistant.io/)
 [![HACS Badge](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://hacs.xyz)
 [![HA installs](https://img.shields.io/badge/dynamic/json?url=https://analytics.home-assistant.io/custom_integrations.json&query=$.otis-ai-companion.total&label=Installs&color=41BDF5)](https://analytics.home-assistant.io/custom_integrations.json)
-[![Version](https://img.shields.io/badge/version-1.7.0-blue.svg)](https://github.com/OtisPresley/otis-ai-companion/blob/main/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.8.0-blue.svg)](https://github.com/OtisPresley/otis-ai-companion/blob/main/CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-e0b416.svg)](https://github.com/OtisPresley/otis-ai-companion/blob/main/LICENSE)
 [![hassfest](https://img.shields.io/github/actions/workflow/status/OtisPresley/otis-ai-companion/hassfest.yaml?branch=main&label=hassfest)](https://github.com/OtisPresley/otis-ai-companion/actions/workflows/hassfest.yaml)
 [![HACS](https://img.shields.io/github/actions/workflow/status/OtisPresley/otis-ai-companion/hacs.yaml?branch=main&label=HACS)](https://github.com/OtisPresley/otis-ai-companion/actions/workflows/hacs.yaml)

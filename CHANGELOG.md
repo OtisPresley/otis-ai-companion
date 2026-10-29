@@ -2,6 +2,23 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.8.0] - 2026-10-29
+
+### Fixed
+- **Floor Plan Text Tag Attribute Corruption (`floorplan_parser.py`, `otis-companion-card.js`)**:
+  - Fixed SVG text label regex generation where attribute values (`x="..." y="..."`) were placed outside the opening tag (`<text class="room-header"> x="..." y="...">Room Name</text>`), causing browser SVG renderers to treat them as text content at coordinate (0, 0) and hiding room titles and subzones.
+  - Implemented depth-aware room group parsing (`find_room_group_span`) to accurately match parent `<g class="room-group">` elements to their corresponding closing `</g>` tags without prematurely halting on child `<g class="entity-badge">` tags.
+  - Added automated server-side and client-side sanitizers (`sanitize_corrupted_svg_text`) to detect and heal previously corrupted SVG text elements upon loading and saving.
+  - Repositioned outdoor subzones (`▪ Deck & Grill`, `▪ Hot Tub`, `▪ Side Gate`) into Backyard boundary geometry when moved or resized.
+
+### Added & Improved
+- **Phase 4 Step 3 Magnetic Snapping & Alignment Guides (`otis-companion-card.js`)**:
+  - Implemented dynamic magnetic wall snapping: when dragging or resizing rooms in Canvas Editor, edges snap magnetically within a 12px threshold to adjacent room walls (aligning left/right/top/bottom edges and abutments).
+  - Added live dashed cyan SVG alignment guidelines (`.snap-guides-layer`) showing real-time wall alignment axes across the canvas.
+- **Multi-Floor Level Switching Persistence (`otis-companion-card.js`)**:
+  - Persisted the active floor zone (`All Floors`, `Ground & Outdoor`, `Upper Level`, `Outdoor Only`) in `localStorage` across page refreshes and editor toggles.
+  - Added smart auto-switching: selecting any upper level or outdoor room in Canvas Editor automatically aligns the active floor zone to match that room's level.
+
 ## [1.7.0] - 2026-10-29
 
 ### Added & Improved

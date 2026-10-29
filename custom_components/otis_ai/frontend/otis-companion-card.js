@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.7.0";
+const CARD_VERSION = "1.8.0";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -51,7 +51,11 @@ class OtisCompanionCard extends HTMLElement {
     this._uploadProgressText = "";
     this._floorplanSvg = null;
     this._loadingFloorplan = false;
-    this._selectedFloorZone = "all"; // 'all' | 'main' | 'upper' | 'outdoor'
+    try {
+      this._selectedFloorZone = localStorage.getItem("otis_floorplan_selected_zone") || "all";
+    } catch (_) {
+      this._selectedFloorZone = "all";
+    }
     this._selectedRoomInfo = null;
     this._spokenOrderOverride = "";
     this._selectedWalkthroughFiles = [];
@@ -202,7 +206,21 @@ class OtisCompanionCard extends HTMLElement {
       const fetchUrl = url + (url.includes("?") ? "&" : "?") + "t=" + Date.now();
       const resp = await fetch(fetchUrl);
       if (resp.ok) {
-        this._floorplanSvg = await resp.text();
+        let rawSvg = await resp.text();
+        // Client-side sanitizer for any corrupted <text> elements where attributes leaked into text content
+        rawSvg = rawSvg.replace(
+          /<text\b([^>]*)class="([^"]*(?:room-header|room-label|subzone-pill)[^"]*)"([^>]*)>(.*?)<\/text>/gi,
+          (fullMatch, preAttrs, clsName, postAttrs, content) => {
+            const allAttrs = `${preAttrs} ${postAttrs}`;
+            const xm = allAttrs.match(/x="([0-9.]+)"/) || content.match(/x="([0-9.]+)"/);
+            const ym = allAttrs.match(/y="([0-9.]+)"/) || content.match(/y="([0-9.]+)"/);
+            const xVal = xm ? xm[1] : "40";
+            const yVal = ym ? ym[1] : "40";
+            const cleanContent = content.replace(/^(?:\s*(?:x|y)="[^"]*"[>\s]*)+/g, "").trim();
+            return `<text x="${xVal}" y="${yVal}" class="${clsName}">${cleanContent}</text>`;
+          }
+        );
+        this._floorplanSvg = rawSvg;
       }
     } catch (err) {
       console.warn("Could not load floorplan SVG:", err);
@@ -4148,6 +4166,9 @@ class OtisCompanionCard extends HTMLElement {
       pill.onclick = (e) => {
         const zone = e.currentTarget.getAttribute("data-zone") || "all";
         this._selectedFloorZone = zone;
+        try {
+          localStorage.setItem("otis_floorplan_selected_zone", zone);
+        } catch (_) {}
         root.querySelectorAll(".zone-pill").forEach((p) => p.classList.toggle("active", p === e.currentTarget));
         applyZoneFilterToSvg(zone);
       };
@@ -4296,6 +4317,15 @@ class OtisCompanionCard extends HTMLElement {
           grp.onclick = (e) => {
             e.stopPropagation();
             const areaId = grp.getAttribute("data-area-id");
+            const roomZone = grp.getAttribute("data-zone") || "main";
+            if (this._selectedFloorZone !== "all" && this._selectedFloorZone !== roomZone) {
+              if (roomZone === "upper" || (roomZone === "main" && this._selectedFloorZone === "upper") || (roomZone === "outdoor" && this._selectedFloorZone === "upper")) {
+                this._selectedFloorZone = roomZone;
+                try { localStorage.setItem("otis_floorplan_selected_zone", roomZone); } catch (_) {}
+                applyZoneFilterToSvg(roomZone);
+                root.querySelectorAll(".zone-pill").forEach((p) => p.classList.toggle("active", p.getAttribute("data-zone") === roomZone));
+              }
+            }
             if (this._selectedEditorRoomId === areaId) return;
             this._selectedEditorRoomId = areaId;
             this._render();
@@ -4335,6 +4365,100 @@ class OtisCompanionCard extends HTMLElement {
                 minY = Math.round(fy + 34);
                 maxY = Math.round(fy + fh - 5);
               }
+
+              // Magnetic Snapping Guides: Gather all other room boundaries in this plan frame
+              const otherRooms = [];
+              planGroup.querySelectorAll(`.room-group:not([data-area-id="${this._selectedEditorRoomId}"])`).forEach((ogrp) => {
+                const oRect = ogrp.querySelector(".room-box, .room-rect");
+                if (oRect) {
+                  const ox = parseFloat(oRect.getAttribute("x") || 0);
+                  const oy = parseFloat(oRect.getAttribute("y") || 0);
+                  const ow = parseFloat(oRect.getAttribute("width") || 160);
+                  const oh = parseFloat(oRect.getAttribute("height") || 120);
+                  otherRooms.push({ x: ox, y: oy, width: ow, height: oh, r: ox + ow, b: oy + oh });
+                }
+              });
+
+              let snapLayer = svgEl.querySelector(".snap-guides-layer");
+              if (!snapLayer) {
+                snapLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
+                snapLayer.setAttribute("class", "snap-guides-layer");
+                svgEl.appendChild(snapLayer);
+              }
+
+              const clearSnapGuides = () => {
+                if (snapLayer) snapLayer.innerHTML = "";
+              };
+
+              const snapCoordinates = (candX, candY, candW, candH, isMove = true) => {
+                const snapDist = 12;
+                let sx = candX;
+                let sy = candY;
+                let sw = candW;
+                let sh = candH;
+                let guides = [];
+
+                for (const o of otherRooms) {
+                  if (isMove) {
+                    // Left edge snaps
+                    if (Math.abs(candX - o.x) <= snapDist) {
+                      sx = o.x;
+                      guides.push(`<line x1="${o.x}" y1="${Math.min(candY, o.y) - 30}" x2="${o.x}" y2="${Math.max(candY + candH, o.b) + 30}" stroke="#38bdf8" stroke-dasharray="4,4" stroke-width="1.8" />`);
+                    } else if (Math.abs(candX - o.r) <= snapDist) {
+                      sx = o.r;
+                      guides.push(`<line x1="${o.r}" y1="${Math.min(candY, o.y) - 30}" x2="${o.r}" y2="${Math.max(candY + candH, o.b) + 30}" stroke="#38bdf8" stroke-dasharray="4,4" stroke-width="1.8" />`);
+                    }
+                    // Right edge snaps
+                    else if (Math.abs(candX + candW - o.r) <= snapDist) {
+                      sx = o.r - candW;
+                      guides.push(`<line x1="${o.r}" y1="${Math.min(candY, o.y) - 30}" x2="${o.r}" y2="${Math.max(candY + candH, o.b) + 30}" stroke="#38bdf8" stroke-dasharray="4,4" stroke-width="1.8" />`);
+                    } else if (Math.abs(candX + candW - o.x) <= snapDist) {
+                      sx = o.x - candW;
+                      guides.push(`<line x1="${o.x}" y1="${Math.min(candY, o.y) - 30}" x2="${o.x}" y2="${Math.max(candY + candH, o.b) + 30}" stroke="#38bdf8" stroke-dasharray="4,4" stroke-width="1.8" />`);
+                    }
+
+                    // Top edge snaps
+                    if (Math.abs(candY - o.y) <= snapDist) {
+                      sy = o.y;
+                      guides.push(`<line x1="${Math.min(candX, o.x) - 30}" y1="${o.y}" x2="${Math.max(candX + candW, o.r) + 30}" y2="${o.y}" stroke="#38bdf8" stroke-dasharray="4,4" stroke-width="1.8" />`);
+                    } else if (Math.abs(candY - o.b) <= snapDist) {
+                      sy = o.b;
+                      guides.push(`<line x1="${Math.min(candX, o.x) - 30}" y1="${o.b}" x2="${Math.max(candX + candW, o.r) + 30}" y2="${o.b}" stroke="#38bdf8" stroke-dasharray="4,4" stroke-width="1.8" />`);
+                    }
+                    // Bottom edge snaps
+                    else if (Math.abs(candY + candH - o.b) <= snapDist) {
+                      sy = o.b - candH;
+                      guides.push(`<line x1="${Math.min(candX, o.x) - 30}" y1="${o.b}" x2="${Math.max(candX + candW, o.r) + 30}" y2="${o.b}" stroke="#38bdf8" stroke-dasharray="4,4" stroke-width="1.8" />`);
+                    } else if (Math.abs(candY + candH - o.y) <= snapDist) {
+                      sy = o.y - candH;
+                      guides.push(`<line x1="${Math.min(candX, o.x) - 30}" y1="${o.y}" x2="${Math.max(candX + candW, o.r) + 30}" y2="${o.y}" stroke="#38bdf8" stroke-dasharray="4,4" stroke-width="1.8" />`);
+                    }
+                  } else {
+                    // Resizing edge snaps
+                    if (Math.abs(candX - o.x) <= snapDist) {
+                      sx = o.x;
+                      sw = (candX + candW) - sx;
+                      guides.push(`<line x1="${o.x}" y1="${Math.min(candY, o.y) - 30}" x2="${o.x}" y2="${Math.max(candY + candH, o.b) + 30}" stroke="#38bdf8" stroke-dasharray="4,4" stroke-width="1.8" />`);
+                    }
+                    if (Math.abs(candX + candW - o.r) <= snapDist) {
+                      sw = o.r - candX;
+                      guides.push(`<line x1="${o.r}" y1="${Math.min(candY, o.y) - 30}" x2="${o.r}" y2="${Math.max(candY + candH, o.b) + 30}" stroke="#38bdf8" stroke-dasharray="4,4" stroke-width="1.8" />`);
+                    }
+                    if (Math.abs(candY - o.y) <= snapDist) {
+                      sy = o.y;
+                      sh = (candY + candH) - sy;
+                      guides.push(`<line x1="${Math.min(candX, o.x) - 30}" y1="${o.y}" x2="${Math.max(candX + candW, o.r) + 30}" y2="${o.y}" stroke="#38bdf8" stroke-dasharray="4,4" stroke-width="1.8" />`);
+                    }
+                    if (Math.abs(candY + candH - o.b) <= snapDist) {
+                      sh = o.b - candY;
+                      guides.push(`<line x1="${Math.min(candX, o.x) - 30}" y1="${o.b}" x2="${Math.max(candX + candW, o.r) + 30}" y2="${o.b}" stroke="#38bdf8" stroke-dasharray="4,4" stroke-width="1.8" />`);
+                    }
+                  }
+                }
+
+                if (snapLayer) snapLayer.innerHTML = guides.join("");
+                return { x: sx, y: sy, width: sw, height: sh };
+              };
 
               // Ensure rect attributes match dirty state
               rect.setAttribute("x", rx);
@@ -4394,18 +4518,24 @@ class OtisCompanionCard extends HTMLElement {
                 if (hSw) { hSw.setAttribute("cx", nx); hSw.setAttribute("cy", ny + nh); }
                 if (hW)  { hW.setAttribute("cx", nx); hW.setAttribute("cy", ny + nh / 2); }
 
-                // Update text label position
+                // Resolve clean room title
                 const lbl = selGrp.querySelector(".room-header, .room-label");
+                const rawName = areaName || this._capabilityMap?.areas?.[this._selectedEditorRoomId]?.name || this._dirtyRooms[this._selectedEditorRoomId]?.name || lbl?.textContent || this._selectedEditorRoomId;
+                const cleanName = String(rawName).replace(/^(?:\s*(?:x|y)="[^"]*"[>\s]*)+/g, "").trim();
+
                 if (lbl) {
                   lbl.setAttribute("x", nx + 14);
                   lbl.setAttribute("y", ny + 22);
-                  if (areaName) lbl.textContent = areaName;
+                  lbl.textContent = cleanName;
                 }
 
                 // Update architectural subzone pills in sync
                 selGrp.querySelectorAll(".subzone-pill").forEach((pill, pIdx) => {
                   pill.setAttribute("x", nx + 16);
                   pill.setAttribute("y", ny + 22 + 18 + pIdx * 16);
+                  if (pill.textContent) {
+                    pill.textContent = pill.textContent.replace(/^(?:\s*(?:x|y)="[^"]*"[>\s]*)+/g, "").trim();
+                  }
                 });
 
                 // Update internal entity badges in sync
@@ -4449,14 +4579,14 @@ class OtisCompanionCard extends HTMLElement {
                   y: Math.round(ny),
                   width: Math.round(nw),
                   height: Math.round(nh),
-                  name: areaName || this._dirtyRooms[this._selectedEditorRoomId]?.name,
+                  name: cleanName,
                 };
                 this._hasUnsavedLayout = true;
                 const saveBtn = root.querySelector("#btn-save-layout");
                 if (saveBtn) saveBtn.textContent = "💾 Save Changes *";
               };
 
-              // Make room body draggable (type: "move")
+              // Make room body draggable (type: "move") with magnetic snapping
               rect.style.cursor = "move";
               rect.onpointerdown = (e) => {
                 e.preventDefault();
@@ -4485,8 +4615,11 @@ class OtisCompanionCard extends HTMLElement {
                 const p = getSvgPoint(svgEl, e.clientX, e.clientY);
                 const dx = p.x - this._resizingHandle.startPoint.x;
                 const dy = p.y - this._resizingHandle.startPoint.y;
-                const nx = Math.max(minX, Math.min(Math.round(this._resizingHandle.initX + dx), maxX - this._resizingHandle.initW));
-                const ny = Math.max(minY, Math.min(Math.round(this._resizingHandle.initY + dy), maxY - this._resizingHandle.initH));
+                let nx = Math.max(minX, Math.min(Math.round(this._resizingHandle.initX + dx), maxX - this._resizingHandle.initW));
+                let ny = Math.max(minY, Math.min(Math.round(this._resizingHandle.initY + dy), maxY - this._resizingHandle.initH));
+                const snapped = snapCoordinates(nx, ny, this._resizingHandle.initW, this._resizingHandle.initH, true);
+                nx = Math.max(minX, Math.min(snapped.x, maxX - this._resizingHandle.initW));
+                ny = Math.max(minY, Math.min(snapped.y, maxY - this._resizingHandle.initH));
                 updateRoomElements(nx, ny, this._resizingHandle.initW, this._resizingHandle.initH);
               };
 
@@ -4494,16 +4627,18 @@ class OtisCompanionCard extends HTMLElement {
                 if (this._resizingHandle && this._resizingHandle.type === "move") {
                   try { rect.releasePointerCapture(e.pointerId); } catch (_) {}
                   this._resizingHandle = null;
+                  clearSnapGuides();
                 }
               };
               rect.onpointercancel = (e) => {
                 if (this._resizingHandle && this._resizingHandle.type === "move") {
                   try { rect.releasePointerCapture(e.pointerId); } catch (_) {}
                   this._resizingHandle = null;
+                  clearSnapGuides();
                 }
               };
 
-              // Attach event handlers to all 8 handles with boundary clamping
+              // Attach event handlers to all 8 handles with boundary clamping & snapping
               handleGrp.querySelectorAll(".room-resize-handle").forEach((handle) => {
                 handle.onpointerdown = (e) => {
                   e.preventDefault();
@@ -4578,6 +4713,12 @@ class OtisCompanionCard extends HTMLElement {
                     nh = (initY + initH) - ny;
                   }
 
+                  const snapped = snapCoordinates(nx, ny, nw, nh, false);
+                  nx = Math.max(minX, snapped.x);
+                  ny = Math.max(minY, snapped.y);
+                  nw = Math.max(60, Math.min(snapped.width, maxX - nx));
+                  nh = Math.max(50, Math.min(snapped.height, maxY - ny));
+
                   updateRoomElements(nx, ny, nw, nh);
                 };
 
@@ -4585,12 +4726,14 @@ class OtisCompanionCard extends HTMLElement {
                   if (this._resizingHandle && this._resizingHandle.type !== "move") {
                     try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
                     this._resizingHandle = null;
+                    clearSnapGuides();
                   }
                 };
                 handle.onpointercancel = (e) => {
                   if (this._resizingHandle && this._resizingHandle.type !== "move") {
                     try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
                     this._resizingHandle = null;
+                    clearSnapGuides();
                   }
                 };
               });
