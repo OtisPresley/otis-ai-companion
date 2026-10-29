@@ -2,6 +2,17 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.6.8] - 2026-10-29
+
+### Added & Improved
+- **Automatic Studio & Room Synchronization to Command Center (`dashboard_manager.py`, `__init__.py`, `const.py`, `otis-companion-card.js`)**:
+  - Implemented automatic bi-directional inheritance: any customizations made to Studios (`media`, `security`, `climate`, `floorplan`) and Room subviews (`area_{slug}`) on the Otis AI dashboard are automatically synchronized to the Command Center dashboard (`/command-center`).
+  - Added URL rewriting engine mapping `/otis-ai/` paths to `/command-center/` across all cards, navigation actions, and badges so non-admin users always stay within the Command Center dashboard context.
+  - Command Center Home view (`home`) now automatically synchronizes its "Studios" grid and "Rooms" grid whenever rooms are added, deleted, or updated, while strictly preserving any custom cards added by the user.
+  - Automatic synchronization runs whenever `update_floorplan_layout`, `generate_floorplan`, or discovery scans complete.
+  - Registered `otis_ai.sync_dashboards` backend service and added a 1-click `🔄 Sync Command Center` launchpad chip to the companion card.
+  - Dynamic dashboard path detection: companion card chips automatically route to `/command-center` when viewed inside Command Center.
+
 ## [1.6.7] - 2026-10-29
 
 ### Added & Improved

@@ -1,6 +1,7 @@
 """Lovelace Dashboard Manager & Professional Dashboard Generator for Otis AI Companion."""
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
@@ -82,6 +83,9 @@ class DashboardManager:
             dashboard_config=dashboard_config,
             overwrite_config=True,
         )
+
+    # Alias for backward compatibility
+    async_ensure_command_center_dashboard = async_ensure_user_command_center_dashboard
 
     def _build_user_command_center_dashboard_config(
         self, capability_map: dict[str, Any] | None = None
@@ -353,9 +357,56 @@ class DashboardManager:
     def _merge_dashboard_config_preserving_user_views(
         self, storage_dir: str | None, dash_id: str, new_config: dict[str, Any]
     ) -> dict[str, Any]:
-        """Preserve user-customized Home view (view 0) and custom user subviews across updates."""
+        """Preserve user-customized Home view (view 0) and custom user subviews across updates, while syncing studios and rooms."""
         if not storage_dir:
             return new_config
+
+        # 1. When updating Command Center, sync customized Studio and Room subviews from the Admin (lovelace.otis_ai) dashboard
+        if dash_id == COMMAND_CENTER_DASHBOARD_ID:
+            admin_file = os.path.join(storage_dir, f"lovelace.{OTIS_DASHBOARD_ID}")
+            if os.path.exists(admin_file):
+                try:
+                    with open(admin_file, "r", encoding="utf-8") as af:
+                        admin_content = af.read().strip()
+                    if admin_content:
+                        admin_data = json.loads(admin_content)
+                        admin_cfg = admin_data.get("data", {}).get("config", {})
+                        admin_views = admin_cfg.get("views", [])
+                        admin_views_by_path = {
+                            v.get("path"): v
+                            for v in admin_views
+                            if v.get("path") and v.get("path") != "default_view"
+                        }
+
+                        def _rewrite_to_command_center(obj: Any) -> Any:
+                            if isinstance(obj, str):
+                                return obj.replace(
+                                    f"/{OTIS_DASHBOARD_URL_PATH}/",
+                                    f"/{COMMAND_CENTER_DASHBOARD_URL_PATH}/",
+                                )
+                            elif isinstance(obj, dict):
+                                return {k: _rewrite_to_command_center(v) for k, v in obj.items()}
+                            elif isinstance(obj, list):
+                                return [_rewrite_to_command_center(elem) for elem in obj]
+                            return obj
+
+                        synced_views = []
+                        for nv in new_config.get("views", []):
+                            vpath = nv.get("path")
+                            if vpath in admin_views_by_path:
+                                cloned_view = _rewrite_to_command_center(
+                                    copy.deepcopy(admin_views_by_path[vpath])
+                                )
+                                synced_views.append(cloned_view)
+                            else:
+                                synced_views.append(nv)
+                        new_config = dict(new_config)
+                        new_config["views"] = synced_views
+                except Exception as sync_err:
+                    _LOGGER.debug(
+                        "Could not inherit admin studio/room customizations for command-center: %s",
+                        sync_err,
+                    )
 
         config_file = os.path.join(storage_dir, f"lovelace.{dash_id}")
         if not os.path.exists(config_file):
@@ -375,14 +426,63 @@ class DashboardManager:
             if not existing_views or not isinstance(existing_views, list):
                 return new_config
 
-            # Preserve view 0 (Home view) containing user's customized Otis AI Companion card settings
-            user_home_view = existing_views[0]
-
             new_views = list(new_config.get("views", []))
-            if new_views:
-                new_views[0] = user_home_view
-            else:
-                new_views = [user_home_view]
+            existing_home_view = existing_views[0] if existing_views else None
+
+            if existing_home_view and new_views:
+                if dash_id == COMMAND_CENTER_DASHBOARD_ID:
+                    # For Command Center home view:
+                    # Keep user's custom cards while always syncing the updated Studios and Rooms grids
+                    fresh_cards = new_views[0].get("cards", [])
+                    fresh_studios_grid = next(
+                        (c for c in fresh_cards if c.get("title") == "Studios"), None
+                    )
+                    fresh_rooms_grid = next(
+                        (c for c in fresh_cards if c.get("title") == "Rooms"), None
+                    )
+
+                    merged_home_cards = []
+                    studios_inserted = False
+                    rooms_inserted = False
+
+                    for ex_card in existing_home_view.get("cards", []):
+                        c_title = ex_card.get("title")
+                        if c_title == "Studios" or (
+                            ex_card.get("type") == "grid"
+                            and any(b.get("name") == "Floor Plan" for b in ex_card.get("cards", []))
+                        ):
+                            if fresh_studios_grid and not studios_inserted:
+                                merged_home_cards.append(fresh_studios_grid)
+                                studios_inserted = True
+                        elif c_title == "Rooms" or (
+                            ex_card.get("type") == "grid"
+                            and any(
+                                str(b.get("tap_action", {}).get("navigation_path", "")).startswith(
+                                    f"/{COMMAND_CENTER_DASHBOARD_URL_PATH}/area_"
+                                )
+                                for b in ex_card.get("cards", [])
+                            )
+                        ):
+                            if fresh_rooms_grid and not rooms_inserted:
+                                merged_home_cards.append(fresh_rooms_grid)
+                                rooms_inserted = True
+                        else:
+                            # User-added custom card on Home view
+                            merged_home_cards.append(ex_card)
+
+                    if fresh_studios_grid and not studios_inserted:
+                        merged_home_cards.append(fresh_studios_grid)
+                    if fresh_rooms_grid and not rooms_inserted:
+                        merged_home_cards.append(fresh_rooms_grid)
+
+                    merged_home = dict(existing_home_view)
+                    merged_home["cards"] = merged_home_cards
+                    new_views[0] = merged_home
+                else:
+                    # For Admin dashboard: preserve user's customized Otis AI Companion card settings in view 0
+                    new_views[0] = existing_home_view
+            elif existing_home_view:
+                new_views = [existing_home_view]
 
             # Preserve any custom user-created subviews not generated by Otis AI
             generated_paths = {"default_view", "home", "floorplan", "media", "security", "climate"}

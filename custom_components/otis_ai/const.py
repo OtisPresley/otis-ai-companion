@@ -29,6 +29,7 @@ SERVICE_REMEDIATE_ANOMALY = "remediate_anomaly"
 SERVICE_GET_SENTINEL_TELEMETRY = "get_sentinel_telemetry"
 SERVICE_IGNORE_SENTINEL_ALERT = "ignore_sentinel_alert"
 SERVICE_CREATE_COMMAND_CENTER = "create_command_center"
+SERVICE_SYNC_DASHBOARDS = "sync_dashboards"
 
 # Dashboard Constants
 COMMAND_CENTER_DASHBOARD_ID = "command-center"

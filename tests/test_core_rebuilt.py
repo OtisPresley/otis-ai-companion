@@ -2533,6 +2533,86 @@ class TestSentinelManager(unittest.TestCase):
         self.assertGreater(len(img_hotspots), 0)
         self.assertIn("/otis-ai/area_foyer", [h["tap_action"]["navigation_path"] for h in img_hotspots])
 
+    def test_command_center_syncs_studios_and_rooms_from_otis_ai(self):
+        """Verify Command Center automatically inherits Studio/Room edits and rewrites URLs."""
+        import json
+        import os
+        import tempfile
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+
+        dm = DashboardManager(self.hass)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # 1. Create mock lovelace.otis_ai with custom cards in Media Studio and a Room view
+            admin_data = {
+                "version": 1,
+                "data": {
+                    "config": {
+                        "views": [
+                            {"path": "default_view", "title": "AI Command Center", "cards": []},
+                            {
+                                "path": "media",
+                                "title": "Media Studio",
+                                "cards": [
+                                    {"type": "markdown", "content": "Custom Admin Media Studio"},
+                                    {"type": "button", "name": "Back", "tap_action": {"action": "navigate", "navigation_path": "/otis-ai/area_theater"}},
+                                ],
+                            },
+                            {
+                                "path": "area_theater",
+                                "title": "Home Theater",
+                                "cards": [
+                                    {"type": "media-control", "entity": "media_player.theater_avr"},
+                                    {"type": "button", "name": "Return", "tap_action": {"action": "navigate", "navigation_path": "/otis-ai/media"}},
+                                ],
+                            },
+                        ]
+                    }
+                }
+            }
+            with open(os.path.join(tmp_dir, "lovelace.otis_ai"), "w") as f:
+                json.dump(admin_data, f)
+
+            # 2. Command Center newly generated config
+            new_cc_config = {
+                "title": "Command Center",
+                "views": [
+                    {
+                        "path": "home",
+                        "title": "Home",
+                        "cards": [
+                            {"type": "markdown", "content": "Header"},
+                            {"type": "grid", "title": "Studios", "cards": [{"name": "Media Studio"}]},
+                            {"type": "grid", "title": "Rooms", "cards": [{"name": "Home Theater"}]},
+                        ],
+                    },
+                    {"path": "media", "title": "Media Studio", "cards": []},
+                    {"path": "area_theater", "title": "Home Theater", "cards": []},
+                ],
+            }
+
+            merged = dm._merge_dashboard_config_preserving_user_views(
+                storage_dir=tmp_dir,
+                dash_id="command-center",
+                new_config=new_cc_config,
+            )
+
+            # Verify Media Studio inherited the admin cards and URL was rewritten to /command-center/
+            media_view = next(v for v in merged["views"] if v["path"] == "media")
+            self.assertEqual(len(media_view["cards"]), 2)
+            self.assertEqual(media_view["cards"][0]["content"], "Custom Admin Media Studio")
+            self.assertEqual(
+                media_view["cards"][1]["tap_action"]["navigation_path"],
+                "/command-center/area_theater",
+            )
+
+            # Verify Room subview inherited the admin cards and URL was rewritten
+            theater_view = next(v for v in merged["views"] if v["path"] == "area_theater")
+            self.assertEqual(len(theater_view["cards"]), 2)
+            self.assertEqual(
+                theater_view["cards"][1]["tap_action"]["navigation_path"],
+                "/command-center/media",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

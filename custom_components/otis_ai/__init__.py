@@ -47,6 +47,7 @@ from .const import (
     SERVICE_GET_SENTINEL_TELEMETRY,
     SERVICE_IGNORE_SENTINEL_ALERT,
     SERVICE_CREATE_COMMAND_CENTER,
+    SERVICE_SYNC_DASHBOARDS,
 )
 from .automation_manager import AutomationManager
 from .dashboard_manager import DashboardManager
@@ -783,7 +784,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_generate_floorplan(call) -> ServiceResponse:
         """Handle service call to generate SVG floorplan."""
         _LOGGER.debug("Service 'generate_floorplan' triggered")
-        eng, _, _, fp, *_ = _get_active_managers()
+        eng, _, _, fp, tm, sm, dm = _get_active_managers()
         capability_map = await eng.async_build_capability_map()
         video_path = call.data.get("video_path")
         spoken_order = call.data.get("spoken_order")
@@ -798,6 +799,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         if hasattr(eng, "invalidate_cache"):
             eng.invalidate_cache()
+        if dm and hasattr(dm, "async_ensure_admin_companion_dashboard"):
+            try:
+                cap_map = (
+                    await eng.async_build_capability_map()
+                    if hasattr(eng, "async_build_capability_map")
+                    else None
+                )
+                await dm.async_ensure_admin_companion_dashboard(cap_map)
+                await dm.async_ensure_user_command_center_dashboard(cap_map)
+            except Exception as d_err:
+                _LOGGER.debug("Could not refresh dashboards after floorplan generation: %s", d_err)
         return res
 
     async def handle_update_floorplan_layout(call) -> ServiceResponse:
@@ -824,10 +836,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     else None
                 )
                 await dm.async_ensure_admin_companion_dashboard(cap_map)
-                await dm.async_ensure_command_center_dashboard(cap_map)
+                await dm.async_ensure_user_command_center_dashboard(cap_map)
             except Exception as d_err:
                 _LOGGER.debug("Could not refresh dashboards after floorplan update: %s", d_err)
         return res
+
+    async def handle_sync_dashboards(call) -> ServiceResponse:
+        """Handle service call to synchronize Studios and Rooms across Otis AI and Command Center."""
+        _LOGGER.debug("Service 'sync_dashboards' triggered")
+        eng, *_, dm = _get_active_managers()
+        cap_map = (
+            await eng.async_build_capability_map()
+            if hasattr(eng, "async_build_capability_map")
+            else None
+        )
+        admin_res = await dm.async_ensure_admin_companion_dashboard(cap_map)
+        user_res = await dm.async_ensure_user_command_center_dashboard(cap_map)
+        return {
+            "success": True,
+            "message": "Synchronized Studios and Rooms across Otis AI and Command Center dashboards",
+            "admin_dashboard": admin_res,
+            "command_center": user_res,
+        }
 
     async def handle_generate_theme(call) -> ServiceResponse:
         """Handle service call to generate and persist a custom theme."""
@@ -1053,6 +1083,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         SERVICE_CREATE_COMMAND_CENTER,
         handle_create_command_center,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SYNC_DASHBOARDS,
+        handle_sync_dashboards,
         supports_response=SupportsResponse.OPTIONAL,
     )
 

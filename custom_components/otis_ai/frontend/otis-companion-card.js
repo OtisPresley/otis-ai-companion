@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 1.6.7
+ * Version: 1.6.8
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.6.7";
+const CARD_VERSION = "1.6.8";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -908,6 +908,12 @@ class OtisCompanionCard extends HTMLElement {
       orphans: (this._capabilityMap?.orphaned_entities || []).length,
     };
 
+    const dashPrefix =
+      window.location.pathname.startsWith("/command-center") ||
+      this._config.dashboard_url_path === "command-center"
+        ? "/command-center"
+        : "/otis-ai";
+
     const areas = this._capabilityMap?.areas || {};
     const entities = this._capabilityMap?.entities || [];
     const activeAreas = [];
@@ -921,7 +927,7 @@ class OtisCompanionCard extends HTMLElement {
           id: aid,
           name: ainfo.name || aid,
           slug: slug,
-          path: `/otis-ai/area_${slug}`,
+          path: `${dashPrefix}/area_${slug}`,
         });
       }
     }
@@ -2791,11 +2797,12 @@ class OtisCompanionCard extends HTMLElement {
           <div class="subviews-launchpad">
             <div class="launchpad-row">
               <span class="subviews-label">Studios:</span>
-              <button class="subview-chip" data-subview="/otis-ai/media">🎵 Media Studio</button>
-              <button class="subview-chip" data-subview="/otis-ai/security">🛡️ Security Center</button>
-              <button class="subview-chip" data-subview="/otis-ai/climate">🌡️ Climate & Pool</button>
-              <button class="subview-chip" data-subview="/otis-ai/floorplan">🗺️ Floor Plan</button>
-              <button class="subview-chip" id="btn-open-themes" style="margin-left: auto;">🎨 Themes</button>
+              <button class="subview-chip" data-subview="${dashPrefix}/media">🎵 Media Studio</button>
+              <button class="subview-chip" data-subview="${dashPrefix}/security">🛡️ Security Center</button>
+              <button class="subview-chip" data-subview="${dashPrefix}/climate">🌡️ Climate & Pool</button>
+              <button class="subview-chip" data-subview="${dashPrefix}/floorplan">🗺️ Floor Plan</button>
+              ${isAdmin ? `<button class="subview-chip" id="btn-sync-dashboards" title="Sync all Studios & Rooms to Command Center" style="margin-left: auto;">🔄 Sync Command Center</button>` : ""}
+              <button class="subview-chip" id="btn-open-themes" style="${isAdmin ? "" : "margin-left: auto;"}">🎨 Themes</button>
             </div>
             ${
               activeAreas.length > 0
@@ -3788,6 +3795,21 @@ class OtisCompanionCard extends HTMLElement {
           e.stopPropagation();
           this._themeModalOpen = true;
           this._render();
+        };
+        return;
+      }
+      if (chip.id === "btn-sync-dashboards") {
+        chip.onclick = async (e) => {
+          e.stopPropagation();
+          try {
+            this._showToast("🔄 Syncing Studios & Rooms to Command Center...");
+            await this._hass.callService("otis_ai", "sync_dashboards", {});
+            this._showToast("✨ Studios and Rooms synchronized to Command Center!");
+            await this._fetchData();
+          } catch (err) {
+            console.error("Failed to sync dashboards:", err);
+            this._showToast(`Failed to sync dashboards: ${err.message || err}`, true);
+          }
         };
         return;
       }

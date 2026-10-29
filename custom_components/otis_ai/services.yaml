@@ -264,6 +264,10 @@ ignore_sentinel_alert:
       selector:
         boolean:
 
+sync_dashboards:
+  name: Sync Dashboards
+  description: Synchronize Studios (Floor Plan, Media, Security, Climate) and Room views from the Otis AI Companion dashboard to the user Command Center dashboard.
+
 create_command_center:
   name: Create / Sync User Command Center
   description: Generate or refresh the non-admin User Command Center dashboard (/command-center) connecting Studios and Room subviews for family members.
