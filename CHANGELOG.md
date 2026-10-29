@@ -2,6 +2,19 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.5.6] - 2026-10-29
+
+### Added & Improved
+- **Hub-and-Spoke Subview Dashboards (`dashboard_manager.py`)**:
+  - Automatically provisions native subpages (`subview: true`) under `/otis-ai`:
+    - `media` (`/otis-ai/media`): Dedicated matrix amplifier audio routing, upstream streamer bridges, and theater displays.
+    - `security` (`/otis-ai/security`): Alarm panel, smart locks, garage doors, camera snapshots, and presence sensors.
+    - `climate` (`/otis-ai/climate`): HVAC thermostats, ceiling fans, pool telemetry, and comfort controls.
+    - `floorplan` (`/otis-ai/floorplan`): Full architectural vector floor plan studio view.
+  - Subviews stay cleanly hidden from the top dashboard tab bar while providing Home Assistant's native header back arrow (`←`) for zero-reload drill-down navigation.
+- **Card-Level Studio Launchpad (`otis-companion-card.js`)**:
+  - Added interactive glassmorphic subview launchpad chips (`.subviews-launchpad`) on the companion card header, allowing instantaneous 1-click drill-down navigation directly into specialized domain subviews via native `hass-navigate`.
+
 ## [1.5.5] - 2026-10-28
 
 ### Fixed & Improved

@@ -6,6 +6,7 @@ import logging
 import os
 import re
 from typing import Any
+import yaml
 
 from homeassistant.core import HomeAssistant
 
@@ -35,8 +36,10 @@ class DashboardManager:
                 pass
         return None
 
-    async def async_ensure_admin_companion_dashboard(self) -> dict[str, Any]:
-        """Automatically create and register the Owner/Admin-only Otis AI Companion dashboard on startup."""
+    async def async_ensure_admin_companion_dashboard(
+        self, capability_map: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Automatically create and register the Owner/Admin-only Otis AI Companion dashboard with Hub-and-Spoke subviews."""
         item = {
             "id": OTIS_DASHBOARD_ID,
             "url_path": OTIS_DASHBOARD_URL_PATH,
@@ -46,38 +49,139 @@ class DashboardManager:
             "show_in_sidebar": True,
             "mode": "storage",
         }
-        dashboard_config = self._build_otis_companion_dashboard_config()
+        dashboard_config = self._build_otis_companion_dashboard_config(capability_map)
         return await self._async_register_and_save_dashboard(
             item=item,
             dashboard_config=dashboard_config,
             overwrite_config=True,
         )
 
-    def _build_otis_companion_dashboard_config(self) -> dict[str, Any]:
-        """Build the Lovelace config for the Admin-only Otis AI Companion Command Center dashboard."""
+    def _build_otis_companion_dashboard_config(
+        self, capability_map: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Build the Lovelace config for the Admin-only Otis AI Companion Command Center with Hub-and-Spoke subviews."""
+        views: list[dict[str, Any]] = [
+            {
+                "title": "AI Command Center",
+                "path": "default_view",
+                "icon": "mdi:robot-outline",
+                "type": "panel",
+                "panel": True,
+                "badges": [],
+                "cards": [
+                    {
+                        "type": "custom:otis-companion-card",
+                        "title": "Otis AI Companion",
+                        "theme_preset": "ha_native",
+                        "show_chat": True,
+                        "show_suggestions": True,
+                        "show_stats": True,
+                        "max_suggestions": 8,
+                    }
+                ],
+            }
+        ]
+
+        # 1. Media Studio Subview (subview: true keeps top tabs clean while giving HA native back navigation)
+        media_cards = (
+            self._generate_template_config("media_studio", "Media Studio", capability_map)["views"][0]["cards"]
+            if capability_map
+            else [
+                {
+                    "type": "markdown",
+                    "content": (
+                        "## 🎵 Whole-Home Media & Matrix Audio\n"
+                        "Control upstream streaming bridges, route audio across Matrix Amp room zones, and manage Theater displays."
+                    ),
+                }
+            ]
+        )
+        views.append({
+            "title": "Media Studio",
+            "path": "media",
+            "icon": "mdi:speaker-multiple",
+            "subview": True,
+            "badges": [],
+            "cards": media_cards,
+        })
+
+        # 2. Security Center Subview
+        security_cards = (
+            self._generate_template_config("security_center", "Security Center", capability_map)["views"][0]["cards"]
+            if capability_map
+            else [
+                {
+                    "type": "markdown",
+                    "content": (
+                        "## 🛡️ Security, Locks & Perimeter Center\n"
+                        "Live status and controls for alarm panels, smart locks, garage doors, occupancy sensors, and perimeter cameras."
+                    ),
+                }
+            ]
+        )
+        views.append({
+            "title": "Security Center",
+            "path": "security",
+            "icon": "mdi:shield-home",
+            "subview": True,
+            "badges": [],
+            "cards": security_cards,
+        })
+
+        # 3. Climate & Pool Subview
+        climate_cards = (
+            self._generate_template_config("climate_energy", "Climate & Pool", capability_map)["views"][0]["cards"]
+            if capability_map
+            else [
+                {
+                    "type": "markdown",
+                    "content": (
+                        "## 🌡️ Climate, Pool & Comfort Operations\n"
+                        "Unified environmental controls for HVAC thermostats, ceiling fans, pool telemetry, and SleepNumber comfort."
+                    ),
+                }
+            ]
+        )
+        views.append({
+            "title": "Climate & Pool",
+            "path": "climate",
+            "icon": "mdi:thermostat-box",
+            "subview": True,
+            "badges": [],
+            "cards": climate_cards,
+        })
+
+        # 4. Floor Plan Subview
+        floorplan_yaml = capability_map.get("floorplan", {}).get("lovelace_yaml") if capability_map else None
+        floorplan_cards: list[dict[str, Any]] = []
+        if floorplan_yaml:
+            try:
+                fp_parsed = yaml.safe_load(floorplan_yaml)
+                if isinstance(fp_parsed, dict):
+                    floorplan_cards.append(fp_parsed)
+            except Exception as err:
+                _LOGGER.debug("Error parsing floorplan lovelace yaml: %s", err)
+        if not floorplan_cards:
+            floorplan_cards.append({
+                "type": "markdown",
+                "content": (
+                    "## 🗺️ Architectural Vector Floor Plan Studio\n"
+                    "Interactive spatial floor plan with live glowing entity badges and inspection drawers.\n\n"
+                    "👉 Use the **Floor Plan** tab on the **AI Command Center** to record or upload a video walkthrough."
+                ),
+            })
+        views.append({
+            "title": "Floor Plan Studio",
+            "path": "floorplan",
+            "icon": "mdi:floor-plan",
+            "subview": True,
+            "badges": [],
+            "cards": floorplan_cards,
+        })
+
         return {
             "title": OTIS_DASHBOARD_TITLE,
-            "views": [
-                {
-                    "title": "AI Command Center",
-                    "path": "default_view",
-                    "icon": "mdi:robot-outline",
-                    "type": "panel",
-                    "panel": True,
-                    "badges": [],
-                    "cards": [
-                        {
-                            "type": "custom:otis-companion-card",
-                            "title": "Otis AI Companion",
-                            "theme_preset": "ha_native",
-                            "show_chat": True,
-                            "show_suggestions": True,
-                            "show_stats": True,
-                            "max_suggestions": 8,
-                        }
-                    ],
-                }
-            ],
+            "views": views,
         }
 
     async def _async_register_and_save_dashboard(

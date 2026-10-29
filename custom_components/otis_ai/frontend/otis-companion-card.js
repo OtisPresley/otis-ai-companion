@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 1.5.5
+ * Version: 1.5.6
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -11,7 +11,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.5.5";
+const CARD_VERSION = "1.5.6";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -1157,6 +1157,50 @@ class OtisCompanionCard extends HTMLElement {
 
         .stat-item.warning .stat-value {
           color: #f59e0b;
+        }
+
+        /* Subview Hub Launchpad */
+        .subviews-launchpad {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex-wrap: wrap;
+          margin-bottom: 12px;
+          padding: 6px 10px;
+          background: color-mix(in srgb, var(--otis-surface) 60%, transparent);
+          border: 1px solid var(--otis-surface-border);
+          border-radius: 8px;
+        }
+
+        .subviews-label {
+          font-size: 0.72rem;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          color: var(--otis-text-muted);
+          margin-right: 4px;
+        }
+
+        .subview-chip {
+          background: var(--otis-surface);
+          border: 1px solid var(--otis-surface-border);
+          color: var(--otis-text);
+          font-size: 0.74rem;
+          font-weight: 500;
+          padding: 4px 9px;
+          border-radius: 6px;
+          cursor: pointer;
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          transition: all 0.15s ease;
+        }
+
+        .subview-chip:hover {
+          background: color-mix(in srgb, var(--otis-primary) 15%, transparent);
+          border-color: var(--otis-primary);
+          color: var(--otis-primary);
+          transform: translateY(-1px);
         }
 
         /* Navigation Tabs */
@@ -2446,6 +2490,15 @@ class OtisCompanionCard extends HTMLElement {
             : ""
         }
 
+        <!-- Studio Subviews Launchpad -->
+        <div class="subviews-launchpad">
+          <span class="subviews-label">Subviews:</span>
+          <button class="subview-chip" data-subview="/otis-ai/media">🎵 Media Studio</button>
+          <button class="subview-chip" data-subview="/otis-ai/security">🛡️ Security Center</button>
+          <button class="subview-chip" data-subview="/otis-ai/climate">🌡️ Climate & Pool</button>
+          <button class="subview-chip" data-subview="/otis-ai/floorplan">🗺️ Floor Plan</button>
+        </div>
+
         <!-- Navigation Tabs -->
         <div class="tabs-nav">
           ${
@@ -2973,6 +3026,23 @@ class OtisCompanionCard extends HTMLElement {
     if (refreshBtn) {
       refreshBtn.onclick = () => this._fetchData();
     }
+
+    // Subview Launchpad
+    root.querySelectorAll(".subview-chip").forEach((chip) => {
+      chip.onclick = () => {
+        const path = chip.getAttribute("data-subview");
+        if (path) {
+          const event = new CustomEvent("hass-navigate", {
+            detail: { href: path },
+            bubbles: true,
+            composed: true,
+          });
+          window.dispatchEvent(event);
+          window.history.pushState(null, "", path);
+          window.dispatchEvent(new CustomEvent("location-changed"));
+        }
+      };
+    });
 
     // Tabs
     const tabSug = root.querySelector("#tab-suggestions");

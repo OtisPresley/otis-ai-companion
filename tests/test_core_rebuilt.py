@@ -1646,6 +1646,11 @@ class TestFloorplanParser(unittest.TestCase):
             self.assertIn('"type": "panel"', otis_dash_data)
             self.assertIn('"panel": true', otis_dash_data)
             self.assertIn('"theme_preset": "ha_native"', otis_dash_data)
+            self.assertIn('"subview": true', otis_dash_data)
+            self.assertIn('"path": "media"', otis_dash_data)
+            self.assertIn('"path": "security"', otis_dash_data)
+            self.assertIn('"path": "climate"', otis_dash_data)
+            self.assertIn('"path": "floorplan"', otis_dash_data)
 
         parser = FloorplanParser(self.hass)
         engine = DiscoveryEngine(self.hass, floorplan_parser=parser, dashboard_manager=d_mgr)
