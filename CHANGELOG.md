@@ -2,6 +2,24 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.5.7] - 2026-10-29
+
+### Added & Improved
+- **Dynamic Area/Room Subviews (`dashboard_manager.py`)**:
+  - Automatically identifies all registered Home Assistant areas containing active entities and generates dedicated subviews (`/otis-ai/area_<slug>`) with `subview: true` and native `←` back navigation.
+  - Automatically categorizes devices in each room into native Lovelace cards:
+    - **Lighting & Power**: Brightness slider tile cards for lights and toggle tile cards for switches/outlets.
+    - **Media & Audio**: Volume slider tile cards for media players.
+    - **Climate & Comfort**: Thermostat cards with HVAC modes, fan tiles, and environmental telemetry sensors.
+    - **Access & Sensors**: Lock and cover command tile cards, live camera feeds, and occupancy/presence sensor lists.
+- **Hub-and-Spoke Architecture for Standalone Dashboards**:
+  - Upgraded pro dashboards (`media_studio`, `security_center`, `climate_energy`, and new `whole_home`) to feature a central navigation Hub linking to dedicated spoke subviews (`zones`, `streamers`, `cinema`, `cameras`, `access`, `sensors`, `hvac`, `pool`, `comfort`, `area_<slug>`).
+  - Added whole-home multi-room hub proposal to gap analysis whenever 3 or more active areas exist.
+- **Continuous Discovery Synchronization (`__init__.py`)**:
+  - Wired `dashboard_manager.async_ensure_admin_companion_dashboard(cap_map)` into `DiscoveryEngine.async_build_capability_map()` to automatically keep companion dashboard subviews synchronized as devices and rooms are added or reassigned.
+- **Card-Level Dynamic Room Launchpad Chips (`otis-companion-card.js`)**:
+  - Added dynamic room launchpad chips to the companion card header for instant one-tap navigation to any room subview.
+
 ## [1.5.6] - 2026-10-29
 
 ### Added & Improved

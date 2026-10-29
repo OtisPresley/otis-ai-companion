@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 1.5.6
+ * Version: 1.5.7
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -11,7 +11,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.5.6";
+const CARD_VERSION = "1.5.7";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -54,6 +54,16 @@ class OtisCompanionCard extends HTMLElement {
     this._discoveredWalkthroughAreas = [];
     this._hasWalkthrough = false;
     this._hasFloorplan = false;
+  }
+
+  _escapeHtml(str) {
+    if (!str) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
   }
 
   _ensureValidActiveTab() {
@@ -840,6 +850,25 @@ class OtisCompanionCard extends HTMLElement {
       orphans: (this._capabilityMap?.orphaned_entities || []).length,
     };
 
+    const areas = this._capabilityMap?.areas || {};
+    const entities = this._capabilityMap?.entities || [];
+    const activeAreas = [];
+    for (const [aid, ainfo] of Object.entries(areas)) {
+      const hasEntities =
+        (ainfo.entities && ainfo.entities.length > 0) ||
+        entities.some((e) => e.area_id === aid);
+      if (hasEntities) {
+        const slug = aid.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "room";
+        activeAreas.push({
+          id: aid,
+          name: ainfo.name || aid,
+          slug: slug,
+          path: `/otis-ai/area_${slug}`,
+        });
+      }
+    }
+    activeAreas.sort((a, b) => a.name.localeCompare(b.name));
+
     const preset = this._config.theme_preset || this._config.theme || "ha_native";
     const themeClass = `theme-${preset.replace(/_/g, "-")}`;
 
@@ -1201,6 +1230,10 @@ class OtisCompanionCard extends HTMLElement {
           border-color: var(--otis-primary);
           color: var(--otis-primary);
           transform: translateY(-1px);
+        }
+
+        .room-chip {
+          background: color-mix(in srgb, var(--otis-surface) 80%, var(--otis-primary) 8%);
         }
 
         /* Navigation Tabs */
@@ -2490,13 +2523,27 @@ class OtisCompanionCard extends HTMLElement {
             : ""
         }
 
-        <!-- Studio Subviews Launchpad -->
+        <!-- Studio & Room Subviews Launchpad -->
         <div class="subviews-launchpad">
-          <span class="subviews-label">Subviews:</span>
+          <span class="subviews-label">Studios:</span>
           <button class="subview-chip" data-subview="/otis-ai/media">🎵 Media Studio</button>
           <button class="subview-chip" data-subview="/otis-ai/security">🛡️ Security Center</button>
           <button class="subview-chip" data-subview="/otis-ai/climate">🌡️ Climate & Pool</button>
           <button class="subview-chip" data-subview="/otis-ai/floorplan">🗺️ Floor Plan</button>
+          ${
+            activeAreas.length > 0
+              ? `
+            <span class="subviews-label" style="margin-left: 6px;">Rooms:</span>
+            ${activeAreas
+              .map(
+                (room) => `
+              <button class="subview-chip room-chip" data-subview="${room.path}">📍 ${this._escapeHtml(room.name)}</button>
+            `
+              )
+              .join("")}
+          `
+              : ""
+          }
         </div>
 
         <!-- Navigation Tabs -->

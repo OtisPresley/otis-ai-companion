@@ -1644,6 +1644,14 @@ class DiscoveryEngine:
         self._cached_cap_map = dict(cap_map)
         self._cache_ts = now
         self._cache_signature = current_sig
+
+        # Continuous Discovery Synchronization: keep companion dashboard subviews updated
+        if getattr(self, "dashboard_manager", None):
+            try:
+                await self.dashboard_manager.async_ensure_admin_companion_dashboard(cap_map)
+            except Exception as err:
+                _LOGGER.debug("Could not synchronize companion dashboard during discovery scan: %s", err)
+
         return cap_map
 
     def _discover_media_topology(

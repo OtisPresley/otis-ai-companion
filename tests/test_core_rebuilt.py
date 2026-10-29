@@ -1130,6 +1130,10 @@ class TestFloorplanParser(unittest.TestCase):
 
         tmp_dir = "/tmp/otis_test_floorplan"
         os.makedirs(tmp_dir, exist_ok=True)
+        storage_dir = os.path.join(tmp_dir, ".storage")
+        if os.path.isdir(storage_dir):
+            import shutil
+            shutil.rmtree(storage_dir, ignore_errors=True)
         for stale in ("automations.yaml", "scripts.yaml", "configuration.yaml"):
             sp = os.path.join(tmp_dir, stale)
             if os.path.exists(sp):
@@ -1703,6 +1707,118 @@ class TestFloorplanParser(unittest.TestCase):
         for fpath in (autos_yaml, scripts_yaml, config_yaml):
             if os.path.exists(fpath):
                 os.remove(fpath)
+
+    def test_hub_and_spoke_subviews_and_room_generation(self):
+        """Test dynamic room subview generation and standalone Hub-and-Spoke dashboards."""
+        import asyncio
+        import json
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+
+        d_mgr = DashboardManager(self.hass)
+
+        capability_map = {
+            "areas": {
+                "living_room": {"name": "Living Room", "entities": ["light.living_room_ceiling", "media_player.living_room_tv"]},
+                "master_bedroom": {"name": "Master Bedroom", "entities": ["light.bedroom_lamp", "climate.bedroom_ac", "lock.balcony_door"]},
+                "study": {"name": "Study Room", "entities": ["switch.study_desk", "sensor.study_temp", "binary_sensor.study_motion"]},
+            },
+            "entities": [
+                {"entity_id": "light.living_room_ceiling", "domain": "light", "state": "on", "area_id": "living_room"},
+                {"entity_id": "media_player.living_room_tv", "domain": "media_player", "state": "playing", "area_id": "living_room"},
+                {"entity_id": "light.bedroom_lamp", "domain": "light", "state": "off", "area_id": "master_bedroom"},
+                {"entity_id": "climate.bedroom_ac", "domain": "climate", "state": "cool", "area_id": "master_bedroom"},
+                {"entity_id": "lock.balcony_door", "domain": "lock", "state": "locked", "area_id": "master_bedroom"},
+                {"entity_id": "switch.study_desk", "domain": "switch", "state": "on", "area_id": "study"},
+                {"entity_id": "sensor.study_temp", "domain": "sensor", "state": "72", "area_id": "study", "attributes": {"device_class": "temperature"}},
+                {"entity_id": "binary_sensor.study_motion", "domain": "binary_sensor", "state": "off", "area_id": "study"},
+                {"entity_id": "camera.front_porch", "domain": "camera", "state": "idle", "area_id": None},
+            ],
+            "media_topology": {
+                "matrix_zones": [{"entity_id": "media_player.living_room_tv"}],
+                "input_streamers": [],
+                "tv_cinema_zones": [{"entity_id": "media_player.living_room_tv"}],
+            },
+            "security_topology": {
+                "alarm_panels": [],
+                "locks": ["lock.balcony_door"],
+                "garage_covers": [],
+                "cameras": ["camera.front_porch"],
+                "bed_occupancy_sensors": [],
+                "persons": [],
+                "perimeter_contact_sensors": [],
+            },
+        }
+
+        # 1. Test Otis Companion Dashboard Room Subviews
+        admin_dash_cfg = d_mgr._build_otis_companion_dashboard_config(capability_map)
+        paths = [v.get("path") for v in admin_dash_cfg["views"]]
+        self.assertIn("default_view", paths)
+        self.assertIn("media", paths)
+        self.assertIn("security", paths)
+        self.assertIn("climate", paths)
+        self.assertIn("floorplan", paths)
+        self.assertIn("area_living_room", paths)
+        self.assertIn("area_master_bedroom", paths)
+        self.assertIn("area_study", paths)
+
+        # Verify room subviews have subview: True and categorized cards
+        room_subviews = {v["path"]: v for v in admin_dash_cfg["views"] if v.get("path", "").startswith("area_")}
+        lr_subview = room_subviews["area_living_room"]
+        self.assertTrue(lr_subview.get("subview"))
+        lr_card_titles = [c.get("title") for c in lr_subview["cards"] if isinstance(c, dict)]
+        self.assertIn("Lighting", lr_card_titles)
+        self.assertIn("Media & Audio", lr_card_titles)
+
+        mb_subview = room_subviews["area_master_bedroom"]
+        self.assertTrue(mb_subview.get("subview"))
+        mb_card_types = [c.get("type") for c in mb_subview["cards"] if isinstance(c, dict)]
+        self.assertIn("thermostat", mb_card_types)
+        mb_card_titles = [c.get("title") for c in mb_subview["cards"] if isinstance(c, dict)]
+        self.assertIn("Access & Covers", mb_card_titles)
+
+        # 2. Test Dashboard Gap Analysis proposing Whole Home (before creation)
+        gaps = asyncio.run(d_mgr.async_analyze_dashboard_gaps(capability_map))
+        proposals = {p["id"]: p for p in gaps["proposals"]}
+        self.assertIn("pro_dashboard_whole_home_hub", proposals)
+        self.assertEqual(proposals["pro_dashboard_whole_home_hub"]["template"], "whole_home")
+
+        # 3. Test Standalone Hub-and-Spoke Dashboards
+        # Media Studio
+        media_dash = asyncio.run(
+            d_mgr.async_create_professional_dashboard(
+                {"template": "media_studio", "url_path": "otis-media-studio", "title": "Media Studio"},
+                capability_map,
+            )
+        )
+        self.assertTrue(media_dash["success"])
+        media_json = self.hass.config.path(".storage/lovelace.otis_media_studio")
+        with open(media_json, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            vpaths = [v["path"] for v in data["data"]["config"]["views"]]
+            self.assertEqual(vpaths, ["default_view", "zones", "streamers", "cinema"])
+            self.assertTrue(data["data"]["config"]["views"][1]["subview"])
+
+        # Whole-Home Hub
+        whole_home_dash = asyncio.run(
+            d_mgr.async_create_professional_dashboard(
+                {"template": "whole_home", "url_path": "otis-whole-home", "title": "Whole Home"},
+                capability_map,
+            )
+        )
+        self.assertTrue(whole_home_dash["success"])
+        wh_json = self.hass.config.path(".storage/lovelace.otis_whole_home")
+        with open(wh_json, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            vpaths = [v["path"] for v in data["data"]["config"]["views"]]
+            self.assertIn("default_view", vpaths)
+            self.assertIn("area_living_room", vpaths)
+            self.assertIn("area_master_bedroom", vpaths)
+            self.assertIn("area_study", vpaths)
+
+        # Gap analysis after creation should no longer propose whole_home
+        gaps_after = asyncio.run(d_mgr.async_analyze_dashboard_gaps(capability_map))
+        proposals_after = {p["id"]: p for p in gaps_after["proposals"]}
+        self.assertNotIn("pro_dashboard_whole_home_hub", proposals_after)
 
 
 if __name__ == "__main__":
