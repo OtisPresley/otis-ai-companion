@@ -2,6 +2,15 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.6.6] - 2026-10-29
+
+### Fixed & Improved
+- **Floor Plan Element Layout & Overlap Resolution (`dashboard_manager.py`, `floorplan_parser.py`, `otis-companion-card.js`)**:
+  - Replaced bulky `state-badge` climate widgets with native `state-icon` Material Design thermostat controls (`mdi:thermostat` with `#f97316` active heating color and tap `more-info`), eliminating oversized 70px badges and truncated entity names overflowing room borders.
+  - Implemented an evenly spaced horizontal control dock along the bottom of each room (`rx + 30 + idx * 46`, `ry + rh - 24`), guaranteeing a generous 22px spacing buffer between adjacent lights, switches, and thermostat icons with zero wall collisions.
+  - Positioned room navigation icons safely inset from right walls (`rx + rw - 32`) and below container banner titles (`ry + 38` for multi-room open spaces like Great Room and Master Suite), eliminating overlaps with architectural banner labels.
+  - Set `.entity-badge { display: none; }` in blueprint SVG styling (and `display: inline !important;` in editor mode) to prevent static vector emoji circles from ghosting underneath native Lovelace controls.
+
 ## [1.6.5] - 2026-10-29
 
 ### Fixed

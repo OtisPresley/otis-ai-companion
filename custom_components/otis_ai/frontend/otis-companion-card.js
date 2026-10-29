@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.6.5";
+const CARD_VERSION = "1.6.6";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -2407,6 +2407,7 @@ class OtisCompanionCard extends HTMLElement {
         }
 
         .floorplan-svg-viewport.editor-mode .entity-badge {
+          display: inline !important;
           cursor: grab !important;
           filter: drop-shadow(0 0 6px var(--otis-primary)) !important;
         }

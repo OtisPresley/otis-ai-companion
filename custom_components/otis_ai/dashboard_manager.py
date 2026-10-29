@@ -938,22 +938,23 @@ class DashboardManager:
                         rw = float(r.get("width", 200))
                         rh = float(r.get("height", 140))
 
-                        # Room Navigation Icon (Valid picture-elements element without entity requirement)
+                        # 1. Room Navigation Icon (Top-right of room, inset safely from borders & container banners)
                         slug = self._slugify(aid)
                         room_icon = self._get_room_icon(r.get("name", ""), aid)
-                        top_pct = round((ry + 20) / canvas_h * 100, 1)
-                        left_pct = round((rx + rw - 24) / 1300.0 * 100, 1)
+                        is_container = bool(r.get("container_bounds") or r.get("parent_container"))
+                        nav_top_y = ry + 38 if is_container else ry + 22
+                        nav_left_x = rx + rw - 32
                         elements.append({
                             "type": "icon",
                             "icon": room_icon,
                             "title": r.get("name"),
                             "style": {
-                                "top": f"{top_pct}%",
-                                "left": f"{left_pct}%",
+                                "top": f"{round(nav_top_y / canvas_h * 100, 1)}%",
+                                "left": f"{round(nav_left_x / 1300.0 * 100, 1)}%",
                                 "color": "#94a3b8",
                                 "cursor": "pointer",
                                 "pointer-events": "auto",
-                                "--mdc-icon-size": "20px",
+                                "--mdc-icon-size": "18px",
                             },
                             "tap_action": {
                                 "action": "navigate",
@@ -961,53 +962,47 @@ class DashboardManager:
                             },
                         })
 
-                        # Light icon at bottom-left of room
+                        # 2. Entity Controls (Lights, Switches, Thermostats) in an evenly spaced horizontal dock along bottom
+                        ctrl_items: list[dict[str, Any]] = []
                         if lights:
-                            top_pct = round(((ry + rh - 28) / canvas_h) * 100, 1)
-                            left_pct = round(((rx + 28) / 1300.0) * 100, 1)
-                            elements.append({
-                                "type": "state-icon",
+                            ctrl_items.append({
                                 "entity": lights[0],
-                                "style": {
-                                    "top": f"{top_pct}%",
-                                    "left": f"{left_pct}%",
-                                    "--paper-item-icon-active-color": "#38bdf8",
-                                    "cursor": "pointer",
-                                },
-                                "tap_action": {"action": "toggle"},
+                                "color": "#38bdf8",
+                                "action": "toggle",
                             })
-
-                        # Switch icon next to light
                         if switches:
-                            top_pct = round(((ry + rh - 28) / canvas_h) * 100, 1)
-                            left_pct = round(((rx + 68) / 1300.0) * 100, 1)
-                            elements.append({
-                                "type": "state-icon",
+                            ctrl_items.append({
                                 "entity": switches[0],
-                                "style": {
-                                    "top": f"{top_pct}%",
-                                    "left": f"{left_pct}%",
-                                    "--paper-item-icon-active-color": "#a855f7",
-                                    "cursor": "pointer",
-                                },
-                                "tap_action": {"action": "toggle"},
+                                "color": "#a855f7",
+                                "action": "toggle",
+                            })
+                        if climates:
+                            ctrl_items.append({
+                                "entity": climates[0],
+                                "color": "#f97316",
+                                "action": "more-info",
                             })
 
-                        # Climate badge at bottom-right of room
-                        if climates:
-                            top_pct = round(((ry + rh - 28) / canvas_h) * 100, 1)
-                            left_pct = round(((rx + rw - 36) / 1300.0) * 100, 1)
-                            elements.append({
-                                "type": "state-badge",
-                                "entity": climates[0],
-                                "style": {
-                                    "top": f"{top_pct}%",
-                                    "left": f"{left_pct}%",
-                                    "transform": "scale(0.75)",
-                                    "cursor": "pointer",
-                                },
-                                "tap_action": {"action": "more-info"},
-                            })
+                        if ctrl_items:
+                            ctrl_top_y = ry + rh - 24
+                            ctrl_top_pct = round(ctrl_top_y / canvas_h * 100, 1)
+                            ctrl_start_x = rx + 30
+                            ctrl_spacing = 46
+
+                            for idx, ctrl in enumerate(ctrl_items):
+                                ctrl_left_x = ctrl_start_x + (idx * ctrl_spacing)
+                                ctrl_left_pct = round(ctrl_left_x / 1300.0 * 100, 1)
+                                elements.append({
+                                    "type": "state-icon",
+                                    "entity": ctrl["entity"],
+                                    "style": {
+                                        "top": f"{ctrl_top_pct}%",
+                                        "left": f"{ctrl_left_pct}%",
+                                        "--paper-item-icon-active-color": ctrl["color"],
+                                        "cursor": "pointer",
+                                    },
+                                    "tap_action": {"action": ctrl["action"]},
+                                })
             except Exception as elem_err:
                 _LOGGER.debug("Could not build picture-elements room badges: %s", elem_err)
 

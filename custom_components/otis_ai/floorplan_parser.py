@@ -1093,6 +1093,7 @@ class FloorplanParser:
         letter-spacing: 0.6px;
       }}
       .entity-badge {{
+        display: none;
         cursor: pointer;
         transition: transform 0.2s ease;
       }}
