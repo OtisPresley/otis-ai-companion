@@ -574,6 +574,10 @@ class DashboardManager:
                         await lovelace_data.dashboards[url_path].async_save(merged_dashboard_config)
                     except Exception as save_err:
                         _LOGGER.debug("LovelaceStorage.async_save skipped: %s", save_err)
+                    try:
+                        self.hass.bus.async_fire("lovelace_updated", {"url_path": url_path})
+                    except Exception:
+                        pass
 
             # Sync with Home Assistant's in-memory DashboardsCollection so UI Settings > Dashboards can edit/delete
             if hasattr(self.hass, "data") and isinstance(self.hass.data, dict):
@@ -1181,6 +1185,18 @@ class DashboardManager:
                 if hasattr(parser, "_metadata") and isinstance(parser._metadata, dict):
                     deleted_rooms = set(parser._metadata.get("deleted_rooms", []))
 
+                # Check custom badge coordinates from metadata
+                custom_badges_map: dict[str, dict[str, float]] = {}
+                if hasattr(parser, "_metadata") and isinstance(parser._metadata, dict):
+                    c_layout = parser._metadata.get("custom_layout", {})
+                    if isinstance(c_layout, dict) and "badges" in c_layout:
+                        for cb in c_layout["badges"]:
+                            if isinstance(cb, dict) and cb.get("entity_id") and "x" in cb and "y" in cb:
+                                custom_badges_map[cb["entity_id"]] = {
+                                    "x": float(cb["x"]),
+                                    "y": float(cb["y"]),
+                                }
+
                 for zone, rooms in layout_by_zone.items():
                     for r in rooms:
                         aid = r.get("id")
@@ -1259,14 +1275,20 @@ class DashboardManager:
                             ctrl_spacing = 46
 
                             for idx, ctrl in enumerate(ctrl_items):
-                                ctrl_left_x = ctrl_start_x + (idx * ctrl_spacing)
-                                ctrl_left_pct = round(ctrl_left_x / 1300.0 * 100, 1)
+                                eid = ctrl["entity"]
+                                if eid in custom_badges_map:
+                                    item_left_pct = round(custom_badges_map[eid]["x"] / 1300.0 * 100, 1)
+                                    item_top_pct = round(custom_badges_map[eid]["y"] / canvas_h * 100, 1)
+                                else:
+                                    ctrl_left_x = ctrl_start_x + (idx * ctrl_spacing)
+                                    item_left_pct = round(ctrl_left_x / 1300.0 * 100, 1)
+                                    item_top_pct = ctrl_top_pct
                                 elements.append({
                                     "type": "state-icon",
-                                    "entity": ctrl["entity"],
+                                    "entity": eid,
                                     "style": {
-                                        "top": f"{ctrl_top_pct}%",
-                                        "left": f"{ctrl_left_pct}%",
+                                        "top": f"{item_top_pct}%",
+                                        "left": f"{item_left_pct}%",
                                         "--paper-item-icon-active-color": ctrl["color"],
                                         "cursor": "pointer",
                                     },

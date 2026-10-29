@@ -963,9 +963,20 @@ class FloorplanParser:
 
         custom_layout = self._metadata.setdefault("custom_layout", {})
         if badges:
-            custom_layout["badges"] = badges
+            existing_badges = {b["entity_id"]: b for b in custom_layout.get("badges", []) if isinstance(b, dict) and b.get("entity_id")}
+            for b in badges:
+                if isinstance(b, dict) and b.get("entity_id"):
+                    existing_badges[b["entity_id"]] = b
+            custom_layout["badges"] = list(existing_badges.values())
+
         if rooms:
-            custom_layout["rooms"] = [r for r in rooms if r.get("id") not in to_delete and not r.get("delete")]
+            existing_rooms = {r["id"]: r for r in custom_layout.get("rooms", []) if isinstance(r, dict) and r.get("id")}
+            for r in rooms:
+                if isinstance(r, dict):
+                    rid = r.get("id")
+                    if rid and rid not in to_delete and not r.get("delete"):
+                        existing_rooms[rid] = r
+            custom_layout["rooms"] = [r for r in existing_rooms.values() if r.get("id") not in to_delete]
 
         if to_delete:
             del_list = self._metadata.setdefault("deleted_rooms", [])
@@ -1116,6 +1127,65 @@ class FloorplanParser:
             y_shift=bp_shift_y,
             used_boxes=used_boxes,
         )
+
+        # 3. Apply custom layout room coordinates from metadata and SVG
+        custom_rooms_map = {}
+        if hasattr(self, "_metadata") and isinstance(self._metadata, dict):
+            c_layout = self._metadata.get("custom_layout", {})
+            if isinstance(c_layout, dict) and "rooms" in c_layout:
+                for cr in c_layout["rooms"]:
+                    if isinstance(cr, dict) and cr.get("id"):
+                        custom_rooms_map[cr["id"]] = dict(cr)
+
+        if hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
+            try:
+                svg_file_path = self.hass.config.path("www/otis_floorplan.svg")
+                if isinstance(svg_file_path, str) and os.path.exists(svg_file_path):
+                    with open(svg_file_path, "r", encoding="utf-8") as svg_f:
+                        svg_txt = svg_f.read()
+                    for m in re.finditer(
+                        r'<g\b[^>]*class="[^"]*room-group[^"]*"[^>]*data-area-id="([^"]*)"[^>]*>[\s\S]*?<rect\b[^>]*x="([0-9.]+)"\s+y="([0-9.]+)"\s+width="([0-9.]+)"\s+height="([0-9.]+)"',
+                        svg_txt,
+                    ):
+                        aid_svg = m.group(1)
+                        if aid_svg not in custom_rooms_map:
+                            custom_rooms_map[aid_svg] = {
+                                "id": aid_svg,
+                                "x": float(m.group(2)),
+                                "y": float(m.group(3)),
+                                "width": float(m.group(4)),
+                                "height": float(m.group(5)),
+                            }
+                        else:
+                            custom_rooms_map[aid_svg]["x"] = float(m.group(2))
+                            custom_rooms_map[aid_svg]["y"] = float(m.group(3))
+                            custom_rooms_map[aid_svg]["width"] = float(m.group(4))
+                            custom_rooms_map[aid_svg]["height"] = float(m.group(5))
+            except Exception:
+                pass
+
+        for zone_k, room_list in layout.items():
+            for r in room_list:
+                rid = r.get("id")
+                if rid in custom_rooms_map:
+                    cr = custom_rooms_map[rid]
+                    if "x" in cr and "y" in cr:
+                        r["x"] = cr["x"]
+                        r["y"] = cr["y"]
+                    if "width" in cr:
+                        r["width"] = cr["width"]
+                    if "height" in cr:
+                        r["height"] = cr["height"]
+                    if cr.get("name"):
+                        r["name"] = cr["name"]
+
+        # Filter out deleted rooms
+        deleted_rooms = set()
+        if hasattr(self, "_metadata") and isinstance(self._metadata, dict):
+            deleted_rooms = set(self._metadata.get("deleted_rooms", []))
+
+        for zone_k in list(layout.keys()):
+            layout[zone_k] = [r for r in layout[zone_k] if r.get("id") not in deleted_rooms]
 
         return layout
 

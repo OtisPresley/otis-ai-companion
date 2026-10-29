@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.8.0";
+const CARD_VERSION = "1.8.1";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -5095,6 +5095,9 @@ class OtisCompanionCard extends HTMLElement {
           delete this._dirtyRooms[rid];
           this._showToast(`Room "${areaName}" removed from floor plan.`);
           await this._fetchFloorplanSvg();
+          await this._fetchData();
+          window.dispatchEvent(new CustomEvent("ll-rebuild"));
+          window.dispatchEvent(new CustomEvent("location-changed"));
           this._render();
         } catch (err) {
           console.error("Failed to delete room:", err);
@@ -5146,13 +5149,16 @@ class OtisCompanionCard extends HTMLElement {
           );
           const data = res?.response || res || {};
           if (data.success) {
-            this._showToast(data.message || "Floor plan layout saved successfully!");
+            this._showToast(data.message || "Floor plan layout saved & synced to Command Center!");
             this._dirtyBadges = {};
             this._dirtyRooms = {};
             this._hasUnsavedLayout = false;
             if (data.url) {
               await this._loadFloorplanSvg(data.url);
             }
+            await this._fetchData();
+            window.dispatchEvent(new CustomEvent("ll-rebuild"));
+            window.dispatchEvent(new CustomEvent("location-changed"));
           } else {
             this._showToast(data.error || "Failed to update layout", true);
           }

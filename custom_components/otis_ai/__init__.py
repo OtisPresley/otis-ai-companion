@@ -808,6 +808,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
                 await dm.async_ensure_admin_companion_dashboard(cap_map)
                 await dm.async_ensure_user_command_center_dashboard(cap_map)
+                hass.bus.async_fire("lovelace_updated", {"url_path": "otis-ai"})
+                hass.bus.async_fire("lovelace_updated", {"url_path": "command-center"})
+                hass.bus.async_fire("otis_ai_floorplan_updated", {"url": res.get("url")})
             except Exception as d_err:
                 _LOGGER.debug("Could not refresh dashboards after floorplan generation: %s", d_err)
         return res
@@ -837,6 +840,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
                 await dm.async_ensure_admin_companion_dashboard(cap_map)
                 await dm.async_ensure_user_command_center_dashboard(cap_map)
+                hass.bus.async_fire("lovelace_updated", {"url_path": "otis-ai"})
+                hass.bus.async_fire("lovelace_updated", {"url_path": "command-center"})
+                hass.bus.async_fire("otis_ai_floorplan_updated", {"url": res.get("url")})
             except Exception as d_err:
                 _LOGGER.debug("Could not refresh dashboards after floorplan update: %s", d_err)
         return res

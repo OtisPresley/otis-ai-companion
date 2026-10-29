@@ -2,6 +2,15 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.8.1] - 2026-10-29
+
+### Fixed & Improved
+- **Automatic Floor Plan & Command Center Synchronization (`floorplan_parser.py`, `dashboard_manager.py`, `__init__.py`, `otis-companion-card.js`)**:
+  - Connected `_calculate_orthogonal_layout` and `_build_floorplan_view_cards` to `custom_layout` room and badge coordinates, ensuring the `picture-elements` card on `/command-center/floorplan` and `/otis-ai/floorplan` mirrors custom floor plan edits with exact visual alignment.
+  - Parsed rendered `<rect>` coordinates from `www/otis_floorplan.svg` into layout calculations so all navigation hotspots, room icons, and intelligent dock controls align with real blueprint geometry.
+  - Implemented merging for `custom_layout["rooms"]` and `custom_layout["badges"]` to persist all multi-room adjustments across sessions.
+  - Added live dashboard bus event notifications (`lovelace_updated`, `otis_ai_floorplan_updated`) and client-side view refresh signals (`ll-rebuild`, `location-changed`) to immediately update views without manual page reloads.
+
 ## [1.8.0] - 2026-10-29
 
 ### Fixed
