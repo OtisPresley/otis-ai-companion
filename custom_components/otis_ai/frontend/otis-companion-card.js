@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 1.6.8
+ * Version: 1.6.9
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.6.8";
+const CARD_VERSION = "1.6.9";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -4218,6 +4218,34 @@ class OtisCompanionCard extends HTMLElement {
           };
         });
 
+        // Apply any pending dirty room dimensions onto SVG elements
+        Object.entries(this._dirtyRooms).forEach(([roomId, rData]) => {
+          const rGrp = svgEl.querySelector(`.room-group[data-area-id="${roomId}"]`);
+          if (rGrp) {
+            const rBox = rGrp.querySelector(".room-box, .room-rect");
+            if (rBox) {
+              rBox.setAttribute("x", rData.x);
+              rBox.setAttribute("y", rData.y);
+              rBox.setAttribute("width", rData.width);
+              rBox.setAttribute("height", rData.height);
+            }
+            const rLbl = rGrp.querySelector(".room-header, .room-label");
+            if (rLbl) {
+              rLbl.setAttribute("x", rData.x + 14);
+              rLbl.setAttribute("y", rData.y + 22);
+              if (rData.name) rLbl.textContent = rData.name;
+            }
+          }
+        });
+
+        // Apply any pending dirty badge coordinates onto SVG elements
+        Object.entries(this._dirtyBadges).forEach(([entityId, bData]) => {
+          const bEl = svgEl.querySelector(`[data-entity-id="${entityId}"]`);
+          if (bEl) {
+            bEl.setAttribute("transform", `translate(${bData.x}, ${bData.y})`);
+          }
+        });
+
         // 3. Room group selection for boundary resizing & editing
         svgEl.querySelectorAll(".room-group").forEach((grp) => {
           grp.style.cursor = "pointer";
@@ -4240,10 +4268,17 @@ class OtisCompanionCard extends HTMLElement {
               rect.style.strokeWidth = "2.5";
               rect.style.strokeDasharray = "4,4";
 
-              const rx = parseFloat(rect.getAttribute("x") || 0);
-              const ry = parseFloat(rect.getAttribute("y") || 0);
-              const rw = parseFloat(rect.getAttribute("width") || 160);
-              const rh = parseFloat(rect.getAttribute("height") || 120);
+              const dirty = this._dirtyRooms[this._selectedEditorRoomId];
+              const rx = dirty ? dirty.x : parseFloat(rect.getAttribute("x") || 0);
+              const ry = dirty ? dirty.y : parseFloat(rect.getAttribute("y") || 0);
+              const rw = dirty ? dirty.width : parseFloat(rect.getAttribute("width") || 160);
+              const rh = dirty ? dirty.height : parseFloat(rect.getAttribute("height") || 120);
+
+              // Ensure rect attributes match dirty state
+              rect.setAttribute("x", rx);
+              rect.setAttribute("y", ry);
+              rect.setAttribute("width", rw);
+              rect.setAttribute("height", rh);
 
               // Update Inspector fields if rendered
               const inpX = root.querySelector("#inspector-room-x");
@@ -4521,15 +4556,16 @@ class OtisCompanionCard extends HTMLElement {
     const btnApplyDim = root.querySelector("#btn-apply-inspector-dim");
     if (btnApplyDim && this._selectedEditorRoomId) {
       btnApplyDim.onclick = () => {
-        const selArea = root.querySelector("#editor-area-select")?.value;
-        const nx = parseFloat(root.querySelector("#inspector-room-x")?.value || 0);
-        const ny = parseFloat(root.querySelector("#inspector-room-y")?.value || 0);
-        const nw = parseFloat(root.querySelector("#inspector-room-w")?.value || 160);
-        const nh = parseFloat(root.querySelector("#inspector-room-h")?.value || 120);
+        const rid = this._selectedEditorRoomId;
+        const selArea = root.querySelector("#editor-area-select")?.value || rid;
+        const nx = Math.round(parseFloat(root.querySelector("#inspector-room-x")?.value || 0));
+        const ny = Math.round(parseFloat(root.querySelector("#inspector-room-y")?.value || 0));
+        const nw = Math.max(60, Math.round(parseFloat(root.querySelector("#inspector-room-w")?.value || 160)));
+        const nh = Math.max(50, Math.round(parseFloat(root.querySelector("#inspector-room-h")?.value || 120)));
 
         const areaName = this._capabilityMap?.areas?.[selArea]?.name;
-        this._dirtyRooms[this._selectedEditorRoomId] = {
-          id: this._selectedEditorRoomId,
+        this._dirtyRooms[rid] = {
+          id: rid,
           x: nx,
           y: ny,
           width: nw,
@@ -4537,8 +4573,40 @@ class OtisCompanionCard extends HTMLElement {
           name: areaName,
         };
         this._hasUnsavedLayout = true;
-        this._showToast(`Updated boundary for ${this._selectedEditorRoomId}! Click Save Layout to persist.`);
-        this._render();
+        const saveBtn = root.querySelector("#btn-save-layout");
+        if (saveBtn) saveBtn.textContent = "💾 Save Changes *";
+
+        // Update SVG DOM directly without re-rendering to prevent snap-back
+        if (svgEl) {
+          const selGrp = svgEl.querySelector(`.room-group[data-area-id="${rid}"]`);
+          if (selGrp) {
+            const rect = selGrp.querySelector(".room-box, .room-rect");
+            if (rect) {
+              rect.setAttribute("x", nx);
+              rect.setAttribute("y", ny);
+              rect.setAttribute("width", nw);
+              rect.setAttribute("height", nh);
+            }
+            const lbl = selGrp.querySelector(".room-header, .room-label");
+            if (lbl) {
+              lbl.setAttribute("x", nx + 14);
+              lbl.setAttribute("y", ny + 22);
+              if (areaName) lbl.textContent = areaName;
+            }
+            const handleGrp = selGrp.querySelector(".handles-layer");
+            if (handleGrp) {
+              const hNw = handleGrp.querySelector('[data-handle="nw"]');
+              const hNe = handleGrp.querySelector('[data-handle="ne"]');
+              const hSe = handleGrp.querySelector('[data-handle="se"]');
+              const hSw = handleGrp.querySelector('[data-handle="sw"]');
+              if (hNw) { hNw.setAttribute("cx", nx); hNw.setAttribute("cy", ny); }
+              if (hNe) { hNe.setAttribute("cx", nx + nw); hNe.setAttribute("cy", ny); }
+              if (hSe) { hSe.setAttribute("cx", nx + nw); hSe.setAttribute("cy", ny + nh); }
+              if (hSw) { hSw.setAttribute("cx", nx); hSw.setAttribute("cy", ny + nh); }
+            }
+          }
+        }
+        this._showToast(`Boundary updated for ${areaName || rid}! Click Save Changes to persist.`);
       };
     }
 

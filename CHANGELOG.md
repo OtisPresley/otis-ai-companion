@@ -2,6 +2,14 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.6.9] - 2026-10-29
+
+### Fixed
+- **Canvas Editor Boundary Snap-Back Resolution (`otis-companion-card.js`)**:
+  - Resolved snap-back bug where clicking "Update Boundary" in the Area Boundary Inspector caused the room to revert to its original position.
+  - Eliminated disruptive full DOM `_render()` call on inspector update; boundary coordinates, SVG rect footprint, text label, and corner resize handles are now updated directly in place.
+  - Added pending layout state persistence (`_dirtyRooms` and `_dirtyBadges` re-application) inside `_attachFloorplanListeners()`, guaranteeing modified room dimensions and repositioned pins persist visually across room selection changes until explicitly saved.
+
 ## [1.6.8] - 2026-10-29
 
 ### Added & Improved
