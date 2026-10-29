@@ -1872,6 +1872,11 @@ class DiscoveryEngine:
             attrs = dict(raw_attrs) if isinstance(raw_attrs, dict) else {}
             is_restored = bool(attrs.get("restored"))
 
+            ent_cat = getattr(entity_entry, "entity_category", None)
+            ent_cat_str = str(getattr(ent_cat, "value", ent_cat)) if ent_cat is not None else None
+            dev_cls = attrs.get("device_class") or getattr(entity_entry, "device_class", None) or getattr(entity_entry, "original_device_class", None)
+            dev_cls_str = str(dev_cls) if dev_cls is not None else None
+
             entity_info: dict[str, Any] = {
                 "entity_id": entity_entry.entity_id,
                 "name": entity_entry.name or entity_entry.original_name,
@@ -1882,6 +1887,8 @@ class DiscoveryEngine:
                 "disabled_by": entity_entry.disabled_by,
                 "hidden_by": entity_entry.hidden_by,
                 "state": state.state if state else "unknown",
+                "entity_category": ent_cat_str,
+                "device_class": dev_cls_str,
             }
             if attrs:
                 entity_info["attributes"] = {

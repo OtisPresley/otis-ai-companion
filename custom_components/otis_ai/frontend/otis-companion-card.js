@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.6.1";
+const CARD_VERSION = "1.6.2";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -78,6 +78,25 @@ class OtisCompanionCard extends HTMLElement {
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#039;");
+  }
+
+  _getRoomEmoji(name) {
+    const k = String(name || "").toLowerCase();
+    if (k.includes("office") || k.includes("study") || k.includes("desk") || k.includes("work")) return "💼";
+    if (k.includes("theater") || k.includes("cinema") || k.includes("media")) return "🎬";
+    if (k.includes("backyard") || k.includes("patio") || k.includes("deck") || k.includes("yard") || k.includes("garden")) return "🌳";
+    if (k.includes("frontyard") || k.includes("driveway") || k.includes("porch")) return "🏡";
+    if (k.includes("bath") || k.includes("shower") || k.includes("restroom") || k.includes("powder")) return "🚿";
+    if (k.includes("gym") || k.includes("fitness") || k.includes("workout")) return "🏋️";
+    if (k.includes("garage") || k.includes("workshop")) return "🚗";
+    if (k.includes("great room") || k.includes("living") || k.includes("family") || k.includes("lounge")) return "🛋️";
+    if (k.includes("master") || k.includes("bed") || k.includes("guest")) return "🛏️";
+    if (k.includes("kitchen")) return "🍳";
+    if (k.includes("dining")) return "🍽️";
+    if (k.includes("laundry") || k.includes("mudroom")) return "🧺";
+    if (k.includes("hallway") || k.includes("corridor") || k.includes("foyer") || k.includes("entry")) return "🚪";
+    if (k.includes("pool") || k.includes("spa")) return "🏊";
+    return "📍";
   }
 
   _ensureValidActiveTab() {
@@ -2766,7 +2785,7 @@ class OtisCompanionCard extends HTMLElement {
                 ${activeAreas
                   .map(
                     (room) => `
-                  <button class="subview-chip room-chip" data-subview="${room.path}">📍 ${this._escapeHtml(room.name)}</button>
+                  <button class="subview-chip room-chip" data-subview="${room.path}">${this._getRoomEmoji(room.name)} ${this._escapeHtml(room.name)}</button>
                 `
                   )
                   .join("")}

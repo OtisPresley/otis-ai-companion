@@ -2198,6 +2198,178 @@ class TestSentinelManager(unittest.TestCase):
         self.assertEqual(res["url_path"], "command-center")
         self.assertFalse(res["require_admin"])
 
+    def test_dashboard_user_card_settings_preservation_and_safe_storage(self):
+        """Verify view 0 is preserved across dashboard updates and empty lovelace_dashboards is handled safely."""
+        import json
+        import os
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+
+        dm = DashboardManager(self.hass)
+        storage_dir = self.hass.config.path(".storage")
+        os.makedirs(storage_dir, exist_ok=True)
+
+        # 1. Test empty lovelace_dashboards file handling
+        dashboards_file = os.path.join(storage_dir, "lovelace_dashboards")
+        with open(dashboards_file, "w", encoding="utf-8") as f:
+            f.write("   \n")  # Empty whitespace that previously crashed with Expecting value: line 1 column 1 (char 0)
+
+        # 2. Setup existing lovelace.otis_ai with user-customized card in view 0
+        dash_file = os.path.join(storage_dir, "lovelace.otis_ai")
+        user_custom_view = {
+            "title": "Home",
+            "path": "default_view",
+            "icon": "mdi:home-heart",
+            "cards": [
+                {
+                    "type": "custom:otis-companion-card",
+                    "title": "My Custom Title",
+                    "custom_user_option": True,
+                },
+                {
+                    "type": "weather-forecast",
+                    "entity": "weather.home",
+                },
+            ],
+        }
+        user_custom_subview = {
+            "title": "My Custom Room",
+            "path": "user_custom_room",
+            "cards": [{"type": "entities", "entities": ["light.living_room"]}],
+        }
+        with open(dash_file, "w", encoding="utf-8") as f:
+            json.dump({
+                "version": 1,
+                "minor_version": 1,
+                "key": "lovelace.otis_ai",
+                "data": {"config": {"views": [user_custom_view, user_custom_subview]}},
+            }, f)
+
+        # 3. Build a new dashboard config as if a new version deployed
+        new_config = dm._build_otis_companion_dashboard_config({})
+        # View 0 in generated config is the default template
+        self.assertEqual(len(new_config["views"][0]["cards"]), 1)
+        self.assertEqual(new_config["views"][0]["cards"][0].get("title"), "Otis AI Companion")
+
+        # 4. Merge preserving user views
+        merged = dm._merge_dashboard_config_preserving_user_views(storage_dir, "otis_ai", new_config)
+
+        # Assert view 0 was preserved exactly as customized by user
+        self.assertEqual(len(merged["views"][0]["cards"]), 2)
+        self.assertEqual(merged["views"][0]["cards"][0]["title"], "My Custom Title")
+        self.assertTrue(merged["views"][0]["cards"][0].get("custom_user_option"))
+        self.assertEqual(merged["views"][0]["cards"][1]["type"], "weather-forecast")
+
+        # Assert custom user subview was preserved
+        paths = [v.get("path") for v in merged["views"]]
+        self.assertIn("user_custom_room", paths)
+
+    def test_floorplan_subview_uses_native_picture_elements(self):
+        """Verify Floor Plan subview in both Admin and Command Center uses native picture-elements and NOT custom:otis-companion-card."""
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+
+        dm = DashboardManager(self.hass)
+        cap_map = {
+            "areas": {"living_room": {"name": "Living Room", "entities": ["light.living_room"]}},
+            "entities": [{"entity_id": "light.living_room", "area_id": "living_room", "state": "on", "domain": "light"}],
+        }
+
+        # Check Admin config
+        admin_cfg = dm._build_otis_companion_dashboard_config(cap_map)
+        fp_view_admin = next(v for v in admin_cfg["views"] if v.get("path") == "floorplan")
+        self.assertTrue(fp_view_admin.get("subview"))
+        for card in fp_view_admin["cards"]:
+            self.assertNotEqual(card.get("type"), "custom:otis-companion-card")
+            self.assertIn(card.get("type"), ("picture-elements", "markdown"))
+
+        # Check User Command Center config
+        user_cfg = dm._build_user_command_center_dashboard_config(cap_map)
+        fp_view_user = next(v for v in user_cfg["views"] if v.get("path") == "floorplan")
+        self.assertTrue(fp_view_user.get("subview"))
+        for card in fp_view_user["cards"]:
+            self.assertNotEqual(card.get("type"), "custom:otis-companion-card")
+            self.assertIn(card.get("type"), ("picture-elements", "markdown"))
+
+    def test_room_view_intelligence_and_clutter_filtering(self):
+        """Verify intelligent filtering of camera config switches, SNMP ports, vacuum maps, and multi-stream cameras."""
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+
+        dm = DashboardManager(self.hass)
+        room_entities = [
+            # Real lights
+            {"entity_id": "light.foyer_chandelier", "domain": "light", "name": "Foyer Chandelier", "state": "on"},
+            # Status / AP LEDs (should be excluded from lighting)
+            {"entity_id": "light.ap_entry_led", "domain": "light", "name": "AP Entry LED", "state": "on"},
+            {"entity_id": "light.foyer_led_indicator", "domain": "light", "name": "Foyer LED Indicator", "state": "off"},
+            # Real power switches
+            {"entity_id": "switch.foyer_outlet_top", "domain": "switch", "name": "Foyer Outlet Top", "state": "on"},
+            {"entity_id": "switch.foyer_outlet_bottom", "domain": "switch", "name": "Foyer Outlet Bottom", "state": "off"},
+            # Camera config toggles (should be excluded from Power & Outlets)
+            {"entity_id": "switch.foyer_detect", "domain": "switch", "name": "Foyer Detect", "state": "on", "entity_category": "config"},
+            {"entity_id": "switch.foyer_recordings", "domain": "switch", "name": "Foyer Recordings", "state": "on"},
+            {"entity_id": "switch.foyer_snapshots", "domain": "switch", "name": "Foyer Snapshots", "state": "on"},
+            {"entity_id": "switch.foyer_audio_detection", "domain": "switch", "name": "Foyer Audio Detection", "state": "on"},
+            {"entity_id": "switch.foyer_infrared_lights", "domain": "switch", "name": "Foyer Infrared Lights", "state": "on"},
+            # SNMP / Firewall switches (should be excluded from Power & Outlets)
+            {"entity_id": "switch.hades_filter_rules_101", "domain": "switch", "name": "Hades Filter Rules", "state": "on"},
+            {"entity_id": "switch.switch_foyer_port_1", "domain": "switch", "name": "Switch Foyer Port 1", "state": "on"},
+            # Vacuum map camera (should be excluded from Cameras)
+            {"entity_id": "camera.larry_poppins_saved_map", "domain": "camera", "name": "Larry Poppins Saved Map", "state": "idle"},
+            # Multi-stream RTSP cameras (should be deduplicated to 1 primary stream)
+            {"entity_id": "camera.foyer_recording", "domain": "camera", "name": "Foyer Recording", "state": "idle", "device_id": "cam_foyer_1"},
+            {"entity_id": "camera.foyer_fluent", "domain": "camera", "name": "Foyer Fluent", "state": "idle", "device_id": "cam_foyer_1"},
+            {"entity_id": "camera.foyer_clear", "domain": "camera", "name": "Foyer Clear", "state": "idle", "device_id": "cam_foyer_1"},
+            # AI counter sensors (should be excluded from Occupancy & Sensors)
+            {"entity_id": "sensor.foyer_person_count", "domain": "sensor", "name": "Foyer Person Count", "state": "0"},
+            {"entity_id": "sensor.foyer_dog_count", "domain": "sensor", "name": "Foyer Dog Count", "state": "0"},
+            # Real occupancy binary sensor
+            {"entity_id": "binary_sensor.foyer_motion", "domain": "binary_sensor", "name": "Foyer Motion", "state": "on", "device_class": "motion"},
+            {"entity_id": "binary_sensor.front_door", "domain": "binary_sensor", "name": "Front Door", "state": "off", "device_class": "door"},
+        ]
+
+        subview = dm._build_room_subview("foyer", {"name": "Foyer"}, room_entities)
+        self.assertIsNotNone(subview)
+        cards_by_title = {c.get("title"): c for c in subview["cards"] if isinstance(c, dict)}
+
+        # Lighting check: Only genuine chandelier, LEDs excluded
+        lighting_card = cards_by_title["Lighting"]
+        lighting_eids = [tile["entity"] for tile in lighting_card["cards"]]
+        self.assertIn("light.foyer_chandelier", lighting_eids)
+        self.assertNotIn("light.ap_entry_led", lighting_eids)
+        self.assertNotIn("light.foyer_led_indicator", lighting_eids)
+
+        # Power & Outlets check: Only real outlets, camera config & SNMP excluded
+        power_card = cards_by_title["Power & Outlets"]
+        power_eids = [tile["entity"] for tile in power_card["cards"]]
+        self.assertIn("switch.foyer_outlet_top", power_eids)
+        self.assertIn("switch.foyer_outlet_bottom", power_eids)
+        self.assertNotIn("switch.foyer_detect", power_eids)
+        self.assertNotIn("switch.foyer_recordings", power_eids)
+        self.assertNotIn("switch.foyer_audio_detection", power_eids)
+        self.assertNotIn("switch.hades_filter_rules_101", power_eids)
+        self.assertNotIn("switch.switch_foyer_port_1", power_eids)
+
+        # Cameras check: Vacuum maps excluded, deduplicated to 1 stream
+        cameras_card = cards_by_title["Cameras"]
+        camera_eids = [card["entity"] for card in cameras_card["cards"]]
+        self.assertNotIn("camera.larry_poppins_saved_map", camera_eids)
+        self.assertEqual(len(camera_eids), 1)
+        self.assertEqual(camera_eids[0], "camera.foyer_clear")
+
+        # Occupancy & Sensors check: Person/dog counters excluded, real motion/door included
+        sensors_card = cards_by_title["Occupancy & Sensors"]
+        sensor_eids = sensors_card["entities"]
+        self.assertIn("binary_sensor.foyer_motion", sensor_eids)
+        self.assertIn("binary_sensor.front_door", sensor_eids)
+        self.assertNotIn("sensor.foyer_person_count", sensor_eids)
+        self.assertNotIn("sensor.foyer_dog_count", sensor_eids)
+
+        # Contextual icon check
+        self.assertEqual(subview["icon"], "mdi:door")
+        self.assertEqual(dm._get_room_icon("Theater", "theater"), "mdi:theater")
+        self.assertEqual(dm._get_room_icon("Backyard", "backyard"), "mdi:tree")
+        self.assertEqual(dm._get_room_icon("Amy's Office", "office"), "mdi:desk")
+        self.assertEqual(dm._get_room_icon("Downstairs Bath", "bath"), "mdi:shower")
+
 
 if __name__ == "__main__":
     unittest.main()

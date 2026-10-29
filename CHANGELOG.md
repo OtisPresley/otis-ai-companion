@@ -2,6 +2,32 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.6.2] - 2026-10-29
+
+### Added & Improved
+- **Native Picture-Elements Floor Plan Studio & Control View (`dashboard_manager.py`)**:
+  - Replaced `custom:otis-companion-card` on the Floor Plan subview (`/otis-ai/floorplan` and `/command-center/floorplan`) with a native Home Assistant **`picture-elements`** card.
+  - Floor Plan Studio is now a true interactive visual control surface across the entire house layout:
+    - Interactive `state-icon` for room lights with tap toggle (`#38bdf8` active glow).
+    - Interactive `state-icon` for room outlets with tap toggle (`#a855f7` active glow).
+    - Interactive `state-badge` for climate thermostats with tap more-info dialog.
+    - Clickable styled room navigation labels that jump directly to each room's subview (`/command-center/area_<slug>`).
+    - Zero admin controls or companion card clutter exposed to non-admin household users.
+- **Permanent User Dashboard Customization Preservation (`dashboard_manager.py`)**:
+  - Added `_merge_dashboard_config_preserving_user_views` to `DashboardManager`.
+  - View 0 (`default_view` / `home`) containing the user's customized Otis AI Companion card settings, titles, and extra cards is 100% preserved across integration updates, service calls, and Home Assistant restarts.
+  - Custom user subviews added outside the integration are also safely preserved.
+- **Fixed `lovelace_dashboards` Startup Warning (`dashboard_manager.py`)**:
+  - Safely reads and strips file contents before attempting `json.loads()`, resolving the `Could not parse lovelace_dashboards: Expecting value: line 1 column 1 (char 0)` startup log entry when the storage file is empty or whitespace.
+- **Room & Studio View Intelligence & Clutter Elimination (`dashboard_manager.py`, `__init__.py`)**:
+  - **Power & Outlets**: Excludes camera toggles (`detect`, `recording`, `snapshots`, `audio_detection`, `infrared`, `siren`, `email`, `ftp`, `push`, `review`), network & SNMP switch ports/firewall rules (`hades`, `snmp`, `switch-`, `port_`, `poe_`), pool equipment, and status LEDs (`*_led`, `ap_*_led`). Capped cleanly at max 8 genuine user outlets/switches.
+  - **Cameras**: Excludes vacuum cleaner map entities (`Larry Poppins Current`, `Larry Poppins Saved Map`) from camera views. Multi-stream RTSP cameras (`_clear`, `_fluent`, `_recording`, `_snapshots_fluent`) are automatically grouped by physical camera and deduplicated to exactly 1 primary high-quality stream.
+  - **Lighting**: Excludes status/indicator LEDs (`AP Entry LED`, `AP Back LED`, `Poolio LED`, `Foyer LED Indicator`) and ceiling fan speed controllers.
+  - **Occupancy & Sensors**: Excludes AI object counters (`person_count`, `dog_count`, `all_count`, etc.) and disconnected network AP alerts. Displays primary motion, presence, and door/window contact sensors.
+  - **Media & Audio**: Features a prominent `media-control` card for the primary active/playing media player (AVR, Shield TV, Apple TV) and compact 2-column tiles for secondary audio zones.
+  - **Pool & Spa Controls**: Rooms with pool/spa hardware (e.g. Backyard) receive a dedicated, organized "Pool & Spa Controls" section.
+  - **Contextual Room Icons**: Contextualizes room icons across the Home Command Center launchpad and navigation headers (`mdi:desk` for Office/Study, `mdi:theater` for Theater, `mdi:tree` for Backyard, `mdi:shower` for Bath, `mdi:sofa` for Great Room, `mdi:bed` for Master/Guest, `mdi:countertop` for Kitchen, `mdi:silverware-fork-knife` for Dining, `mdi:garage` for Garage, `mdi:dumbbell` for Gym, `mdi:washing-machine` for Laundry/Mudroom).
+
 ## [1.6.1] - 2026-10-29
 
 ### Added & Improved
