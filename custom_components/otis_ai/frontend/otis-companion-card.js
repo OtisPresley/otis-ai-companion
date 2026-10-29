@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 1.6.1
+ * Version: 1.6.7
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.6.6";
+const CARD_VERSION = "1.6.7";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -3384,9 +3384,12 @@ class OtisCompanionCard extends HTMLElement {
             <input type="number" id="inspector-room-h" style="width: 100%; box-sizing: border-box; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); border-radius: 4px; padding: 3px 6px; font-size: 0.74rem;" />
           </div>
         </div>
-        <div style="display: flex; gap: 6px; margin-top: 4px;">
-          <button class="btn-modal-primary" id="btn-apply-inspector-dim" style="flex: 1; padding: 4px; font-size: 0.72rem;">
+        <div style="display: flex; gap: 6px; margin-top: 6px;">
+          <button class="btn-modal-primary" id="btn-apply-inspector-dim" style="flex: 1; padding: 5px 8px; font-size: 0.74rem;">
             ✓ Update Boundary
+          </button>
+          <button class="btn-toolbar" id="btn-delete-inspector-room" style="background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.35); padding: 5px 10px; font-size: 0.74rem; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+            <span>🗑️</span><span>Delete Room</span>
           </button>
         </div>
       </div>
@@ -4386,6 +4389,21 @@ class OtisCompanionCard extends HTMLElement {
             }
           };
         });
+
+        svgViewport.querySelectorAll(".room-header").forEach((hdr) => {
+          hdr.style.cursor = "pointer";
+          hdr.onclick = (e) => {
+            e.stopPropagation();
+            const grp = hdr.closest(".room-group");
+            const areaId = grp?.getAttribute("data-area-id");
+            if (areaId) {
+              const slug = areaId.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "room";
+              const path = `/otis-ai/area_${slug}`;
+              window.history.pushState(null, "", path);
+              window.dispatchEvent(new CustomEvent("location-changed"));
+            }
+          };
+        });
       }
     }
 
@@ -4499,6 +4517,31 @@ class OtisCompanionCard extends HTMLElement {
         this._hasUnsavedLayout = true;
         this._showToast(`Updated boundary for ${this._selectedEditorRoomId}! Click Save Layout to persist.`);
         this._render();
+      };
+    }
+
+    const btnDeleteRoom = root.querySelector("#btn-delete-inspector-room");
+    if (btnDeleteRoom && this._selectedEditorRoomId) {
+      btnDeleteRoom.onclick = async () => {
+        const rid = this._selectedEditorRoomId;
+        const areaName = this._capabilityMap?.areas?.[rid]?.name || rid;
+        if (!confirm(`Are you sure you want to delete room "${areaName}" (${rid}) from the floor plan?`)) {
+          return;
+        }
+        try {
+          this._showToast(`Deleting room ${areaName}...`);
+          await this._hass.callService("otis_ai", "update_floorplan_layout", {
+            deleted_rooms: [rid],
+          });
+          this._selectedEditorRoomId = null;
+          delete this._dirtyRooms[rid];
+          this._showToast(`Room "${areaName}" removed from floor plan.`);
+          await this._fetchFloorplanSvg();
+          this._render();
+        } catch (err) {
+          console.error("Failed to delete room:", err);
+          this._showToast(`Failed to delete room: ${err.message || err}`, true);
+        }
       };
     }
 

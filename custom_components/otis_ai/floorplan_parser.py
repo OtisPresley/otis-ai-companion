@@ -612,7 +612,8 @@ class FloorplanParser:
         else:
             is_walkthrough = bool(self._metadata.get("walkthrough_completed", False))
 
-        # Group areas into floor zones
+        # Group areas into floor zones (excluding rooms previously deleted by user)
+        deleted_set = set(self._metadata.get("deleted_rooms", []))
         zones: dict[str, list[dict[str, Any]]] = {
             "main": [],
             "upper": [],
@@ -620,6 +621,8 @@ class FloorplanParser:
         }
 
         for aid, ainfo in areas_map.items():
+            if aid in deleted_set:
+                continue
             aname = ainfo.get("name", aid)
             zone_type = classify_area_zone(aid, aname)
             zones[zone_type].append({
@@ -696,9 +699,10 @@ class FloorplanParser:
         self,
         badges: list[dict[str, Any]] | None = None,
         rooms: list[dict[str, Any]] | None = None,
+        deleted_rooms: list[str] | None = None,
         svg_relative_path: str = "www/otis_floorplan.svg",
     ) -> dict[str, Any]:
-        """Update SVG floorplan device marker coordinates and area boundary geometry."""
+        """Update SVG floorplan device marker coordinates and area boundary geometry, or delete rooms."""
         output_full_path = (
             self.hass.config.path(svg_relative_path)
             if hasattr(self.hass, "config") and hasattr(self.hass.config, "path")
@@ -715,6 +719,22 @@ class FloorplanParser:
                 return f.read()
 
         svg_content = await self.hass.async_add_executor_job(read_sync)
+
+        # 0. Delete requested rooms/areas from SVG markup
+        to_delete = set(deleted_rooms or [])
+        if rooms:
+            for r in rooms:
+                if r.get("delete") or r.get("deleted"):
+                    if r.get("id"):
+                        to_delete.add(r["id"])
+
+        deleted_rooms_count = 0
+        for del_id in to_delete:
+            room_pattern = rf'\s*<g\b[^>]*class="[^"]*room-group[^"]*"[^>]*data-area-id="{re.escape(del_id)}"[^>]*>[\s\S]*?</g>\s*'
+            new_svg, count = re.subn(room_pattern, '\n', svg_content)
+            if count > 0:
+                svg_content = new_svg
+                deleted_rooms_count += count
 
         # 1. Update device marker badges
         updated_badges = 0
@@ -819,7 +839,16 @@ class FloorplanParser:
         if badges:
             custom_layout["badges"] = badges
         if rooms:
-            custom_layout["rooms"] = rooms
+            custom_layout["rooms"] = [r for r in rooms if r.get("id") not in to_delete and not r.get("delete")]
+
+        if to_delete:
+            del_list = self._metadata.setdefault("deleted_rooms", [])
+            for did in to_delete:
+                if did not in del_list:
+                    del_list.append(did)
+            if "rooms" in custom_layout and isinstance(custom_layout["rooms"], list):
+                custom_layout["rooms"] = [r for r in custom_layout["rooms"] if r.get("id") not in to_delete]
+
         self._metadata["last_layout_update"] = int(time.time())
         await self.async_save_metadata(self._metadata)
 
@@ -829,19 +858,21 @@ class FloorplanParser:
 
         await self.hass.async_add_executor_job(write_sync)
         _LOGGER.info(
-            "Updated floorplan layout in %s (badges=%d, rooms=%d)",
+            "Updated floorplan layout in %s (badges=%d, rooms=%d, deleted=%d)",
             output_full_path,
             updated_badges,
             updated_rooms,
+            deleted_rooms_count,
         )
 
         return {
             "success": True,
-            "message": f"Updated floor plan layout ({updated_badges} badges, {updated_rooms} rooms)",
+            "message": f"Updated floor plan layout ({updated_badges} badges, {updated_rooms} rooms, {deleted_rooms_count} deleted)",
             "svg_path": svg_relative_path,
             "url": f"/local/{os.path.basename(svg_relative_path)}?v={int(time.time())}",
             "updated_badges": updated_badges,
             "updated_rooms": updated_rooms,
+            "deleted_rooms": deleted_rooms_count,
         }
 
     def _place_zone_rooms(

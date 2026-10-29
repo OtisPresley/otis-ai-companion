@@ -803,17 +803,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_update_floorplan_layout(call) -> ServiceResponse:
         """Handle service call to adjust floorplan marker and room layout coordinates."""
         _LOGGER.debug("Service 'update_floorplan_layout' triggered with: %s", call.data)
-        eng, _, _, fp, *_ = _get_active_managers()
+        eng, _, _, fp, tm, sm, dm = _get_active_managers()
         badges = call.data.get("badges")
         rooms = call.data.get("rooms")
+        deleted_rooms = call.data.get("deleted_rooms")
         svg_path = call.data.get("svg_path", "www/otis_floorplan.svg")
         res = await fp.async_update_floorplan_layout(
             badges=badges,
             rooms=rooms,
+            deleted_rooms=deleted_rooms,
             svg_relative_path=svg_path,
         )
         if hasattr(eng, "invalidate_cache"):
             eng.invalidate_cache()
+        if dm and hasattr(dm, "async_ensure_admin_companion_dashboard"):
+            try:
+                cap_map = (
+                    await eng.async_build_capability_map()
+                    if hasattr(eng, "async_build_capability_map")
+                    else None
+                )
+                await dm.async_ensure_admin_companion_dashboard(cap_map)
+                await dm.async_ensure_command_center_dashboard(cap_map)
+            except Exception as d_err:
+                _LOGGER.debug("Could not refresh dashboards after floorplan update: %s", d_err)
         return res
 
     async def handle_generate_theme(call) -> ServiceResponse:

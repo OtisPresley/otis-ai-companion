@@ -1282,6 +1282,48 @@ class TestFloorplanParser(unittest.TestCase):
         self.assertFalse(err_res["success"])
         self.assertIn("not found", err_res["error"])
 
+    def test_delete_room_layout(self):
+        """Verify FloorplanParser room deletion from SVG and metadata tracking."""
+        from custom_components.otis_ai.floorplan_parser import FloorplanParser
+
+        parser = FloorplanParser(self.hass)
+        mock_cap_map = {
+            "areas": {
+                "foyer": {"name": "Foyer", "entities": ["light.foyer_lights"]},
+                "garage": {"name": "Garage", "entities": ["light.garage_lights"]},
+            },
+            "entities": [
+                {"entity_id": "light.foyer_lights", "name": "Foyer Lights", "area_id": "foyer", "domain": "light", "state": "on"},
+                {"entity_id": "light.garage_lights", "name": "Garage Lights", "area_id": "garage", "domain": "light", "state": "on"},
+            ],
+            "spatial_graph": {"adjacencies": {}},
+        }
+
+        # Generate baseline SVG
+        asyncio.run(parser.async_generate_svg_floorplan(mock_cap_map, output_relative_path="test_del_fp.svg"))
+
+        # Verify garage is in SVG initially
+        svg_file = self.hass.config.path("test_del_fp.svg")
+        with open(svg_file, "r") as f:
+            self.assertIn('data-area-id="garage"', f.read())
+
+        # Delete garage
+        res = asyncio.run(
+            parser.async_update_floorplan_layout(
+                deleted_rooms=["garage"],
+                svg_relative_path="test_del_fp.svg",
+            )
+        )
+        self.assertTrue(res["success"])
+        self.assertGreater(res["deleted_rooms"], 0)
+        self.assertIn("garage", parser._metadata.get("deleted_rooms", []))
+
+        # Verify garage is removed from SVG
+        with open(svg_file, "r") as f:
+            content = f.read()
+            self.assertNotIn('data-area-id="garage"', content)
+            self.assertIn('data-area-id="foyer"', content)
+
     def test_proactive_floorplan_suggestion(self):
         """Verify that DiscoveryEngine suggests recording a walkthrough when no floorplan exists."""
         from custom_components.otis_ai import DiscoveryEngine
@@ -2421,6 +2463,75 @@ class TestSentinelManager(unittest.TestCase):
         self.assertIn("sensor.side_hose_timer_battery_level", sm._ignored_anomaly_ids)
         self.assertIn("sentinel_battery_low_sensor.side_hose_timer_battery_level", sm._ignored_anomaly_ids)
         self.assertIn("sentinel_battery_critical_sensor.side_hose_timer_battery_level", sm._ignored_anomaly_ids)
+
+    def test_intelligent_room_controls_selection(self):
+        """Verify intelligent controllable device selection filters clutter and provides domain diversity."""
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+
+        dm = DashboardManager(self.hass)
+        valid_eids = {
+            "light.dining_room_chandelier",
+            "switch.mary_poppins_customized_cleaning",
+            "switch.sleepnumber_super_sleep_pause_mode",
+            "media_player.dining_room_sonos",
+            "switch.dining_room_accent_plug",
+            "fan.dining_room_ceiling_fan",
+        }
+        room_ents = [
+            {"entity_id": "switch.mary_poppins_customized_cleaning", "name": "Mary Poppins Customized Cleaning", "domain": "switch"},
+            {"entity_id": "switch.sleepnumber_super_sleep_pause_mode", "name": "Sleep Number Pause Mode", "domain": "switch"},
+            {"entity_id": "light.dining_room_chandelier", "name": "Dining Room Chandelier", "domain": "light"},
+            {"entity_id": "media_player.dining_room_sonos", "name": "Dining Room Sonos", "domain": "media_player"},
+            {"entity_id": "switch.dining_room_accent_plug", "name": "Dining Room Lamp Plug", "domain": "switch"},
+            {"entity_id": "fan.dining_room_ceiling_fan", "name": "Dining Room Fan", "domain": "fan"},
+        ]
+
+        selected = dm._select_intelligent_room_controls(
+            room_ents, valid_eids, area_name="Dining Room", area_id="dining_room", max_controls=3
+        )
+
+        selected_eids = [s["entity"] for s in selected]
+        # Vacuum sub-switches and sleepnumber toggles must be filtered out
+        self.assertNotIn("switch.mary_poppins_customized_cleaning", selected_eids)
+        self.assertNotIn("switch.sleepnumber_super_sleep_pause_mode", selected_eids)
+
+        # High-utility primary devices must be prioritized
+        self.assertIn("light.dining_room_chandelier", selected_eids)
+        # Check domain diversity (should have media_player or fan as second control)
+        self.assertTrue(
+            "media_player.dining_room_sonos" in selected_eids or "fan.dining_room_ceiling_fan" in selected_eids
+        )
+        self.assertLessEqual(len(selected), 3)
+
+    def test_room_header_navigation_hotspot(self):
+        """Verify Floor Plan view elements include clickable transparent hotspots for room names."""
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+        from custom_components.otis_ai.floorplan_parser import FloorplanParser
+
+        fp = FloorplanParser(self.hass)
+        dm = DashboardManager(self.hass, floorplan_parser=fp)
+
+        mock_cap_map = {
+            "areas": {
+                "foyer": {"name": "Foyer", "entities": ["light.foyer_lights"]},
+            },
+            "entities": [
+                {"entity_id": "light.foyer_lights", "name": "Foyer Lights", "area_id": "foyer", "domain": "light", "state": "on"},
+            ],
+        }
+        self.hass.config.path = lambda p: "/config/www/otis_floorplan.svg" if "otis_floorplan.svg" in p else p
+        with unittest.mock.patch("os.path.exists", return_value=True), \
+             unittest.mock.patch("os.path.getmtime", return_value=1730225708):
+            cards = dm._build_floorplan_view_cards(mock_cap_map, dashboard_url_path="otis-ai")
+
+        elements = cards[0]["elements"]
+        # Find transparent image navigation hotspots
+        img_hotspots = [
+            e for e in elements
+            if e.get("type") == "image" and e.get("tap_action", {}).get("action") == "navigate"
+        ]
+        self.assertGreater(len(img_hotspots), 0)
+        self.assertIn("/otis-ai/area_foyer", [h["tap_action"]["navigation_path"] for h in img_hotspots])
 
 
 if __name__ == "__main__":

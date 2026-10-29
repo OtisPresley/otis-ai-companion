@@ -821,6 +821,175 @@ class DashboardManager:
             return "mdi:wardrobe"
         return "mdi:door-open"
 
+    def _select_intelligent_room_controls(
+        self,
+        room_ents: list[dict[str, Any]],
+        valid_eids: set[str],
+        area_name: str = "",
+        area_id: str = "",
+        max_controls: int = 3,
+    ) -> list[dict[str, Any]]:
+        """Select up to max_controls high-utility, diverse controllable devices for a room on the interactive floor plan."""
+        # 1. Reject low-utility clutter patterns (diagnostics, sub-switches, maintenance toggles)
+        reject_keywords = (
+            "cleaning", "customized_cleaning", "clean_record", "mop", "water_box",
+            "child_lock", "dnd", "carpet_boost", "gentle_mode", "auto_empty", "dock_led",
+            "sleep_pause", "super_sleep", "sleep_number", "responsive_air",
+            "pause_mode", "smart_sleeper", "bed_presence", "sleep_tracker",
+            "ice_maker", "ice_plus", "express_freeze", "sabbath", "door_alarm",
+            "filter_reset", "fresh_air", "water_filter", "air_filter",
+            "poe", "port_", "switch_port", "status_led", "led_ring", "night_vision",
+            "screen_saver", "auto_update", "cloud_connection", "mesh_reboot",
+            "restart", "reboot", "tamper", "pairing", "update", "firmware",
+            "mute", "do_not_disturb", "beep", "buzzer", "indicator", "identify",
+        )
+
+        domain_candidates: dict[str, list[tuple[float, dict[str, Any]]]] = {
+            "light": [],
+            "media_player": [],
+            "fan": [],
+            "switch": [],
+            "cover": [],
+            "lock": [],
+            "climate": [],
+            "vacuum": [],
+        }
+
+        aname_norm = area_name.lower()
+
+        for e in room_ents:
+            eid = e.get("entity_id", "")
+            if not eid or (valid_eids and eid not in valid_eids):
+                continue
+            if e.get("entity_category") in ("config", "diagnostic"):
+                continue
+
+            dom = e.get("domain") or (eid.split(".")[0] if "." in eid else "")
+            if dom not in domain_candidates:
+                continue
+
+            fname = (e.get("name") or e.get("friendly_name") or eid).lower()
+            ename_norm = eid.lower()
+
+            # Reject unwanted clutter
+            if any(rk in ename_norm or rk in fname for rk in reject_keywords):
+                continue
+
+            # Utility scoring
+            base_score = 0.0
+            if dom == "light":
+                base_score = 100.0
+                if aname_norm and aname_norm in fname:
+                    base_score += 40.0
+                if any(k in fname or k in ename_norm for k in ("main", "ceiling", "overhead", "chandelier", "recessed", "downlight", "island", "table")):
+                    base_score += 30.0
+                if any(k in fname or k in ename_norm for k in ("accent", "cabinet", "closet", "nightlight", "strip", "bias", "under_cabinet", "counter")):
+                    base_score -= 30.0
+
+            elif dom == "media_player":
+                base_score = 90.0
+                if any(k in fname or k in ename_norm for k in ("tv", "television", "apple_tv", "shield", "roku", "soundbar", "sonos", "receiver", "avr", "stereo")):
+                    base_score += 35.0
+
+            elif dom == "fan":
+                base_score = 85.0
+                if any(k in fname or k in ename_norm for k in ("ceiling", "fan", "exhaust", "vent")):
+                    base_score += 25.0
+
+            elif dom == "climate":
+                base_score = 80.0
+                if any(k in fname or k in ename_norm for k in ("thermostat", "hvac", "ac", "furnace", "pool")):
+                    base_score += 20.0
+
+            elif dom == "cover":
+                base_score = 75.0
+                if any(k in fname or k in ename_norm for k in ("garage", "shades", "blinds", "curtain", "door")):
+                    base_score += 25.0
+
+            elif dom == "lock":
+                base_score = 75.0
+                if any(k in fname or k in ename_norm for k in ("front", "garage", "deadbolt", "entry")):
+                    base_score += 25.0
+
+            elif dom == "switch":
+                base_score = 60.0
+                if any(k in fname or k in ename_norm for k in ("fan", "exhaust", "vent", "bath_fan", "fireplace", "heater", "fountain", "pump", "pool", "disposal", "lamp")):
+                    base_score += 35.0
+                elif any(k in fname or k in ename_norm for k in ("plug", "outlet", "switch")):
+                    base_score += 15.0
+
+            elif dom == "vacuum":
+                base_score = 65.0
+
+            domain_candidates[dom].append((base_score, {
+                "entity": eid,
+                "domain": dom,
+                "name": e.get("name") or e.get("friendly_name") or eid,
+            }))
+
+        for dom in domain_candidates:
+            domain_candidates[dom].sort(key=lambda x: x[0], reverse=True)
+
+        selected: list[dict[str, Any]] = []
+
+        cfg_map = {
+            "light": {"color": "#38bdf8", "action": "toggle"},
+            "switch": {"color": "#a855f7", "action": "toggle"},
+            "media_player": {"color": "#ec4899", "action": "more-info"},
+            "fan": {"color": "#06b6d4", "action": "toggle"},
+            "climate": {"color": "#f97316", "action": "more-info"},
+            "cover": {"color": "#eab308", "action": "toggle"},
+            "lock": {"color": "#10b981", "action": "more-info"},
+            "vacuum": {"color": "#8b5cf6", "action": "more-info"},
+        }
+
+        # 1. Best Light
+        if domain_candidates["light"]:
+            best = domain_candidates["light"].pop(0)[1]
+            selected.append({
+                "entity": best["entity"],
+                "color": cfg_map["light"]["color"],
+                "action": cfg_map["light"]["action"],
+            })
+
+        # 2. Best Media Player or Fan (or Climate if no separate climate)
+        entertainment_or_comfort: list[tuple[float, dict[str, Any]]] = []
+        if domain_candidates["media_player"]:
+            entertainment_or_comfort.append(domain_candidates["media_player"][0])
+        if domain_candidates["fan"]:
+            entertainment_or_comfort.append(domain_candidates["fan"][0])
+        if domain_candidates["climate"]:
+            entertainment_or_comfort.append(domain_candidates["climate"][0])
+
+        if entertainment_or_comfort:
+            entertainment_or_comfort.sort(key=lambda x: x[0], reverse=True)
+            best_ec = entertainment_or_comfort[0][1]
+            domain_candidates[best_ec["domain"]] = [
+                c for c in domain_candidates[best_ec["domain"]] if c[1]["entity"] != best_ec["entity"]
+            ]
+            selected.append({
+                "entity": best_ec["entity"],
+                "color": cfg_map[best_ec["domain"]]["color"],
+                "action": cfg_map[best_ec["domain"]]["action"],
+            })
+
+        # 3. Best Switch, Cover, Lock, or Second Light / Vacuum if slots remain
+        remaining_candidates: list[tuple[float, dict[str, Any]]] = []
+        for dom, cands in domain_candidates.items():
+            remaining_candidates.extend(cands)
+        remaining_candidates.sort(key=lambda x: x[0], reverse=True)
+
+        while len(selected) < max_controls and remaining_candidates:
+            cand = remaining_candidates.pop(0)[1]
+            cdom = cand["domain"]
+            selected.append({
+                "entity": cand["entity"],
+                "color": cfg_map.get(cdom, {}).get("color", "#38bdf8"),
+                "action": cfg_map.get(cdom, {}).get("action", "toggle"),
+            })
+
+        return selected[:max_controls]
+
     def _build_floorplan_view_cards(
         self, capability_map: dict[str, Any] | None, dashboard_url_path: str = "otis-ai"
     ) -> list[dict[str, Any]]:
@@ -908,46 +1077,57 @@ class DashboardManager:
         if layout_by_zone and parser:
             try:
                 canvas_h = float(parser._get_canvas_height(layout_by_zone))
+                deleted_rooms = set()
+                if hasattr(parser, "_metadata") and isinstance(parser._metadata, dict):
+                    deleted_rooms = set(parser._metadata.get("deleted_rooms", []))
+
                 for zone, rooms in layout_by_zone.items():
                     for r in rooms:
                         aid = r.get("id")
-                        room_ents = entities_by_area.get(aid, [])
-                        lights = [
-                            e["entity_id"]
-                            for e in room_ents
-                            if e.get("domain") == "light"
-                            and e.get("entity_id") in valid_eids
-                            and e.get("entity_category") not in ("config", "diagnostic")
-                        ]
-                        switches = [
-                            e["entity_id"]
-                            for e in room_ents
-                            if e.get("domain") == "switch"
-                            and e.get("entity_id") in valid_eids
-                            and e.get("entity_category") not in ("config", "diagnostic")
-                        ]
-                        climates = [
-                            e["entity_id"]
-                            for e in room_ents
-                            if e.get("domain") == "climate"
-                            and e.get("entity_id") in valid_eids
-                        ]
+                        if aid in deleted_rooms:
+                            continue
 
+                        room_ents = entities_by_area.get(aid, [])
                         rx = float(r.get("x", 0))
                         ry = float(r.get("y", 0))
                         rw = float(r.get("width", 200))
                         rh = float(r.get("height", 140))
-
-                        # 1. Room Navigation Icon (Top-right of room, inset safely from borders & container banners)
                         slug = self._slugify(aid)
-                        room_icon = self._get_room_icon(r.get("name", ""), aid)
+                        rname = str(r.get("name") or aid)
                         is_container = bool(r.get("container_bounds") or r.get("parent_container"))
+                        header_y = ry + 34 if is_container else ry + 22
+
+                        # 1. Clickable Room Header Hotspot (navigates directly to room view)
+                        est_w = min(max(len(rname) * 9 + 16, 65), int(rw - 48))
+                        header_center_x = rx + 14 + (est_w / 2.0)
+                        header_center_y = header_y - 6.0
+                        elements.append({
+                            "type": "image",
+                            "image": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='1' height='1'/>",
+                            "title": f"View {rname}",
+                            "style": {
+                                "top": f"{round(header_center_y / canvas_h * 100, 2)}%",
+                                "left": f"{round(header_center_x / 1300.0 * 100, 2)}%",
+                                "width": f"{est_w}px",
+                                "height": "24px",
+                                "cursor": "pointer",
+                                "transform": "translate(-50%, -50%)",
+                                "-webkit-tap-highlight-color": "transparent",
+                            },
+                            "tap_action": {
+                                "action": "navigate",
+                                "navigation_path": f"/{dashboard_url_path}/area_{slug}",
+                            },
+                        })
+
+                        # 2. Room Navigation Icon (Top-right of room, inset safely from borders & container banners)
+                        room_icon = self._get_room_icon(rname, aid)
                         nav_top_y = ry + 38 if is_container else ry + 22
                         nav_left_x = rx + rw - 32
                         elements.append({
                             "type": "icon",
                             "icon": room_icon,
-                            "title": r.get("name"),
+                            "title": rname,
                             "style": {
                                 "top": f"{round(nav_top_y / canvas_h * 100, 1)}%",
                                 "left": f"{round(nav_left_x / 1300.0 * 100, 1)}%",
@@ -962,26 +1142,15 @@ class DashboardManager:
                             },
                         })
 
-                        # 2. Entity Controls (Lights, Switches, Thermostats) in an evenly spaced horizontal dock along bottom
-                        ctrl_items: list[dict[str, Any]] = []
-                        if lights:
-                            ctrl_items.append({
-                                "entity": lights[0],
-                                "color": "#38bdf8",
-                                "action": "toggle",
-                            })
-                        if switches:
-                            ctrl_items.append({
-                                "entity": switches[0],
-                                "color": "#a855f7",
-                                "action": "toggle",
-                            })
-                        if climates:
-                            ctrl_items.append({
-                                "entity": climates[0],
-                                "color": "#f97316",
-                                "action": "more-info",
-                            })
+                        # 3. Intelligent Entity Controls in bottom horizontal dock
+                        max_ctrls = 2 if rw < 155 else 3
+                        ctrl_items = self._select_intelligent_room_controls(
+                            room_ents,
+                            valid_eids,
+                            area_name=rname,
+                            area_id=aid,
+                            max_controls=max_ctrls,
+                        )
 
                         if ctrl_items:
                             ctrl_top_y = ry + rh - 24

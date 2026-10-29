@@ -113,6 +113,11 @@ update_floorplan_layout:
       description: List of rooms with id, x, y, width, height, or polygon points.
       selector:
         object:
+    deleted_rooms:
+      name: Deleted Room IDs
+      description: List of area/room IDs to delete and remove from the vector floor plan.
+      selector:
+        object:
     svg_path:
       name: Floor Plan SVG Path
       description: Destination SVG path relative to Home Assistant config.

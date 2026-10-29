@@ -2,6 +2,23 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.6.7] - 2026-10-29
+
+### Added & Improved
+- **Floor Plan Canvas Room Deletion (`floorplan_parser.py`, `otis-companion-card.js`, `__init__.py`, `services.yaml`)**:
+  - Added 1-click room deletion directly from the Area Boundary Inspector panel in the Floor Plan Canvas Editor.
+  - Deleting an area immediately removes its SVG boundary `<g class="room-group" data-area-id="...">` element, purges it from metadata `custom_layout["rooms"]`, registers it in `deleted_rooms`, and triggers instant SVG live refresh.
+  - Added `deleted_rooms` parameter to `otis_ai.update_floorplan_layout` service call and updated service schema.
+  - Synchronized dashboard configuration regeneration upon floor plan update and room deletion.
+- **Intelligent Controllable Device Selection for Interactive Floor Plan (`dashboard_manager.py`)**:
+  - Implemented `_select_intelligent_room_controls` heuristic algorithm selecting up to 2–3 high-utility, domain-diverse devices per room for the interactive bottom dock.
+  - Strict filtering out of low-utility clutter: robot vacuum sub-switches (e.g. `_customized_cleaning`, `_mop_`, `_clean_record`), sleep number / bed toggles (e.g. `_sleep_pause_mode`, `_super_sleep`), fridge/appliance sub-switches (`_ice_maker`, `_filter_reset`), and network/PoE infrastructure switches.
+  - Domain-diverse allocation prioritizing room primary lighting, TV/media players (`media_player.*`), ceiling fans/exhaust fans (`fan.*` or bath fan switch), and environmental/security controls (`cover.*`, `lock.*`, `climate.*`).
+  - Dynamic width-aware dock sizing: automatically limits controls to 2 for narrow rooms (< 155px width) and 3 for spacious rooms to ensure comfortable 46px icon dock spacing with zero edge clipping.
+- **Clickable Room Names for Subview Navigation (`dashboard_manager.py`, `otis-companion-card.js`)**:
+  - Placed an invisible, transparent interactive hotspot over room title vector text in Home Assistant's `picture-elements` card, routing directly to `/{dashboard_url}/area_{slug}` on click with pointer hover cursor and contextual tooltip.
+  - Added room title click listeners (`.room-header`) in the Lovelace companion card SVG viewer to route instantly to the corresponding room controls.
+
 ## [1.6.6] - 2026-10-29
 
 ### Fixed & Improved
