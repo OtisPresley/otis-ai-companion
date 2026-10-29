@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import html
 import json
 import logging
 import os
@@ -222,6 +223,10 @@ class FloorplanParser:
             full_path = self.hass.config.path(DEFAULT_OUTPUT_SVG_PATH)
             return os.path.exists(full_path)
         return False
+
+    def get_lovelace_yaml(self) -> str | None:
+        """Return cached lovelace card YAML if available."""
+        return self._metadata.get("lovelace_yaml")
 
     def cleanup_previous_uploads(self, upload_dir: str) -> int:
         """Remove any previously uploaded walkthrough video or audio files to conserve disk space."""
@@ -1068,11 +1073,11 @@ class FloorplanParser:
             )
             if room.get("container_title"):
                 parts.append(
-                    f'    <text x="{cx + 14}" y="{cy + 16}" class="container-banner">{room["container_title"]}</text>\n'
+                    f'    <text x="{cx + 14}" y="{cy + 16}" class="container-banner">{html.escape(str(room["container_title"]))}</text>\n'
                 )
 
         header_y = y + 34 if (room.get("container_bounds") or room.get("parent_container")) else y + 22
-        parts.append(f'    <text x="{x + 14}" y="{header_y}" class="room-header">{rname}</text>\n')
+        parts.append(f'    <text x="{x + 14}" y="{header_y}" class="room-header">{html.escape(str(rname))}</text>\n')
 
         # Render internal architectural sub-zones (e.g., Living Area, Breakfast Nook, Kitchen Island, Deck & Grill)
         sub_zones = room.get("sub_zones", [])
@@ -1080,7 +1085,7 @@ class FloorplanParser:
             sy = header_y + 18 + s_idx * 16
             if sy < y + h - 32:
                 parts.append(
-                    f'    <text x="{x + 16}" y="{sy}" class="subzone-pill">▪ {sz_label}</text>\n'
+                    f'    <text x="{x + 16}" y="{sy}" class="subzone-pill">▪ {html.escape(str(sz_label))}</text>\n'
                 )
 
         # Render staircase steps if room contains stairs

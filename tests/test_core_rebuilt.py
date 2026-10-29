@@ -3,6 +3,7 @@
 import sys
 import os
 import asyncio
+import tempfile
 import unittest
 import types
 from unittest.mock import MagicMock, AsyncMock
@@ -1819,6 +1820,119 @@ class TestFloorplanParser(unittest.TestCase):
         gaps_after = asyncio.run(d_mgr.async_analyze_dashboard_gaps(capability_map))
         proposals_after = {p["id"]: p for p in gaps_after["proposals"]}
         self.assertNotIn("pro_dashboard_whole_home_hub", proposals_after)
+
+
+class TestThemeManager(unittest.TestCase):
+    """Test suite for Phase 2 Dynamic Themes & Collaborative AI Styling."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.hass = MagicMock()
+        self.hass.config = MagicMock()
+        self.hass.config.path = lambda *args: os.path.join(self.temp_dir.name, *args)
+        self.hass.services = MagicMock()
+        self.hass.services.has_service = MagicMock(return_value=True)
+
+        async def _mock_call(domain, service, service_data=None, blocking=True):
+            return True
+
+        self.hass.services.async_call = MagicMock(side_effect=_mock_call)
+
+        def _mock_executor(fn, *args):
+            return fn(*args)
+
+        self.hass.async_add_executor_job = MagicMock(side_effect=_mock_executor)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_synthesize_presets(self):
+        """Verify baseline presets generate valid Home Assistant CSS tokens."""
+        from custom_components.otis_ai.theme_manager import ThemeManager
+
+        tm = ThemeManager(self.hass)
+
+        # 1. Cyberpunk Neon
+        cp = tm.synthesize_theme_from_prompt("cyberpunk neon", base_palette="cyberpunk")
+        self.assertTrue(cp["dark_mode"])
+        self.assertEqual(cp["vars"]["primary-color"], "#00f0ff")
+        self.assertIn("0 0 16px", cp["vars"]["ha-card-box-shadow"])
+
+        # 2. Nordic Frost (Light mode)
+        nf = tm.synthesize_theme_from_prompt("clean daylight scandinavian theme", base_palette="nordic_frost")
+        self.assertFalse(nf["dark_mode"])
+        self.assertEqual(nf["vars"]["primary-background-color"], "#f8fafc")
+
+        # 3. High Contrast
+        hc = tm.synthesize_theme_from_prompt("accessible high contrast", base_palette="high_contrast")
+        self.assertEqual(hc["vars"]["ha-card-border-width"], "2px")
+        self.assertEqual(hc["vars"]["ha-card-border-radius"], "4px")
+
+    def test_prompt_custom_token_synthesis(self):
+        """Verify natural language prompt parsing extracts hex colors, radius, and glow."""
+        from custom_components.otis_ai.theme_manager import ThemeManager
+
+        tm = ThemeManager(self.hass)
+
+        # Custom hex color + radius + glow
+        res = tm.synthesize_theme_from_prompt(
+            "Create a glowing violet #8b5cf6 theme with 20px rounded cards and #ec4899 accent",
+            name="Neon Violet",
+        )
+        self.assertEqual(res["title"], "Neon Violet")
+        self.assertEqual(res["slug"], "neon_violet")
+        self.assertEqual(res["theme_key"], "otis_neon_violet")
+        self.assertEqual(res["vars"]["primary-color"], "#8b5cf6")
+        self.assertEqual(res["vars"]["accent-color"], "#ec4899")
+        self.assertEqual(res["vars"]["ha-card-border-radius"], "20px")
+        self.assertIn("0 0 16px", res["vars"]["ha-card-box-shadow"])
+
+        # Sharp borders keyword
+        sharp_res = tm.synthesize_theme_from_prompt("Brutalist sharp square theme")
+        self.assertEqual(sharp_res["vars"]["ha-card-border-radius"], "0px")
+
+    def test_save_list_apply_delete_lifecycle(self):
+        """Verify end-to-end theme creation, file writing, frontend reload, list, apply, and delete."""
+        from custom_components.otis_ai.theme_manager import ThemeManager
+
+        tm = ThemeManager(self.hass)
+
+        # 1. Generate & save theme
+        save_res = asyncio.run(
+            tm.async_generate_and_save_theme(
+                prompt="Cyberpunk neon with glowing cyan",
+                name="Otis Cyber Matrix",
+                base_palette="cyberpunk",
+                apply_immediately=True,
+            )
+        )
+        self.assertTrue(save_res["success"])
+        self.assertEqual(save_res["theme_key"], "otis_cyber_matrix")
+        self.assertTrue(os.path.exists(save_res["file_path"]))
+
+        # Verify YAML content structure
+        with open(save_res["file_path"], "r", encoding="utf-8") as f:
+            content = f.read()
+            self.assertIn("otis_cyber_matrix:", content)
+            self.assertIn("primary-color:", content)
+
+        # 2. List themes
+        themes_list = asyncio.run(tm.async_list_otis_themes())
+        self.assertEqual(len(themes_list), 1)
+        self.assertEqual(themes_list[0]["theme_key"], "otis_cyber_matrix")
+        self.assertEqual(themes_list[0]["preview"]["primary"], "#06b6d4")
+
+        # 3. Apply theme
+        applied = asyncio.run(tm.async_apply_theme("otis_cyber_matrix"))
+        self.assertTrue(applied)
+        self.hass.services.async_call.assert_any_call("frontend", "set_theme", {"name": "otis_cyber_matrix"}, blocking=True)
+
+        # 4. Delete theme
+        deleted = asyncio.run(tm.async_delete_theme("otis_cyber_matrix"))
+        self.assertTrue(deleted)
+        self.assertFalse(os.path.exists(save_res["file_path"]))
+        themes_after = asyncio.run(tm.async_list_otis_themes())
+        self.assertEqual(len(themes_after), 0)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,25 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.5.8] - 2026-10-29
+
+### Added & Improved
+- **Phase 2 Step 1: Dynamic Themes & Collaborative AI Styling (`theme_manager.py`)**:
+  - Implemented `ThemeManager` allowing Otis to dynamically synthesize and persist Home Assistant themes to `/config/themes/otis_<theme_name>.yaml`.
+  - Natural language prompt parsing: extracts custom hex codes, named colors, border radius (`16px`, `8px`, `0px`), glow effects, and light/dark modes.
+  - Curated master presets: `cyberpunk` (neon cyan/magenta glow), `midnight_slate` (frosted glass & sky blue), `oled_black` (pitch black zero-emission), `sunset_amber` (warm wood/charcoal & gold), `emerald_luxury` (forest green & mint), `nordic_frost` (clean Scandinavian daylight), `high_contrast` (accessibility sharp high-contrast).
+  - Registered services with live responses: `otis_ai.generate_theme`, `otis_ai.apply_theme`, `otis_ai.list_themes`, and `otis_ai.delete_theme`.
+  - Automatic `frontend.reload_themes` service invocation upon theme creation and deletion for instant zero-restart loading.
+  - Instant live activation via conversational chat requests (e.g. "Generate a cyberpunk neon theme", "Apply midnight slate theme").
+- **Dynamic AI Theme Studio in Lovelace Card (`otis-companion-card.js`)**:
+  - Added dedicated `🎨 Themes` launcher chip in the launchpad header.
+  - Interactive Theme Studio modal with 1-click live theme activation, swatches preview, and AI generation prompt input.
+- **Lovelace Launchpad Row Hierarchy Fix (`otis-companion-card.js`)**:
+  - Restructured launchpad into two distinct visual flex rows: Studios on row 1, and dynamic Rooms on a dedicated new row below.
+- **Vector Floor Plan Studio SVG XML Escaping (`floorplan_parser.py`)**:
+  - Added XML entity escaping (`html.escape`) to room names, container banners, and sub-zone labels, resolving XML parsing errors that prevented the Floor Plan subview from rendering.
+  - Exposed cached `lovelace_yaml` via `capability_map["floorplan"]` for picture-elements interactive toggles.
+
 ## [1.5.7] - 2026-10-29
 
 ### Added & Improved

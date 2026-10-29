@@ -99,4 +99,95 @@ generate_floorplan:
       selector:
         text:
 
+generate_theme:
+  name: Generate Custom Theme
+  description: Generate custom Home Assistant theme definitions directly into /config/themes/otis_<theme_name>.yaml from natural language prompts or presets and automatically reload themes.
+  fields:
+    prompt:
+      name: Theme Prompt
+      description: Natural language styling instruction (e.g., 'Cyberpunk neon dark mode with glowing cyan accents and 16px rounded cards').
+      required: true
+      selector:
+        text:
+    name:
+      name: Theme Name
+      description: Optional display name for the theme.
+      required: false
+      selector:
+        text:
+    base_palette:
+      name: Base Palette Preset
+      description: Optional base palette preset ('cyberpunk', 'midnight_slate', 'oled_black', 'sunset_amber', 'emerald_luxury', 'nordic_frost', 'high_contrast').
+      required: false
+      selector:
+        select:
+          options:
+            - cyberpunk
+            - midnight_slate
+            - oled_black
+            - sunset_amber
+            - emerald_luxury
+            - nordic_frost
+            - high_contrast
+    dark_mode:
+      name: Dark Mode
+      description: Whether the theme is dark mode (true) or light mode (false).
+      default: true
+      selector:
+        boolean:
+    border_radius:
+      name: Border Radius
+      description: Optional border radius override (e.g. '14px', '8px', '0px').
+      required: false
+      selector:
+        text:
+    glow_effect:
+      name: Glow Effect
+      description: Whether cards feature a glowing luminous neon shadow border.
+      required: false
+      selector:
+        boolean:
+    apply_immediately:
+      name: Apply Immediately
+      description: Whether to set and activate this theme immediately across the Home Assistant frontend.
+      default: false
+      selector:
+        boolean:
+
+apply_theme:
+  name: Apply Theme
+  description: Instantly activate a Home Assistant theme across the frontend.
+  fields:
+    name:
+      name: Theme Name / Key
+      description: Theme name or key (e.g., 'otis_cyberpunk', 'otis_midnight_slate').
+      required: true
+      selector:
+        text:
+    mode:
+      name: Mode
+      description: Optional display mode ('dark', 'light', 'auto').
+      required: false
+      selector:
+        select:
+          options:
+            - dark
+            - light
+            - auto
+
+list_themes:
+  name: List Otis Themes
+  description: List all Otis-generated custom themes in /config/themes/ with their color swatches and style properties.
+
+delete_theme:
+  name: Delete Otis Theme
+  description: Remove a custom Otis theme file from /config/themes/ and reload themes.
+  fields:
+    name:
+      name: Theme Key
+      description: Theme key or slug to delete (e.g., 'otis_cyberpunk').
+      required: true
+      selector:
+        text:
+
 

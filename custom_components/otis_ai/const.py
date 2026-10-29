@@ -19,4 +19,8 @@ SERVICE_CHAT = "chat"
 SERVICE_GET_SPATIAL_MAP = "get_spatial_map"
 SERVICE_UPDATE_SPATIAL_MAP = "update_spatial_map"
 SERVICE_GENERATE_FLOORPLAN = "generate_floorplan"
+SERVICE_GENERATE_THEME = "generate_theme"
+SERVICE_APPLY_THEME = "apply_theme"
+SERVICE_LIST_THEMES = "list_themes"
+SERVICE_DELETE_THEME = "delete_theme"
 

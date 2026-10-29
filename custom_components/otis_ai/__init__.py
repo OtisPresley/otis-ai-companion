@@ -37,6 +37,10 @@ from .const import (
     SERVICE_GET_SPATIAL_MAP,
     SERVICE_UPDATE_SPATIAL_MAP,
     SERVICE_GENERATE_FLOORPLAN,
+    SERVICE_GENERATE_THEME,
+    SERVICE_APPLY_THEME,
+    SERVICE_LIST_THEMES,
+    SERVICE_DELETE_THEME,
 )
 from .automation_manager import AutomationManager
 from .dashboard_manager import DashboardManager
@@ -49,6 +53,7 @@ from .spatial_manager import (
     resolve_area_identifier,
 )
 from .floorplan_parser import FloorplanParser
+from .theme_manager import PRESET_THEMES, ThemeManager, slugify_theme_name
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -327,11 +332,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await async_register_frontend_paths(hass)
     hass.data.setdefault(DOMAIN, {})
     
-    # Initialize the Spatial Graph, Discovery Engine, Automation Manager, Floorplan Parser, and Dashboard Manager concurrently
+    # Initialize the Spatial Graph, Discovery Engine, Automation Manager, Floorplan Parser, Dashboard Manager, and Theme Manager
     spatial_manager = SpatialGraphManager(hass)
     floorplan_parser = FloorplanParser(hass)
     automation_manager = AutomationManager(hass)
     dashboard_manager = DashboardManager(hass)
+    theme_manager = ThemeManager(hass)
     await asyncio.gather(
         spatial_manager.async_load(),
         floorplan_parser.async_load(),
@@ -342,6 +348,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         spatial_manager=spatial_manager,
         floorplan_parser=floorplan_parser,
         dashboard_manager=dashboard_manager,
+        theme_manager=theme_manager,
     )
 
     # Register Walkthrough Upload View
@@ -354,7 +361,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.debug("Could not register walkthrough upload view: %s", err)
 
     # Register the conversation agent
-    agent = OtisAIConversationAgent(hass, entry, engine, automation_manager, spatial_manager=spatial_manager)
+    agent = OtisAIConversationAgent(
+        hass,
+        entry,
+        engine,
+        automation_manager,
+        spatial_manager=spatial_manager,
+        theme_manager=theme_manager,
+    )
     if hasattr(conversation, "async_register_agent"):
         conversation.async_register_agent(hass, agent)
     else:
@@ -368,6 +382,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "spatial_manager": spatial_manager,
         "floorplan_parser": floorplan_parser,
         "dashboard_manager": dashboard_manager,
+        "theme_manager": theme_manager,
     }
 
     async def _async_update_listener(hass_inst: HomeAssistant, updated_entry: ConfigEntry) -> None:
@@ -391,12 +406,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         mgr = entry_data.get("automation_manager", automation_manager)
         s_mgr = entry_data.get("spatial_manager", spatial_manager)
         fp = entry_data.get("floorplan_parser", floorplan_parser)
-        return eng, mgr, s_mgr, fp
+        tm = entry_data.get("theme_manager", theme_manager)
+        return eng, mgr, s_mgr, fp, tm
 
     async def handle_get_capability_map(call) -> ServiceResponse:
         """Handle service call to get the capability map."""
         _LOGGER.debug("Service 'get_capability_map' triggered")
-        eng, _, _, _ = _get_active_managers()
+        eng, _, _, _, _ = _get_active_managers()
         capability_map = await eng.async_build_capability_map()
         capability_map["conversation_agent_id"] = entry.entry_id
         return capability_map
@@ -404,7 +420,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_get_suggestions(call) -> ServiceResponse:
         """Handle service call to retrieve proactive suggestions."""
         _LOGGER.debug("Service 'get_suggestions' triggered")
-        eng, _, _, _ = _get_active_managers()
+        eng, _, _, _, _ = _get_active_managers()
         capability_map = await eng.async_build_capability_map()
         return {"suggestions": capability_map.get("proactive_suggestions", [])}
 
@@ -415,7 +431,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not suggestion_id:
             return {"success": False, "error": "Missing suggestion_id parameter"}
 
-        eng, mgr, _, _ = _get_active_managers()
+        eng, mgr, _, _, _ = _get_active_managers()
         target = None
         if hasattr(eng, "get_cached_suggestion") and callable(getattr(eng, "get_cached_suggestion", None)):
             cached = eng.get_cached_suggestion(suggestion_id)
@@ -691,7 +707,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_get_spatial_map(call) -> ServiceResponse:
         """Handle service call to retrieve the spatial area adjacency graph."""
         _LOGGER.debug("Service 'get_spatial_map' triggered")
-        _, _, s_mgr, _ = _get_active_managers()
+        _, _, s_mgr, _, _ = _get_active_managers()
         graph = await s_mgr.async_get_graph()
         return graph
 
@@ -713,7 +729,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return {"success": False, "error": "Both 'area_1' and 'area_2' are required parameters"}
 
         try:
-            eng, _, s_mgr, _ = _get_active_managers()
+            eng, _, s_mgr, _, _ = _get_active_managers()
             graph = await s_mgr.async_update_connection(area_1, area_2, connected, connection_type)
             if hasattr(eng, "invalidate_cache"):
                 eng.invalidate_cache()
@@ -730,7 +746,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_generate_floorplan(call) -> ServiceResponse:
         """Handle service call to generate SVG floorplan."""
         _LOGGER.debug("Service 'generate_floorplan' triggered")
-        eng, _, _, fp = _get_active_managers()
+        eng, _, _, fp, _ = _get_active_managers()
         capability_map = await eng.async_build_capability_map()
         video_path = call.data.get("video_path")
         spoken_order = call.data.get("spoken_order")
@@ -746,6 +762,61 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if hasattr(eng, "invalidate_cache"):
             eng.invalidate_cache()
         return res
+
+    async def handle_generate_theme(call) -> ServiceResponse:
+        """Handle service call to generate and persist a custom theme."""
+        _LOGGER.debug("Service 'generate_theme' triggered with: %s", call.data)
+        eng, _, _, _, tm = _get_active_managers()
+        prompt = call.data.get("prompt", "")
+        name = call.data.get("name")
+        base_palette = call.data.get("base_palette")
+        dark_mode = call.data.get("dark_mode")
+        border_radius = call.data.get("border_radius")
+        glow_effect = call.data.get("glow_effect")
+        apply_immediately = call.data.get("apply_immediately", False)
+
+        res = await tm.async_generate_and_save_theme(
+            prompt=prompt,
+            name=name,
+            base_palette=base_palette,
+            dark_mode=dark_mode,
+            border_radius=border_radius,
+            glow_effect=glow_effect,
+            apply_immediately=apply_immediately,
+        )
+        if hasattr(eng, "invalidate_cache"):
+            eng.invalidate_cache()
+        return res
+
+    async def handle_apply_theme(call) -> ServiceResponse:
+        """Handle service call to apply a theme."""
+        theme_name = call.data.get("name") or call.data.get("theme_name")
+        mode = call.data.get("mode")
+        _LOGGER.debug("Service 'apply_theme' triggered for: %s (mode=%s)", theme_name, mode)
+        if not theme_name:
+            return {"success": False, "error": "Missing theme 'name' parameter"}
+        _, _, _, _, tm = _get_active_managers()
+        ok = await tm.async_apply_theme(theme_name, mode=mode)
+        return {"success": ok, "theme": theme_name}
+
+    async def handle_list_themes(call) -> ServiceResponse:
+        """Handle service call to list generated Otis themes."""
+        _LOGGER.debug("Service 'list_themes' triggered")
+        _, _, _, _, tm = _get_active_managers()
+        themes = await tm.async_list_otis_themes()
+        return {"themes": themes, "presets": list(PRESET_THEMES.keys())}
+
+    async def handle_delete_theme(call) -> ServiceResponse:
+        """Handle service call to delete an Otis theme."""
+        theme_name = call.data.get("name") or call.data.get("theme_name")
+        _LOGGER.debug("Service 'delete_theme' triggered for: %s", theme_name)
+        if not theme_name:
+            return {"success": False, "error": "Missing theme 'name' parameter"}
+        eng, _, _, _, tm = _get_active_managers()
+        deleted = await tm.async_delete_theme(theme_name)
+        if hasattr(eng, "invalidate_cache"):
+            eng.invalidate_cache()
+        return {"success": deleted, "theme": theme_name}
 
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
@@ -788,6 +859,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         SERVICE_GENERATE_FLOORPLAN,
         handle_generate_floorplan,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GENERATE_THEME,
+        handle_generate_theme,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_APPLY_THEME,
+        handle_apply_theme,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LIST_THEMES,
+        handle_list_themes,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_DELETE_THEME,
+        handle_delete_theme,
         supports_response=SupportsResponse.ONLY,
     )
 
@@ -840,6 +935,7 @@ class OtisAIConversationAgent(AbstractAgent):
         engine: DiscoveryEngine,
         automation_manager: AutomationManager,
         spatial_manager: SpatialGraphManager | None = None,
+        theme_manager: ThemeManager | None = None,
     ) -> None:
         """Initialize the agent."""
         self.hass = hass
@@ -847,6 +943,7 @@ class OtisAIConversationAgent(AbstractAgent):
         self.engine = engine
         self.automation_manager = automation_manager
         self.spatial_manager = spatial_manager or SpatialGraphManager(hass)
+        self.theme_manager = theme_manager or ThemeManager(hass)
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -922,6 +1019,45 @@ class OtisAIConversationAgent(AbstractAgent):
                     user_input,
                     "Okay, I have discarded the proposed configuration."
                 )
+
+        # Check for theme styling commands
+        if any(w in user_text for w in ("create theme", "generate theme", "new theme", "make theme", "build theme")):
+            clean_prompt = re.sub(
+                r"^(please\s+)?(can you\s+)?(create|generate|make|build)\s+(a\s+|an\s+)?(custom\s+)?theme\s*(called|named)?\s*",
+                "",
+                user_input.text,
+                flags=re.IGNORECASE,
+            ).strip()
+            if clean_prompt and self.theme_manager:
+                try:
+                    res = await self.theme_manager.async_generate_and_save_theme(prompt=clean_prompt, apply_immediately=True)
+                    if hasattr(self.engine, "invalidate_cache"):
+                        self.engine.invalidate_cache()
+                    speech = (
+                        f"✨ Created and applied **{res['title']}**!\n\n"
+                        f"• Saved to `{res['file_path']}` and reloaded Home Assistant frontend themes.\n"
+                        f"• Colors: Primary `{res['preview']['primary']}` | Accent `{res['preview']['accent']}` | Background `{res['preview']['background']}`"
+                    )
+                    return self._create_response(user_input, speech)
+                except Exception as err:
+                    _LOGGER.error("Theme generation error: %s", err)
+                    return self._create_response(user_input, f"Encountered an issue generating theme: {err}")
+
+        elif any(w in user_text for w in ("apply theme", "switch theme", "set theme", "change theme")):
+            target = re.sub(
+                r"^(please\s+)?(can you\s+)?(apply|switch|set|change)\s+(to\s+)?(the\s+)?theme\s*",
+                "",
+                user_input.text,
+                flags=re.IGNORECASE,
+            ).strip()
+            if target and self.theme_manager:
+                slug = slugify_theme_name(target)
+                key = f"otis_{slug}" if not slug.startswith("otis_") else slug
+                ok = await self.theme_manager.async_apply_theme(key)
+                if not ok:
+                    ok = await self.theme_manager.async_apply_theme(target)
+                speech = f"🎨 Switched active theme to **{target}** across Home Assistant." if ok else f"⚠️ Could not apply theme '{target}'."
+                return self._create_response(user_input, speech)
 
         # 1. Resolve prioritized AI agent cascade (Primary + Fallbacks)
         options = self.entry.options
@@ -1406,12 +1542,14 @@ class DiscoveryEngine:
         spatial_manager: SpatialGraphManager | None = None,
         floorplan_parser: FloorplanParser | None = None,
         dashboard_manager: DashboardManager | None = None,
+        theme_manager: ThemeManager | None = None,
     ) -> None:
         """Initialize the discovery engine."""
         self.hass = hass
         self.spatial_manager = spatial_manager or SpatialGraphManager(hass)
         self.floorplan_parser = floorplan_parser or FloorplanParser(hass)
         self.dashboard_manager = dashboard_manager or DashboardManager(hass)
+        self.theme_manager = theme_manager or ThemeManager(hass)
         self._cached_cap_map: dict[str, Any] | None = None
         self._cache_ts: float = 0.0
         self._cache_signature: tuple[Any, ...] | None = None
@@ -1635,11 +1773,20 @@ class DiscoveryEngine:
                 "exists": has_floorplan,
                 "walkthrough_completed": has_walkthrough,
                 "url": "/local/otis_floorplan.svg" if has_floorplan else None,
+                "lovelace_yaml": self.floorplan_parser.get_lovelace_yaml() if has_floorplan else None,
             },
             "media_topology": media_topology,
             "security_topology": security_topology,
             "maturity": maturity,
         }
+        themes = []
+        if self.theme_manager:
+            themes = await self.theme_manager.async_list_otis_themes()
+        cap_map["themes"] = themes
+        cap_map["theme_presets"] = [
+            {"key": k, "name": v["name"], "description": v["description"], "preview": v["preview"], "dark_mode": v.get("dark_mode", True)}
+            for k, v in PRESET_THEMES.items()
+        ]
         cap_map["proactive_suggestions"] = await self.async_generate_proactive_suggestions(cap_map)
         self._cached_cap_map = dict(cap_map)
         self._cache_ts = now

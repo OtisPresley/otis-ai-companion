@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 1.5.7
+ * Version: 1.5.8
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -11,7 +11,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.5.7";
+const CARD_VERSION = "1.5.8";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -43,6 +43,8 @@ class OtisCompanionCard extends HTMLElement {
 
     // Phase 6: Floorplan & Walkthrough state
     this._floorplanModalOpen = false;
+    this._themeModalOpen = false;
+    this._generatingTheme = false;
     this._uploadingVideo = false;
     this._uploadProgressText = "";
     this._floorplanSvg = null;
@@ -1191,14 +1193,20 @@ class OtisCompanionCard extends HTMLElement {
         /* Subview Hub Launchpad */
         .subviews-launchpad {
           display: flex;
-          align-items: center;
-          gap: 6px;
-          flex-wrap: wrap;
+          flex-direction: column;
+          gap: 8px;
           margin-bottom: 12px;
-          padding: 6px 10px;
+          padding: 8px 10px;
           background: color-mix(in srgb, var(--otis-surface) 60%, transparent);
           border: 1px solid var(--otis-surface-border);
           border-radius: 8px;
+        }
+
+        .launchpad-row {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex-wrap: wrap;
         }
 
         .subviews-label {
@@ -1208,6 +1216,48 @@ class OtisCompanionCard extends HTMLElement {
           letter-spacing: 0.05em;
           color: var(--otis-text-muted);
           margin-right: 4px;
+          min-width: 58px;
+        }
+
+        /* Theme Studio Grid */
+        .theme-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+          gap: 12px;
+          max-height: 380px;
+          overflow-y: auto;
+          padding: 4px;
+        }
+
+        .theme-card {
+          background: color-mix(in srgb, var(--otis-surface) 80%, transparent);
+          border: 1px solid var(--otis-surface-border);
+          border-radius: 12px;
+          padding: 12px;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          transition: all 0.15s ease;
+        }
+
+        .theme-card:hover {
+          border-color: var(--otis-primary);
+          transform: translateY(-2px);
+          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+        }
+
+        .theme-swatches {
+          display: flex;
+          gap: 6px;
+          align-items: center;
+        }
+
+        .theme-swatch {
+          width: 18px;
+          height: 18px;
+          border-radius: 50%;
+          border: 1px solid rgba(255, 255, 255, 0.25);
+          box-shadow: 0 2px 4px rgba(0,0,0,0.3);
         }
 
         .subview-chip {
@@ -2525,22 +2575,27 @@ class OtisCompanionCard extends HTMLElement {
 
         <!-- Studio & Room Subviews Launchpad -->
         <div class="subviews-launchpad">
-          <span class="subviews-label">Studios:</span>
-          <button class="subview-chip" data-subview="/otis-ai/media">🎵 Media Studio</button>
-          <button class="subview-chip" data-subview="/otis-ai/security">🛡️ Security Center</button>
-          <button class="subview-chip" data-subview="/otis-ai/climate">🌡️ Climate & Pool</button>
-          <button class="subview-chip" data-subview="/otis-ai/floorplan">🗺️ Floor Plan</button>
+          <div class="launchpad-row">
+            <span class="subviews-label">Studios:</span>
+            <button class="subview-chip" data-subview="/otis-ai/media">🎵 Media Studio</button>
+            <button class="subview-chip" data-subview="/otis-ai/security">🛡️ Security Center</button>
+            <button class="subview-chip" data-subview="/otis-ai/climate">🌡️ Climate & Pool</button>
+            <button class="subview-chip" data-subview="/otis-ai/floorplan">🗺️ Floor Plan</button>
+            <button class="subview-chip" id="btn-open-themes" style="margin-left: auto;">🎨 Themes</button>
+          </div>
           ${
             activeAreas.length > 0
               ? `
-            <span class="subviews-label" style="margin-left: 6px;">Rooms:</span>
-            ${activeAreas
-              .map(
-                (room) => `
-              <button class="subview-chip room-chip" data-subview="${room.path}">📍 ${this._escapeHtml(room.name)}</button>
-            `
-              )
-              .join("")}
+            <div class="launchpad-row">
+              <span class="subviews-label">Rooms:</span>
+              ${activeAreas
+                .map(
+                  (room) => `
+                <button class="subview-chip room-chip" data-subview="${room.path}">📍 ${this._escapeHtml(room.name)}</button>
+              `
+                )
+                .join("")}
+            </div>
           `
               : ""
           }
@@ -2581,6 +2636,7 @@ class OtisCompanionCard extends HTMLElement {
         ${this._activeTab === "capabilities" ? this._renderCapabilitiesTab(stats) : ""}
         ${this._activeTab === "floorplan" ? this._renderFloorplanTab() : ""}
         ${this._floorplanModalOpen ? this._renderWalkthroughModal() : ""}
+        ${this._themeModalOpen ? this._renderThemeModal() : ""}
 
         <!-- Feedback Toast -->
         <div class="toast" id="toast"></div>
@@ -3065,6 +3121,188 @@ class OtisCompanionCard extends HTMLElement {
     `;
   }
 
+  _renderThemeModal() {
+    const presets = this._capabilityMap?.theme_presets || [
+      { key: "cyberpunk", name: "Cyberpunk Neon", preview: { primary: "#00f0ff", accent: "#f43f5e", background: "#070b14", card_bg: "#0f172a" } },
+      { key: "midnight_slate", name: "Midnight Slate", preview: { primary: "#38bdf8", accent: "#818cf8", background: "#0b1120", card_bg: "#1e293b" } },
+      { key: "oled_black", name: "OLED Obsidian", preview: { primary: "#10b981", accent: "#38bdf8", background: "#000000", card_bg: "#111113" } },
+      { key: "sunset_amber", name: "Sunset Amber", preview: { primary: "#f59e0b", accent: "#ea580c", background: "#1c1917", card_bg: "#292524" } },
+      { key: "emerald_luxury", name: "Emerald Luxury", preview: { primary: "#34d399", accent: "#fbbf24", background: "#022c22", card_bg: "#064e3b" } },
+      { key: "nordic_frost", name: "Nordic Frost", preview: { primary: "#0284c7", accent: "#0d9488", background: "#f8fafc", card_bg: "#ffffff" } },
+      { key: "high_contrast", name: "High Contrast", preview: { primary: "#ffff00", accent: "#00ffff", background: "#000000", card_bg: "#000000" } },
+    ];
+    const customThemes = this._capabilityMap?.themes || [];
+
+    return `
+      <div class="modal-overlay" id="theme-modal-backdrop">
+        <div class="modal-card" style="max-width: 620px;">
+          <div class="modal-header">
+            <div>
+              <div class="modal-title">
+                <span>🎨</span>
+                <span>Dynamic AI Theme Studio</span>
+              </div>
+              <div class="modal-subtitle">
+                Collaborative natural language styling & instant live theme application
+              </div>
+            </div>
+            <button class="modal-close-btn" id="theme-modal-close-btn">✕</button>
+          </div>
+
+          <!-- AI Natural Language Generator Prompt -->
+          <div class="guide-box" style="display: flex; flex-direction: column; gap: 8px;">
+            <div style="font-weight: 700; font-size: 0.85rem; color: var(--otis-primary);">
+              ✨ Collaborative AI Theme Generator
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <input
+                type="text"
+                id="theme-prompt-input"
+                placeholder="e.g. Glowing neon cyan and purple with dark slate cards and 16px radius..."
+                style="flex: 1; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--otis-surface-border); background: var(--otis-surface); color: var(--otis-text); font-size: 0.82rem;"
+              />
+              <button
+                class="btn-modal-primary"
+                id="btn-generate-theme-ai"
+                style="white-space: nowrap;"
+                ${this._generatingTheme ? "disabled" : ""}
+              >
+                ${this._generatingTheme ? `<div class="spinner" style="width: 14px; height: 14px;"></div> Generating...` : "✨ Generate & Apply"}
+              </button>
+            </div>
+          </div>
+
+          <!-- Custom Saved Themes -->
+          ${
+            customThemes.length > 0
+              ? `
+            <div>
+              <div style="font-size: 0.76rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--otis-text-muted); margin-bottom: 8px;">
+                Custom Generated Themes (${customThemes.length})
+              </div>
+              <div class="theme-grid" style="margin-bottom: 14px;">
+                ${customThemes
+                  .map(
+                    (th) => `
+                  <div class="theme-card" style="border-left: 3px solid ${th.preview.primary};">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                      <span style="font-weight: 700; font-size: 0.85rem; color: var(--otis-text);">${this._escapeHtml(th.title)}</span>
+                      <div class="theme-swatches">
+                        <span class="theme-swatch" style="background: ${th.preview.primary};" title="Primary"></span>
+                        <span class="theme-swatch" style="background: ${th.preview.accent};" title="Accent"></span>
+                        <span class="theme-swatch" style="background: ${th.preview.background};" title="Background"></span>
+                      </div>
+                    </div>
+                    <div style="font-size: 0.72rem; color: var(--otis-text-muted);">
+                      Radius: ${th.border_radius} • File: ${th.file_name}
+                    </div>
+                    <div style="display: flex; gap: 6px; margin-top: 4px;">
+                      <button class="btn-modal-primary btn-apply-theme" data-theme-key="${th.theme_key}" style="flex: 1; padding: 4px 8px; font-size: 0.75rem;">
+                        ⚡ Apply Live
+                      </button>
+                      <button class="btn-toolbar btn-delete-theme" data-theme-key="${th.theme_key}" style="padding: 4px 8px; color: #f43f5e;" title="Delete Theme">
+                        🗑️
+                      </button>
+                    </div>
+                  </div>
+                `
+                  )
+                  .join("")}
+              </div>
+            </div>
+          `
+              : ""
+          }
+
+          <!-- Curated Baseline Presets -->
+          <div>
+            <div style="font-size: 0.76rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--otis-text-muted); margin-bottom: 8px;">
+              Curated Master Presets (Instant 1-Click Generation & Activation)
+            </div>
+            <div class="theme-grid">
+              ${presets
+                .map(
+                  (p) => `
+                <div class="theme-card" style="border-left: 3px solid ${p.preview.primary};">
+                  <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-weight: 700; font-size: 0.85rem; color: var(--otis-text);">${this._escapeHtml(p.name)}</span>
+                    <div class="theme-swatches">
+                      <span class="theme-swatch" style="background: ${p.preview.primary};" title="Primary"></span>
+                      <span class="theme-swatch" style="background: ${p.preview.accent};" title="Accent"></span>
+                      <span class="theme-swatch" style="background: ${p.preview.background};" title="Background"></span>
+                    </div>
+                  </div>
+                  <div style="font-size: 0.72rem; color: var(--otis-text-muted); line-height: 1.35;">
+                    ${this._escapeHtml(p.description || "Master aesthetic profile")}
+                  </div>
+                  <button class="btn-modal-secondary btn-generate-preset" data-preset-key="${p.key}" style="padding: 4px 8px; font-size: 0.75rem; margin-top: 4px;">
+                    ✨ Generate & Set Live
+                  </button>
+                </div>
+              `
+                )
+                .join("")}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  async _generateThemeAi(prompt, presetKey = null) {
+    if (!this._hass) return;
+    this._generatingTheme = true;
+    this._render();
+
+    try {
+      const payload = {
+        prompt: prompt || (presetKey ? `Generate ${presetKey} theme` : "Otis Custom Theme"),
+        apply_immediately: true,
+      };
+      if (presetKey) {
+        payload.base_palette = presetKey;
+      }
+      const res = await this._hass.callService("otis_ai", "generate_theme", payload, undefined, true, true);
+      const data = res?.response || res || {};
+      if (data.success) {
+        this._showToast(`✨ Generated and applied "${data.title}"!`);
+        await this._fetchData();
+      } else {
+        this._showToast(data.error || "Could not generate theme", true);
+      }
+    } catch (err) {
+      console.error("Error generating theme:", err);
+      this._showToast("Error generating theme. Check HA logs.", true);
+    } finally {
+      this._generatingTheme = false;
+      this._render();
+    }
+  }
+
+  async _applyThemeDirect(themeKey) {
+    if (!this._hass || !themeKey) return;
+    try {
+      await this._hass.callService("frontend", "set_theme", { name: themeKey });
+      await this._hass.callService("otis_ai", "apply_theme", { name: themeKey });
+      this._showToast(`Switched active theme to ${themeKey}`);
+    } catch (err) {
+      console.error("Error applying theme:", err);
+      this._showToast("Error applying theme", true);
+    }
+  }
+
+  async _deleteThemeDirect(themeKey) {
+    if (!this._hass || !themeKey) return;
+    try {
+      await this._hass.callService("otis_ai", "delete_theme", { name: themeKey }, undefined, true, true);
+      this._showToast(`Deleted theme ${themeKey}`);
+      await this._fetchData();
+    } catch (err) {
+      console.error("Error deleting theme:", err);
+      this._showToast("Error deleting theme", true);
+    }
+  }
+
   _bindEvents() {
     const root = this.shadowRoot;
 
@@ -3076,6 +3314,14 @@ class OtisCompanionCard extends HTMLElement {
 
     // Subview Launchpad
     root.querySelectorAll(".subview-chip").forEach((chip) => {
+      if (chip.id === "btn-open-themes") {
+        chip.onclick = (e) => {
+          e.stopPropagation();
+          this._themeModalOpen = true;
+          this._render();
+        };
+        return;
+      }
       chip.onclick = () => {
         const path = chip.getAttribute("data-subview");
         if (path) {
@@ -3088,6 +3334,60 @@ class OtisCompanionCard extends HTMLElement {
           window.history.pushState(null, "", path);
           window.dispatchEvent(new CustomEvent("location-changed"));
         }
+      };
+    });
+
+    // Theme Studio Modal Events
+    const themeCloseBtn = root.querySelector("#theme-modal-close-btn");
+    if (themeCloseBtn) {
+      themeCloseBtn.onclick = () => {
+        this._themeModalOpen = false;
+        this._render();
+      };
+    }
+    const themeBackdrop = root.querySelector("#theme-modal-backdrop");
+    if (themeBackdrop) {
+      themeBackdrop.onclick = (e) => {
+        if (e.target === themeBackdrop) {
+          this._themeModalOpen = false;
+          this._render();
+        }
+      };
+    }
+    const btnGenThemeAi = root.querySelector("#btn-generate-theme-ai");
+    const themePromptInput = root.querySelector("#theme-prompt-input");
+    if (btnGenThemeAi && themePromptInput) {
+      btnGenThemeAi.onclick = () => {
+        const p = themePromptInput.value.trim();
+        if (p) {
+          this._generateThemeAi(p);
+        } else {
+          this._showToast("Please enter a theme styling prompt", true);
+        }
+      };
+      themePromptInput.onkeydown = (e) => {
+        if (e.key === "Enter") {
+          const p = themePromptInput.value.trim();
+          if (p) this._generateThemeAi(p);
+        }
+      };
+    }
+    root.querySelectorAll(".btn-apply-theme").forEach((btn) => {
+      btn.onclick = () => {
+        const k = btn.getAttribute("data-theme-key");
+        if (k) this._applyThemeDirect(k);
+      };
+    });
+    root.querySelectorAll(".btn-delete-theme").forEach((btn) => {
+      btn.onclick = () => {
+        const k = btn.getAttribute("data-theme-key");
+        if (k && confirm(`Delete theme ${k}?`)) this._deleteThemeDirect(k);
+      };
+    });
+    root.querySelectorAll(".btn-generate-preset").forEach((btn) => {
+      btn.onclick = () => {
+        const pk = btn.getAttribute("data-preset-key");
+        if (pk) this._generateThemeAi(`Generate ${pk} preset theme`, pk);
       };
     });
 
