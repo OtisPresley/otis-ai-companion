@@ -2,6 +2,21 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.7.0] - 2026-10-29
+
+### Added & Improved
+- **Interactive 8-Point Canvas Editor & Whole-Room Dragging (`otis-companion-card.js`, `floorplan_parser.py`)**:
+  - Implemented 8 distinct resize handles (`nw`, `n`, `ne`, `e`, `se`, `s`, `sw`, `w`) allowing direct width-only and height-only adjustments from any edge or corner.
+  - Enabled direct room dragging (`type: "move"`): clicking and dragging anywhere inside a selected room smoothly repositions the entire room across the architectural canvas.
+  - Synchronized all internal room contents live during drag and resize operations: architectural subzone labels (e.g. `▪ Deck & Grill`, `▪ Hot Tub`), entity badges, staircase cuts, and doorway thresholds move seamlessly with room boundaries.
+  - Added strict plan frame clamping: room boundaries are strictly clamped within the blueprint outer border (`minX >= 40`, `maxX <= 1260`, `minY >= 30`, `maxY <= 1400`), preventing rooms from extending outside the blueprint into the canvas void.
+- **Draggable Area Boundary Editor Box (`otis-companion-card.js`)**:
+  - Made the Area Boundary Inspector card draggable: users can grab the header bar and move the dialog anywhere across the canvas so it never obstructs the room or section being configured.
+- **Flicker-Free Handle Hover Styling (`otis-companion-card.js`)**:
+  - Removed SVG CSS `transform: scale(1.4)` on `:hover` which caused rapid 60Hz flickering when hovering near handle boundaries; replaced with stable high-contrast fill and stroke styling.
+- **Backend Layout Synchronization (`floorplan_parser.py`)**:
+  - Enhanced `update_floorplan_layout` with boundary clamping and automated regex synchronization for `.subzone-pill` labels, `.entity-badge` groups, and `.stairs-step` elements.
+
 ## [1.6.9] - 2026-10-29
 
 ### Fixed

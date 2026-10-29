@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 1.6.9
+ * Version: 1.7.0
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.6.9";
+const CARD_VERSION = "1.7.0";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -2461,8 +2461,8 @@ class OtisCompanionCard extends HTMLElement {
 
         .room-inspector-card {
           position: absolute;
-          bottom: 16px;
-          left: 16px;
+          top: 16px;
+          right: 16px;
           background: var(--ha-card-background, #0f172a);
           border: 1.5px solid var(--otis-primary);
           border-radius: 12px;
@@ -2476,23 +2476,54 @@ class OtisCompanionCard extends HTMLElement {
           gap: 8px;
           font-size: 0.78rem;
           animation: fadeIn 0.2s ease;
+          user-select: none;
+        }
+
+        .inspector-drag-handle {
+          cursor: grab;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding-bottom: 4px;
+          border-bottom: 1px solid var(--otis-surface-border);
+        }
+
+        .inspector-drag-handle:active {
+          cursor: grabbing;
         }
 
         .room-resize-handle {
           fill: var(--otis-primary);
           stroke: #ffffff;
-          stroke-width: 1.5;
-          cursor: nwse-resize;
-          transition: transform 0.15s ease;
+          stroke-width: 2;
+          cursor: pointer;
+          transition: fill 0.15s ease, stroke 0.15s ease;
         }
 
         .room-resize-handle:hover {
-          transform: scale(1.4);
+          fill: #ffffff;
+          stroke: var(--otis-primary);
+          stroke-width: 3;
+        }
+
+        .room-resize-handle[data-handle="nw"],
+        .room-resize-handle[data-handle="se"] {
+          cursor: nwse-resize;
         }
 
         .room-resize-handle[data-handle="ne"],
         .room-resize-handle[data-handle="sw"] {
           cursor: nesw-resize;
+        }
+
+        .room-resize-handle[data-handle="n"],
+        .room-resize-handle[data-handle="s"] {
+          cursor: ns-resize;
+        }
+
+        .room-resize-handle[data-handle="e"],
+        .room-resize-handle[data-handle="w"] {
+          cursor: ew-resize;
         }
 
         .room-info-card {
@@ -3361,10 +3392,16 @@ class OtisCompanionCard extends HTMLElement {
       id,
       name: a.name || id,
     }));
+    const posStyle = (this._inspectorX !== undefined && this._inspectorY !== undefined)
+      ? `left: ${this._inspectorX}px; top: ${this._inspectorY}px; right: auto; bottom: auto;`
+      : "";
     return `
-      <div class="room-inspector-card" id="room-inspector">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <strong style="color: var(--otis-primary); font-size: 0.82rem;">📐 Area Boundary Editor</strong>
+      <div class="room-inspector-card" id="room-inspector" style="${posStyle}">
+        <div class="inspector-drag-handle" id="inspector-header">
+          <strong style="color: var(--otis-primary); font-size: 0.82rem; display: flex; align-items: center; gap: 4px;">
+            <span>📐</span><span>Area Boundary Editor</span>
+            <span style="font-size: 0.65rem; color: var(--otis-text-muted); font-weight: normal; margin-left: 4px;">(drag to move)</span>
+          </strong>
           <button class="btn-toolbar" id="btn-close-inspector" style="padding: 2px 6px; font-size: 0.72rem;">✕</button>
         </div>
         <div style="display: flex; flex-direction: column; gap: 4px;">
@@ -4235,6 +4272,13 @@ class OtisCompanionCard extends HTMLElement {
               rLbl.setAttribute("y", rData.y + 22);
               if (rData.name) rLbl.textContent = rData.name;
             }
+            rGrp.querySelectorAll(".subzone-pill").forEach((pill, sIdx) => {
+              pill.setAttribute("x", rData.x + 16);
+              pill.setAttribute("y", rData.y + 22 + 18 + sIdx * 16);
+            });
+            rGrp.querySelectorAll(".entity-badge").forEach((badge, bIdx) => {
+              badge.setAttribute("transform", `translate(${rData.x + 16 + bIdx * 24}, ${rData.y + rData.height - 18})`);
+            });
           }
         });
 
@@ -4258,7 +4302,7 @@ class OtisCompanionCard extends HTMLElement {
           };
         });
 
-        // 4. Inject interactive corner resize handles onto selected room
+        // 4. Inject interactive 8-point resize handles and move support onto selected room
         if (this._selectedEditorRoomId) {
           const selGrp = svgEl.querySelector(`.room-group[data-area-id="${this._selectedEditorRoomId}"]`);
           if (selGrp) {
@@ -4273,6 +4317,24 @@ class OtisCompanionCard extends HTMLElement {
               const ry = dirty ? dirty.y : parseFloat(rect.getAttribute("y") || 0);
               const rw = dirty ? dirty.width : parseFloat(rect.getAttribute("width") || 160);
               const rh = dirty ? dirty.height : parseFloat(rect.getAttribute("height") || 120);
+
+              // Blueprint boundary detection for clamping
+              const planGroup = selGrp.closest("[data-plan]") || selGrp.closest(".floor-zone") || svgEl;
+              const planFrame = planGroup.querySelector(".plan-frame");
+              let minX = 40;
+              let maxX = 1260;
+              let minY = 30;
+              let maxY = 1400;
+              if (planFrame) {
+                const fx = parseFloat(planFrame.getAttribute("x") || 40);
+                const fy = parseFloat(planFrame.getAttribute("y") || 30);
+                const fw = parseFloat(planFrame.getAttribute("width") || 1220);
+                const fh = parseFloat(planFrame.getAttribute("height") || 650);
+                minX = Math.round(fx + 5);
+                maxX = Math.round(fx + fw - 5);
+                minY = Math.round(fy + 34);
+                maxY = Math.round(fy + fh - 5);
+              }
 
               // Ensure rect attributes match dirty state
               rect.setAttribute("x", rx);
@@ -4290,7 +4352,7 @@ class OtisCompanionCard extends HTMLElement {
               if (inpW) inpW.value = Math.round(rw);
               if (inpH) inpH.value = Math.round(rh);
 
-              // Render handles overlay layer
+              // Render 8 handles overlay layer (corners + edges)
               let handleGrp = selGrp.querySelector(".handles-layer");
               if (!handleGrp) {
                 handleGrp = document.createElementNS("http://www.w3.org/2000/svg", "g");
@@ -4299,101 +4361,234 @@ class OtisCompanionCard extends HTMLElement {
               }
               handleGrp.innerHTML = `
                 <circle class="room-resize-handle" data-handle="nw" cx="${rx}" cy="${ry}" r="7" />
+                <circle class="room-resize-handle" data-handle="n" cx="${rx + rw / 2}" cy="${ry}" r="6" />
                 <circle class="room-resize-handle" data-handle="ne" cx="${rx + rw}" cy="${ry}" r="7" />
+                <circle class="room-resize-handle" data-handle="e" cx="${rx + rw}" cy="${ry + rh / 2}" r="6" />
                 <circle class="room-resize-handle" data-handle="se" cx="${rx + rw}" cy="${ry + rh}" r="7" />
+                <circle class="room-resize-handle" data-handle="s" cx="${rx + rw / 2}" cy="${ry + rh}" r="6" />
                 <circle class="room-resize-handle" data-handle="sw" cx="${rx}" cy="${ry + rh}" r="7" />
+                <circle class="room-resize-handle" data-handle="w" cx="${rx}" cy="${ry + rh / 2}" r="6" />
               `;
 
+              const updateRoomElements = (nx, ny, nw, nh, areaName) => {
+                rect.setAttribute("x", nx);
+                rect.setAttribute("y", ny);
+                rect.setAttribute("width", nw);
+                rect.setAttribute("height", nh);
+
+                // Update all 8 handles
+                const hNw = handleGrp.querySelector('[data-handle="nw"]');
+                const hN  = handleGrp.querySelector('[data-handle="n"]');
+                const hNe = handleGrp.querySelector('[data-handle="ne"]');
+                const hE  = handleGrp.querySelector('[data-handle="e"]');
+                const hSe = handleGrp.querySelector('[data-handle="se"]');
+                const hS  = handleGrp.querySelector('[data-handle="s"]');
+                const hSw = handleGrp.querySelector('[data-handle="sw"]');
+                const hW  = handleGrp.querySelector('[data-handle="w"]');
+                if (hNw) { hNw.setAttribute("cx", nx); hNw.setAttribute("cy", ny); }
+                if (hN)  { hN.setAttribute("cx", nx + nw / 2); hN.setAttribute("cy", ny); }
+                if (hNe) { hNe.setAttribute("cx", nx + nw); hNe.setAttribute("cy", ny); }
+                if (hE)  { hE.setAttribute("cx", nx + nw); hE.setAttribute("cy", ny + nh / 2); }
+                if (hSe) { hSe.setAttribute("cx", nx + nw); hSe.setAttribute("cy", ny + nh); }
+                if (hS)  { hS.setAttribute("cx", nx + nw / 2); hS.setAttribute("cy", ny + nh); }
+                if (hSw) { hSw.setAttribute("cx", nx); hSw.setAttribute("cy", ny + nh); }
+                if (hW)  { hW.setAttribute("cx", nx); hW.setAttribute("cy", ny + nh / 2); }
+
+                // Update text label position
+                const lbl = selGrp.querySelector(".room-header, .room-label");
+                if (lbl) {
+                  lbl.setAttribute("x", nx + 14);
+                  lbl.setAttribute("y", ny + 22);
+                  if (areaName) lbl.textContent = areaName;
+                }
+
+                // Update architectural subzone pills in sync
+                selGrp.querySelectorAll(".subzone-pill").forEach((pill, pIdx) => {
+                  pill.setAttribute("x", nx + 16);
+                  pill.setAttribute("y", ny + 22 + 18 + pIdx * 16);
+                });
+
+                // Update internal entity badges in sync
+                selGrp.querySelectorAll(".entity-badge").forEach((badge, bIdx) => {
+                  badge.setAttribute("transform", `translate(${nx + 16 + bIdx * 24}, ${ny + nh - 18})`);
+                });
+
+                // Update stairs if present
+                const stairsBox = selGrp.querySelector('rect[fill*="rgba(56, 189, 248"]');
+                if (stairsBox) {
+                  const sx = nx + nw - 58;
+                  const sy = ny + nh - 42;
+                  stairsBox.setAttribute("x", sx);
+                  stairsBox.setAttribute("y", sy);
+                  selGrp.querySelectorAll(".stairs-step").forEach((line, sIdx) => {
+                    const lx = sx + (sIdx + 1) * 9;
+                    line.setAttribute("x1", lx);
+                    line.setAttribute("y1", sy);
+                    line.setAttribute("x2", lx);
+                    line.setAttribute("y2", sy + 28);
+                  });
+                }
+
+                // Update door-cut if present
+                const doorCut = selGrp.querySelector(".door-cut");
+                if (doorCut) {
+                  doorCut.setAttribute("x1", nx + nw - 34);
+                  doorCut.setAttribute("y1", ny + nh);
+                  doorCut.setAttribute("x2", nx + nw - 12);
+                  doorCut.setAttribute("y2", ny + nh);
+                }
+
+                if (inpX) inpX.value = Math.round(nx);
+                if (inpY) inpY.value = Math.round(ny);
+                if (inpW) inpW.value = Math.round(nw);
+                if (inpH) inpH.value = Math.round(nh);
+
+                this._dirtyRooms[this._selectedEditorRoomId] = {
+                  id: this._selectedEditorRoomId,
+                  x: Math.round(nx),
+                  y: Math.round(ny),
+                  width: Math.round(nw),
+                  height: Math.round(nh),
+                  name: areaName || this._dirtyRooms[this._selectedEditorRoomId]?.name,
+                };
+                this._hasUnsavedLayout = true;
+                const saveBtn = root.querySelector("#btn-save-layout");
+                if (saveBtn) saveBtn.textContent = "💾 Save Changes *";
+              };
+
+              // Make room body draggable (type: "move")
+              rect.style.cursor = "move";
+              rect.onpointerdown = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const p = getSvgPoint(svgEl, e.clientX, e.clientY);
+                const curX = parseFloat(rect.getAttribute("x") || 0);
+                const curY = parseFloat(rect.getAttribute("y") || 0);
+                const curW = parseFloat(rect.getAttribute("width") || 160);
+                const curH = parseFloat(rect.getAttribute("height") || 120);
+                this._resizingHandle = {
+                  type: "move",
+                  startPoint: p,
+                  initX: curX,
+                  initY: curY,
+                  initW: curW,
+                  initH: curH,
+                  minX, maxX, minY, maxY,
+                };
+                try { rect.setPointerCapture(e.pointerId); } catch (_) {}
+              };
+
+              rect.onpointermove = (e) => {
+                if (!this._resizingHandle || this._resizingHandle.type !== "move") return;
+                e.preventDefault();
+                e.stopPropagation();
+                const p = getSvgPoint(svgEl, e.clientX, e.clientY);
+                const dx = p.x - this._resizingHandle.startPoint.x;
+                const dy = p.y - this._resizingHandle.startPoint.y;
+                const nx = Math.max(minX, Math.min(Math.round(this._resizingHandle.initX + dx), maxX - this._resizingHandle.initW));
+                const ny = Math.max(minY, Math.min(Math.round(this._resizingHandle.initY + dy), maxY - this._resizingHandle.initH));
+                updateRoomElements(nx, ny, this._resizingHandle.initW, this._resizingHandle.initH);
+              };
+
+              rect.onpointerup = (e) => {
+                if (this._resizingHandle && this._resizingHandle.type === "move") {
+                  try { rect.releasePointerCapture(e.pointerId); } catch (_) {}
+                  this._resizingHandle = null;
+                }
+              };
+              rect.onpointercancel = (e) => {
+                if (this._resizingHandle && this._resizingHandle.type === "move") {
+                  try { rect.releasePointerCapture(e.pointerId); } catch (_) {}
+                  this._resizingHandle = null;
+                }
+              };
+
+              // Attach event handlers to all 8 handles with boundary clamping
               handleGrp.querySelectorAll(".room-resize-handle").forEach((handle) => {
                 handle.onpointerdown = (e) => {
                   e.preventDefault();
                   e.stopPropagation();
                   const p = getSvgPoint(svgEl, e.clientX, e.clientY);
                   const handleType = handle.getAttribute("data-handle");
+                  const curX = parseFloat(rect.getAttribute("x") || 0);
+                  const curY = parseFloat(rect.getAttribute("y") || 0);
+                  const curW = parseFloat(rect.getAttribute("width") || 160);
+                  const curH = parseFloat(rect.getAttribute("height") || 120);
                   this._resizingHandle = {
                     type: handleType,
                     startPoint: p,
-                    initX: rx,
-                    initY: ry,
-                    initW: rw,
-                    initH: rh,
-                    rectEl: rect,
-                    selGrp,
+                    initX: curX,
+                    initY: curY,
+                    initW: curW,
+                    initH: curH,
+                    minX, maxX, minY, maxY,
                   };
                   try { handle.setPointerCapture(e.pointerId); } catch (_) {}
                 };
 
                 handle.onpointermove = (e) => {
-                  if (!this._resizingHandle) return;
+                  if (!this._resizingHandle || this._resizingHandle.type === "move") return;
                   e.preventDefault();
                   e.stopPropagation();
                   const p = getSvgPoint(svgEl, e.clientX, e.clientY);
                   const dx = p.x - this._resizingHandle.startPoint.x;
                   const dy = p.y - this._resizingHandle.startPoint.y;
-                  let nx = this._resizingHandle.initX;
-                  let ny = this._resizingHandle.initY;
-                  let nw = this._resizingHandle.initW;
-                  let nh = this._resizingHandle.initH;
+                  const initX = this._resizingHandle.initX;
+                  const initY = this._resizingHandle.initY;
+                  const initW = this._resizingHandle.initW;
+                  const initH = this._resizingHandle.initH;
+                  const hType = this._resizingHandle.type;
 
-                  if (this._resizingHandle.type === "se") {
-                    nw = Math.max(60, Math.round(this._resizingHandle.initW + dx));
-                    nh = Math.max(50, Math.round(this._resizingHandle.initH + dy));
-                  } else if (this._resizingHandle.type === "sw") {
-                    nx = Math.round(this._resizingHandle.initX + dx);
-                    nw = Math.max(60, Math.round(this._resizingHandle.initW - dx));
-                    nh = Math.max(50, Math.round(this._resizingHandle.initH + dy));
-                  } else if (this._resizingHandle.type === "ne") {
-                    ny = Math.round(this._resizingHandle.initY + dy);
-                    nw = Math.max(60, Math.round(this._resizingHandle.initW + dx));
-                    nh = Math.max(50, Math.round(this._resizingHandle.initH - dy));
-                  } else if (this._resizingHandle.type === "nw") {
-                    nx = Math.round(this._resizingHandle.initX + dx);
-                    ny = Math.round(this._resizingHandle.initY + dy);
-                    nw = Math.max(60, Math.round(this._resizingHandle.initW - dx));
-                    nh = Math.max(50, Math.round(this._resizingHandle.initH - dy));
+                  let nx = initX;
+                  let ny = initY;
+                  let nw = initW;
+                  let nh = initH;
+
+                  if (hType === "e") {
+                    nw = Math.max(60, Math.min(Math.round(initW + dx), maxX - initX));
+                  } else if (hType === "w") {
+                    const propX = Math.max(minX, Math.min(Math.round(initX + dx), initX + initW - 60));
+                    nx = propX;
+                    nw = (initX + initW) - nx;
+                  } else if (hType === "s") {
+                    nh = Math.max(50, Math.min(Math.round(initH + dy), maxY - initY));
+                  } else if (hType === "n") {
+                    const propY = Math.max(minY, Math.min(Math.round(initY + dy), initY + initH - 50));
+                    ny = propY;
+                    nh = (initY + initH) - ny;
+                  } else if (hType === "se") {
+                    nw = Math.max(60, Math.min(Math.round(initW + dx), maxX - initX));
+                    nh = Math.max(50, Math.min(Math.round(initH + dy), maxY - initY));
+                  } else if (hType === "sw") {
+                    const propX = Math.max(minX, Math.min(Math.round(initX + dx), initX + initW - 60));
+                    nx = propX;
+                    nw = (initX + initW) - nx;
+                    nh = Math.max(50, Math.min(Math.round(initH + dy), maxY - initY));
+                  } else if (hType === "ne") {
+                    nw = Math.max(60, Math.min(Math.round(initW + dx), maxX - initX));
+                    const propY = Math.max(minY, Math.min(Math.round(initY + dy), initY + initH - 50));
+                    ny = propY;
+                    nh = (initY + initH) - ny;
+                  } else if (hType === "nw") {
+                    const propX = Math.max(minX, Math.min(Math.round(initX + dx), initX + initW - 60));
+                    const propY = Math.max(minY, Math.min(Math.round(initY + dy), initY + initH - 50));
+                    nx = propX;
+                    ny = propY;
+                    nw = (initX + initW) - nx;
+                    nh = (initY + initH) - ny;
                   }
 
-                  rect.setAttribute("x", nx);
-                  rect.setAttribute("y", ny);
-                  rect.setAttribute("width", nw);
-                  rect.setAttribute("height", nh);
-
-                  // Update handle positions live
-                  const hNw = handleGrp.querySelector('[data-handle="nw"]');
-                  const hNe = handleGrp.querySelector('[data-handle="ne"]');
-                  const hSe = handleGrp.querySelector('[data-handle="se"]');
-                  const hSw = handleGrp.querySelector('[data-handle="sw"]');
-                  if (hNw) { hNw.setAttribute("cx", nx); hNw.setAttribute("cy", ny); }
-                  if (hNe) { hNe.setAttribute("cx", nx + nw); hNe.setAttribute("cy", ny); }
-                  if (hSe) { hSe.setAttribute("cx", nx + nw); hSe.setAttribute("cy", ny + nh); }
-                  if (hSw) { hSw.setAttribute("cx", nx); hSw.setAttribute("cy", ny + nh); }
-
-                  // Update text label position
-                  const lbl = selGrp.querySelector(".room-header, .room-label");
-                  if (lbl) {
-                    lbl.setAttribute("x", nx + 14);
-                    lbl.setAttribute("y", ny + 22);
-                  }
-
-                  if (inpX) inpX.value = nx;
-                  if (inpY) inpY.value = ny;
-                  if (inpW) inpW.value = nw;
-                  if (inpH) inpH.value = nh;
-
-                  this._dirtyRooms[this._selectedEditorRoomId] = {
-                    id: this._selectedEditorRoomId,
-                    x: nx,
-                    y: ny,
-                    width: nw,
-                    height: nh,
-                  };
-                  this._hasUnsavedLayout = true;
-                  const saveBtn = root.querySelector("#btn-save-layout");
-                  if (saveBtn) saveBtn.textContent = "💾 Save Changes *";
+                  updateRoomElements(nx, ny, nw, nh);
                 };
 
                 handle.onpointerup = (e) => {
-                  if (this._resizingHandle) {
+                  if (this._resizingHandle && this._resizingHandle.type !== "move") {
+                    try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
+                    this._resizingHandle = null;
+                  }
+                };
+                handle.onpointercancel = (e) => {
+                  if (this._resizingHandle && this._resizingHandle.type !== "move") {
                     try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
                     this._resizingHandle = null;
                   }
@@ -4552,18 +4747,179 @@ class OtisCompanionCard extends HTMLElement {
       };
     }
 
+    // Draggable Area Boundary Editor (Inspector) Card
+    const inspectorEl = root.querySelector("#room-inspector");
+    const inspectorHeader = root.querySelector("#inspector-header");
+    if (inspectorEl && inspectorHeader) {
+      let isDraggingInspector = false;
+      let startX = 0;
+      let startY = 0;
+      let startLeft = 0;
+      let startTop = 0;
+
+      inspectorHeader.onpointerdown = (e) => {
+        if (e.target && e.target.id === "btn-close-inspector") return;
+        e.preventDefault();
+        e.stopPropagation();
+        isDraggingInspector = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        const parentRect = (inspectorEl.parentElement || root).getBoundingClientRect();
+        const rect = inspectorEl.getBoundingClientRect();
+        startLeft = rect.left - parentRect.left;
+        startTop = rect.top - parentRect.top;
+        try { inspectorHeader.setPointerCapture(e.pointerId); } catch (_) {}
+      };
+
+      inspectorHeader.onpointermove = (e) => {
+        if (!isDraggingInspector) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        const parentRect = (inspectorEl.parentElement || root).getBoundingClientRect();
+        const maxLeft = Math.max(0, parentRect.width - inspectorEl.offsetWidth);
+        const maxTop = Math.max(0, parentRect.height - inspectorEl.offsetHeight);
+        const newLeft = Math.max(0, Math.min(startLeft + dx, maxLeft));
+        const newTop = Math.max(0, Math.min(startTop + dy, maxTop));
+        inspectorEl.style.left = `${newLeft}px`;
+        inspectorEl.style.top = `${newTop}px`;
+        inspectorEl.style.right = "auto";
+        inspectorEl.style.bottom = "auto";
+        this._inspectorX = Math.round(newLeft);
+        this._inspectorY = Math.round(newTop);
+      };
+
+      const endDragInspector = (e) => {
+        if (isDraggingInspector) {
+          try { inspectorHeader.releasePointerCapture(e.pointerId); } catch (_) {}
+          isDraggingInspector = false;
+        }
+      };
+      inspectorHeader.onpointerup = endDragInspector;
+      inspectorHeader.onpointercancel = endDragInspector;
+    }
+
     // Boundary Inspector: Area Rebinding & Direct Numerical Dimensions
     const btnApplyDim = root.querySelector("#btn-apply-inspector-dim");
     if (btnApplyDim && this._selectedEditorRoomId) {
       btnApplyDim.onclick = () => {
         const rid = this._selectedEditorRoomId;
         const selArea = root.querySelector("#editor-area-select")?.value || rid;
-        const nx = Math.round(parseFloat(root.querySelector("#inspector-room-x")?.value || 0));
-        const ny = Math.round(parseFloat(root.querySelector("#inspector-room-y")?.value || 0));
-        const nw = Math.max(60, Math.round(parseFloat(root.querySelector("#inspector-room-w")?.value || 160)));
-        const nh = Math.max(50, Math.round(parseFloat(root.querySelector("#inspector-room-h")?.value || 120)));
+        let nx = Math.round(parseFloat(root.querySelector("#inspector-room-x")?.value || 0));
+        let ny = Math.round(parseFloat(root.querySelector("#inspector-room-y")?.value || 0));
+        let nw = Math.max(60, Math.round(parseFloat(root.querySelector("#inspector-room-w")?.value || 160)));
+        let nh = Math.max(50, Math.round(parseFloat(root.querySelector("#inspector-room-h")?.value || 120)));
 
         const areaName = this._capabilityMap?.areas?.[selArea]?.name;
+
+        // Blueprint plan clamping
+        const selGrp = svgEl ? svgEl.querySelector(`.room-group[data-area-id="${rid}"]`) : null;
+        let minX = 40;
+        let maxX = 1260;
+        let minY = 30;
+        let maxY = 1400;
+        if (selGrp) {
+          const planGroup = selGrp.closest("[data-plan]") || selGrp.closest(".floor-zone") || svgEl;
+          const planFrame = planGroup.querySelector(".plan-frame");
+          if (planFrame) {
+            const fx = parseFloat(planFrame.getAttribute("x") || 40);
+            const fy = parseFloat(planFrame.getAttribute("y") || 30);
+            const fw = parseFloat(planFrame.getAttribute("width") || 1220);
+            const fh = parseFloat(planFrame.getAttribute("height") || 650);
+            minX = Math.round(fx + 5);
+            maxX = Math.round(fx + fw - 5);
+            minY = Math.round(fy + 34);
+            maxY = Math.round(fy + fh - 5);
+          }
+        }
+
+        nx = Math.max(minX, Math.min(nx, maxX - 60));
+        ny = Math.max(minY, Math.min(ny, maxY - 50));
+        nw = Math.max(60, Math.min(nw, maxX - nx));
+        nh = Math.max(50, Math.min(nh, maxY - ny));
+
+        // Update SVG DOM directly without re-rendering to prevent snap-back
+        if (selGrp) {
+          const rect = selGrp.querySelector(".room-box, .room-rect");
+          if (rect) {
+            rect.setAttribute("x", nx);
+            rect.setAttribute("y", ny);
+            rect.setAttribute("width", nw);
+            rect.setAttribute("height", nh);
+          }
+          const lbl = selGrp.querySelector(".room-header, .room-label");
+          if (lbl) {
+            lbl.setAttribute("x", nx + 14);
+            lbl.setAttribute("y", ny + 22);
+            if (areaName) lbl.textContent = areaName;
+          }
+          const handleGrp = selGrp.querySelector(".handles-layer");
+          if (handleGrp) {
+            const hNw = handleGrp.querySelector('[data-handle="nw"]');
+            const hN  = handleGrp.querySelector('[data-handle="n"]');
+            const hNe = handleGrp.querySelector('[data-handle="ne"]');
+            const hE  = handleGrp.querySelector('[data-handle="e"]');
+            const hSe = handleGrp.querySelector('[data-handle="se"]');
+            const hS  = handleGrp.querySelector('[data-handle="s"]');
+            const hSw = handleGrp.querySelector('[data-handle="sw"]');
+            const hW  = handleGrp.querySelector('[data-handle="w"]');
+            if (hNw) { hNw.setAttribute("cx", nx); hNw.setAttribute("cy", ny); }
+            if (hN)  { hN.setAttribute("cx", nx + nw / 2); hN.setAttribute("cy", ny); }
+            if (hNe) { hNe.setAttribute("cx", nx + nw); hNe.setAttribute("cy", ny); }
+            if (hE)  { hE.setAttribute("cx", nx + nw); hE.setAttribute("cy", ny + nh / 2); }
+            if (hSe) { hSe.setAttribute("cx", nx + nw); hSe.setAttribute("cy", ny + nh); }
+            if (hS)  { hS.setAttribute("cx", nx + nw / 2); hS.setAttribute("cy", ny + nh); }
+            if (hSw) { hSw.setAttribute("cx", nx); hSw.setAttribute("cy", ny + nh); }
+            if (hW)  { hW.setAttribute("cx", nx); hW.setAttribute("cy", ny + nh / 2); }
+          }
+
+          // Update subzone pills
+          selGrp.querySelectorAll(".subzone-pill").forEach((pill, pIdx) => {
+            pill.setAttribute("x", nx + 16);
+            pill.setAttribute("y", ny + 22 + 18 + pIdx * 16);
+          });
+
+          // Update entity badges
+          selGrp.querySelectorAll(".entity-badge").forEach((badge, bIdx) => {
+            badge.setAttribute("transform", `translate(${nx + 16 + bIdx * 24}, ${ny + nh - 18})`);
+          });
+
+          // Update stairs if present
+          const stairsBox = selGrp.querySelector('rect[fill*="rgba(56, 189, 248"]');
+          if (stairsBox) {
+            const sx = nx + nw - 58;
+            const sy = ny + nh - 42;
+            stairsBox.setAttribute("x", sx);
+            stairsBox.setAttribute("y", sy);
+            selGrp.querySelectorAll(".stairs-step").forEach((line, sIdx) => {
+              const lx = sx + (sIdx + 1) * 9;
+              line.setAttribute("x1", lx);
+              line.setAttribute("y1", sy);
+              line.setAttribute("x2", lx);
+              line.setAttribute("y2", sy + 28);
+            });
+          }
+
+          // Update door cut if present
+          const doorCut = selGrp.querySelector(".door-cut");
+          if (doorCut) {
+            doorCut.setAttribute("x1", nx + nw - 34);
+            doorCut.setAttribute("y1", ny + nh);
+            doorCut.setAttribute("x2", nx + nw - 12);
+            doorCut.setAttribute("y2", ny + nh);
+          }
+        }
+
+        const inpX = root.querySelector("#inspector-room-x");
+        const inpY = root.querySelector("#inspector-room-y");
+        const inpW = root.querySelector("#inspector-room-w");
+        const inpH = root.querySelector("#inspector-room-h");
+        if (inpX) inpX.value = nx;
+        if (inpY) inpY.value = ny;
+        if (inpW) inpW.value = nw;
+        if (inpH) inpH.value = nh;
+
         this._dirtyRooms[rid] = {
           id: rid,
           x: nx,
@@ -4575,38 +4931,7 @@ class OtisCompanionCard extends HTMLElement {
         this._hasUnsavedLayout = true;
         const saveBtn = root.querySelector("#btn-save-layout");
         if (saveBtn) saveBtn.textContent = "💾 Save Changes *";
-
-        // Update SVG DOM directly without re-rendering to prevent snap-back
-        if (svgEl) {
-          const selGrp = svgEl.querySelector(`.room-group[data-area-id="${rid}"]`);
-          if (selGrp) {
-            const rect = selGrp.querySelector(".room-box, .room-rect");
-            if (rect) {
-              rect.setAttribute("x", nx);
-              rect.setAttribute("y", ny);
-              rect.setAttribute("width", nw);
-              rect.setAttribute("height", nh);
-            }
-            const lbl = selGrp.querySelector(".room-header, .room-label");
-            if (lbl) {
-              lbl.setAttribute("x", nx + 14);
-              lbl.setAttribute("y", ny + 22);
-              if (areaName) lbl.textContent = areaName;
-            }
-            const handleGrp = selGrp.querySelector(".handles-layer");
-            if (handleGrp) {
-              const hNw = handleGrp.querySelector('[data-handle="nw"]');
-              const hNe = handleGrp.querySelector('[data-handle="ne"]');
-              const hSe = handleGrp.querySelector('[data-handle="se"]');
-              const hSw = handleGrp.querySelector('[data-handle="sw"]');
-              if (hNw) { hNw.setAttribute("cx", nx); hNw.setAttribute("cy", ny); }
-              if (hNe) { hNe.setAttribute("cx", nx + nw); hNe.setAttribute("cy", ny); }
-              if (hSe) { hSe.setAttribute("cx", nx + nw); hSe.setAttribute("cy", ny + nh); }
-              if (hSw) { hSw.setAttribute("cx", nx); hSw.setAttribute("cy", ny + nh); }
-            }
-          }
-        }
-        this._showToast(`Boundary updated for ${areaName || rid}! Click Save Changes to persist.`);
+        this._showToast(`Boundary updated for ${areaName || rid}! Click Save Layout to persist.`);
       };
     }
 

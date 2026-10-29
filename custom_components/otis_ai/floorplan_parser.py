@@ -787,10 +787,10 @@ class FloorplanParser:
                 rid = r.get("id")
                 if not rid or "x" not in r or "y" not in r:
                     continue
-                rx = round(float(r["x"]), 1)
-                ry = round(float(r["y"]), 1)
-                rw = round(float(r.get("width", 160)), 1)
-                rh = round(float(r.get("height", 120)), 1)
+                rx = max(40.0, min(round(float(r["x"]), 1), 1200.0))
+                ry = max(30.0, min(round(float(r["y"]), 1), 1350.0))
+                rw = max(60.0, min(round(float(r.get("width", 160)), 1), 1260.0 - rx))
+                rh = max(50.0, min(round(float(r.get("height", 120)), 1), 1400.0 - ry))
                 points = r.get("points")
                 rname = r.get("name")
 
@@ -826,6 +826,65 @@ class FloorplanParser:
                     inner = re.sub(
                         r'(<text\b[^>]*class="[^"]*(?:room-header|room-label)[^"]*"[^>]*>)(.*?)(</text>)',
                         _text_sub,
+                        inner,
+                    )
+
+                    # Update internal architectural subzone pills in sync with room coordinates
+                    pill_idx = 0
+
+                    def _pill_sub(pmatch: re.Match) -> str:
+                        nonlocal pill_idx
+                        tag_start = pmatch.group(1)
+                        tag_txt = pmatch.group(2)
+                        tag_start = re.sub(r'\s+(?:x|y)="[^"]*"', '', tag_start)
+                        py = round(ry + 22 + 18 + pill_idx * 16, 1)
+                        pill_idx += 1
+                        return f'{tag_start} x="{round(rx + 16, 1)}" y="{py}">{tag_txt}</text>'
+
+                    inner = re.sub(
+                        r'(<text\b[^>]*class="[^"]*subzone-pill[^"]*"[^>]*>)(.*?)(</text>)',
+                        _pill_sub,
+                        inner,
+                    )
+
+                    # Update internal entity badges in sync with room coordinates
+                    b_idx = 0
+
+                    def _badge_sub(bmatch: re.Match) -> str:
+                        nonlocal b_idx
+                        tag_start = bmatch.group(1)
+                        tag_rest = bmatch.group(2)
+                        tag_start = re.sub(r'\s+transform="[^"]*"', '', tag_start)
+                        bx = round(rx + 16 + b_idx * 24, 1)
+                        by = round(ry + rh - 18, 1)
+                        b_idx += 1
+                        return f'{tag_start} transform="translate({bx}, {by})">{tag_rest}'
+
+                    inner = re.sub(
+                        r'(<g\b[^>]*class="[^"]*entity-badge[^"]*"[^>]*>)([\s\S]*?</g>)',
+                        _badge_sub,
+                        inner,
+                    )
+
+                    # Update internal stairs in sync with room coordinates if present
+                    sx = round(rx + rw - 58, 1)
+                    sy = round(ry + rh - 42, 1)
+                    inner = re.sub(
+                        r'(<rect\b[^>]*fill="rgba\(56,\s*189,\s*248,\s*0\.12\)"[^>]*?)\s+x="[^"]*"\s+y="[^"]*"',
+                        rf'\1 x="{sx}" y="{sy}"',
+                        inner,
+                    )
+                    step_i = 0
+
+                    def _step_sub(smatch: re.Match) -> str:
+                        nonlocal step_i
+                        step_i += 1
+                        lx = round(sx + step_i * 9, 1)
+                        return f'<line x1="{lx}" y1="{sy}" x2="{lx}" y2="{round(sy + 28, 1)}" class="stairs-step" />'
+
+                    inner = re.sub(
+                        r'<line\b[^>]*class="stairs-step"[^>]*/>',
+                        _step_sub,
                         inner,
                     )
                     svg_content = svg_content[:match.start()] + header + inner + footer + svg_content[match.end():]
