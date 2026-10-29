@@ -23,4 +23,7 @@ SERVICE_GENERATE_THEME = "generate_theme"
 SERVICE_APPLY_THEME = "apply_theme"
 SERVICE_LIST_THEMES = "list_themes"
 SERVICE_DELETE_THEME = "delete_theme"
+SERVICE_RUN_SENTINEL_WATCHDOG = "run_sentinel_watchdog"
+SERVICE_REMEDIATE_ANOMALY = "remediate_anomaly"
+SERVICE_GET_SENTINEL_TELEMETRY = "get_sentinel_telemetry"
 

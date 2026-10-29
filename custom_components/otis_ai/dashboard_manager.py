@@ -6,7 +6,6 @@ import logging
 import os
 import re
 from typing import Any
-import yaml
 
 from homeassistant.core import HomeAssistant
 
@@ -116,42 +115,21 @@ class DashboardManager:
         })
 
         # 4. Floor Plan Subview
-        floorplan_info = capability_map.get("floorplan", {}) if capability_map else {}
-        floorplan_yaml = floorplan_info.get("lovelace_yaml")
-        floorplan_cards: list[dict[str, Any]] = []
-        if floorplan_yaml:
-            try:
-                fp_parsed = yaml.safe_load(floorplan_yaml)
-                if isinstance(fp_parsed, dict):
-                    floorplan_cards.append(fp_parsed)
-            except Exception as err:
-                _LOGGER.debug("Error parsing floorplan lovelace yaml: %s", err)
-        elif floorplan_info.get("exists") or (
-            self.hass
-            and hasattr(self.hass, "config")
-            and hasattr(self.hass.config, "path")
-            and os.path.exists(self.hass.config.path("www/otis_floorplan.svg"))
-        ):
-            floorplan_cards.append({
-                "type": "picture-elements",
-                "image": "/local/otis_floorplan.svg",
-                "elements": [],
-            })
-
-        if not floorplan_cards:
-            floorplan_cards.append({
-                "type": "markdown",
-                "content": (
-                    "## 🗺️ Architectural Vector Floor Plan Studio\n"
-                    "Interactive spatial floor plan with live glowing entity badges and inspection drawers.\n\n"
-                    "👉 Use the **Floor Plan** tab on the **AI Command Center** to record or upload a video walkthrough."
-                ),
-            })
+        floorplan_cards: list[dict[str, Any]] = [
+            {
+                "type": "custom:otis-companion-card",
+                "default_tab": "floorplan",
+                "show_stats": False,
+                "title": "Architectural Vector Floor Plan Studio",
+            }
+        ]
         views.append({
             "title": "Floor Plan Studio",
             "path": "floorplan",
             "icon": "mdi:floor-plan",
             "subview": True,
+            "type": "panel",
+            "panel": True,
             "badges": [],
             "cards": floorplan_cards,
         })

@@ -190,4 +190,29 @@ delete_theme:
       selector:
         text:
 
+run_sentinel_watchdog:
+  name: Run Sentinel Watchdog Audit
+  description: Run comprehensive Otis Sentinel telemetry scan across climate short-cycling, battery drain, stuck security perimeter access, and failed integration nodes.
+
+remediate_anomaly:
+  name: Remediate Sentinel Anomaly
+  description: Trigger 1-click self-healing remediation for an anomaly detected by Otis Sentinel.
+  fields:
+    anomaly_id:
+      name: Anomaly ID
+      description: Identifier of the anomaly to remediate.
+      required: true
+      selector:
+        text:
+    action:
+      name: Action Override
+      description: Optional remediation action override (e.g., 'secure_perimeter_entity', 'adjust_climate_target', 'reload_config_entry', 'dismiss').
+      required: false
+      selector:
+        text:
+
+get_sentinel_telemetry:
+  name: Get Sentinel Telemetry
+  description: Retrieve live Sentinel anomaly monitoring status, active anomalies list, and remediation history.
+
 

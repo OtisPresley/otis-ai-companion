@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shutil
+import time
 from typing import Any
 import urllib.request
 
@@ -849,7 +850,7 @@ class FloorplanParser:
         canvas_height = self._get_canvas_height(layout_by_zone)
 
         svg_parts = [
-            f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1300 {canvas_height}" data-full-viewbox="0 0 1300 {canvas_height}" width="100%" height="100%" class="otis-floorplan {theme}">
+            f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1300 {canvas_height}" data-full-viewbox="0 0 1300 {canvas_height}" width="1300" height="{canvas_height}" class="otis-floorplan {theme}">
   <defs>
     <style>
       .otis-floorplan {{
@@ -1153,7 +1154,7 @@ class FloorplanParser:
         """Generate ready-to-use Lovelace picture-elements YAML configuration."""
         card_def = {
             "type": "picture-elements",
-            "image": f"/local/{os.path.basename(svg_relative_path)}",
+            "image": f"/local/{os.path.basename(svg_relative_path)}?v={int(time.time())}",
             "title": "Interactive Home Floor Plan",
             "elements": [],
         }

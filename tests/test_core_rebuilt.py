@@ -1935,6 +1935,125 @@ class TestThemeManager(unittest.TestCase):
         self.assertEqual(len(themes_after), 0)
 
 
+class TestSentinelManager(unittest.TestCase):
+    """Test suite for Phase 3 Otis Sentinel Telemetry Watchdog & Self-Healing."""
+
+    def setUp(self):
+        self.hass = MagicMock()
+        self.hass.states = MagicMock()
+        self.hass.services = MagicMock()
+        self.hass.services.has_service = MagicMock(return_value=True)
+
+        async def _mock_call(domain, service, service_data=None, blocking=True):
+            return True
+
+        self.hass.services.async_call = MagicMock(side_effect=_mock_call)
+
+        self.hass.config_entries = MagicMock()
+
+        async def _mock_reload(entry_id):
+            return True
+
+        self.hass.config_entries.async_reload = MagicMock(side_effect=_mock_reload)
+
+    def test_battery_watchdog(self):
+        """Verify critical and low battery detection."""
+        from custom_components.otis_ai.sentinel_manager import SentinelManager
+
+        s_crit = MagicMock()
+        s_crit.entity_id = "sensor.front_door_lock_battery"
+        s_crit.state = "6"
+        s_crit.attributes = {"device_class": "battery", "friendly_name": "Front Door Lock Battery"}
+
+        s_low = MagicMock()
+        s_low.entity_id = "sensor.living_room_motion_battery"
+        s_low.state = "18"
+        s_low.attributes = {"device_class": "battery", "friendly_name": "Living Room Motion Battery"}
+
+        self.hass.states.async_all.return_value = [s_crit, s_low]
+
+        sm = SentinelManager(self.hass)
+        anomalies = asyncio.run(sm.async_scan_all_anomalies())
+        self.assertEqual(len(anomalies), 2)
+
+        a_crit = next(a for a in anomalies if a["entity_id"] == "sensor.front_door_lock_battery")
+        self.assertEqual(a_crit["severity"], "high")
+        self.assertIn("Critical Battery", a_crit["title"])
+
+        a_low = next(a for a in anomalies if a["entity_id"] == "sensor.living_room_motion_battery")
+        self.assertEqual(a_low["severity"], "medium")
+
+    def test_perimeter_access_watchdog(self):
+        """Verify stuck unlocked lock and open garage doors > 60m are detected."""
+        from custom_components.otis_ai.sentinel_manager import SentinelManager
+        from datetime import datetime, timezone, timedelta
+
+        past_time = datetime.now(timezone.utc) - timedelta(minutes=75)
+
+        s_lock = MagicMock()
+        s_lock.entity_id = "lock.front_door"
+        s_lock.state = "unlocked"
+        s_lock.last_changed = past_time
+        s_lock.attributes = {"friendly_name": "Front Door"}
+
+        s_garage = MagicMock()
+        s_garage.entity_id = "cover.garage_door"
+        s_garage.state = "open"
+        s_garage.last_changed = past_time
+        s_garage.attributes = {"device_class": "garage", "friendly_name": "Main Garage Door"}
+
+        self.hass.states.async_all.return_value = [s_lock, s_garage]
+
+        sm = SentinelManager(self.hass)
+        anomalies = asyncio.run(sm.async_scan_all_anomalies())
+        self.assertEqual(len(anomalies), 2)
+        self.assertTrue(all(a["severity"] == "high" for a in anomalies))
+
+    def test_failed_integration_watchdog(self):
+        """Verify failed integration entries trigger actionable alerts."""
+        from custom_components.otis_ai.sentinel_manager import SentinelManager
+
+        mock_entry = MagicMock()
+        mock_entry.entry_id = "entry_12345"
+        mock_entry.title = "Unifi Protect"
+        mock_entry.state = "setup_error"
+        mock_entry.domain = "unifiprotect"
+
+        self.hass.states.async_all.return_value = []
+        self.hass.config_entries.async_entries.return_value = [mock_entry]
+
+        sm = SentinelManager(self.hass)
+        anomalies = asyncio.run(sm.async_scan_all_anomalies())
+        self.assertEqual(len(anomalies), 1)
+        self.assertIn("Integration Error", anomalies[0]["title"])
+        self.assertEqual(anomalies[0]["remediation_action"], "reload_config_entry")
+
+    def test_self_healing_remediation_lifecycle(self):
+        """Verify 1-click self-healing execution and anomaly resolution."""
+        from custom_components.otis_ai.sentinel_manager import SentinelManager
+        from datetime import datetime, timezone, timedelta
+
+        s_lock = MagicMock()
+        s_lock.entity_id = "lock.back_door"
+        s_lock.state = "unlocked"
+        s_lock.last_changed = datetime.now(timezone.utc) - timedelta(minutes=90)
+        s_lock.attributes = {"friendly_name": "Back Door"}
+
+        self.hass.states.async_all.return_value = [s_lock]
+        self.hass.config_entries.async_entries.return_value = []
+
+        sm = SentinelManager(self.hass)
+        anomalies = asyncio.run(sm.async_scan_all_anomalies())
+        self.assertEqual(len(anomalies), 1)
+        anom_id = anomalies[0]["id"]
+
+        # Remediate via 1-click action
+        res = asyncio.run(sm.async_remediate_anomaly(anom_id))
+        self.assertTrue(res["success"])
+        self.hass.services.async_call.assert_any_call("lock", "lock", {"entity_id": "lock.back_door"}, blocking=True)
+        self.assertEqual(len(sm.get_active_anomalies()), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
 

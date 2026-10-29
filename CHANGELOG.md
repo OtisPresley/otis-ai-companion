@@ -2,6 +2,30 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.5.9] - 2026-10-29
+
+### Added & Improved
+- **Phase 3: Otis Sentinel (Proactive Anomaly Detection & Watchdog) (`sentinel_manager.py`)**:
+  - Implemented continuous telemetry watchdog audit engine across:
+    - **Climate Short-Cycling & Extreme Runaway Deltas**: Detects extreme divergence between target and ambient temperatures to avoid compressor stress.
+    - **Battery Health & Depletion Watchdog**: Flags critical (< 10%) and low (< 20%) battery sensors before unexpected device drops.
+    - **Security Perimeter Watchdog**: Detects locks left unsecured or garage doors left open for > 60 minutes.
+    - **Failed Integration Detection**: Audits `config_entries` for `SETUP_ERROR` or `SETUP_RETRY` states.
+    - **Offline Infrastructure Nodes**: Identifies unavailable network switches, cameras, and media bridges.
+  - **1-Click Self-Healing Remediation**:
+    - Auto-lock and auto-close unlatched perimeter gates/doors.
+    - Live reload failed integration config entries without Home Assistant restarts.
+    - Adjust runaway HVAC targets to safe operational deadbands.
+    - Create persistent alert notifications for critical battery replacements.
+  - **Services Registered**:
+    - `otis_ai.run_sentinel_watchdog`: Triggers a comprehensive telemetry audit.
+    - `otis_ai.remediate_anomaly`: Executes atomic self-healing action for any anomaly.
+    - `otis_ai.get_sentinel_telemetry`: Returns active anomaly status and remediation logs.
+  - **Conversational Intelligence**: Ask Otis *"Run sentinel audit"* or *"Check system anomalies"* for instant status.
+- **Floor Plan Studio Subview Optimization (`dashboard_manager.py`, `floorplan_parser.py`)**:
+  - Changed `/otis-ai/floorplan` subview to host `custom:otis-companion-card` with `default_tab: "floorplan"`, providing the full interactive vector floor plan studio with zone filters, room inspection drawer, and live glowing badges.
+  - Changed root SVG markup from percentage dimensions to explicit `width="1300" height="{canvas_height}"` and added cache-busting version query parameters (`?v=...`) to avoid stale 31-day browser cache issues.
+
 ## [1.5.8] - 2026-10-29
 
 ### Added & Improved

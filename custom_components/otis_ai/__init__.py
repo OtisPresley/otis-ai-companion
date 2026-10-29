@@ -41,9 +41,13 @@ from .const import (
     SERVICE_APPLY_THEME,
     SERVICE_LIST_THEMES,
     SERVICE_DELETE_THEME,
+    SERVICE_RUN_SENTINEL_WATCHDOG,
+    SERVICE_REMEDIATE_ANOMALY,
+    SERVICE_GET_SENTINEL_TELEMETRY,
 )
 from .automation_manager import AutomationManager
 from .dashboard_manager import DashboardManager
+from .sentinel_manager import SentinelManager
 from .spatial_manager import (
     SpatialGraphManager,
     build_area_lookup_map,
@@ -332,12 +336,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await async_register_frontend_paths(hass)
     hass.data.setdefault(DOMAIN, {})
     
-    # Initialize the Spatial Graph, Discovery Engine, Automation Manager, Floorplan Parser, Dashboard Manager, and Theme Manager
+    # Initialize the Spatial Graph, Discovery Engine, Automation Manager, Floorplan Parser, Dashboard Manager, Theme Manager, and Sentinel Watchdog
     spatial_manager = SpatialGraphManager(hass)
     floorplan_parser = FloorplanParser(hass)
     automation_manager = AutomationManager(hass)
     dashboard_manager = DashboardManager(hass)
     theme_manager = ThemeManager(hass)
+    sentinel_manager = SentinelManager(hass)
     await asyncio.gather(
         spatial_manager.async_load(),
         floorplan_parser.async_load(),
@@ -349,6 +354,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         floorplan_parser=floorplan_parser,
         dashboard_manager=dashboard_manager,
         theme_manager=theme_manager,
+        sentinel_manager=sentinel_manager,
     )
 
     # Register Walkthrough Upload View
@@ -368,6 +374,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         automation_manager,
         spatial_manager=spatial_manager,
         theme_manager=theme_manager,
+        sentinel_manager=sentinel_manager,
     )
     if hasattr(conversation, "async_register_agent"):
         conversation.async_register_agent(hass, agent)
@@ -383,6 +390,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "floorplan_parser": floorplan_parser,
         "dashboard_manager": dashboard_manager,
         "theme_manager": theme_manager,
+        "sentinel_manager": sentinel_manager,
     }
 
     async def _async_update_listener(hass_inst: HomeAssistant, updated_entry: ConfigEntry) -> None:
@@ -407,12 +415,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         s_mgr = entry_data.get("spatial_manager", spatial_manager)
         fp = entry_data.get("floorplan_parser", floorplan_parser)
         tm = entry_data.get("theme_manager", theme_manager)
-        return eng, mgr, s_mgr, fp, tm
+        sm = entry_data.get("sentinel_manager", sentinel_manager)
+        return eng, mgr, s_mgr, fp, tm, sm
 
     async def handle_get_capability_map(call) -> ServiceResponse:
         """Handle service call to get the capability map."""
         _LOGGER.debug("Service 'get_capability_map' triggered")
-        eng, _, _, _, _ = _get_active_managers()
+        eng, _, _, _, _, _ = _get_active_managers()
         capability_map = await eng.async_build_capability_map()
         capability_map["conversation_agent_id"] = entry.entry_id
         return capability_map
@@ -420,7 +429,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_get_suggestions(call) -> ServiceResponse:
         """Handle service call to retrieve proactive suggestions."""
         _LOGGER.debug("Service 'get_suggestions' triggered")
-        eng, _, _, _, _ = _get_active_managers()
+        eng, _, _, _, _, _ = _get_active_managers()
         capability_map = await eng.async_build_capability_map()
         return {"suggestions": capability_map.get("proactive_suggestions", [])}
 
@@ -431,7 +440,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not suggestion_id:
             return {"success": False, "error": "Missing suggestion_id parameter"}
 
-        eng, mgr, _, _, _ = _get_active_managers()
+        eng, mgr, _, _, _, sm = _get_active_managers()
         target = None
         if hasattr(eng, "get_cached_suggestion") and callable(getattr(eng, "get_cached_suggestion", None)):
             cached = eng.get_cached_suggestion(suggestion_id)
@@ -452,6 +461,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         def _invalidate():
             if hasattr(eng, "invalidate_cache") and callable(getattr(eng, "invalidate_cache", None)):
                 eng.invalidate_cache()
+
+        if action_type == "remediate_sentinel_anomaly":
+            res = await sm.async_remediate_anomaly(
+                payload.get("anomaly_id", suggestion_id),
+                action=payload.get("action"),
+            )
+            _invalidate()
+            return res
 
         if action_type == "create_automation":
             auto_id = await mgr.async_write_automation(payload)
@@ -707,7 +724,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_get_spatial_map(call) -> ServiceResponse:
         """Handle service call to retrieve the spatial area adjacency graph."""
         _LOGGER.debug("Service 'get_spatial_map' triggered")
-        _, _, s_mgr, _, _ = _get_active_managers()
+        _, _, s_mgr, _, _, _ = _get_active_managers()
         graph = await s_mgr.async_get_graph()
         return graph
 
@@ -729,7 +746,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return {"success": False, "error": "Both 'area_1' and 'area_2' are required parameters"}
 
         try:
-            eng, _, s_mgr, _, _ = _get_active_managers()
+            eng, _, s_mgr, _, _, _ = _get_active_managers()
             graph = await s_mgr.async_update_connection(area_1, area_2, connected, connection_type)
             if hasattr(eng, "invalidate_cache"):
                 eng.invalidate_cache()
@@ -746,7 +763,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_generate_floorplan(call) -> ServiceResponse:
         """Handle service call to generate SVG floorplan."""
         _LOGGER.debug("Service 'generate_floorplan' triggered")
-        eng, _, _, fp, _ = _get_active_managers()
+        eng, _, _, fp, _, _ = _get_active_managers()
         capability_map = await eng.async_build_capability_map()
         video_path = call.data.get("video_path")
         spoken_order = call.data.get("spoken_order")
@@ -766,7 +783,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_generate_theme(call) -> ServiceResponse:
         """Handle service call to generate and persist a custom theme."""
         _LOGGER.debug("Service 'generate_theme' triggered with: %s", call.data)
-        eng, _, _, _, tm = _get_active_managers()
+        eng, _, _, _, tm, _ = _get_active_managers()
         prompt = call.data.get("prompt", "")
         name = call.data.get("name")
         base_palette = call.data.get("base_palette")
@@ -795,14 +812,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Service 'apply_theme' triggered for: %s (mode=%s)", theme_name, mode)
         if not theme_name:
             return {"success": False, "error": "Missing theme 'name' parameter"}
-        _, _, _, _, tm = _get_active_managers()
+        _, _, _, _, tm, _ = _get_active_managers()
         ok = await tm.async_apply_theme(theme_name, mode=mode)
         return {"success": ok, "theme": theme_name}
 
     async def handle_list_themes(call) -> ServiceResponse:
         """Handle service call to list generated Otis themes."""
         _LOGGER.debug("Service 'list_themes' triggered")
-        _, _, _, _, tm = _get_active_managers()
+        _, _, _, _, tm, _ = _get_active_managers()
         themes = await tm.async_list_otis_themes()
         return {"themes": themes, "presets": list(PRESET_THEMES.keys())}
 
@@ -812,11 +829,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Service 'delete_theme' triggered for: %s", theme_name)
         if not theme_name:
             return {"success": False, "error": "Missing theme 'name' parameter"}
-        eng, _, _, _, tm = _get_active_managers()
+        eng, _, _, _, tm, _ = _get_active_managers()
         deleted = await tm.async_delete_theme(theme_name)
         if hasattr(eng, "invalidate_cache"):
             eng.invalidate_cache()
         return {"success": deleted, "theme": theme_name}
+
+    async def handle_run_sentinel_watchdog(call) -> ServiceResponse:
+        """Handle service call to run Sentinel watchdog audit."""
+        _LOGGER.debug("Service 'run_sentinel_watchdog' triggered")
+        eng, _, _, _, _, sm = _get_active_managers()
+        anomalies = await sm.async_scan_all_anomalies()
+        if hasattr(eng, "invalidate_cache"):
+            eng.invalidate_cache()
+        return {"success": True, "anomalies": anomalies, "count": len(anomalies)}
+
+    async def handle_remediate_anomaly(call) -> ServiceResponse:
+        """Handle service call to remediate a detected anomaly."""
+        anomaly_id = call.data.get("anomaly_id")
+        action = call.data.get("action")
+        _LOGGER.debug("Service 'remediate_anomaly' triggered for: %s (action=%s)", anomaly_id, action)
+        if not anomaly_id:
+            return {"success": False, "error": "Missing 'anomaly_id' parameter"}
+        eng, _, _, _, _, sm = _get_active_managers()
+        res = await sm.async_remediate_anomaly(anomaly_id, action=action)
+        if hasattr(eng, "invalidate_cache"):
+            eng.invalidate_cache()
+        return res
+
+    async def handle_get_sentinel_telemetry(call) -> ServiceResponse:
+        """Handle service call to retrieve Sentinel telemetry."""
+        _LOGGER.debug("Service 'get_sentinel_telemetry' triggered")
+        _, _, _, _, _, sm = _get_active_managers()
+        anomalies = sm.get_active_anomalies()
+        return {"anomalies": anomalies, "count": len(anomalies)}
 
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
@@ -885,6 +931,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_delete_theme,
         supports_response=SupportsResponse.ONLY,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RUN_SENTINEL_WATCHDOG,
+        handle_run_sentinel_watchdog,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REMEDIATE_ANOMALY,
+        handle_remediate_anomaly,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_SENTINEL_TELEMETRY,
+        handle_get_sentinel_telemetry,
+        supports_response=SupportsResponse.ONLY,
+    )
 
     _LOGGER.info("Otis AI Companion entry set up successfully")
     return True
@@ -936,6 +1000,7 @@ class OtisAIConversationAgent(AbstractAgent):
         automation_manager: AutomationManager,
         spatial_manager: SpatialGraphManager | None = None,
         theme_manager: ThemeManager | None = None,
+        sentinel_manager: SentinelManager | None = None,
     ) -> None:
         """Initialize the agent."""
         self.hass = hass
@@ -944,6 +1009,7 @@ class OtisAIConversationAgent(AbstractAgent):
         self.automation_manager = automation_manager
         self.spatial_manager = spatial_manager or SpatialGraphManager(hass)
         self.theme_manager = theme_manager or ThemeManager(hass)
+        self.sentinel_manager = sentinel_manager or SentinelManager(hass)
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -1057,6 +1123,20 @@ class OtisAIConversationAgent(AbstractAgent):
                 if not ok:
                     ok = await self.theme_manager.async_apply_theme(target)
                 speech = f"🎨 Switched active theme to **{target}** across Home Assistant." if ok else f"⚠️ Could not apply theme '{target}'."
+                return self._create_response(user_input, speech)
+
+        # Check for Otis Sentinel Watchdog commands
+        if any(w in user_text for w in ("run sentinel", "sentinel audit", "sentinel scan", "check anomalies", "watchdog scan", "watchdog audit")):
+            if self.sentinel_manager:
+                anomalies = await self.sentinel_manager.async_scan_all_anomalies()
+                if not anomalies:
+                    speech = "🛡️ **Otis Sentinel Watchdog: All Systems Nominal**\n\nNo anomalies detected across HVAC, battery health, security perimeter, or integration nodes."
+                else:
+                    lines = [f"🛡️ **Otis Sentinel Audit: {len(anomalies)} Anomaly Alert(s) Detected**\n"]
+                    for a in anomalies[:5]:
+                        lines.append(f"• **{a['title']}** [{a.get('severity', 'high').upper()}]: {a['description']}")
+                    lines.append("\nUse the **Proactive Feed** in the Companion Card to trigger 1-click self-healing remediation.")
+                    speech = "\n".join(lines)
                 return self._create_response(user_input, speech)
 
         # 1. Resolve prioritized AI agent cascade (Primary + Fallbacks)
@@ -1543,6 +1623,7 @@ class DiscoveryEngine:
         floorplan_parser: FloorplanParser | None = None,
         dashboard_manager: DashboardManager | None = None,
         theme_manager: ThemeManager | None = None,
+        sentinel_manager: SentinelManager | None = None,
     ) -> None:
         """Initialize the discovery engine."""
         self.hass = hass
@@ -1550,6 +1631,7 @@ class DiscoveryEngine:
         self.floorplan_parser = floorplan_parser or FloorplanParser(hass)
         self.dashboard_manager = dashboard_manager or DashboardManager(hass)
         self.theme_manager = theme_manager or ThemeManager(hass)
+        self.sentinel_manager = sentinel_manager or SentinelManager(hass)
         self._cached_cap_map: dict[str, Any] | None = None
         self._cache_ts: float = 0.0
         self._cache_signature: tuple[Any, ...] | None = None
@@ -1779,6 +1861,15 @@ class DiscoveryEngine:
             "security_topology": security_topology,
             "maturity": maturity,
         }
+        sentinel_data = {"active_anomalies": [], "count": 0}
+        if self.sentinel_manager:
+            try:
+                anomalies = await self.sentinel_manager.async_scan_all_anomalies()
+                sentinel_data = {"active_anomalies": anomalies, "count": len(anomalies)}
+            except Exception as err:
+                _LOGGER.debug("Error running Sentinel audit during discovery scan: %s", err)
+        cap_map["sentinel"] = sentinel_data
+
         themes = []
         if self.theme_manager:
             themes = await self.theme_manager.async_list_otis_themes()
@@ -2569,6 +2660,14 @@ class DiscoveryEngine:
             if e.get("domain") == "script"
         } | config_audit.get("norm_names", set())
         all_existing_names = existing_auto_names | existing_script_names
+
+        # 0. Surface Sentinel Telemetry Anomaly Self-Healing Alerts (Highest Priority)
+        if self.sentinel_manager:
+            try:
+                sentinel_suggestions = self.sentinel_manager.convert_anomalies_to_proactive_suggestions()
+                suggestions.extend(sentinel_suggestions)
+            except Exception as err:
+                _LOGGER.debug("Error generating Sentinel suggestions: %s", err)
 
         # Surface Existing Automation Improvements & HA System/Config Optimizations
         suggestions.extend(config_audit.get("improvement_suggestions", [])[:4])
