@@ -692,6 +692,158 @@ class FloorplanParser:
             "lovelace_yaml": lovelace_card_yaml,
         }
 
+    async def async_update_floorplan_layout(
+        self,
+        badges: list[dict[str, Any]] | None = None,
+        rooms: list[dict[str, Any]] | None = None,
+        svg_relative_path: str = "www/otis_floorplan.svg",
+    ) -> dict[str, Any]:
+        """Update SVG floorplan device marker coordinates and area boundary geometry."""
+        output_full_path = (
+            self.hass.config.path(svg_relative_path)
+            if hasattr(self.hass, "config") and hasattr(self.hass.config, "path")
+            else svg_relative_path
+        )
+        if not os.path.exists(output_full_path):
+            return {
+                "success": False,
+                "error": f"Floorplan SVG not found at {output_full_path}. Generate floor plan first.",
+            }
+
+        def read_sync() -> str:
+            with open(output_full_path, "r", encoding="utf-8") as f:
+                return f.read()
+
+        svg_content = await self.hass.async_add_executor_job(read_sync)
+
+        # 1. Update device marker badges
+        updated_badges = 0
+        if badges:
+            for b in badges:
+                eid = b.get("entity_id")
+                if not eid or "x" not in b or "y" not in b:
+                    continue
+                bx = round(float(b["x"]), 1)
+                by = round(float(b["y"]), 1)
+                # Match <g ... class="entity-badge" ... data-entity-id="eid" ... transform="...">
+                pattern = rf'(<g\b[^>]*class="[^"]*entity-badge[^"]*"[^>]*data-entity-id="{re.escape(eid)}"[^>]*?)(\s+transform="translate\([^)]*\)")?'
+
+                def _badge_sub(match: re.Match) -> str:
+                    prefix = match.group(1)
+                    prefix = re.sub(r'\s+transform="[^"]*"', '', prefix)
+                    return f'{prefix} transform="translate({bx}, {by})"'
+
+                new_svg, count = re.subn(pattern, _badge_sub, svg_content)
+                if count > 0:
+                    svg_content = new_svg
+                    updated_badges += count
+                else:
+                    # Also try pattern if data-entity-id came before class
+                    pattern_alt = rf'(<g\b[^>]*data-entity-id="{re.escape(eid)}"[^>]*class="[^"]*entity-badge[^"]*"[^>]*?)(\s+transform="translate\([^)]*\)")?'
+                    new_svg, count = re.subn(pattern_alt, _badge_sub, svg_content)
+                    if count > 0:
+                        svg_content = new_svg
+                        updated_badges += count
+                    else:
+                        # Insert as new badge before closing of plan-ground or </svg>
+                        domain = eid.split(".")[0] if "." in eid else "unknown"
+                        icon_char = "💡" if domain == "light" else "🚶" if domain == "binary_sensor" else "🌡️" if domain == "climate" else "📺" if domain == "media_player" else "📹" if domain == "camera" else "⚡"
+                        badge_markup = (
+                            f'    <g class="entity-badge" data-entity-id="{eid}" transform="translate({bx}, {by})">\n'
+                            f'      <circle cx="0" cy="0" r="9" class="badge-circle" />\n'
+                            f'      <text class="badge-icon">{icon_char}</text>\n'
+                            f'    </g>\n'
+                        )
+                        if '</g>\n</svg>' in svg_content:
+                            svg_content = svg_content.replace('</g>\n</svg>', f'{badge_markup}  </g>\n</svg>', 1)
+                        elif '</svg>' in svg_content:
+                            svg_content = svg_content.replace('</svg>', f'{badge_markup}</svg>', 1)
+                        updated_badges += 1
+
+        # 2. Update room boundaries & geometry
+        updated_rooms = 0
+        if rooms:
+            for r in rooms:
+                rid = r.get("id")
+                if not rid or "x" not in r or "y" not in r:
+                    continue
+                rx = round(float(r["x"]), 1)
+                ry = round(float(r["y"]), 1)
+                rw = round(float(r.get("width", 160)), 1)
+                rh = round(float(r.get("height", 120)), 1)
+                points = r.get("points")
+                rname = r.get("name")
+
+                # Match room group by data-area-id
+                room_pattern = rf'(<g\b[^>]*class="[^"]*room-group[^"]*"[^>]*data-area-id="{re.escape(rid)}"[^>]*>)([\s\S]*?)(</g>)'
+                match = re.search(room_pattern, svg_content)
+                if match:
+                    header, inner, footer = match.groups()
+                    if points:
+                        if '<polygon' in inner:
+                            inner = re.sub(r'<polygon[^>]*class="room-polygon"[^>]*/>', f'<polygon points="{points}" class="room-polygon" />', inner)
+                        else:
+                            inner = re.sub(r'<rect[^>]*class="room-rect"[^>]*/>', f'<polygon points="{points}" class="room-polygon" />', inner)
+                    else:
+                        def _rect_sub(rmatch: re.Match) -> str:
+                            tag = rmatch.group(0)
+                            tag = re.sub(r'\s+(?:x|y|width|height)="[^"]*"', '', tag)
+                            return f'<rect x="{rx}" y="{ry}" width="{rw}" height="{rh}"' + tag[5:]
+
+                        inner = re.sub(
+                            r'<rect\b[^>]*class="[^"]*(?:room-box|room-rect)[^"]*"[^>]*/>',
+                            _rect_sub,
+                            inner,
+                        )
+
+                    # Update text label position
+                    def _text_sub(tmatch: re.Match) -> str:
+                        tag_start = tmatch.group(1)
+                        content_txt = rname if rname else tmatch.group(2)
+                        tag_start = re.sub(r'\s+(?:x|y)="[^"]*"', '', tag_start)
+                        return f'{tag_start} x="{round(rx + 14, 1)}" y="{round(ry + 22, 1)}">{content_txt}</text>'
+
+                    inner = re.sub(
+                        r'(<text\b[^>]*class="[^"]*(?:room-header|room-label)[^"]*"[^>]*>)(.*?)(</text>)',
+                        _text_sub,
+                        inner,
+                    )
+                    svg_content = svg_content[:match.start()] + header + inner + footer + svg_content[match.end():]
+                    updated_rooms += 1
+
+        # 3. Persist updated layout coordinates to metadata storage
+        if not self._initialized:
+            await self.async_load()
+
+        custom_layout = self._metadata.setdefault("custom_layout", {})
+        if badges:
+            custom_layout["badges"] = badges
+        if rooms:
+            custom_layout["rooms"] = rooms
+        self._metadata["last_layout_update"] = int(time.time())
+        await self.async_save_metadata(self._metadata)
+
+        def write_sync():
+            with open(output_full_path, "w", encoding="utf-8") as f:
+                f.write(svg_content)
+
+        await self.hass.async_add_executor_job(write_sync)
+        _LOGGER.info(
+            "Updated floorplan layout in %s (badges=%d, rooms=%d)",
+            output_full_path,
+            updated_badges,
+            updated_rooms,
+        )
+
+        return {
+            "success": True,
+            "message": f"Updated floor plan layout ({updated_badges} badges, {updated_rooms} rooms)",
+            "svg_path": svg_relative_path,
+            "url": f"/local/{os.path.basename(svg_relative_path)}?v={int(time.time())}",
+            "updated_badges": updated_badges,
+            "updated_rooms": updated_rooms,
+        }
+
     def _place_zone_rooms(
         self,
         rooms: list[dict[str, Any]],

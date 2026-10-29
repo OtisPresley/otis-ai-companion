@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 1.5.9
+ * Version: 1.6.0
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -8,10 +8,11 @@
  * - Proactive suggestions feed with category filter pills & 1-click coordinator execution
  * - Embedded Assist conversational co-pilot with quick prompt chips
  * - Multimodal Video-to-Floorplan SVG Parser & Interactive Viewer
+ * - Phase 4 Visual Floor Plan Boundary & Marker Adjuster on Lovelace Canvas
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.5.9";
+const CARD_VERSION = "1.6.0";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -56,6 +57,16 @@ class OtisCompanionCard extends HTMLElement {
     this._discoveredWalkthroughAreas = [];
     this._hasWalkthrough = false;
     this._hasFloorplan = false;
+
+    // Phase 4: Visual Floor Plan Boundary & Marker Adjuster Canvas Editor
+    this._editorActive = false;
+    this._dirtyBadges = {};
+    this._dirtyRooms = {};
+    this._selectedEditorRoomId = null;
+    this._resizingHandle = null;
+    this._hasUnsavedLayout = false;
+    this._savingLayout = false;
+    this._addMarkerModalOpen = false;
   }
 
   _escapeHtml(str) {
@@ -101,6 +112,9 @@ class OtisCompanionCard extends HTMLElement {
     };
     if (config.default_tab) {
       this._activeTab = config.default_tab;
+    }
+    if (config.mode === "floorplan_studio") {
+      this._activeTab = "floorplan";
     }
     this._ensureValidActiveTab();
     this._render();
@@ -876,6 +890,7 @@ class OtisCompanionCard extends HTMLElement {
 
     const preset = this._config.theme_preset || this._config.theme || "ha_native";
     const themeClass = `theme-${preset.replace(/_/g, "-")}`;
+    const isStudioMode = this._config.mode === "floorplan_studio";
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -928,6 +943,42 @@ class OtisCompanionCard extends HTMLElement {
         ha-card.card-container:hover {
           border-color: var(--otis-primary);
           box-shadow: 0 18px 42px rgba(0, 0, 0, 0.45), 0 0 20px var(--otis-glow);
+        }
+
+        /* Floor Plan Studio Full-Width Mode */
+        ha-card.card-container.mode-floorplan-studio {
+          width: 100% !important;
+          max-width: 100% !important;
+          margin: 0 !important;
+          border-radius: 0 !important;
+          border-left: none !important;
+          border-right: none !important;
+          padding: 16px 20px !important;
+          box-shadow: none !important;
+          min-height: calc(100vh - 80px) !important;
+        }
+
+        ha-card.card-container.mode-floorplan-studio .floorplan-svg-viewport {
+          min-height: calc(100vh - 190px) !important;
+          max-height: none !important;
+          height: calc(100vh - 190px) !important;
+        }
+
+        ha-card.card-container.mode-floorplan-studio .floorplan-svg-viewport svg {
+          max-height: calc(100vh - 200px) !important;
+          height: 100% !important;
+          width: 100% !important;
+        }
+
+        .studio-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          margin-bottom: 14px;
+          padding-bottom: 12px;
+          border-bottom: 1px solid var(--otis-surface-border);
+          flex-wrap: wrap;
+          gap: 10px;
         }
 
         /* Curated Theme Presets */
@@ -2298,19 +2349,102 @@ class OtisCompanionCard extends HTMLElement {
           border-radius: 12px;
           padding: 12px;
           overflow: auto;
-          max-height: 480px;
+          min-height: 480px;
+          max-height: 520px;
           display: flex;
           justify-content: center;
           align-items: center;
           position: relative;
           box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.5);
+          user-select: none;
+        }
+
+        .floorplan-svg-viewport.editor-mode {
+          background-image: radial-gradient(rgba(56, 189, 248, 0.15) 1px, transparent 1px);
+          background-size: 24px 24px;
+          border-color: var(--otis-primary);
+        }
+
+        .floorplan-svg-viewport.editor-mode .entity-badge {
+          cursor: grab !important;
+          filter: drop-shadow(0 0 6px var(--otis-primary)) !important;
+        }
+
+        .floorplan-svg-viewport.editor-mode .entity-badge:active {
+          cursor: grabbing !important;
         }
 
         .floorplan-svg-viewport svg {
           width: 100%;
           height: auto;
-          max-height: 450px;
+          max-height: 480px;
           filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4));
+        }
+
+        .editor-toolbar-strip {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          background: rgba(56, 189, 248, 0.08);
+          border: 1px solid rgba(56, 189, 248, 0.3);
+          border-radius: 8px;
+          padding: 8px 12px;
+          gap: 8px;
+          flex-wrap: wrap;
+          font-size: 0.74rem;
+          margin-bottom: 8px;
+        }
+
+        .editor-hud {
+          position: absolute;
+          top: 12px;
+          right: 12px;
+          background: rgba(15, 23, 42, 0.9);
+          border: 1px solid var(--otis-primary);
+          color: var(--otis-primary);
+          padding: 4px 10px;
+          border-radius: 6px;
+          font-family: monospace;
+          font-size: 0.72rem;
+          z-index: 20;
+          pointer-events: none;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+        }
+
+        .room-inspector-card {
+          position: absolute;
+          bottom: 16px;
+          left: 16px;
+          background: var(--ha-card-background, #0f172a);
+          border: 1.5px solid var(--otis-primary);
+          border-radius: 12px;
+          padding: 12px 16px;
+          z-index: 30;
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+          max-width: 320px;
+          width: 100%;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          font-size: 0.78rem;
+          animation: fadeIn 0.2s ease;
+        }
+
+        .room-resize-handle {
+          fill: var(--otis-primary);
+          stroke: #ffffff;
+          stroke-width: 1.5;
+          cursor: nwse-resize;
+          transition: transform 0.15s ease;
+        }
+
+        .room-resize-handle:hover {
+          transform: scale(1.4);
+        }
+
+        .room-resize-handle[data-handle="ne"],
+        .room-resize-handle[data-handle="sw"] {
+          cursor: nesw-resize;
         }
 
         .room-info-card {
@@ -2525,121 +2659,151 @@ class OtisCompanionCard extends HTMLElement {
         }
       </style>
 
-      <ha-card class="card-container ${themeClass}">
-        <!-- Header -->
-        <div class="card-header">
-          <div class="brand-section">
-            <div class="emblem-icon">
-              <svg viewBox="0 0 24 24">
-                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
-                <polyline points="9 22 9 12 15 12 15 22"></polyline>
-              </svg>
+      <ha-card class="card-container ${themeClass} ${isStudioMode ? "mode-floorplan-studio" : ""}">
+        ${
+          isStudioMode
+            ? `
+          <!-- Studio Header (Full Width Blueprint Workspace) -->
+          <div class="studio-header">
+            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+              <button class="btn-toolbar" id="btn-back-dashboard" title="Return to Otis Co-Pilot Dashboard">
+                ← Back to Dashboard
+              </button>
+              <div class="title-group">
+                <span class="main-title">🗺️ Architectural Floor Plan Studio</span>
+                <span class="sub-title">
+                  <span class="status-dot"></span>
+                  Interactive Blueprint Workspace • ${this._editorActive ? "Canvas Editor Mode Active" : "Interactive Blueprint Viewer"}
+                </span>
+              </div>
             </div>
-            <div class="title-group">
-              <span class="main-title">${this._config.title || "Otis AI Companion"}</span>
-              <span class="sub-title">
-                <span class="status-dot"></span>
-                Autonomous Co-Pilot Active
-              </span>
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <button class="icon-btn" id="refresh-btn" title="Refresh floor plan">
+                ↻ Refresh
+              </button>
             </div>
           </div>
-          <div class="header-actions">
-            <button class="icon-btn" id="refresh-btn" title="Refresh intelligence">
-              ↻ Refresh
+          ${this._renderFloorplanTab()}
+        `
+            : `
+          <!-- Header -->
+          <div class="card-header">
+            <div class="brand-section">
+              <div class="emblem-icon">
+                <svg viewBox="0 0 24 24">
+                  <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
+                  <polyline points="9 22 9 12 15 12 15 22"></polyline>
+                </svg>
+              </div>
+              <div class="title-group">
+                <span class="main-title">${this._config.title || "Otis AI Companion"}</span>
+                <span class="sub-title">
+                  <span class="status-dot"></span>
+                  Autonomous Co-Pilot Active
+                </span>
+              </div>
+            </div>
+            <div class="header-actions">
+              <button class="icon-btn" id="refresh-btn" title="Refresh intelligence">
+                ↻ Refresh
+              </button>
+            </div>
+          </div>
+
+          <!-- Quick Stats Bar -->
+          ${
+            this._config.show_stats !== false
+              ? `
+            <div class="stats-bar">
+              <div class="stat-item">
+                <span class="stat-value">${stats.areas}</span>
+                <span class="stat-label">Areas</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-value">${stats.entities}</span>
+                <span class="stat-label">Entities</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-value">${stats.automations}</span>
+                <span class="stat-label">Automations</span>
+              </div>
+              <div class="stat-item ${stats.orphans > 0 ? "warning" : ""}">
+                <span class="stat-value">${stats.orphans}</span>
+                <span class="stat-label">Orphans</span>
+              </div>
+            </div>
+          `
+              : ""
+          }
+
+          <!-- Studio & Room Subviews Launchpad -->
+          <div class="subviews-launchpad">
+            <div class="launchpad-row">
+              <span class="subviews-label">Studios:</span>
+              <button class="subview-chip" data-subview="/otis-ai/media">🎵 Media Studio</button>
+              <button class="subview-chip" data-subview="/otis-ai/security">🛡️ Security Center</button>
+              <button class="subview-chip" data-subview="/otis-ai/climate">🌡️ Climate & Pool</button>
+              <button class="subview-chip" data-subview="/otis-ai/floorplan">🗺️ Floor Plan</button>
+              <button class="subview-chip" id="btn-open-themes" style="margin-left: auto;">🎨 Themes</button>
+            </div>
+            ${
+              activeAreas.length > 0
+                ? `
+              <div class="launchpad-row">
+                <span class="subviews-label">Rooms:</span>
+                ${activeAreas
+                  .map(
+                    (room) => `
+                  <button class="subview-chip room-chip" data-subview="${room.path}">📍 ${this._escapeHtml(room.name)}</button>
+                `
+                  )
+                  .join("")}
+              </div>
+            `
+                : ""
+            }
+          </div>
+
+          <!-- Navigation Tabs -->
+          <div class="tabs-nav">
+            ${
+              this._config.show_suggestions !== false
+                ? `
+              <button class="tab-btn ${this._activeTab === "suggestions" ? "active" : ""}" id="tab-suggestions">
+                Proactive Feed
+                ${activeSuggestions.length > 0 ? `<span class="tab-badge">${activeSuggestions.length}</span>` : ""}
+              </button>
+            `
+                : ""
+            }
+            ${
+              this._config.show_chat !== false
+                ? `
+              <button class="tab-btn ${this._activeTab === "chat" ? "active" : ""}" id="tab-chat">
+                Assist Co-Pilot
+              </button>
+            `
+                : ""
+            }
+            <button class="tab-btn ${this._activeTab === "floorplan" ? "active" : ""}" id="tab-floorplan">
+              Floor Plan
+              ${this._capabilityMap?.floorplan?.exists ? "" : `<span class="tab-badge" style="background: var(--otis-accent, #a855f7);">New</span>`}
+            </button>
+            <button class="tab-btn ${this._activeTab === "capabilities" ? "active" : ""}" id="tab-capabilities">
+              Capabilities
             </button>
           </div>
-        </div>
 
-        <!-- Quick Stats Bar -->
-        ${
-          this._config.show_stats !== false
-            ? `
-          <div class="stats-bar">
-            <div class="stat-item">
-              <span class="stat-value">${stats.areas}</span>
-              <span class="stat-label">Areas</span>
-            </div>
-            <div class="stat-item">
-              <span class="stat-value">${stats.entities}</span>
-              <span class="stat-label">Entities</span>
-            </div>
-            <div class="stat-item">
-              <span class="stat-value">${stats.automations}</span>
-              <span class="stat-label">Automations</span>
-            </div>
-            <div class="stat-item ${stats.orphans > 0 ? "warning" : ""}">
-              <span class="stat-value">${stats.orphans}</span>
-              <span class="stat-label">Orphans</span>
-            </div>
-          </div>
+          ${this._activeTab === "suggestions" ? this._renderSuggestionsTab(visibleSuggestions) : ""}
+          ${this._activeTab === "chat" ? this._renderChatTab() : ""}
+          ${this._activeTab === "capabilities" ? this._renderCapabilitiesTab(stats) : ""}
+          ${this._activeTab === "floorplan" ? this._renderFloorplanTab() : ""}
         `
-            : ""
         }
 
-        <!-- Studio & Room Subviews Launchpad -->
-        <div class="subviews-launchpad">
-          <div class="launchpad-row">
-            <span class="subviews-label">Studios:</span>
-            <button class="subview-chip" data-subview="/otis-ai/media">🎵 Media Studio</button>
-            <button class="subview-chip" data-subview="/otis-ai/security">🛡️ Security Center</button>
-            <button class="subview-chip" data-subview="/otis-ai/climate">🌡️ Climate & Pool</button>
-            <button class="subview-chip" data-subview="/otis-ai/floorplan">🗺️ Floor Plan</button>
-            <button class="subview-chip" id="btn-open-themes" style="margin-left: auto;">🎨 Themes</button>
-          </div>
-          ${
-            activeAreas.length > 0
-              ? `
-            <div class="launchpad-row">
-              <span class="subviews-label">Rooms:</span>
-              ${activeAreas
-                .map(
-                  (room) => `
-                <button class="subview-chip room-chip" data-subview="${room.path}">📍 ${this._escapeHtml(room.name)}</button>
-              `
-                )
-                .join("")}
-            </div>
-          `
-              : ""
-          }
-        </div>
-
-        <!-- Navigation Tabs -->
-        <div class="tabs-nav">
-          ${
-            this._config.show_suggestions !== false
-              ? `
-            <button class="tab-btn ${this._activeTab === "suggestions" ? "active" : ""}" id="tab-suggestions">
-              Proactive Feed
-              ${activeSuggestions.length > 0 ? `<span class="tab-badge">${activeSuggestions.length}</span>` : ""}
-            </button>
-          `
-              : ""
-          }
-          ${
-            this._config.show_chat !== false
-              ? `
-            <button class="tab-btn ${this._activeTab === "chat" ? "active" : ""}" id="tab-chat">
-              Assist Co-Pilot
-            </button>
-          `
-              : ""
-          }
-          <button class="tab-btn ${this._activeTab === "floorplan" ? "active" : ""}" id="tab-floorplan">
-            Floor Plan
-            ${this._capabilityMap?.floorplan?.exists ? "" : `<span class="tab-badge" style="background: var(--otis-accent, #a855f7);">New</span>`}
-          </button>
-          <button class="tab-btn ${this._activeTab === "capabilities" ? "active" : ""}" id="tab-capabilities">
-            Capabilities
-          </button>
-        </div>
-
-        ${this._activeTab === "suggestions" ? this._renderSuggestionsTab(visibleSuggestions) : ""}
-        ${this._activeTab === "chat" ? this._renderChatTab() : ""}
-        ${this._activeTab === "capabilities" ? this._renderCapabilitiesTab(stats) : ""}
-        ${this._activeTab === "floorplan" ? this._renderFloorplanTab() : ""}
         ${this._floorplanModalOpen ? this._renderWalkthroughModal() : ""}
         ${this._themeModalOpen ? this._renderThemeModal() : ""}
+        ${this._addMarkerModalOpen ? this._renderAddMarkerModal() : ""}
 
         <!-- Feedback Toast -->
         <div class="toast" id="toast"></div>
@@ -2980,11 +3144,43 @@ class OtisCompanionCard extends HTMLElement {
             >
               📋 Lovelace YAML
             </button>
+            <button 
+              class="btn-toolbar ${this._editorActive ? 'active' : ''}" 
+              id="btn-toggle-editor"
+              style="${this._editorActive ? 'background: var(--otis-primary); color: var(--otis-btn-text, #ffffff); border-color: var(--otis-primary);' : ''}"
+              title="Toggle Interactive Canvas Editor to drag pins and adjust room boundaries"
+            >
+              ${this._editorActive ? "🛠️ Canvas Editor (Active)" : "✏️ Canvas Editor"}
+            </button>
           </div>
         </div>
 
         ${
-          !this._hasWalkthrough && this._floorplanSvg
+          this._editorActive
+            ? `
+          <div class="editor-toolbar-strip">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-weight: 700; color: var(--otis-primary);">🛠️ Layout Adjuster:</span>
+              <span style="color: var(--otis-text-muted);">Drag pins or select room boundaries to reposition &amp; resize</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <button class="btn-toolbar" id="btn-open-add-marker" style="padding: 4px 8px;">
+                ➕ Add Pin
+              </button>
+              <button class="btn-modal-primary" id="btn-save-layout" style="padding: 4px 10px; font-size: 0.74rem;" ${this._savingLayout ? "disabled" : ""}>
+                ${this._savingLayout ? `<div class="spinner" style="width: 12px; height: 12px;"></div> Saving...` : (this._hasUnsavedLayout ? "💾 Save Changes *" : "💾 Save Layout")}
+              </button>
+              <button class="btn-toolbar" id="btn-exit-editor" style="padding: 4px 8px; color: var(--otis-text-muted);">
+                ✕ Exit
+              </button>
+            </div>
+          </div>
+        `
+            : ""
+        }
+
+        ${
+          !this._hasWalkthrough && this._floorplanSvg && !this._editorActive
             ? `
           <div class="walkthrough-pending-banner">
             <div class="walkthrough-pending-text">
@@ -3002,11 +3198,13 @@ class OtisCompanionCard extends HTMLElement {
             ? `<div class="empty-state"><div class="spinner" style="margin: 0 auto 8px auto; width: 24px; height: 24px;"></div>Rendering vector floor plan...</div>`
             : this._floorplanSvg
             ? `
-            <div class="floorplan-svg-viewport" id="floorplan-viewport">
+            <div class="floorplan-svg-viewport ${this._editorActive ? 'editor-mode' : ''}" id="floorplan-viewport">
+              ${this._editorActive ? `<div class="editor-hud" id="editor-hud">📐 Pointer: --, --</div>` : ''}
               ${this._floorplanSvg}
+              ${this._editorActive && this._selectedEditorRoomId ? this._renderRoomInspector() : ""}
             </div>
             ${
-              this._selectedRoomInfo
+              !this._editorActive && this._selectedRoomInfo
                 ? `
               <div class="room-info-card">
                 <div>
@@ -3041,6 +3239,102 @@ class OtisCompanionCard extends HTMLElement {
             </div>
           `
         }
+      </div>
+    `;
+  }
+
+  _renderRoomInspector() {
+    const rid = this._selectedEditorRoomId;
+    if (!rid) return "";
+    const area = this._capabilityMap?.areas?.[rid] || { name: rid };
+    const allAreas = Object.entries(this._capabilityMap?.areas || {}).map(([id, a]) => ({
+      id,
+      name: a.name || id,
+    }));
+    return `
+      <div class="room-inspector-card" id="room-inspector">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <strong style="color: var(--otis-primary); font-size: 0.82rem;">📐 Area Boundary Editor</strong>
+          <button class="btn-toolbar" id="btn-close-inspector" style="padding: 2px 6px; font-size: 0.72rem;">✕</button>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+          <label style="font-size: 0.7rem; color: var(--otis-text-muted);">Bind to HA Area Registry:</label>
+          <select id="editor-area-select" style="background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); border-radius: 6px; padding: 4px 6px; font-size: 0.76rem;">
+            ${allAreas.map(a => `<option value="${a.id}" ${a.id === rid ? "selected" : ""}>${this._escapeHtml(a.name)} (${a.id})</option>`).join("")}
+          </select>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
+          <div>
+            <label style="font-size: 0.68rem; color: var(--otis-text-muted);">X Coord:</label>
+            <input type="number" id="inspector-room-x" style="width: 100%; box-sizing: border-box; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); border-radius: 4px; padding: 3px 6px; font-size: 0.74rem;" />
+          </div>
+          <div>
+            <label style="font-size: 0.68rem; color: var(--otis-text-muted);">Y Coord:</label>
+            <input type="number" id="inspector-room-y" style="width: 100%; box-sizing: border-box; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); border-radius: 4px; padding: 3px 6px; font-size: 0.74rem;" />
+          </div>
+          <div>
+            <label style="font-size: 0.68rem; color: var(--otis-text-muted);">Width:</label>
+            <input type="number" id="inspector-room-w" style="width: 100%; box-sizing: border-box; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); border-radius: 4px; padding: 3px 6px; font-size: 0.74rem;" />
+          </div>
+          <div>
+            <label style="font-size: 0.68rem; color: var(--otis-text-muted);">Height:</label>
+            <input type="number" id="inspector-room-h" style="width: 100%; box-sizing: border-box; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); border-radius: 4px; padding: 3px 6px; font-size: 0.74rem;" />
+          </div>
+        </div>
+        <div style="display: flex; gap: 6px; margin-top: 4px;">
+          <button class="btn-modal-primary" id="btn-apply-inspector-dim" style="flex: 1; padding: 4px; font-size: 0.72rem;">
+            ✓ Update Boundary
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  _renderAddMarkerModal() {
+    if (!this._addMarkerModalOpen) return "";
+    const entities = this._capabilityMap?.entities || [];
+    const grouped = {
+      light: [],
+      switch: [],
+      climate: [],
+      media_player: [],
+      camera: [],
+      binary_sensor: [],
+      other: [],
+    };
+    entities.forEach((e) => {
+      const d = e.split(".")[0];
+      if (grouped[d]) grouped[d].push(e);
+      else grouped.other.push(e);
+    });
+
+    return `
+      <div class="modal-overlay" id="add-marker-modal-backdrop">
+        <div class="modal-card" style="max-width: 520px;">
+          <div class="modal-header">
+            <div>
+              <div class="modal-title"><span>➕</span><span>Add Device Pin to Floor Plan</span></div>
+              <div class="modal-subtitle">Select an entity to drop onto your architectural canvas</div>
+            </div>
+            <button class="modal-close-btn" id="add-marker-close-btn">✕</button>
+          </div>
+          <div style="max-height: 380px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 4px;">
+            ${Object.entries(grouped).filter(([_, list]) => list.length > 0).map(([dom, list]) => `
+              <div>
+                <div style="font-size: 0.74rem; font-weight: 700; text-transform: uppercase; color: var(--otis-primary); margin-bottom: 4px;">
+                  ${dom} (${list.length})
+                </div>
+                <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                  ${list.slice(0, 24).map(eid => `
+                    <button class="subview-chip btn-place-entity-pin" data-entity-id="${eid}" style="font-size: 0.72rem; padding: 4px 8px;">
+                      ${eid}
+                    </button>
+                  `).join("")}
+                </div>
+              </div>
+            `).join("")}
+          </div>
+        </div>
       </div>
     `;
   }
@@ -3268,8 +3562,11 @@ class OtisCompanionCard extends HTMLElement {
       const res = await this._hass.callService("otis_ai", "generate_theme", payload, undefined, true, true);
       const data = res?.response || res || {};
       if (data.success) {
-        this._showToast(`✨ Generated and applied "${data.title}"!`);
+        this._showToast(`✨ Generated and applying "${data.title}"...`);
         await this._fetchData();
+        if (data.theme_key) {
+          await this._applyThemeDirect(data.theme_key);
+        }
       } else {
         this._showToast(data.error || "Could not generate theme", true);
       }
@@ -3285,9 +3582,28 @@ class OtisCompanionCard extends HTMLElement {
   async _applyThemeDirect(themeKey) {
     if (!this._hass || !themeKey) return;
     try {
+      // 1. Call backend services
       await this._hass.callService("frontend", "set_theme", { name: themeKey });
       await this._hass.callService("otis_ai", "apply_theme", { name: themeKey });
-      this._showToast(`Switched active theme to ${themeKey}`);
+
+      // 2. Dispatch standard Home Assistant settheme event to update active browser session immediately
+      const setthemeEvent = new CustomEvent("settheme", {
+        detail: { theme: themeKey },
+        bubbles: true,
+        composed: true,
+      });
+      this.dispatchEvent(setthemeEvent);
+      window.dispatchEvent(setthemeEvent);
+      const ha = document.querySelector("home-assistant");
+      if (ha) ha.dispatchEvent(setthemeEvent);
+
+      // 3. Update localStorage if HA tracks selected theme
+      try {
+        const existing = JSON.parse(localStorage.getItem("selectedTheme") || "{}");
+        localStorage.setItem("selectedTheme", JSON.stringify({ ...existing, theme: themeKey }));
+      } catch (_) {}
+
+      this._showToast(`🎨 Active theme applied: ${themeKey}`);
     } catch (err) {
       console.error("Error applying theme:", err);
       this._showToast("Error applying theme", true);
@@ -3622,39 +3938,291 @@ class OtisCompanionCard extends HTMLElement {
       };
     });
 
-    // Floorplan: Interactive SVG entity badges and room inspection
-    const svgViewport = root.querySelector("#floorplan-viewport");
-    if (svgViewport) {
-      svgViewport.querySelectorAll("[data-entity-id]").forEach((badge) => {
-        badge.style.cursor = "pointer";
-        badge.onclick = (e) => {
-          e.stopPropagation();
-          const entityId = badge.getAttribute("data-entity-id");
-          if (entityId && this._hass) {
-            this._hass.callService("homeassistant", "toggle", { entity_id: entityId });
-            this._showToast(`Toggled ${entityId}`);
-          }
-        };
-      });
-
-      svgViewport.querySelectorAll(".room-group").forEach((grp) => {
-        grp.style.cursor = "pointer";
-        grp.onclick = () => {
-          const areaId = grp.getAttribute("data-area-id");
-          const area = this._capabilityMap?.areas?.[areaId];
-          if (area) {
-            this._selectedRoomInfo = {
-              areaId,
-              name: area.name || areaId,
-              zone: grp.getAttribute("data-zone") || "indoor",
-              entities: area.entities || [],
-            };
-            this._render();
-          }
-        };
-      });
+    // Studio Back to Dashboard Button
+    const btnBackDash = root.querySelector("#btn-back-dashboard");
+    if (btnBackDash) {
+      btnBackDash.onclick = () => {
+        const path = "/otis-ai";
+        const event = new CustomEvent("hass-navigate", {
+          detail: { href: path },
+          bubbles: true,
+          composed: true,
+        });
+        window.dispatchEvent(event);
+        window.history.pushState(null, "", path);
+        window.dispatchEvent(new CustomEvent("location-changed"));
+      };
     }
 
+    // Helper to calculate exact SVG viewBox coordinates from mouse/pointer event
+    const getSvgPoint = (svg, clientX, clientY) => {
+      const pt = svg.createSVGPoint();
+      pt.x = clientX;
+      pt.y = clientY;
+      const ctm = svg.getScreenCTM();
+      return ctm ? pt.matrixTransform(ctm.inverse()) : { x: clientX, y: clientY };
+    };
+
+    // Floorplan: Interactive SVG entity badges, canvas editor, and room inspection
+    const svgViewport = root.querySelector("#floorplan-viewport");
+    const svgEl = root.querySelector("#floorplan-viewport svg");
+    const editorHud = root.querySelector("#editor-hud");
+
+    if (svgViewport && svgEl) {
+      if (this._editorActive) {
+        // --- Canvas Editor Active Mode ---
+
+        // 1. Live pointer HUD
+        svgEl.onpointermove = (e) => {
+          if (!this._draggingBadge && !this._resizingHandle) {
+            const p = getSvgPoint(svgEl, e.clientX, e.clientY);
+            if (editorHud) {
+              editorHud.textContent = `📐 X: ${Math.round(p.x)}, Y: ${Math.round(p.y)}`;
+            }
+          }
+        };
+
+        // 2. Drag & Drop repositioning of entity badges
+        svgEl.querySelectorAll(".entity-badge").forEach((badge) => {
+          badge.style.cursor = "grab";
+          badge.onpointerdown = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const p = getSvgPoint(svgEl, e.clientX, e.clientY);
+            const tr = badge.getAttribute("transform") || "";
+            const m = tr.match(/translate\(\s*([-\d.]+)[,\s]+([-\d.]+)\s*\)/);
+            const curX = m ? parseFloat(m[1]) : p.x;
+            const curY = m ? parseFloat(m[2]) : p.y;
+            const entityId = badge.getAttribute("data-entity-id");
+
+            this._draggingBadge = {
+              el: badge,
+              entityId,
+              offsetX: p.x - curX,
+              offsetY: p.y - curY,
+            };
+            try { badge.setPointerCapture(e.pointerId); } catch (_) {}
+          };
+
+          badge.onpointermove = (e) => {
+            if (!this._draggingBadge || this._draggingBadge.el !== badge) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const p = getSvgPoint(svgEl, e.clientX, e.clientY);
+            const newX = Math.round(p.x - this._draggingBadge.offsetX);
+            const newY = Math.round(p.y - this._draggingBadge.offsetY);
+
+            badge.setAttribute("transform", `translate(${newX}, ${newY})`);
+            if (editorHud) {
+              editorHud.textContent = `📍 ${this._draggingBadge.entityId} (X: ${newX}, Y: ${newY})`;
+            }
+            this._dirtyBadges[this._draggingBadge.entityId] = {
+              entity_id: this._draggingBadge.entityId,
+              x: newX,
+              y: newY,
+            };
+            this._hasUnsavedLayout = true;
+            const saveBtn = root.querySelector("#btn-save-layout");
+            if (saveBtn) saveBtn.textContent = "💾 Save Changes *";
+          };
+
+          badge.onpointerup = (e) => {
+            if (this._draggingBadge && this._draggingBadge.el === badge) {
+              try { badge.releasePointerCapture(e.pointerId); } catch (_) {}
+              this._draggingBadge = null;
+            }
+          };
+          badge.onpointercancel = (e) => {
+            if (this._draggingBadge && this._draggingBadge.el === badge) {
+              try { badge.releasePointerCapture(e.pointerId); } catch (_) {}
+              this._draggingBadge = null;
+            }
+          };
+        });
+
+        // 3. Room group selection for boundary resizing & editing
+        svgEl.querySelectorAll(".room-group").forEach((grp) => {
+          grp.style.cursor = "pointer";
+          grp.onclick = (e) => {
+            e.stopPropagation();
+            const areaId = grp.getAttribute("data-area-id");
+            if (this._selectedEditorRoomId === areaId) return;
+            this._selectedEditorRoomId = areaId;
+            this._render();
+          };
+        });
+
+        // 4. Inject interactive corner resize handles onto selected room
+        if (this._selectedEditorRoomId) {
+          const selGrp = svgEl.querySelector(`.room-group[data-area-id="${this._selectedEditorRoomId}"]`);
+          if (selGrp) {
+            const rect = selGrp.querySelector(".room-box, .room-rect");
+            if (rect) {
+              rect.style.stroke = "var(--otis-primary)";
+              rect.style.strokeWidth = "2.5";
+              rect.style.strokeDasharray = "4,4";
+
+              const rx = parseFloat(rect.getAttribute("x") || 0);
+              const ry = parseFloat(rect.getAttribute("y") || 0);
+              const rw = parseFloat(rect.getAttribute("width") || 160);
+              const rh = parseFloat(rect.getAttribute("height") || 120);
+
+              // Update Inspector fields if rendered
+              const inpX = root.querySelector("#inspector-room-x");
+              const inpY = root.querySelector("#inspector-room-y");
+              const inpW = root.querySelector("#inspector-room-w");
+              const inpH = root.querySelector("#inspector-room-h");
+              if (inpX) inpX.value = Math.round(rx);
+              if (inpY) inpY.value = Math.round(ry);
+              if (inpW) inpW.value = Math.round(rw);
+              if (inpH) inpH.value = Math.round(rh);
+
+              // Render handles overlay layer
+              let handleGrp = selGrp.querySelector(".handles-layer");
+              if (!handleGrp) {
+                handleGrp = document.createElementNS("http://www.w3.org/2000/svg", "g");
+                handleGrp.setAttribute("class", "handles-layer");
+                selGrp.appendChild(handleGrp);
+              }
+              handleGrp.innerHTML = `
+                <circle class="room-resize-handle" data-handle="nw" cx="${rx}" cy="${ry}" r="7" />
+                <circle class="room-resize-handle" data-handle="ne" cx="${rx + rw}" cy="${ry}" r="7" />
+                <circle class="room-resize-handle" data-handle="se" cx="${rx + rw}" cy="${ry + rh}" r="7" />
+                <circle class="room-resize-handle" data-handle="sw" cx="${rx}" cy="${ry + rh}" r="7" />
+              `;
+
+              handleGrp.querySelectorAll(".room-resize-handle").forEach((handle) => {
+                handle.onpointerdown = (e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const p = getSvgPoint(svgEl, e.clientX, e.clientY);
+                  const handleType = handle.getAttribute("data-handle");
+                  this._resizingHandle = {
+                    type: handleType,
+                    startPoint: p,
+                    initX: rx,
+                    initY: ry,
+                    initW: rw,
+                    initH: rh,
+                    rectEl: rect,
+                    selGrp,
+                  };
+                  try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+                };
+
+                handle.onpointermove = (e) => {
+                  if (!this._resizingHandle) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const p = getSvgPoint(svgEl, e.clientX, e.clientY);
+                  const dx = p.x - this._resizingHandle.startPoint.x;
+                  const dy = p.y - this._resizingHandle.startPoint.y;
+                  let nx = this._resizingHandle.initX;
+                  let ny = this._resizingHandle.initY;
+                  let nw = this._resizingHandle.initW;
+                  let nh = this._resizingHandle.initH;
+
+                  if (this._resizingHandle.type === "se") {
+                    nw = Math.max(60, Math.round(this._resizingHandle.initW + dx));
+                    nh = Math.max(50, Math.round(this._resizingHandle.initH + dy));
+                  } else if (this._resizingHandle.type === "sw") {
+                    nx = Math.round(this._resizingHandle.initX + dx);
+                    nw = Math.max(60, Math.round(this._resizingHandle.initW - dx));
+                    nh = Math.max(50, Math.round(this._resizingHandle.initH + dy));
+                  } else if (this._resizingHandle.type === "ne") {
+                    ny = Math.round(this._resizingHandle.initY + dy);
+                    nw = Math.max(60, Math.round(this._resizingHandle.initW + dx));
+                    nh = Math.max(50, Math.round(this._resizingHandle.initH - dy));
+                  } else if (this._resizingHandle.type === "nw") {
+                    nx = Math.round(this._resizingHandle.initX + dx);
+                    ny = Math.round(this._resizingHandle.initY + dy);
+                    nw = Math.max(60, Math.round(this._resizingHandle.initW - dx));
+                    nh = Math.max(50, Math.round(this._resizingHandle.initH - dy));
+                  }
+
+                  rect.setAttribute("x", nx);
+                  rect.setAttribute("y", ny);
+                  rect.setAttribute("width", nw);
+                  rect.setAttribute("height", nh);
+
+                  // Update handle positions live
+                  const hNw = handleGrp.querySelector('[data-handle="nw"]');
+                  const hNe = handleGrp.querySelector('[data-handle="ne"]');
+                  const hSe = handleGrp.querySelector('[data-handle="se"]');
+                  const hSw = handleGrp.querySelector('[data-handle="sw"]');
+                  if (hNw) { hNw.setAttribute("cx", nx); hNw.setAttribute("cy", ny); }
+                  if (hNe) { hNe.setAttribute("cx", nx + nw); hNe.setAttribute("cy", ny); }
+                  if (hSe) { hSe.setAttribute("cx", nx + nw); hSe.setAttribute("cy", ny + nh); }
+                  if (hSw) { hSw.setAttribute("cx", nx); hSw.setAttribute("cy", ny + nh); }
+
+                  // Update text label position
+                  const lbl = selGrp.querySelector(".room-header, .room-label");
+                  if (lbl) {
+                    lbl.setAttribute("x", nx + 14);
+                    lbl.setAttribute("y", ny + 22);
+                  }
+
+                  if (inpX) inpX.value = nx;
+                  if (inpY) inpY.value = ny;
+                  if (inpW) inpW.value = nw;
+                  if (inpH) inpH.value = nh;
+
+                  this._dirtyRooms[this._selectedEditorRoomId] = {
+                    id: this._selectedEditorRoomId,
+                    x: nx,
+                    y: ny,
+                    width: nw,
+                    height: nh,
+                  };
+                  this._hasUnsavedLayout = true;
+                  const saveBtn = root.querySelector("#btn-save-layout");
+                  if (saveBtn) saveBtn.textContent = "💾 Save Changes *";
+                };
+
+                handle.onpointerup = (e) => {
+                  if (this._resizingHandle) {
+                    try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
+                    this._resizingHandle = null;
+                  }
+                };
+              });
+            }
+          }
+        }
+      } else {
+        // --- Normal Interactive Viewer Mode ---
+        svgViewport.querySelectorAll("[data-entity-id]").forEach((badge) => {
+          badge.style.cursor = "pointer";
+          badge.onclick = (e) => {
+            e.stopPropagation();
+            const entityId = badge.getAttribute("data-entity-id");
+            if (entityId && this._hass) {
+              this._hass.callService("homeassistant", "toggle", { entity_id: entityId });
+              this._showToast(`Toggled ${entityId}`);
+            }
+          };
+        });
+
+        svgViewport.querySelectorAll(".room-group").forEach((grp) => {
+          grp.style.cursor = "pointer";
+          grp.onclick = () => {
+            const areaId = grp.getAttribute("data-area-id");
+            const area = this._capabilityMap?.areas?.[areaId];
+            if (area) {
+              this._selectedRoomInfo = {
+                areaId,
+                name: area.name || areaId,
+                zone: grp.getAttribute("data-zone") || "indoor",
+                entities: area.entities || [],
+              };
+              this._render();
+            }
+          };
+        });
+      }
+    }
+
+    // Room Info and Inspector Close Buttons
     const btnCloseRoomInfo = root.querySelector("#btn-close-room-info");
     if (btnCloseRoomInfo) {
       btnCloseRoomInfo.onclick = () => {
@@ -3662,6 +4230,133 @@ class OtisCompanionCard extends HTMLElement {
         this._render();
       };
     }
+    const btnCloseInspector = root.querySelector("#btn-close-inspector");
+    if (btnCloseInspector) {
+      btnCloseInspector.onclick = () => {
+        this._selectedEditorRoomId = null;
+        this._render();
+      };
+    }
+
+    // Boundary Inspector: Area Rebinding & Direct Numerical Dimensions
+    const btnApplyDim = root.querySelector("#btn-apply-inspector-dim");
+    if (btnApplyDim && this._selectedEditorRoomId) {
+      btnApplyDim.onclick = () => {
+        const selArea = root.querySelector("#editor-area-select")?.value;
+        const nx = parseFloat(root.querySelector("#inspector-room-x")?.value || 0);
+        const ny = parseFloat(root.querySelector("#inspector-room-y")?.value || 0);
+        const nw = parseFloat(root.querySelector("#inspector-room-w")?.value || 160);
+        const nh = parseFloat(root.querySelector("#inspector-room-h")?.value || 120);
+
+        const areaName = this._capabilityMap?.areas?.[selArea]?.name;
+        this._dirtyRooms[this._selectedEditorRoomId] = {
+          id: this._selectedEditorRoomId,
+          x: nx,
+          y: ny,
+          width: nw,
+          height: nh,
+          name: areaName,
+        };
+        this._hasUnsavedLayout = true;
+        this._showToast(`Updated boundary for ${this._selectedEditorRoomId}! Click Save Layout to persist.`);
+        this._render();
+      };
+    }
+
+    // Canvas Editor Toolbar Controls
+    const btnToggleEditor = root.querySelector("#btn-toggle-editor");
+    if (btnToggleEditor) {
+      btnToggleEditor.onclick = () => {
+        this._editorActive = !this._editorActive;
+        if (!this._editorActive) {
+          this._selectedEditorRoomId = null;
+        }
+        this._render();
+      };
+    }
+    const btnExitEditor = root.querySelector("#btn-exit-editor");
+    if (btnExitEditor) {
+      btnExitEditor.onclick = () => {
+        this._editorActive = false;
+        this._selectedEditorRoomId = null;
+        this._render();
+      };
+    }
+
+    // Save Layout Button
+    const btnSaveLayout = root.querySelector("#btn-save-layout");
+    if (btnSaveLayout) {
+      btnSaveLayout.onclick = async () => {
+        const badgesPayload = Object.values(this._dirtyBadges);
+        const roomsPayload = Object.values(this._dirtyRooms);
+        if (badgesPayload.length === 0 && roomsPayload.length === 0) {
+          this._showToast("No layout changes to save.");
+          return;
+        }
+        this._savingLayout = true;
+        this._render();
+        try {
+          const res = await this._hass.callService(
+            "otis_ai",
+            "update_floorplan_layout",
+            { badges: badgesPayload, rooms: roomsPayload },
+            undefined,
+            true,
+            true
+          );
+          const data = res?.response || res || {};
+          if (data.success) {
+            this._showToast(data.message || "Floor plan layout saved successfully!");
+            this._dirtyBadges = {};
+            this._dirtyRooms = {};
+            this._hasUnsavedLayout = false;
+            if (data.url) {
+              await this._loadFloorplanSvg(data.url);
+            }
+          } else {
+            this._showToast(data.error || "Failed to update layout", true);
+          }
+        } catch (err) {
+          console.error("Error saving floorplan layout:", err);
+          this._showToast("Error updating layout. Check HA logs.", true);
+        } finally {
+          this._savingLayout = false;
+          this._render();
+        }
+      };
+    }
+
+    // Add Pin Modal & Selection
+    const btnOpenAddMarker = root.querySelector("#btn-open-add-marker");
+    if (btnOpenAddMarker) {
+      btnOpenAddMarker.onclick = () => {
+        this._addMarkerModalOpen = true;
+        this._render();
+      };
+    }
+    const addMarkerCloseBtn = root.querySelector("#add-marker-close-btn");
+    if (addMarkerCloseBtn) {
+      addMarkerCloseBtn.onclick = () => {
+        this._addMarkerModalOpen = false;
+        this._render();
+      };
+    }
+    root.querySelectorAll(".btn-place-entity-pin").forEach((btn) => {
+      btn.onclick = () => {
+        const eid = btn.getAttribute("data-entity-id");
+        if (eid) {
+          this._dirtyBadges[eid] = {
+            entity_id: eid,
+            x: 320,
+            y: 280,
+          };
+          this._hasUnsavedLayout = true;
+          this._addMarkerModalOpen = false;
+          this._showToast(`Dropped pin for ${eid}! Drag to position and click Save.`);
+          this._render();
+        }
+      };
+    });
 
     // Floorplan Toolbar Buttons
     const btnOpenWalkthrough = root.querySelector("#btn-open-walkthrough");

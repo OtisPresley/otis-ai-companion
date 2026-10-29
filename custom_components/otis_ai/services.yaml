@@ -99,6 +99,27 @@ generate_floorplan:
       selector:
         text:
 
+update_floorplan_layout:
+  name: Update Floor Plan Layout
+  description: Reposition device marker badges and adjust room boundary polygon coordinates directly on the vector SVG floor plan.
+  fields:
+    badges:
+      name: Device Marker Badges
+      description: List of device markers with entity_id, x, and y coordinates.
+      selector:
+        object:
+    rooms:
+      name: Room Boundaries
+      description: List of rooms with id, x, y, width, height, or polygon points.
+      selector:
+        object:
+    svg_path:
+      name: Floor Plan SVG Path
+      description: Destination SVG path relative to Home Assistant config.
+      default: www/otis_floorplan.svg
+      selector:
+        text:
+
 generate_theme:
   name: Generate Custom Theme
   description: Generate custom Home Assistant theme definitions directly into /config/themes/otis_<theme_name>.yaml from natural language prompts or presets and automatically reload themes.

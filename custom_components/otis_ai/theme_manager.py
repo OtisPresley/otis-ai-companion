@@ -16,7 +16,7 @@ DEFAULT_THEMES_DIR = "themes"
 STORAGE_KEY = "otis_ai_themes"
 STORAGE_VERSION = 1
 
-# Built-in curated theme presets
+# Built-in curated theme presets with robust surface and input contrast variables
 PRESET_THEMES: dict[str, dict[str, Any]] = {
     "cyberpunk": {
         "name": "Otis Cyberpunk Neon",
@@ -34,7 +34,9 @@ PRESET_THEMES: dict[str, dict[str, Any]] = {
             "accent-color": "#f43f5e",
             "primary-background-color": "#070b14",
             "secondary-background-color": "#0b1220",
-            "ha-card-background": "rgba(15, 23, 42, 0.85)",
+            "ha-card-background": "rgba(15, 23, 42, 0.95)",
+            "card-background-color": "#0f172a",
+            "mdc-theme-surface": "#0f172a",
             "ha-card-border-color": "rgba(0, 240, 255, 0.28)",
             "ha-card-border-width": "1px",
             "ha-card-border-radius": "12px",
@@ -53,6 +55,27 @@ PRESET_THEMES: dict[str, dict[str, Any]] = {
             "switch-unchecked-track-color": "#1e293b",
             "slider-color": "#00f0ff",
             "slider-bar-color": "#1e293b",
+            # Input & Select Control Contrast
+            "input-fill-color": "#0b1220",
+            "input-ink-color": "#f8fafc",
+            "input-label-ink-color": "#94a3b8",
+            "input-dropdown-icon-color": "#00f0ff",
+            "input-idle-line-color": "rgba(0, 240, 255, 0.2)",
+            "input-hover-line-color": "#00f0ff",
+            "mdc-select-fill-color": "#0b1220",
+            "mdc-select-ink-color": "#f8fafc",
+            "mdc-select-label-ink-color": "#94a3b8",
+            "mdc-select-dropdown-icon-color": "#00f0ff",
+            "mdc-text-field-fill-color": "#0b1220",
+            "mdc-text-field-ink-color": "#f8fafc",
+            "mdc-text-field-label-ink-color": "#94a3b8",
+            "mdc-theme-text-primary-on-background": "#f8fafc",
+            "mdc-theme-text-secondary-on-background": "#94a3b8",
+            "sidebar-background-color": "#070b14",
+            "sidebar-text-color": "#f8fafc",
+            "sidebar-icon-color": "#94a3b8",
+            "sidebar-selected-icon-color": "#00f0ff",
+            "sidebar-selected-text-color": "#00f0ff",
         },
     },
     "midnight_slate": {
@@ -71,7 +94,9 @@ PRESET_THEMES: dict[str, dict[str, Any]] = {
             "accent-color": "#818cf8",
             "primary-background-color": "#0b1120",
             "secondary-background-color": "#0f172a",
-            "ha-card-background": "rgba(30, 41, 59, 0.78)",
+            "ha-card-background": "rgba(30, 41, 59, 0.95)",
+            "card-background-color": "#1e293b",
+            "mdc-theme-surface": "#1e293b",
             "ha-card-border-color": "rgba(56, 189, 248, 0.22)",
             "ha-card-border-width": "1px",
             "ha-card-border-radius": "14px",
@@ -90,6 +115,27 @@ PRESET_THEMES: dict[str, dict[str, Any]] = {
             "switch-unchecked-track-color": "#1e293b",
             "slider-color": "#38bdf8",
             "slider-bar-color": "#1e293b",
+            # Input & Select Control Contrast (Fix white-on-white dropdowns)
+            "input-fill-color": "#0f172a",
+            "input-ink-color": "#ffffff",
+            "input-label-ink-color": "#94a3b8",
+            "input-dropdown-icon-color": "#38bdf8",
+            "input-idle-line-color": "rgba(255, 255, 255, 0.15)",
+            "input-hover-line-color": "#38bdf8",
+            "mdc-select-fill-color": "#0f172a",
+            "mdc-select-ink-color": "#ffffff",
+            "mdc-select-label-ink-color": "#94a3b8",
+            "mdc-select-dropdown-icon-color": "#38bdf8",
+            "mdc-text-field-fill-color": "#0f172a",
+            "mdc-text-field-ink-color": "#ffffff",
+            "mdc-text-field-label-ink-color": "#94a3b8",
+            "mdc-theme-text-primary-on-background": "#ffffff",
+            "mdc-theme-text-secondary-on-background": "#94a3b8",
+            "sidebar-background-color": "#0b1120",
+            "sidebar-text-color": "#ffffff",
+            "sidebar-icon-color": "#94a3b8",
+            "sidebar-selected-icon-color": "#38bdf8",
+            "sidebar-selected-text-color": "#38bdf8",
         },
     },
     "oled_black": {
@@ -109,6 +155,8 @@ PRESET_THEMES: dict[str, dict[str, Any]] = {
             "primary-background-color": "#000000",
             "secondary-background-color": "#080808",
             "ha-card-background": "#111113",
+            "card-background-color": "#111113",
+            "mdc-theme-surface": "#111113",
             "ha-card-border-color": "#27272a",
             "ha-card-border-width": "1px",
             "ha-card-border-radius": "10px",
@@ -127,6 +175,26 @@ PRESET_THEMES: dict[str, dict[str, Any]] = {
             "switch-unchecked-track-color": "#18181b",
             "slider-color": "#10b981",
             "slider-bar-color": "#27272a",
+            "input-fill-color": "#080808",
+            "input-ink-color": "#ffffff",
+            "input-label-ink-color": "#a1a1aa",
+            "input-dropdown-icon-color": "#10b981",
+            "input-idle-line-color": "#27272a",
+            "input-hover-line-color": "#10b981",
+            "mdc-select-fill-color": "#080808",
+            "mdc-select-ink-color": "#ffffff",
+            "mdc-select-label-ink-color": "#a1a1aa",
+            "mdc-select-dropdown-icon-color": "#10b981",
+            "mdc-text-field-fill-color": "#080808",
+            "mdc-text-field-ink-color": "#ffffff",
+            "mdc-text-field-label-ink-color": "#a1a1aa",
+            "mdc-theme-text-primary-on-background": "#ffffff",
+            "mdc-theme-text-secondary-on-background": "#a1a1aa",
+            "sidebar-background-color": "#000000",
+            "sidebar-text-color": "#ffffff",
+            "sidebar-icon-color": "#71717a",
+            "sidebar-selected-icon-color": "#10b981",
+            "sidebar-selected-text-color": "#10b981",
         },
     },
     "sunset_amber": {
@@ -145,7 +213,9 @@ PRESET_THEMES: dict[str, dict[str, Any]] = {
             "accent-color": "#ea580c",
             "primary-background-color": "#1c1917",
             "secondary-background-color": "#141210",
-            "ha-card-background": "rgba(41, 37, 36, 0.88)",
+            "ha-card-background": "rgba(41, 37, 36, 0.95)",
+            "card-background-color": "#292524",
+            "mdc-theme-surface": "#292524",
             "ha-card-border-color": "rgba(245, 158, 11, 0.25)",
             "ha-card-border-width": "1px",
             "ha-card-border-radius": "16px",
@@ -164,6 +234,26 @@ PRESET_THEMES: dict[str, dict[str, Any]] = {
             "switch-unchecked-track-color": "#292524",
             "slider-color": "#f59e0b",
             "slider-bar-color": "#292524",
+            "input-fill-color": "#141210",
+            "input-ink-color": "#fafaf9",
+            "input-label-ink-color": "#a8a29e",
+            "input-dropdown-icon-color": "#f59e0b",
+            "input-idle-line-color": "rgba(245, 158, 11, 0.2)",
+            "input-hover-line-color": "#f59e0b",
+            "mdc-select-fill-color": "#141210",
+            "mdc-select-ink-color": "#fafaf9",
+            "mdc-select-label-ink-color": "#a8a29e",
+            "mdc-select-dropdown-icon-color": "#f59e0b",
+            "mdc-text-field-fill-color": "#141210",
+            "mdc-text-field-ink-color": "#fafaf9",
+            "mdc-text-field-label-ink-color": "#a8a29e",
+            "mdc-theme-text-primary-on-background": "#fafaf9",
+            "mdc-theme-text-secondary-on-background": "#a8a29e",
+            "sidebar-background-color": "#1c1917",
+            "sidebar-text-color": "#fafaf9",
+            "sidebar-icon-color": "#a8a29e",
+            "sidebar-selected-icon-color": "#f59e0b",
+            "sidebar-selected-text-color": "#f59e0b",
         },
     },
     "emerald_luxury": {
@@ -182,7 +272,9 @@ PRESET_THEMES: dict[str, dict[str, Any]] = {
             "accent-color": "#fbbf24",
             "primary-background-color": "#022c22",
             "secondary-background-color": "#011e17",
-            "ha-card-background": "rgba(6, 78, 59, 0.72)",
+            "ha-card-background": "rgba(6, 78, 59, 0.95)",
+            "card-background-color": "#064e3b",
+            "mdc-theme-surface": "#064e3b",
             "ha-card-border-color": "rgba(52, 211, 153, 0.25)",
             "ha-card-border-width": "1px",
             "ha-card-border-radius": "14px",
@@ -201,6 +293,26 @@ PRESET_THEMES: dict[str, dict[str, Any]] = {
             "switch-unchecked-track-color": "#064e3b",
             "slider-color": "#34d399",
             "slider-bar-color": "#064e3b",
+            "input-fill-color": "#011e17",
+            "input-ink-color": "#f0fdf4",
+            "input-label-ink-color": "#a7f3d0",
+            "input-dropdown-icon-color": "#34d399",
+            "input-idle-line-color": "rgba(52, 211, 153, 0.2)",
+            "input-hover-line-color": "#34d399",
+            "mdc-select-fill-color": "#011e17",
+            "mdc-select-ink-color": "#f0fdf4",
+            "mdc-select-label-ink-color": "#a7f3d0",
+            "mdc-select-dropdown-icon-color": "#34d399",
+            "mdc-text-field-fill-color": "#011e17",
+            "mdc-text-field-ink-color": "#f0fdf4",
+            "mdc-text-field-label-ink-color": "#a7f3d0",
+            "mdc-theme-text-primary-on-background": "#f0fdf4",
+            "mdc-theme-text-secondary-on-background": "#a7f3d0",
+            "sidebar-background-color": "#022c22",
+            "sidebar-text-color": "#f0fdf4",
+            "sidebar-icon-color": "#a7f3d0",
+            "sidebar-selected-icon-color": "#34d399",
+            "sidebar-selected-text-color": "#34d399",
         },
     },
     "nordic_frost": {
@@ -220,6 +332,8 @@ PRESET_THEMES: dict[str, dict[str, Any]] = {
             "primary-background-color": "#f8fafc",
             "secondary-background-color": "#f1f5f9",
             "ha-card-background": "#ffffff",
+            "card-background-color": "#ffffff",
+            "mdc-theme-surface": "#ffffff",
             "ha-card-border-color": "#e2e8f0",
             "ha-card-border-width": "1px",
             "ha-card-border-radius": "12px",
@@ -238,6 +352,26 @@ PRESET_THEMES: dict[str, dict[str, Any]] = {
             "switch-unchecked-track-color": "#e2e8f0",
             "slider-color": "#0284c7",
             "slider-bar-color": "#e2e8f0",
+            "input-fill-color": "#f1f5f9",
+            "input-ink-color": "#0f172a",
+            "input-label-ink-color": "#64748b",
+            "input-dropdown-icon-color": "#0284c7",
+            "input-idle-line-color": "#cbd5e1",
+            "input-hover-line-color": "#0284c7",
+            "mdc-select-fill-color": "#f1f5f9",
+            "mdc-select-ink-color": "#0f172a",
+            "mdc-select-label-ink-color": "#64748b",
+            "mdc-select-dropdown-icon-color": "#0284c7",
+            "mdc-text-field-fill-color": "#f1f5f9",
+            "mdc-text-field-ink-color": "#0f172a",
+            "mdc-text-field-label-ink-color": "#64748b",
+            "mdc-theme-text-primary-on-background": "#0f172a",
+            "mdc-theme-text-secondary-on-background": "#64748b",
+            "sidebar-background-color": "#ffffff",
+            "sidebar-text-color": "#0f172a",
+            "sidebar-icon-color": "#64748b",
+            "sidebar-selected-icon-color": "#0284c7",
+            "sidebar-selected-text-color": "#0284c7",
         },
     },
     "high_contrast": {
@@ -257,6 +391,8 @@ PRESET_THEMES: dict[str, dict[str, Any]] = {
             "primary-background-color": "#000000",
             "secondary-background-color": "#000000",
             "ha-card-background": "#000000",
+            "card-background-color": "#000000",
+            "mdc-theme-surface": "#000000",
             "ha-card-border-color": "#ffffff",
             "ha-card-border-width": "2px",
             "ha-card-border-radius": "4px",
@@ -275,6 +411,26 @@ PRESET_THEMES: dict[str, dict[str, Any]] = {
             "switch-unchecked-track-color": "#374151",
             "slider-color": "#ffff00",
             "slider-bar-color": "#374151",
+            "input-fill-color": "#000000",
+            "input-ink-color": "#ffffff",
+            "input-label-ink-color": "#ffff00",
+            "input-dropdown-icon-color": "#ffff00",
+            "input-idle-line-color": "#ffffff",
+            "input-hover-line-color": "#ffff00",
+            "mdc-select-fill-color": "#000000",
+            "mdc-select-ink-color": "#ffffff",
+            "mdc-select-label-ink-color": "#ffff00",
+            "mdc-select-dropdown-icon-color": "#ffff00",
+            "mdc-text-field-fill-color": "#000000",
+            "mdc-text-field-ink-color": "#ffffff",
+            "mdc-text-field-label-ink-color": "#ffff00",
+            "mdc-theme-text-primary-on-background": "#ffffff",
+            "mdc-theme-text-secondary-on-background": "#e5e7eb",
+            "sidebar-background-color": "#000000",
+            "sidebar-text-color": "#ffffff",
+            "sidebar-icon-color": "#ffff00",
+            "sidebar-selected-icon-color": "#00ffff",
+            "sidebar-selected-text-color": "#00ffff",
         },
     },
 }
@@ -416,11 +572,23 @@ class ThemeManager:
             theme_vars["ha-card-box-shadow"] = f"0 0 16px color-mix(in srgb, {p_col} 35%, transparent)"
             theme_vars["ha-card-border-color"] = f"color-mix(in srgb, {p_col} 50%, transparent)"
 
-        # 6. Apply any direct caller custom variable overrides
+        # 6. Synchronize input, surface, and interactive elements with theme palette
+        p_col = theme_vars["primary-color"]
+        theme_vars["input-dropdown-icon-color"] = p_col
+        theme_vars["input-hover-line-color"] = p_col
+        theme_vars["mdc-select-dropdown-icon-color"] = p_col
+        theme_vars["sidebar-selected-icon-color"] = p_col
+        theme_vars["sidebar-selected-text-color"] = p_col
+        if "card-background-color" not in theme_vars:
+            theme_vars["card-background-color"] = preview.get("card_bg", "#1e293b")
+        if "mdc-theme-surface" not in theme_vars:
+            theme_vars["mdc-theme-surface"] = preview.get("card_bg", "#1e293b")
+
+        # 7. Apply any direct caller custom variable overrides
         if custom_vars:
             theme_vars.update(custom_vars)
 
-        # 7. Generate clean title and slug
+        # 8. Generate clean title and slug
         if name:
             title = name
         else:
@@ -475,8 +643,14 @@ class ThemeManager:
 
         # Structure theme file content for Home Assistant include_dir_merge_named
         # Top-level key is the theme identifier (e.g., otis_cyberpunk)
+        mode_key = "dark" if theme_data.get("dark_mode", True) else "light"
         ha_theme_dict = {
-            theme_key: theme_data["vars"]
+            theme_key: {
+                **theme_data["vars"],
+                "modes": {
+                    mode_key: theme_data["vars"],
+                },
+            }
         }
 
         yaml_content = (

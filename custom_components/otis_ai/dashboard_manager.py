@@ -114,12 +114,15 @@ class DashboardManager:
             "cards": climate_cards,
         })
 
-        # 4. Floor Plan Subview
+        # 4. Floor Plan Subview (Full-width Interactive Studio Canvas)
         floorplan_cards: list[dict[str, Any]] = [
             {
                 "type": "custom:otis-companion-card",
+                "mode": "floorplan_studio",
                 "default_tab": "floorplan",
                 "show_stats": False,
+                "show_suggestions": False,
+                "show_chat": False,
                 "title": "Architectural Vector Floor Plan Studio",
             }
         ]

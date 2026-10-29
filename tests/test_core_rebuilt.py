@@ -1230,6 +1230,58 @@ class TestFloorplanParser(unittest.TestCase):
         self.assertIn("Ground / Main Floor", content)
         self.assertIn("Outdoor &amp; Perimeter", content)
 
+    def test_update_floorplan_layout(self):
+        """Verify Phase 4 interactive layout update: device pin repositioning and room boundary resizing."""
+        from custom_components.otis_ai.floorplan_parser import FloorplanParser
+
+        parser = FloorplanParser(self.hass)
+        mock_cap_map = {
+            "areas": {
+                "foyer": {"name": "Foyer", "entities": ["light.foyer_lights"]},
+                "kitchen": {"name": "Kitchen", "entities": ["light.kitchen"]},
+            },
+            "entities": [
+                {"entity_id": "light.foyer_lights", "name": "Foyer Lights", "domain": "light"},
+                {"entity_id": "light.kitchen", "name": "Kitchen", "domain": "light"},
+            ],
+            "spatial_graph": {"adjacencies": {"foyer": ["kitchen"]}},
+        }
+
+        # 1. Generate baseline SVG
+        asyncio.run(parser.async_generate_svg_floorplan(mock_cap_map, output_relative_path="test_edit_fp.svg"))
+
+        # 2. Update layout with new marker coordinates and resized room footprint
+        update_res = asyncio.run(
+            parser.async_update_floorplan_layout(
+                badges=[{"entity_id": "light.foyer_lights", "x": 120.5, "y": 250.5}],
+                rooms=[{"id": "foyer", "x": 55.0, "y": 65.0, "width": 210.0, "height": 190.0, "name": "Grand Foyer"}],
+                svg_relative_path="test_edit_fp.svg",
+            )
+        )
+        self.assertTrue(update_res["success"])
+        self.assertEqual(update_res["updated_badges"], 1)
+        self.assertEqual(update_res["updated_rooms"], 1)
+
+        # 3. Verify changes persisted directly into SVG markup
+        svg_file_path = self.hass.config.path("test_edit_fp.svg")
+        with open(svg_file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        self.assertIn('data-entity-id="light.foyer_lights"', content)
+        self.assertIn('transform="translate(120.5, 250.5)"', content)
+        self.assertIn('x="55.0" y="65.0" width="210.0" height="190.0"', content)
+        self.assertIn("Grand Foyer", content)
+
+        # 4. Graceful handling when SVG file not found
+        err_res = asyncio.run(
+            parser.async_update_floorplan_layout(
+                badges=[{"entity_id": "light.nonexistent", "x": 0, "y": 0}],
+                svg_relative_path="nonexistent_fp.svg",
+            )
+        )
+        self.assertFalse(err_res["success"])
+        self.assertIn("not found", err_res["error"])
+
     def test_proactive_floorplan_suggestion(self):
         """Verify that DiscoveryEngine suggests recording a walkthrough when no floorplan exists."""
         from custom_components.otis_ai import DiscoveryEngine

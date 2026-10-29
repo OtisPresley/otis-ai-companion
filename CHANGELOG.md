@@ -2,7 +2,27 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
-## [1.5.9] - 2026-10-29
+## [1.6.0] - 2026-10-29
+
+### Added & Improved
+- **Phase 4: Visual Floor Plan Boundary & Marker Adjuster Canvas Editor (`floorplan_parser.py`, `otis-companion-card.js`)**:
+  - **Full-Width Floor Plan Studio View**: Redesigned `/otis-ai/floorplan` subview with dedicated studio mode (`mode: "floorplan_studio"`). Takes up 100% full width and full viewport height with an expansive vector canvas, dedicated studio header, and quick return navigation to `/otis-ai`.
+  - **Interactive Canvas Editor Mode**:
+    - Embedded `🛠️ Canvas Editor` toggle button into the floor plan toolbar.
+    - Drag-and-drop repositioning for device pins and badges directly on `/local/otis_floorplan.svg` with 60fps live SVG coordinate updates via inverted CTM matrix transforms.
+    - Added floating live coordinate HUD (`📐 Pointer: X, Y`) displaying mouse and drag coordinates.
+  - **Visual Area Boundary Polygon & Footprint Editor**:
+    - Click any room boundary to activate interactive corner resize handles (`nw`, `ne`, `se`, `sw`) to dynamically expand or contract room footprints on the architectural blueprint.
+    - Built-in Boundary Inspector card allows 1-click binding of SVG polygons to Home Assistant `area_id`s from the registry, renaming rooms, and fine-tuning dimensions.
+  - **Layout Persistence (`otis_ai.update_floorplan_layout`)**:
+    - Registered `update_floorplan_layout` service persisting modified badge coordinates, room rectangles, and polygon boundaries directly back into SVG markup and metadata storage.
+  - **Device Pin Placer**:
+    - Added `➕ Add Pin` modal to drop unmapped sensors, lights, climates, and cameras directly onto the blueprint.
+- **Dynamic Theme Improvements & Usability Fixes (`theme_manager.py`, `otis-companion-card.js`)**:
+  - **Instant Live Theme Activation**: Fixed theme application so clicking "Generate & Apply" or "Apply Live" immediately updates the active browser session without having to visit the User Profile settings, dispatching native `settheme` CustomEvents directly to the Home Assistant DOM root.
+  - **Resolved White-on-White Contrast Issues**: Audited and enhanced all curated presets (including `midnight_slate`, `cyberpunk`, `oled_black`, `sunset_amber`, `emerald_luxury`, and `high_contrast`) with complete MDC surface, input, and select variables (`card-background-color`, `mdc-theme-surface`, `input-fill-color`, `input-ink-color`, `input-dropdown-icon-color`, `mdc-select-fill-color`, `mdc-text-field-fill-color`).
+  - **Modern HA `modes` Compatibility**: Serializes both top-level variables and `modes: { dark: ... }` / `modes: { light: ... }` dictionaries so Home Assistant natively renders all form fields, menus, and dropdowns in high-contrast dark mode.
+
 
 ### Added & Improved
 - **Phase 3: Otis Sentinel (Proactive Anomaly Detection & Watchdog) (`sentinel_manager.py`)**:

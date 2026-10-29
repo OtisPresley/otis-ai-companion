@@ -37,6 +37,7 @@ from .const import (
     SERVICE_GET_SPATIAL_MAP,
     SERVICE_UPDATE_SPATIAL_MAP,
     SERVICE_GENERATE_FLOORPLAN,
+    SERVICE_UPDATE_FLOORPLAN_LAYOUT,
     SERVICE_GENERATE_THEME,
     SERVICE_APPLY_THEME,
     SERVICE_LIST_THEMES,
@@ -780,6 +781,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             eng.invalidate_cache()
         return res
 
+    async def handle_update_floorplan_layout(call) -> ServiceResponse:
+        """Handle service call to adjust floorplan marker and room layout coordinates."""
+        _LOGGER.debug("Service 'update_floorplan_layout' triggered with: %s", call.data)
+        eng, _, _, fp, _, _ = _get_active_managers()
+        badges = call.data.get("badges")
+        rooms = call.data.get("rooms")
+        svg_path = call.data.get("svg_path", "www/otis_floorplan.svg")
+        res = await fp.async_update_floorplan_layout(
+            badges=badges,
+            rooms=rooms,
+            svg_relative_path=svg_path,
+        )
+        if hasattr(eng, "invalidate_cache"):
+            eng.invalidate_cache()
+        return res
+
     async def handle_generate_theme(call) -> ServiceResponse:
         """Handle service call to generate and persist a custom theme."""
         _LOGGER.debug("Service 'generate_theme' triggered with: %s", call.data)
@@ -909,6 +926,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     hass.services.async_register(
         DOMAIN,
+        SERVICE_UPDATE_FLOORPLAN_LAYOUT,
+        handle_update_floorplan_layout,
+        supports_response=SupportsResponse.ONLY,
+    )
+    hass.services.async_register(
+        DOMAIN,
         SERVICE_GENERATE_THEME,
         handle_generate_theme,
         supports_response=SupportsResponse.ONLY,
@@ -976,6 +999,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             SERVICE_GET_SPATIAL_MAP,
             SERVICE_UPDATE_SPATIAL_MAP,
             SERVICE_GENERATE_FLOORPLAN,
+            SERVICE_UPDATE_FLOORPLAN_LAYOUT,
         ):
             if hass.services.has_service(DOMAIN, srv):
                 _LOGGER.debug("Removing service: %s", srv)
