@@ -1002,7 +1002,8 @@ class FloorplanParser:
         canvas_height = self._get_canvas_height(layout_by_zone)
 
         svg_parts = [
-            f'''<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1300 {canvas_height}" data-full-viewbox="0 0 1300 {canvas_height}" width="1300" height="{canvas_height}" class="otis-floorplan {theme}">
+            f'''<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1300 {canvas_height}" data-full-viewbox="0 0 1300 {canvas_height}" width="1300" height="{canvas_height}" class="otis-floorplan {theme}">
   <defs>
     <style>
       .otis-floorplan {{

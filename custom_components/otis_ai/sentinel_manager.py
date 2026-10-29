@@ -66,8 +66,33 @@ class SentinelManager:
         """Mute a specific anomaly from appearing in Proactive Feed."""
         await self.async_load_preferences()
         self._ignored_anomaly_ids.add(anomaly_id)
-        if anomaly_id in self._anomalies:
-            del self._anomalies[anomaly_id]
+        # Also ignore by entity_id if anomaly_id references an entity
+        for prefix in (
+            "sentinel_battery_critical_",
+            "sentinel_battery_low_",
+            "sentinel_node_offline_",
+            "sentinel_garage_open_",
+            "sentinel_climate_extreme_delta_",
+            "sentinel_integration_failed_",
+        ):
+            if anomaly_id.startswith(prefix):
+                ent_id = anomaly_id[len(prefix):]
+                self._ignored_anomaly_ids.add(ent_id)
+                self._ignored_anomaly_ids.add(f"sentinel_battery_critical_{ent_id}")
+                self._ignored_anomaly_ids.add(f"sentinel_battery_low_{ent_id}")
+                self._ignored_anomaly_ids.add(f"sentinel_node_offline_{ent_id}")
+                break
+
+        # Remove from active in-memory anomalies
+        to_del = [
+            k for k, v in self._anomalies.items()
+            if k == anomaly_id
+            or k in self._ignored_anomaly_ids
+            or v.get("entity_id") in self._ignored_anomaly_ids
+        ]
+        for k in to_del:
+            self._anomalies.pop(k, None)
+
         await self.async_save_preferences()
 
     async def async_ignore_category(self, category: str) -> None:
@@ -88,6 +113,7 @@ class SentinelManager:
         anomalies = [
             a for a in self._anomalies.values()
             if a.get("id") not in self._ignored_anomaly_ids
+            and a.get("entity_id") not in self._ignored_anomaly_ids
             and a.get("anomaly_type") not in self._ignored_categories
             and a.get("domain") not in self._ignored_categories
         ]

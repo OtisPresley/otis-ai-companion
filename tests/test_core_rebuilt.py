@@ -2370,6 +2370,58 @@ class TestSentinelManager(unittest.TestCase):
         self.assertEqual(dm._get_room_icon("Amy's Office", "office"), "mdi:desk")
         self.assertEqual(dm._get_room_icon("Downstairs Bath", "bath"), "mdi:shower")
 
+    def test_floorplan_view_cards_picture_elements(self):
+        """Verify Floor Plan view builds interactive picture-elements card with elements and cache buster."""
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+        from custom_components.otis_ai.floorplan_parser import FloorplanParser
+
+        fp = FloorplanParser(self.hass)
+        dm = DashboardManager(self.hass, floorplan_parser=fp)
+
+        mock_cap_map = {
+            "areas": {
+                "foyer": {"name": "Foyer", "entities": ["light.foyer_lights"]},
+                "theater": {"name": "Theater", "entities": ["light.theater_lights"]},
+            },
+            "entities": [
+                {"entity_id": "light.foyer_lights", "name": "Foyer Lights", "area_id": "foyer", "domain": "light", "state": "on"},
+                {"entity_id": "light.theater_lights", "name": "Theater Lights", "area_id": "theater", "domain": "light", "state": "off"},
+            ],
+        }
+        # Mock svg file existence
+        self.hass.config.path = lambda p: "/config/www/otis_floorplan.svg" if "otis_floorplan.svg" in p else p
+        with unittest.mock.patch("os.path.exists", return_value=True), \
+             unittest.mock.patch("os.path.getmtime", return_value=1730225708):
+            cards = dm._build_floorplan_view_cards(
+                mock_cap_map, dashboard_url_path="command-center"
+            )
+
+        self.assertEqual(len(cards), 1)
+        self.assertEqual(cards[0]["type"], "picture-elements")
+        self.assertIn("otis_floorplan.svg?v=1730225708", cards[0]["image"])
+        self.assertGreater(len(cards[0]["elements"]), 0)
+
+        # Check room label navigation
+        labels = [e for e in cards[0]["elements"] if e["type"] == "state-label"]
+        self.assertGreater(len(labels), 0)
+        nav_paths = [lbl["tap_action"]["navigation_path"] for lbl in labels]
+        self.assertTrue(any(p.startswith("/command-center/area_") for p in nav_paths))
+
+    def test_sentinel_ignore_anomaly_indexing(self):
+        """Verify Sentinel indexes anomaly entity_id and prefix variations."""
+        import asyncio
+        from custom_components.otis_ai.sentinel_manager import SentinelManager
+
+        sm = SentinelManager(self.hass)
+        with unittest.mock.patch.object(sm._store, "async_load", return_value=None), \
+             unittest.mock.patch.object(sm._store, "async_save", return_value=None):
+            asyncio.run(sm.async_ignore_anomaly("sentinel_battery_critical_sensor.side_hose_timer_battery_level"))
+
+        # Entity ID and prefix variations should be ignored
+        self.assertIn("sensor.side_hose_timer_battery_level", sm._ignored_anomaly_ids)
+        self.assertIn("sentinel_battery_low_sensor.side_hose_timer_battery_level", sm._ignored_anomaly_ids)
+        self.assertIn("sentinel_battery_critical_sensor.side_hose_timer_battery_level", sm._ignored_anomaly_ids)
+
 
 if __name__ == "__main__":
     unittest.main()

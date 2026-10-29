@@ -27,9 +27,10 @@ OTIS_DASHBOARD_ICON = "mdi:robot-outline"
 class DashboardManager:
     """Manages automatic creation of the Admin-only Otis AI dashboard and pro-grade custom dashboards."""
 
-    def __init__(self, hass: HomeAssistant) -> None:
+    def __init__(self, hass: HomeAssistant, floorplan_parser: Any = None) -> None:
         """Initialize the Dashboard Manager."""
         self.hass = hass
+        self.floorplan_parser = floorplan_parser
 
     def _storage_dir(self) -> str | None:
         """Return the path to Home Assistant's .storage directory if available."""
@@ -196,7 +197,9 @@ class DashboardManager:
                 "type": "panel",
                 "panel": True,
                 "badges": [],
-                "cards": self._build_floorplan_view_cards(capability_map),
+                "cards": self._build_floorplan_view_cards(
+                    capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH
+                ),
             },
             {
                 "title": "Media Studio",
@@ -294,7 +297,9 @@ class DashboardManager:
         })
 
         # 4. Floor Plan Subview (Full-width Interactive User Control Surface with picture-elements)
-        floorplan_cards = self._build_floorplan_view_cards(capability_map)
+        floorplan_cards = self._build_floorplan_view_cards(
+            capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH
+        )
         views.append({
             "title": "Floor Plan",
             "path": "floorplan",
@@ -799,164 +804,195 @@ class DashboardManager:
         return "mdi:door-open"
 
     def _build_floorplan_view_cards(
-        self, capability_map: dict[str, Any] | None
+        self, capability_map: dict[str, Any] | None, dashboard_url_path: str = "otis-ai"
     ) -> list[dict[str, Any]]:
         """Build interactive picture-elements view cards for Floor Plan subview."""
-        # 1. Determine if SVG floor plan exists in www/
+        # 1. Determine if SVG floor plan exists in www/ and record mtime for cache busting
         svg_exists = False
+        svg_mtime = 0
         if hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
             svg_path = self.hass.config.path("www/otis_floorplan.svg")
-            svg_exists = os.path.exists(svg_path)
+            if os.path.exists(svg_path):
+                svg_exists = True
+                try:
+                    svg_mtime = int(os.path.getmtime(svg_path))
+                except Exception:
+                    svg_mtime = 1
 
         elements: list[dict[str, Any]] = []
 
+        # Retrieve floorplan parser
+        parser = getattr(self, "floorplan_parser", None)
+        if parser is None and hasattr(self.hass, "data") and isinstance(self.hass.data, dict):
+            otis_data = self.hass.data.get("otis_ai")
+            if isinstance(otis_data, dict):
+                for v in otis_data.values():
+                    if isinstance(v, dict) and "floorplan_parser" in v:
+                        parser = v["floorplan_parser"]
+                        break
+        if parser is None:
+            try:
+                from .floorplan_parser import FloorplanParser
+                parser = FloorplanParser(self.hass)
+            except Exception:
+                parser = None
+
+        areas_map: dict[str, Any] = {}
+        entities_list: list[dict[str, Any]] = []
         if capability_map:
-            areas_map = capability_map.get("areas", {})
-            entities_list = capability_map.get("entities", [])
-            valid_eids = {
-                e["entity_id"]
-                for e in entities_list
-                if e.get("entity_id")
-                and not e.get("disabled_by")
-                and not e.get("hidden_by")
-                and e.get("state") not in ("unknown", "unavailable", None, "")
-            }
-            entities_by_area: dict[str, list[dict[str, Any]]] = {}
-            for e in entities_list:
-                aid = e.get("area_id")
-                if aid:
-                    entities_by_area.setdefault(aid, []).append(e)
+            areas_map = dict(capability_map.get("areas", {}))
+            entities_list = list(capability_map.get("entities", []))
 
-            # Retrieve floorplan parser if available
-            coordinator = None
-            if hasattr(self.hass, "data") and isinstance(self.hass.data, dict):
-                otis_data = self.hass.data.get("otis_ai")
-                if isinstance(otis_data, dict):
-                    coordinator = otis_data.get("coordinator")
+        # Fallback to Home Assistant registries if areas_map is empty
+        if not areas_map:
+            try:
+                from homeassistant.helpers import area_registry as ar_helper
+                reg = ar_helper.async_get(self.hass)
+                for area_entry in reg.async_list_areas():
+                    areas_map[area_entry.id] = {
+                        "name": area_entry.name,
+                        "entities": [],
+                    }
+            except Exception:
+                pass
 
-            layout_by_zone = None
-            if coordinator and hasattr(coordinator, "floorplan_parser"):
-                try:
-                    zones: dict[str, list[dict[str, Any]]] = {"main": [], "upper": [], "outdoor": []}
-                    for aid, ainfo in areas_map.items():
-                        from .floorplan_parser import classify_area_zone
-                        zt = classify_area_zone(aid, ainfo.get("name", aid))
-                        zones[zt].append({
-                            "id": aid,
-                            "name": ainfo.get("name", aid),
-                            "entities": ainfo.get("entities", []),
-                            "adjacent_areas": [],
+        valid_eids = {
+            e["entity_id"]
+            for e in entities_list
+            if e.get("entity_id")
+            and not e.get("disabled_by")
+            and not e.get("hidden_by")
+            and e.get("state") not in ("unknown", "unavailable", None, "")
+        }
+        entities_by_area: dict[str, list[dict[str, Any]]] = {}
+        for e in entities_list:
+            aid = e.get("area_id")
+            if aid:
+                entities_by_area.setdefault(aid, []).append(e)
+
+        layout_by_zone = None
+        if parser and areas_map:
+            try:
+                from .floorplan_parser import classify_area_zone
+                zones: dict[str, list[dict[str, Any]]] = {"main": [], "upper": [], "outdoor": []}
+                for aid, ainfo in areas_map.items():
+                    zt = classify_area_zone(aid, ainfo.get("name", aid))
+                    zones[zt].append({
+                        "id": aid,
+                        "name": ainfo.get("name", aid),
+                        "entities": ainfo.get("entities", []),
+                        "adjacent_areas": [],
+                    })
+                layout_by_zone = parser._calculate_orthogonal_layout(zones)
+            except Exception as calc_err:
+                _LOGGER.debug("Could not calculate layout for picture-elements: %s", calc_err)
+
+        if layout_by_zone and parser:
+            try:
+                canvas_h = float(parser._get_canvas_height(layout_by_zone))
+                for zone, rooms in layout_by_zone.items():
+                    for r in rooms:
+                        aid = r.get("id")
+                        room_ents = entities_by_area.get(aid, [])
+                        lights = [
+                            e["entity_id"]
+                            for e in room_ents
+                            if e.get("domain") == "light"
+                            and e.get("entity_id") in valid_eids
+                            and e.get("entity_category") not in ("config", "diagnostic")
+                        ]
+                        switches = [
+                            e["entity_id"]
+                            for e in room_ents
+                            if e.get("domain") == "switch"
+                            and e.get("entity_id") in valid_eids
+                            and e.get("entity_category") not in ("config", "diagnostic")
+                        ]
+                        climates = [
+                            e["entity_id"]
+                            for e in room_ents
+                            if e.get("domain") == "climate"
+                            and e.get("entity_id") in valid_eids
+                        ]
+
+                        rx = float(r.get("x", 0))
+                        ry = float(r.get("y", 0))
+                        rw = float(r.get("width", 200))
+                        rh = float(r.get("height", 140))
+
+                        center_left_pct = round(((rx + rw / 2.0) / 1300.0) * 100, 1)
+
+                        # Room Navigation Label
+                        slug = self._slugify(aid)
+                        elements.append({
+                            "type": "state-label",
+                            "title": r.get("name"),
+                            "style": {
+                                "top": f"{round((ry + 22) / canvas_h * 100, 1)}%",
+                                "left": f"{center_left_pct}%",
+                                "color": "#e2e8f0",
+                                "font-size": "13px",
+                                "font-weight": "700",
+                                "letter-spacing": "0.5px",
+                                "cursor": "pointer",
+                                "pointer-events": "auto",
+                                "text-shadow": "0 2px 4px rgba(0,0,0,0.8)",
+                            },
+                            "tap_action": {
+                                "action": "navigate",
+                                "navigation_path": f"/{dashboard_url_path}/area_{slug}",
+                            },
                         })
-                    layout_by_zone = coordinator.floorplan_parser._calculate_orthogonal_layout(zones)
-                except Exception as calc_err:
-                    _LOGGER.debug("Could not calculate layout for picture-elements: %s", calc_err)
 
-            if layout_by_zone and coordinator:
-                try:
-                    canvas_h = float(coordinator.floorplan_parser._get_canvas_height(layout_by_zone))
-                    for zone, rooms in layout_by_zone.items():
-                        for r in rooms:
-                            aid = r.get("id")
-                            room_ents = entities_by_area.get(aid, [])
-                            lights = [
-                                e["entity_id"]
-                                for e in room_ents
-                                if e.get("domain") == "light"
-                                and e.get("entity_id") in valid_eids
-                                and e.get("entity_category") not in ("config", "diagnostic")
-                            ]
-                            switches = [
-                                e["entity_id"]
-                                for e in room_ents
-                                if e.get("domain") == "switch"
-                                and e.get("entity_id") in valid_eids
-                                and e.get("entity_category") not in ("config", "diagnostic")
-                            ]
-                            climates = [
-                                e["entity_id"]
-                                for e in room_ents
-                                if e.get("domain") == "climate"
-                                and e.get("entity_id") in valid_eids
-                            ]
-
-                            rx = float(r.get("x", 0))
-                            ry = float(r.get("y", 0))
-                            rw = float(r.get("width", 200))
-                            rh = float(r.get("height", 140))
-
-                            center_left_pct = round(((rx + rw / 2.0) / 1300.0) * 100, 1)
-
-                            # Room Navigation Label
-                            slug = self._slugify(aid)
+                        # Light icon at bottom-left of room
+                        if lights:
+                            top_pct = round(((ry + rh - 28) / canvas_h) * 100, 1)
+                            left_pct = round(((rx + 28) / 1300.0) * 100, 1)
                             elements.append({
-                                "type": "state-label",
-                                "title": r.get("name"),
+                                "type": "state-icon",
+                                "entity": lights[0],
                                 "style": {
-                                    "top": f"{round((ry + 22) / canvas_h * 100, 1)}%",
-                                    "left": f"{center_left_pct}%",
-                                    "color": "#e2e8f0",
-                                    "font-size": "13px",
-                                    "font-weight": "700",
-                                    "letter-spacing": "0.5px",
+                                    "top": f"{top_pct}%",
+                                    "left": f"{left_pct}%",
+                                    "--paper-item-icon-active-color": "#38bdf8",
                                     "cursor": "pointer",
-                                    "pointer-events": "auto",
-                                    "text-shadow": "0 2px 4px rgba(0,0,0,0.8)",
                                 },
-                                "tap_action": {
-                                    "action": "navigate",
-                                    "navigation_path": f"/command-center/area_{slug}",
-                                },
+                                "tap_action": {"action": "toggle"},
                             })
 
-                            # Light icon at bottom-left of room
-                            if lights:
-                                top_pct = round(((ry + rh - 28) / canvas_h) * 100, 1)
-                                left_pct = round(((rx + 28) / 1300.0) * 100, 1)
-                                elements.append({
-                                    "type": "state-icon",
-                                    "entity": lights[0],
-                                    "style": {
-                                        "top": f"{top_pct}%",
-                                        "left": f"{left_pct}%",
-                                        "--paper-item-icon-active-color": "#38bdf8",
-                                        "cursor": "pointer",
-                                    },
-                                    "tap_action": {"action": "toggle"},
-                                })
+                        # Switch icon next to light
+                        if switches:
+                            top_pct = round(((ry + rh - 28) / canvas_h) * 100, 1)
+                            left_pct = round(((rx + 68) / 1300.0) * 100, 1)
+                            elements.append({
+                                "type": "state-icon",
+                                "entity": switches[0],
+                                "style": {
+                                    "top": f"{top_pct}%",
+                                    "left": f"{left_pct}%",
+                                    "--paper-item-icon-active-color": "#a855f7",
+                                    "cursor": "pointer",
+                                },
+                                "tap_action": {"action": "toggle"},
+                            })
 
-                            # Switch icon next to light
-                            if switches:
-                                top_pct = round(((ry + rh - 28) / canvas_h) * 100, 1)
-                                left_pct = round(((rx + 68) / 1300.0) * 100, 1)
-                                elements.append({
-                                    "type": "state-icon",
-                                    "entity": switches[0],
-                                    "style": {
-                                        "top": f"{top_pct}%",
-                                        "left": f"{left_pct}%",
-                                        "--paper-item-icon-active-color": "#a855f7",
-                                        "cursor": "pointer",
-                                    },
-                                    "tap_action": {"action": "toggle"},
-                                })
-
-                            # Climate badge at bottom-right of room
-                            if climates:
-                                top_pct = round(((ry + rh - 28) / canvas_h) * 100, 1)
-                                left_pct = round(((rx + rw - 36) / 1300.0) * 100, 1)
-                                elements.append({
-                                    "type": "state-badge",
-                                    "entity": climates[0],
-                                    "style": {
-                                        "top": f"{top_pct}%",
-                                        "left": f"{left_pct}%",
-                                        "transform": "scale(0.75)",
-                                        "cursor": "pointer",
-                                    },
-                                    "tap_action": {"action": "more-info"},
-                                })
-                except Exception as elem_err:
-                    _LOGGER.debug("Could not build picture-elements room badges: %s", elem_err)
+                        # Climate badge at bottom-right of room
+                        if climates:
+                            top_pct = round(((ry + rh - 28) / canvas_h) * 100, 1)
+                            left_pct = round(((rx + rw - 36) / 1300.0) * 100, 1)
+                            elements.append({
+                                "type": "state-badge",
+                                "entity": climates[0],
+                                "style": {
+                                    "top": f"{top_pct}%",
+                                    "left": f"{left_pct}%",
+                                    "transform": "scale(0.75)",
+                                    "cursor": "pointer",
+                                },
+                                "tap_action": {"action": "more-info"},
+                            })
+            except Exception as elem_err:
+                _LOGGER.debug("Could not build picture-elements room badges: %s", elem_err)
 
         if not svg_exists:
             return [
@@ -970,10 +1006,11 @@ class DashboardManager:
                 }
             ]
 
+        image_url = f"/local/otis_floorplan.svg?v={svg_mtime}" if svg_mtime else "/local/otis_floorplan.svg"
         return [
             {
                 "type": "picture-elements",
-                "image": "/local/otis_floorplan.svg",
+                "image": image_url,
                 "title": "Interactive Floor Plan",
                 "elements": elements,
             }

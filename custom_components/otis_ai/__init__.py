@@ -343,7 +343,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     spatial_manager = SpatialGraphManager(hass)
     floorplan_parser = FloorplanParser(hass)
     automation_manager = AutomationManager(hass)
-    dashboard_manager = DashboardManager(hass)
+    dashboard_manager = DashboardManager(hass, floorplan_parser=floorplan_parser)
     theme_manager = ThemeManager(hass)
     sentinel_manager = SentinelManager(hass)
     await asyncio.gather(
@@ -421,12 +421,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         fp = entry_data.get("floorplan_parser", floorplan_parser)
         tm = entry_data.get("theme_manager", theme_manager)
         sm = entry_data.get("sentinel_manager", sentinel_manager)
-        return eng, mgr, s_mgr, fp, tm, sm
+        dm = entry_data.get("dashboard_manager", dashboard_manager)
+        return eng, mgr, s_mgr, fp, tm, sm, dm
 
     async def handle_get_capability_map(call) -> ServiceResponse:
         """Handle service call to get the capability map."""
         _LOGGER.debug("Service 'get_capability_map' triggered")
-        eng, _, _, _, _, _ = _get_active_managers()
+        eng, *_ = _get_active_managers()
         capability_map = await eng.async_build_capability_map()
         capability_map["conversation_agent_id"] = entry.entry_id
         return capability_map
@@ -434,7 +435,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_get_suggestions(call) -> ServiceResponse:
         """Handle service call to retrieve proactive suggestions."""
         _LOGGER.debug("Service 'get_suggestions' triggered")
-        eng, _, _, _, _, _ = _get_active_managers()
+        eng, *_ = _get_active_managers()
         capability_map = await eng.async_build_capability_map()
         return {"suggestions": capability_map.get("proactive_suggestions", [])}
 
@@ -445,7 +446,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not suggestion_id:
             return {"success": False, "error": "Missing suggestion_id parameter"}
 
-        eng, mgr, _, _, _, sm = _get_active_managers()
+        eng, mgr, *_, sm, _ = _get_active_managers()
         target = None
         if hasattr(eng, "get_cached_suggestion") and callable(getattr(eng, "get_cached_suggestion", None)):
             cached = eng.get_cached_suggestion(suggestion_id)
@@ -743,7 +744,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_get_spatial_map(call) -> ServiceResponse:
         """Handle service call to retrieve the spatial area adjacency graph."""
         _LOGGER.debug("Service 'get_spatial_map' triggered")
-        _, _, s_mgr, _, _, _ = _get_active_managers()
+        _, _, s_mgr, *_ = _get_active_managers()
         graph = await s_mgr.async_get_graph()
         return graph
 
@@ -765,7 +766,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return {"success": False, "error": "Both 'area_1' and 'area_2' are required parameters"}
 
         try:
-            eng, _, s_mgr, _, _, _ = _get_active_managers()
+            eng, _, s_mgr, *_ = _get_active_managers()
             graph = await s_mgr.async_update_connection(area_1, area_2, connected, connection_type)
             if hasattr(eng, "invalidate_cache"):
                 eng.invalidate_cache()
@@ -782,7 +783,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_generate_floorplan(call) -> ServiceResponse:
         """Handle service call to generate SVG floorplan."""
         _LOGGER.debug("Service 'generate_floorplan' triggered")
-        eng, _, _, fp, _, _ = _get_active_managers()
+        eng, _, _, fp, *_ = _get_active_managers()
         capability_map = await eng.async_build_capability_map()
         video_path = call.data.get("video_path")
         spoken_order = call.data.get("spoken_order")
@@ -802,7 +803,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_update_floorplan_layout(call) -> ServiceResponse:
         """Handle service call to adjust floorplan marker and room layout coordinates."""
         _LOGGER.debug("Service 'update_floorplan_layout' triggered with: %s", call.data)
-        eng, _, _, fp, _, _ = _get_active_managers()
+        eng, _, _, fp, *_ = _get_active_managers()
         badges = call.data.get("badges")
         rooms = call.data.get("rooms")
         svg_path = call.data.get("svg_path", "www/otis_floorplan.svg")
@@ -818,7 +819,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_generate_theme(call) -> ServiceResponse:
         """Handle service call to generate and persist a custom theme."""
         _LOGGER.debug("Service 'generate_theme' triggered with: %s", call.data)
-        eng, _, _, _, tm, _ = _get_active_managers()
+        eng, _, _, _, tm, *_ = _get_active_managers()
         prompt = call.data.get("prompt", "")
         name = call.data.get("name")
         base_palette = call.data.get("base_palette")
@@ -855,14 +856,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         if not theme_name:
             return {"success": False, "error": "Missing theme 'name' parameter"}
-        _, _, _, _, tm, _ = _get_active_managers()
+        _, _, _, _, tm, *_ = _get_active_managers()
         ok = await tm.async_apply_theme(theme_name, mode=mode, user_id=user_id, all_users=all_users)
         return {"success": ok, "theme": theme_name}
 
     async def handle_list_themes(call) -> ServiceResponse:
         """Handle service call to list generated Otis themes."""
         _LOGGER.debug("Service 'list_themes' triggered")
-        _, _, _, _, tm, _ = _get_active_managers()
+        _, _, _, _, tm, *_ = _get_active_managers()
         themes = await tm.async_list_otis_themes()
         return {"themes": themes, "presets": list(PRESET_THEMES.keys())}
 
@@ -872,7 +873,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Service 'delete_theme' triggered for: %s", theme_name)
         if not theme_name:
             return {"success": False, "error": "Missing theme 'name' parameter"}
-        eng, _, _, _, tm, _ = _get_active_managers()
+        eng, _, _, _, tm, *_ = _get_active_managers()
         deleted = await tm.async_delete_theme(theme_name)
         if hasattr(eng, "invalidate_cache"):
             eng.invalidate_cache()
@@ -881,7 +882,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_run_sentinel_watchdog(call) -> ServiceResponse:
         """Handle service call to run Sentinel watchdog audit."""
         _LOGGER.debug("Service 'run_sentinel_watchdog' triggered")
-        eng, _, _, _, _, sm = _get_active_managers()
+        eng, *_, sm, _ = _get_active_managers()
         anomalies = await sm.async_scan_all_anomalies()
         if hasattr(eng, "invalidate_cache"):
             eng.invalidate_cache()
@@ -894,7 +895,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Service 'remediate_anomaly' triggered for: %s (action=%s)", anomaly_id, action)
         if not anomaly_id:
             return {"success": False, "error": "Missing 'anomaly_id' parameter"}
-        eng, _, _, _, _, sm = _get_active_managers()
+        eng, *_, sm, _ = _get_active_managers()
         res = await sm.async_remediate_anomaly(anomaly_id, action=action)
         if hasattr(eng, "invalidate_cache"):
             eng.invalidate_cache()
@@ -903,7 +904,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_get_sentinel_telemetry(call) -> ServiceResponse:
         """Handle service call to retrieve Sentinel telemetry."""
         _LOGGER.debug("Service 'get_sentinel_telemetry' triggered")
-        _, _, _, _, _, sm = _get_active_managers()
+        *_, sm, _ = _get_active_managers()
         anomalies = sm.get_active_anomalies()
         return {"anomalies": anomalies, "count": len(anomalies)}
 
@@ -918,12 +919,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             category,
             all_in_category,
         )
-        eng, _, _, _, _, sm = _get_active_managers()
+        eng, *_, sm, _ = _get_active_managers()
         if sm:
-            if all_in_category and category:
+            if category:
                 await sm.async_ignore_category(category)
             elif anomaly_id:
                 await sm.async_ignore_anomaly(anomaly_id)
+            if hasattr(sm, "async_scan_all_anomalies"):
+                await sm.async_scan_all_anomalies()
         if hasattr(eng, "invalidate_cache"):
             eng.invalidate_cache()
         return {"success": True, "anomaly_id": anomaly_id, "category": category}
@@ -931,7 +934,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_create_command_center(call) -> ServiceResponse:
         """Handle service call to create or sync the User role Command Center dashboard."""
         _LOGGER.debug("Service 'create_command_center' triggered")
-        eng, dm, _, _, _, _ = _get_active_managers()
+        eng, *_, dm = _get_active_managers()
         cap_map = await eng.async_get_capability_map() if hasattr(eng, "async_get_capability_map") else {}
         res = await dm.async_ensure_user_command_center_dashboard(cap_map)
         return {"success": True, "dashboard": res}
@@ -3800,10 +3803,10 @@ class DiscoveryEngine:
                 "action_payload": {},
             })
 
-        # Sort suggestions by priority: High -> Medium -> Low
-        priority_rank = {"high": 0, "medium": 1, "low": 2}
+        # Sort suggestions by priority: Critical -> High -> Medium -> Low
+        priority_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
         suggestions.sort(
-            key=lambda s: priority_rank.get(str(s.get("priority", "medium")).lower(), 1)
+            key=lambda s: priority_rank.get(str(s.get("priority", "medium")).lower(), 2)
         )
 
         self._suggestions_by_id = {s["id"]: s for s in suggestions if s.get("id")}

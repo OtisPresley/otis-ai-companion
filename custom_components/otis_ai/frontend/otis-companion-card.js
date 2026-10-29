@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.6.2";
+const CARD_VERSION = "1.6.3";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -27,7 +27,7 @@ class OtisCompanionCard extends HTMLElement {
     this._hass = null;
     this._capabilityMap = null;
     this._suggestions = [];
-    this._dismissedIds = new Set();
+    this._dismissedIds = this._loadDismissedIds();
     this._loadingSuggestions = false;
     this._applyingIds = new Set();
     this._chatMessages = [];
@@ -424,8 +424,27 @@ class OtisCompanionCard extends HTMLElement {
     }
   }
 
+  _loadDismissedIds() {
+    try {
+      const stored = localStorage.getItem("otis_dismissed_suggestions");
+      if (stored) {
+        return new Set(JSON.parse(stored));
+      }
+    } catch (_) {}
+    return new Set();
+  }
+
+  _saveDismissedIds() {
+    try {
+      if (this._dismissedIds && this._dismissedIds.size > 0) {
+        localStorage.setItem("otis_dismissed_suggestions", JSON.stringify([...this._dismissedIds]));
+      }
+    } catch (_) {}
+  }
+
   _dismissSuggestion(sId) {
     this._dismissedIds.add(sId);
+    this._saveDismissedIds();
     this._render();
   }
 
@@ -4424,6 +4443,7 @@ class OtisCompanionCard extends HTMLElement {
         try {
           await this._hass.callService("otis_ai", "ignore_sentinel_alert", { anomaly_id: aId });
           this._showToast("Alert ignored");
+          await this._fetchData();
         } catch (_) {}
       };
     });
@@ -4438,6 +4458,7 @@ class OtisCompanionCard extends HTMLElement {
             this._dismissedIds.add(s.id);
           }
         });
+        this._saveDismissedIds();
         this._render();
         try {
           await this._hass.callService("otis_ai", "ignore_sentinel_alert", { category: cat, all_in_category: true });
