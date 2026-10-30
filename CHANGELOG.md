@@ -2,6 +2,22 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.9.2] - 2026-10-30
+
+### Added & Improved
+- **Phase 6 Voice Feedback & Multi-Room Audio Handoff (`audio_manager.py`, `__init__.py`, `const.py`, `services.yaml`, `otis-companion-card.js`)**:
+  - Implemented `AudioHandoffManager` providing presence-based media follow-me routing and zone transfers across multi-zone matrix amplifiers (Control4) and upstream media streamers (`media_player.bridge`, `media_player.gym_bridge`).
+  - Added `otis_ai.audio_handoff` service with spatial adjacency validation via the Spatial Graph topology, supporting both `handoff` (transfer & turn off departed room) and `follow` / `mirror` (keep rooms synchronized) modes.
+  - Added `otis_ai.release_idle_sources` idle power guard: inspects all matrix zones and automatically pauses unmonitored playing streamers when no output zones are actively listening, eliminating phantom standby power draw.
+  - Deepened `otis_ai.notify_voice` integration routing audible speech announcements through `script.notify_router` or targeted room zones based on person presence.
+  - Registered natural language audio handoff and idle guard command parsing in Assist Co-Pilot ("follow me to the study", "transfer music to great room", "release idle sources").
+  - Added Phase 6 prompt chips in the Assist Co-Pilot header (`🎵 Audio Handoff`, `🔇 Idle Guard`).
+- **Assist Co-Pilot Prompt Copy Icon & Resilient Response Pipeline (`otis-companion-card.js`, `__init__.py`)**:
+  - Added 1-click `📋 Copy` icon on each previous user prompt bubble in the Assist Co-Pilot chat, instantly copying the prompt text to the clipboard and populating the chat textarea for effortless re-execution or editing.
+  - Hardened `_sendChatMessage` execution with a 40-second client-side `Promise.race` timeout guard, eliminating infinite UI loading lockups.
+  - Optimized LLM capability prompt serialization: capped detailed control entities to active devices + representative sample, reducing prompt payload by 92% (from 50,000+ characters down to ~4,500 characters), drastically reducing Google Gemini latency from 25s down to 2-3s and eliminating rate-limit demand spikes.
+  - Added structured error response rendering in Assist Co-Pilot bubbles if all configured AI agents fail.
+
 ## [1.9.1] - 2026-10-30
 
 ### Fixed & Improved

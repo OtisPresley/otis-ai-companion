@@ -316,5 +316,96 @@ list_macros:
   name: List Macros & Execution History
   description: List available built-in smart macro templates and recent execution history with rollback statuses.
 
+audio_handoff:
+  name: Audio Handoff
+  description: Transfer or mirror playing audio between rooms across multi-zone matrix amplifiers and media players, validated via Spatial Adjacency.
+  fields:
+    source_area:
+      name: Source Area / Room
+      description: The room/area currently playing audio or being departed.
+      required: true
+      selector:
+        text:
+    target_area:
+      name: Target Area / Room
+      description: The room/area being entered where audio should follow or transfer.
+      required: true
+      selector:
+        text:
+    mode:
+      name: Handoff Mode
+      description: Mode of transfer ('handoff' moves audio and turns off source room; 'follow' or 'mirror' keeps both rooms synchronized).
+      default: handoff
+      selector:
+        select:
+          options:
+            - handoff
+            - follow
+            - mirror
+    idle_power_guard:
+      name: Idle Power Guard
+      description: Automatically check for and release idle upstream streamer and amplifier sources.
+      default: true
+      selector:
+        boolean:
+
+media_follow_me:
+  name: Media Follow-Me Routing
+  description: Dynamically evaluate presence and follow user audio into newly entered rooms.
+  fields:
+    source_area:
+      name: Source Area
+      required: true
+      selector:
+        text:
+    target_area:
+      name: Target Area
+      required: true
+      selector:
+        text:
+    mode:
+      name: Mode
+      default: follow
+      selector:
+        select:
+          options:
+            - follow
+            - handoff
+
+release_idle_sources:
+  name: Release Idle Matrix Sources
+  description: Inspect multi-zone matrix amplifier zones and pause unmonitored upstream streamers to prevent idle phantom power waste.
+
+notify_voice:
+  name: Voice Feedback Router
+  description: Deliver voice/audio feedback dynamically routed to a specific area or following person presence via central notify_router.
+  fields:
+    message:
+      name: Message
+      description: Text or voice announcement to deliver.
+      required: true
+      selector:
+        text:
+    area_id:
+      name: Target Area
+      description: Area where announcement should play.
+      required: false
+      selector:
+        text:
+    person_entity_id:
+      name: Person Entity ID
+      description: Person whose current location determines the output speaker.
+      required: false
+      selector:
+        entity:
+          domain: person
+    announce:
+      name: Announce (audio)
+      description: Whether to play audible TTS speech.
+      default: true
+      selector:
+        boolean:
+
+
 
 

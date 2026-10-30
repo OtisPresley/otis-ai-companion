@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.9.1";
+const CARD_VERSION = "1.9.2";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -552,16 +552,49 @@ class OtisCompanionCard extends HTMLElement {
     this._render();
     this._scrollChatToBottom();
 
-    try {
-      let speech = "";
+    const extractSpeech = (resObj) => {
+      if (!resObj) return "";
+      if (typeof resObj === "string" && resObj.trim()) return resObj.trim();
+      if (resObj && typeof resObj.response === "string" && resObj.response.trim()) return resObj.response.trim();
+      if (resObj?.response && typeof resObj.response.response === "string" && resObj.response.response.trim()) {
+        return resObj.response.response.trim();
+      }
+      if (resObj?.response?.speech?.plain?.speech) return resObj.response.speech.plain.speech.trim();
+      if (resObj?.speech?.plain?.speech) return resObj.speech.plain.speech.trim();
+      return "";
+    };
 
-      // 1. First attempt otis_ai.chat service via WebSocket (primary, supports return_response directly)
+    const extractConvId = (resObj) => {
+      if (!resObj || typeof resObj !== "object") return null;
+      return resObj.conversation_id || resObj.response?.conversation_id || null;
+    };
+
+    const callPromise = (async () => {
+      let speech = "";
       const directPayload = { text: userText };
       if (this._conversationId) {
         directPayload.conversation_id = this._conversationId;
       }
 
-      if (this._hass.callWS) {
+      // 1. Direct call to otis_ai.chat service
+      try {
+        const directRes = await this._hass.callService(
+          "otis_ai",
+          "chat",
+          directPayload,
+          undefined,
+          true,
+          true
+        );
+        speech = extractSpeech(directRes);
+        const cid = extractConvId(directRes);
+        if (cid) this._conversationId = cid;
+      } catch (serviceErr) {
+        console.debug("otis_ai.chat callService failed, attempting callWS:", serviceErr);
+      }
+
+      // 2. WebSocket call_service fallback
+      if (!speech && this._hass.callWS) {
         try {
           const wsRes = await this._hass.callWS({
             type: "call_service",
@@ -570,46 +603,15 @@ class OtisCompanionCard extends HTMLElement {
             service_data: directPayload,
             return_response: true,
           });
-          const data = wsRes?.response?.response || wsRes?.response || wsRes;
-          if (typeof data === "string" && data.trim()) {
-            speech = data;
-          } else if (data && typeof data.response === "string" && data.response.trim()) {
-            speech = data.response;
-          }
-          if (data && data.conversation_id) {
-            this._conversationId = data.conversation_id;
-          }
+          speech = extractSpeech(wsRes);
+          const cid = extractConvId(wsRes);
+          if (cid) this._conversationId = cid;
         } catch (wsErr) {
-          console.debug("otis_ai.chat via callWS failed, attempting callService:", wsErr);
+          console.debug("otis_ai.chat callWS failed, attempting conversation.process:", wsErr);
         }
       }
 
-      // 2. If callWS didn't return speech, attempt callService
-      if (!speech) {
-        try {
-          const directRes = await this._hass.callService(
-            "otis_ai",
-            "chat",
-            directPayload,
-            undefined,
-            true,
-            true
-          );
-          const data = directRes?.response?.response || directRes?.response || directRes;
-          if (typeof data === "string" && data.trim()) {
-            speech = data;
-          } else if (data && typeof data.response === "string" && data.response.trim()) {
-            speech = data.response;
-          }
-          if (data && data.conversation_id) {
-            this._conversationId = data.conversation_id;
-          }
-        } catch (serviceErr) {
-          console.warn("otis_ai.chat service call failed, falling back to conversation.process:", serviceErr);
-        }
-      }
-
-      // 3. Fallback: conversation.process with resolved agent_id & conversation_id
+      // 3. Fallback to conversation.process
       if (!speech) {
         const agentId = await this._getConversationAgentId();
         const payload = { text: userText };
@@ -622,11 +624,9 @@ class OtisCompanionCard extends HTMLElement {
               type: "conversation/process",
               ...payload,
             });
-            speech =
-              cRes?.response?.speech?.plain?.speech ||
-              cRes?.speech?.plain?.speech ||
-              "";
-            if (cRes?.conversation_id) this._conversationId = cRes.conversation_id;
+            speech = extractSpeech(cRes);
+            const cid = extractConvId(cRes);
+            if (cid) this._conversationId = cid;
           } catch (cErr) {
             console.debug("conversation/process callWS failed:", cErr);
           }
@@ -641,19 +641,24 @@ class OtisCompanionCard extends HTMLElement {
             true,
             true
           );
-
-          speech =
-            res?.response?.response?.speech?.plain?.speech ||
-            res?.response?.speech?.plain?.speech ||
-            res?.speech?.plain?.speech ||
-            "I'm here to assist, but received an empty response.";
-
-          const returnedConvId = res?.response?.conversation_id || res?.conversation_id;
-          if (returnedConvId) {
-            this._conversationId = returnedConvId;
-          }
+          speech = extractSpeech(res);
+          const cid = extractConvId(res);
+          if (cid) this._conversationId = cid;
         }
       }
+
+      return speech || "I'm here to assist, but received an empty response.";
+    })();
+
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(
+        () => reject(new Error("Request timed out after 40 seconds. Please try again.")),
+        40000
+      )
+    );
+
+    try {
+      const speech = await Promise.race([callPromise, timeoutPromise]);
 
       this._chatMessages.push({
         sender: "otis",
@@ -673,7 +678,7 @@ class OtisCompanionCard extends HTMLElement {
       console.error("Error sending message to Otis:", err);
       this._chatMessages.push({
         sender: "otis",
-        text: "I encountered an error connecting to the AI agent. Please check system logs or fallback configuration.",
+        text: `⚠️ **Assist Co-Pilot:** ${err.message || "Failed to connect to the AI agent. Please try again."}`,
         timestamp: new Date().toISOString(),
         isError: true,
       });
@@ -1996,11 +2001,46 @@ class OtisCompanionCard extends HTMLElement {
         }
 
         .chat-bubble.user {
+          position: relative;
           align-self: flex-end;
           background: var(--otis-user-bubble-bg);
           color: var(--otis-user-bubble-text);
           border-bottom-right-radius: 3px;
           border: 1px solid var(--otis-surface-border);
+          padding-right: 36px;
+        }
+
+        .prompt-copy-btn {
+          position: absolute;
+          top: 6px;
+          right: 6px;
+          background: rgba(0, 0, 0, 0.25);
+          border: 1px solid rgba(255, 255, 255, 0.15);
+          color: rgba(255, 255, 255, 0.7);
+          border-radius: 4px;
+          width: 22px;
+          height: 22px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+          transition: all 0.15s ease;
+          padding: 0;
+          opacity: 0.6;
+        }
+
+        .copy-icon {
+          width: 13px;
+          height: 13px;
+          fill: currentColor;
+        }
+
+        .chat-bubble.user:hover .prompt-copy-btn,
+        .prompt-copy-btn:hover {
+          opacity: 1;
+          color: #ffffff;
+          background: rgba(0, 0, 0, 0.55);
+          transform: scale(1.08);
         }
 
         .chat-bubble.user h1,
@@ -3165,6 +3205,8 @@ class OtisCompanionCard extends HTMLElement {
           <button type="button" class="chip-btn" data-chip="Goodnight routine">🌙 Goodnight</button>
           <button type="button" class="chip-btn" data-chip="Party mode">🥂 Party Mode</button>
           <button type="button" class="chip-btn" data-chip="Lockdown home">🛡️ Lockdown</button>
+          <button type="button" class="chip-btn" data-chip="Handoff audio to study">🎵 Audio Handoff</button>
+          <button type="button" class="chip-btn" data-chip="Release idle sources">🔇 Idle Guard</button>
           <button type="button" class="chip-btn" data-chip="Undo last macro">↺ Undo</button>
           <button type="button" class="chip-btn" data-chip="Suggest automations for my active areas">💡 Automations</button>
           <button type="button" class="chip-btn" data-chip="Clean up orphaned entities">🧹 Clean orphans</button>
@@ -3178,6 +3220,17 @@ class OtisCompanionCard extends HTMLElement {
                   .map(
                     (m) => `
                 <div class="chat-bubble ${m.sender} ${m.isError ? "error" : ""}">
+                  ${
+                    m.sender === "user"
+                      ? `
+                    <button type="button" class="prompt-copy-btn" title="Copy prompt to input" data-prompt="${this._escapeHtml(m.text)}">
+                      <svg viewBox="0 0 24 24" class="copy-icon">
+                        <path d="M16 1H4C2.9 1 2 1.9 2 3v14h2V3h12V1zm3 4H8C6.9 5 6 5.9 6 7v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                      </svg>
+                    </button>
+                  `
+                      : ""
+                  }
                   ${this._renderMarkdown(m.text)}
                   ${this._renderChatActionButtons(m)}
                 </div>
@@ -4206,6 +4259,29 @@ class OtisCompanionCard extends HTMLElement {
         const prompt = e.currentTarget.getAttribute("data-chip");
         if (prompt) {
           this._sendChatMessage(prompt);
+        }
+      };
+    });
+
+    // Prompt copy buttons
+    root.querySelectorAll(".prompt-copy-btn").forEach((btn) => {
+      btn.onclick = async (e) => {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        const prompt = btn.getAttribute("data-prompt");
+        if (prompt) {
+          try {
+            await navigator.clipboard.writeText(prompt);
+          } catch (_) {}
+          const input = root.querySelector("#chat-input");
+          if (input) {
+            input.value = prompt;
+            input.focus();
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+          }
+          this._showToast("📋 Copied prompt to input!");
         }
       };
     });

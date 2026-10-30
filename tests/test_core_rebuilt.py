@@ -2977,6 +2977,114 @@ class TestMacroManager(unittest.TestCase):
         self.assertIn("Activated", speech_2)
         self.assertNotIn("pending_macro", sessions["conv_welcome"])
 
+    def test_audio_handoff_manager_discovery(self):
+        """Test AudioHandoffManager discovers matrix amp zones, input streamers, and TV players."""
+        from custom_components.otis_ai.audio_manager import AudioHandoffManager
+
+        class MockMediaState:
+            def __init__(self, entity_id, state="on", attributes=None):
+                self.entity_id = entity_id
+                self.state = state
+                self.attributes = attributes or {}
+
+        states = [
+            MockMediaState("media_player.matrix_amp_1_great_room", "playing", {"source": "Bridge", "volume_level": 0.4}),
+            MockMediaState("media_player.matrix_amp_1_study", "off", {"source": "Input 1", "volume_level": 0.2}),
+            MockMediaState("media_player.bridge", "playing", {"friendly_name": "Bridge Streamer"}),
+            MockMediaState("media_player.great_room_tv_4", "off", {"friendly_name": "Great Room TV"}),
+        ]
+        self.hass.states.async_all = MagicMock(return_value=states)
+
+        mgr = AudioHandoffManager(self.hass)
+        zones = asyncio.run(mgr.async_get_active_media_zones())
+        self.assertTrue(zones["has_matrix_amp"])
+        self.assertEqual(len(zones["matrix_zones"]), 2)
+        self.assertEqual(len(zones["input_streamers"]), 1)
+        self.assertEqual(len(zones["tv_cinema_players"]), 1)
+
+    def test_audio_handoff_execution(self):
+        """Test audio handoff routes source, volume, and releases departed room zone."""
+        from custom_components.otis_ai.audio_manager import AudioHandoffManager
+
+        class MockMediaState:
+            def __init__(self, entity_id, state="on", attributes=None):
+                self.entity_id = entity_id
+                self.state = state
+                self.attributes = attributes or {}
+
+        states = [
+            MockMediaState("media_player.matrix_amp_1_great_room", "playing", {"friendly_name": "Great Room", "source": "Bridge", "volume_level": 0.35}),
+            MockMediaState("media_player.matrix_amp_1_study", "off", {"friendly_name": "Study", "source": "Input 1", "volume_level": 0.15}),
+            MockMediaState("media_player.bridge", "playing", {"friendly_name": "Bridge"}),
+        ]
+        self.hass.states.async_all = MagicMock(return_value=states)
+        self.hass.services.has_service = MagicMock(return_value=True)
+
+        spatial_mock = MagicMock()
+        spatial_mock.async_get_graph = AsyncMock(return_value={
+            "named_adjacencies": {"great_room": ["study"], "study": ["great_room"]}
+        })
+
+        mgr = AudioHandoffManager(self.hass, spatial_manager=spatial_mock)
+        res = asyncio.run(mgr.async_audio_handoff(
+            source_area="great_room",
+            target_area="study",
+            mode="handoff",
+            idle_power_guard=False,
+        ))
+
+        self.assertTrue(res["success"])
+        self.assertTrue(res["spatially_adjacent"])
+        self.assertEqual(res["source_player"], "media_player.matrix_amp_1_great_room")
+        self.assertEqual(res["target_player"], "media_player.matrix_amp_1_study")
+
+        calls = self.hass.services.async_call.call_args_list
+        called = [(c[0][0], c[0][1], c[0][2].get("entity_id")) for c in calls]
+        self.assertIn(("media_player", "turn_on", "media_player.matrix_amp_1_study"), called)
+        self.assertIn(("media_player", "select_source", "media_player.matrix_amp_1_study"), called)
+        self.assertIn(("media_player", "turn_off", "media_player.matrix_amp_1_great_room"), called)
+
+    def test_audio_handoff_release_idle_sources(self):
+        """Test idle guard pauses streamers when no matrix zones are listening."""
+        from custom_components.otis_ai.audio_manager import AudioHandoffManager
+
+        class MockMediaState:
+            def __init__(self, entity_id, state="on", attributes=None):
+                self.entity_id = entity_id
+                self.state = state
+                self.attributes = attributes or {}
+
+        states = [
+            MockMediaState("media_player.matrix_amp_1_great_room", "off", {"source": "Bridge"}),
+            MockMediaState("media_player.bridge", "playing", {"friendly_name": "Bridge"}),
+        ]
+        self.hass.states.async_all = MagicMock(return_value=states)
+
+        mgr = AudioHandoffManager(self.hass)
+        res = asyncio.run(mgr.async_release_idle_sources())
+        self.assertTrue(res["success"])
+        self.assertIn("media_player.bridge", res["streamers_paused"])
+
+        calls = self.hass.services.async_call.call_args_list
+        pause_calls = [c for c in calls if c[0][1] == "media_pause"]
+        self.assertEqual(len(pause_calls), 1)
+
+    def test_audio_handoff_voice_notify(self):
+        """Test voice feedback routed through script.notify_router."""
+        from custom_components.otis_ai.audio_manager import AudioHandoffManager
+
+        self.hass.services.has_service = MagicMock(return_value=True)
+        mgr = AudioHandoffManager(self.hass)
+
+        res = asyncio.run(mgr.async_notify_voice(
+            message="Motion detected on Front Porch",
+            area_id="great_room",
+            announce=True,
+        ))
+
+        self.assertTrue(res["success"])
+        self.assertEqual(res["routed_via"], "script.notify_router")
+
 
 if __name__ == "__main__":
     unittest.main()

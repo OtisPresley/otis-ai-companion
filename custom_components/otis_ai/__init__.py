@@ -52,7 +52,12 @@ from .const import (
     SERVICE_EXECUTE_MACRO,
     SERVICE_ROLLBACK_MACRO,
     SERVICE_LIST_MACROS,
+    SERVICE_AUDIO_HANDOFF,
+    SERVICE_MEDIA_FOLLOW_ME,
+    SERVICE_RELEASE_IDLE_SOURCES,
+    SERVICE_NOTIFY_VOICE,
 )
+from .audio_manager import AudioHandoffManager
 from .automation_manager import AutomationManager
 from .dashboard_manager import DashboardManager
 from .macro_manager import MacroManager
@@ -353,6 +358,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     theme_manager = ThemeManager(hass)
     sentinel_manager = SentinelManager(hass)
     macro_manager = MacroManager(hass)
+    audio_manager = AudioHandoffManager(hass, spatial_manager=spatial_manager)
     await asyncio.gather(
         spatial_manager.async_load(),
         floorplan_parser.async_load(),
@@ -388,6 +394,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         theme_manager=theme_manager,
         sentinel_manager=sentinel_manager,
         macro_manager=macro_manager,
+        audio_manager=audio_manager,
     )
     if hasattr(conversation, "async_register_agent"):
         conversation.async_register_agent(hass, agent)
@@ -405,6 +412,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "theme_manager": theme_manager,
         "sentinel_manager": sentinel_manager,
         "macro_manager": macro_manager,
+        "audio_manager": audio_manager,
     }
 
     async def _async_update_listener(hass_inst: HomeAssistant, updated_entry: ConfigEntry) -> None:
@@ -431,7 +439,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         tm = entry_data.get("theme_manager", theme_manager)
         sm = entry_data.get("sentinel_manager", sentinel_manager)
         dm = entry_data.get("dashboard_manager", dashboard_manager)
-        return eng, mgr, s_mgr, fp, tm, sm, dm
+        mm = entry_data.get("macro_manager", macro_manager)
+        am = entry_data.get("audio_manager", audio_manager)
+        return eng, mgr, s_mgr, fp, tm, sm, dm, mm, am
 
     async def handle_get_capability_map(call) -> ServiceResponse:
         """Handle service call to get the capability map."""
@@ -1067,6 +1077,62 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         history = mm.get_history()
         return {"templates": templates, "history": history}
 
+    def _get_audio_manager() -> AudioHandoffManager:
+        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        return entry_data.get("audio_manager", audio_manager)
+
+    async def handle_audio_handoff(call) -> ServiceResponse:
+        """Handle service call to transfer or mirror audio across rooms."""
+        _LOGGER.debug("Service 'audio_handoff' triggered: %s", call.data)
+        am = _get_audio_manager()
+        source_area = call.data.get("source_area")
+        target_area = call.data.get("target_area")
+        mode = call.data.get("mode", "handoff")
+        player = call.data.get("player")
+        idle_guard = call.data.get("idle_power_guard", True)
+        return await am.async_audio_handoff(
+            source_area=source_area,
+            target_area=target_area,
+            mode=mode,
+            player_entity_id=player,
+            idle_power_guard=idle_guard,
+        )
+
+    async def handle_media_follow_me(call) -> ServiceResponse:
+        """Handle service call to follow audio playback dynamically into a newly entered room."""
+        _LOGGER.debug("Service 'media_follow_me' triggered: %s", call.data)
+        am = _get_audio_manager()
+        source_area = call.data.get("source_area")
+        target_area = call.data.get("target_area")
+        mode = call.data.get("mode", "follow")
+        return await am.async_audio_handoff(
+            source_area=source_area,
+            target_area=target_area,
+            mode=mode,
+            idle_power_guard=True,
+        )
+
+    async def handle_release_idle_sources(call) -> ServiceResponse:
+        """Handle idle power guard to pause unmonitored streamers and idle amp zones."""
+        _LOGGER.debug("Service 'release_idle_sources' triggered")
+        am = _get_audio_manager()
+        return await am.async_release_idle_sources()
+
+    async def handle_notify_voice(call) -> ServiceResponse:
+        """Handle voice feedback routing via notify_router or direct TTS."""
+        _LOGGER.debug("Service 'notify_voice' triggered: %s", call.data)
+        am = _get_audio_manager()
+        msg = call.data.get("message", "")
+        area_id = call.data.get("area_id")
+        person = call.data.get("person_entity_id")
+        announce = call.data.get("announce", True)
+        return await am.async_notify_voice(
+            message=msg,
+            area_id=area_id,
+            person_entity_id=person,
+            announce=announce,
+        )
+
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
         DOMAIN,
@@ -1194,6 +1260,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_list_macros,
         supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_AUDIO_HANDOFF,
+        handle_audio_handoff,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_MEDIA_FOLLOW_ME,
+        handle_media_follow_me,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RELEASE_IDLE_SOURCES,
+        handle_release_idle_sources,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_NOTIFY_VOICE,
+        handle_notify_voice,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
 
     _LOGGER.info("Otis AI Companion entry set up successfully")
     return True
@@ -1248,6 +1338,7 @@ class OtisAIConversationAgent(AbstractAgent):
         theme_manager: ThemeManager | None = None,
         sentinel_manager: SentinelManager | None = None,
         macro_manager: MacroManager | None = None,
+        audio_manager: AudioHandoffManager | None = None,
     ) -> None:
         """Initialize the agent."""
         self.hass = hass
@@ -1258,6 +1349,7 @@ class OtisAIConversationAgent(AbstractAgent):
         self.theme_manager = theme_manager or ThemeManager(hass)
         self.sentinel_manager = sentinel_manager or SentinelManager(hass)
         self.macro_manager = macro_manager or MacroManager(hass)
+        self.audio_manager = audio_manager or AudioHandoffManager(hass, spatial_manager=self.spatial_manager)
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -1496,6 +1588,45 @@ class OtisAIConversationAgent(AbstractAgent):
                     speech = "\n".join(lines)
                 return self._create_response(user_input, speech)
 
+        # Check for Phase 6 Audio Handoff / Follow-Me commands
+        user_lower = user_text.lower()
+        if self.audio_manager and any(w in user_lower for w in (
+            "handoff audio", "hand off audio", "transfer music", "transfer audio",
+            "follow me to", "music follow me", "audio follow me", "switch audio to",
+            "move music to", "move audio to", "audio handoff", "audio transfer"
+        )):
+            target_match = re.search(r"(?:to|into)\s+(?:the\s+)?([a-zA-Z0-9_\s'-]+)$", user_input.text, re.IGNORECASE)
+            source_match = re.search(r"(?:from)\s+(?:the\s+)?([a-zA-Z0-9_\s'-]+?)\s+(?:to|into)", user_input.text, re.IGNORECASE)
+            target_area = target_match.group(1).strip() if target_match else ""
+            source_area = source_match.group(1).strip() if source_match else ""
+            mode = "follow" if "follow" in user_lower else "handoff"
+            if target_area:
+                zones = await self.audio_manager.async_get_active_media_zones()
+                active_playing = [
+                    z for z in (zones["matrix_zones"] + zones["other_players"])
+                    if z["state"] in ("playing", "on") and z.get("area_id")
+                ]
+                if not source_area and active_playing:
+                    source_area = active_playing[0]["area_id"]
+                if source_area:
+                    res = await self.audio_manager.async_audio_handoff(
+                        source_area=source_area,
+                        target_area=target_area,
+                        mode=mode,
+                        idle_power_guard=True,
+                    )
+                    if res.get("success"):
+                        return self._create_response(user_input, res["message"])
+                    return self._create_response(user_input, f"⚠️ Audio handoff: {res.get('error')}")
+
+        # Check for Release Idle Sources command
+        if self.audio_manager and any(w in user_lower for w in (
+            "release idle sources", "turn off idle amp", "turn off idle zones",
+            "pause idle streamers", "stop idle music", "idle power guard"
+        )):
+            res = await self.audio_manager.async_release_idle_sources()
+            return self._create_response(user_input, res["message"])
+
         # 1. Resolve prioritized AI agent cascade (Primary + Fallbacks)
         options = self.entry.options
         data = self.entry.data
@@ -1518,29 +1649,33 @@ class OtisAIConversationAgent(AbstractAgent):
         entity_domains = Counter(e['domain'] for e in capability_map['entities'])
         entity_summary = ", ".join(f"{count} {domain}s" for domain, count in sorted(entity_domains.items()))
 
-        # Filter active entities to only include physical control/actionable domains in the detailed list
+        # Filter active entities to only include physical control/actionable domains
         CONTROL_DOMAINS = {
             "light", "switch", "media_player", "climate", "lock", "cover", 
             "fan", "vacuum", "scene", "humidifier", "alarm_control_panel",
             "siren", "camera", "person",
         }
-        detailed_entities = [
-            {"entity_id": e["entity_id"], "area_id": e["area_id"], "state": e["state"]}
+        control_candidates = [
+            {"entity_id": e["entity_id"], "area_id": e.get("area_id"), "state": e.get("state")}
             for e in capability_map["entities"]
             if e["domain"] in CONTROL_DOMAINS
         ]
+        # Prioritize active/on entities and sample inactive ones to keep prompt token size fast and lean
+        active_control = [e for e in control_candidates if e["state"] not in ("off", "unavailable", "unknown", "idle")]
+        inactive_sample = [e for e in control_candidates if e["state"] in ("off", "idle")][:35]
+        detailed_entities = (active_control + inactive_sample)[:70]
 
-        # Extract existing automations and scripts with their friendly names
+        # Extract existing automations and scripts concisely (capped to prevent exceeding model context)
         existing_automations = [
-            {"entity_id": e["entity_id"], "name": e["name"], "state": e["state"]}
+            {"entity_id": e["entity_id"], "name": e.get("name")}
             for e in capability_map["entities"]
             if e["domain"] == "automation"
-        ]
+        ][:35]
         existing_scripts = [
-            {"entity_id": e["entity_id"], "name": e["name"], "state": e["state"]}
+            {"entity_id": e["entity_id"], "name": e.get("name")}
             for e in capability_map["entities"]
             if e["domain"] == "script"
-        ]
+        ][:20]
 
         # Summarize orphaned entities
         orphan_domains = Counter(e['domain'] for e in capability_map['orphaned_entities'])
@@ -1632,6 +1767,7 @@ Instructions:
 5. Keep your responses concise, structured, and actionable.
 6. Use the Spatial Adjacency topology for room transition queries, pathway lighting automations, and tracking movements between connected rooms.
 7. When the user requests multi-step routines (such as movie night, bedtime, party, lockdown, or arrival), you can propose or trigger Otis dynamic macros, which feature atomic snapshotting and 1-click state rollback.
+8. When the user asks to move music, transfer audio, or follow them between rooms, you can propose or trigger Otis Audio Handoff (`audio_handoff` / `media_follow_me`), which leverages Spatial Adjacency to route matrix amplifier zones (Control4) and streamers seamlessly.
 
 User: {user_input.text}
 """

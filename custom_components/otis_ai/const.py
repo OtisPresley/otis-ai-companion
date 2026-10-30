@@ -33,6 +33,10 @@ SERVICE_SYNC_DASHBOARDS = "sync_dashboards"
 SERVICE_EXECUTE_MACRO = "execute_macro"
 SERVICE_ROLLBACK_MACRO = "rollback_macro"
 SERVICE_LIST_MACROS = "list_macros"
+SERVICE_AUDIO_HANDOFF = "audio_handoff"
+SERVICE_MEDIA_FOLLOW_ME = "media_follow_me"
+SERVICE_RELEASE_IDLE_SOURCES = "release_idle_sources"
+SERVICE_NOTIFY_VOICE = "notify_voice"
 
 # Dashboard Constants
 COMMAND_CENTER_DASHBOARD_ID = "command-center"
