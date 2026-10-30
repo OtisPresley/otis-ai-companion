@@ -162,13 +162,17 @@ class AutonomousCommissioningManager:
                     "aliases": aliases,
                 })
 
-        devices = device_reg.devices if hasattr(device_reg, "devices") else {}
+        raw_devices = device_reg.devices if hasattr(device_reg, "devices") else []
+        dev_iter = raw_devices.values() if isinstance(raw_devices, dict) else raw_devices
         entities = entity_reg.entities if hasattr(entity_reg, "entities") else {}
 
         # Index devices by ID
         dev_map: dict[str, Any] = {}
         unassigned_devices: list[dict[str, Any]] = []
-        for d_id, dev in devices.items():
+        for dev in dev_iter:
+            d_id = getattr(dev, "id", None)
+            if not d_id:
+                continue
             area_id = getattr(dev, "area_id", None)
             d_name = getattr(dev, "name_by_user", None) or getattr(dev, "name", "") or ""
             d_model = getattr(dev, "model", "") or ""

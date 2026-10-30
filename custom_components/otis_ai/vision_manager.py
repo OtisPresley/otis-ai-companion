@@ -79,9 +79,13 @@ class VisionPresenceManager:
         try:
             dev_reg = dr.async_get(self.hass)
             if hasattr(dev_reg, "devices"):
-                for dev_id, dev in dev_reg.devices.items():
-                    if getattr(dev, "area_id", None):
-                        dev_to_area[dev_id] = dev.area_id
+                raw_devs = dev_reg.devices
+                dev_iter = raw_devs.values() if isinstance(raw_devs, dict) else raw_devs
+                for dev in dev_iter:
+                    d_id = getattr(dev, "id", None)
+                    area_id = getattr(dev, "area_id", None)
+                    if d_id and area_id:
+                        dev_to_area[d_id] = area_id
         except Exception:
             pass
 
@@ -395,9 +399,10 @@ class VisionPresenceManager:
                 device_name = None
                 if ent_reg and dev_reg and hasattr(ent_reg, "entities") and best_eid in ent_reg.entities:
                     entry = ent_reg.entities[best_eid]
-                    if getattr(entry, "device_id", None) and hasattr(dev_reg, "devices") and entry.device_id in dev_reg.devices:
-                        dev = dev_reg.devices[entry.device_id]
-                        device_name = dev.name_by_user or dev.name
+                    if getattr(entry, "device_id", None):
+                        dev = dev_reg.async_get(entry.device_id) if hasattr(dev_reg, "async_get") else None
+                        if dev:
+                            device_name = dev.name_by_user or dev.name
 
                 if device_name:
                     clean_name = device_name
