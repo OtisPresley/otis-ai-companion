@@ -25,6 +25,8 @@ except ImportError:  # pragma: no cover
 
 from homeassistant.helpers.storage import Store
 
+from .const import INTEGRATION_VERSION
+
 _LOGGER = logging.getLogger(__name__)
 
 STORAGE_KEY = "otis_ai_federation_nodes"
@@ -90,7 +92,7 @@ class FederationManager:
         token = node.get("token", "").strip()
         headers = {
             "Content-Type": "application/json",
-            "User-Agent": "Otis-AI-Companion-Federation/1.11.0",
+            "User-Agent": f"Otis-AI-Companion-Federation/{INTEGRATION_VERSION}",
         }
         if token:
             headers["Authorization"] = f"Bearer {token}"

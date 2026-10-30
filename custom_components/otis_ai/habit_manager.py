@@ -21,6 +21,224 @@ from homeassistant.core import HomeAssistant
 _LOGGER = logging.getLogger(__name__)
 
 
+def cluster_sequences_to_routines(
+    rows: list[tuple[str, str, float]],
+    window_seconds: float = 300.0,
+    min_occurrences: int = 2,
+    entity_area_map: dict[str, str] | None = None,
+    adjacencies: dict[str, list[str]] | None = None,
+    hass: HomeAssistant | None = None,
+) -> list[dict[str, Any]]:
+    """Cluster recurring temporal sequences of state transitions into habit routine proposals.
+
+    Args:
+        rows: List of (entity_id, state, timestamp) tuples sorted by timestamp.
+        window_seconds: Maximum time window between trigger and subsequent action events.
+        min_occurrences: Minimum times the sequence must occur across distinct episodes/days.
+        entity_area_map: Optional mapping of entity_id -> area_id for spatial coherence filtering.
+        adjacencies: Optional mapping of area_id -> list of adjacent area_ids.
+        hass: Optional HomeAssistant instance to determine time zone.
+
+    Returns:
+        List of routine proposals containing name, trigger, actions, and confidence.
+    """
+    if not rows:
+        return []
+
+    sorted_rows = sorted(rows, key=lambda x: x[2])
+    episodes: list[list[tuple[str, str, float]]] = []
+    current_episode: list[tuple[str, str, float]] = []
+
+    for item in sorted_rows:
+        if not current_episode:
+            current_episode.append(item)
+        else:
+            prev_ts = current_episode[-1][2]
+            if item[2] - prev_ts <= window_seconds:
+                current_episode.append(item)
+            else:
+                if len(current_episode) >= 2:
+                    episodes.append(current_episode)
+                current_episode = [item]
+    if len(current_episode) >= 2:
+        episodes.append(current_episode)
+
+    if not episodes:
+        return []
+
+    actuator_domains = {"light", "switch", "media_player", "select", "fan", "cover", "lock", "climate"}
+    rear_tokens = {"backyard", "back_deck", "back_door", "pool", "spa", "patio"}
+    front_tokens = {"frontdoor", "front_door", "frontyard", "driveway", "foyer", "entry", "porch"}
+
+    def _is_spatially_coherent(trig_eid: str, act_eid: str) -> bool:
+        t_low = trig_eid.lower()
+        a_low = act_eid.lower()
+        # Never pair rear/backyard sensors with front/driveway entities (or vice versa)
+        if (any(rt in t_low for rt in rear_tokens) and any(ft in a_low for ft in front_tokens)) or (
+            any(ft in t_low for ft in front_tokens) and any(rt in a_low for rt in rear_tokens)
+        ):
+            return False
+        if entity_area_map:
+            t_area = entity_area_map.get(trig_eid)
+            a_area = entity_area_map.get(act_eid)
+            if t_area and a_area and t_area != a_area:
+                if adjacencies and a_area not in (adjacencies.get(t_area) or []):
+                    return False
+        return True
+
+    pattern_counts: dict[tuple, list[float]] = {}
+    pattern_actions: dict[tuple, list[dict[str, str]]] = {}
+
+    for ep in episodes:
+        trigger_entity, trigger_state, trigger_ts = ep[0]
+        if not trigger_entity.startswith("binary_sensor."):
+            continue
+        actions = []
+        seen_entities = {trigger_entity}
+        for act_entity, act_state, _ in ep[1:]:
+            if act_entity not in seen_entities and _is_spatially_coherent(trigger_entity, act_entity):
+                seen_entities.add(act_entity)
+                actions.append({"entity_id": act_entity, "state": act_state})
+
+        # Require at least one controllable actuator in the sequence (never propose sensor-only sequences)
+        actuator_actions = [
+            a for a in actions if a["entity_id"].split(".", 1)[0] in actuator_domains
+        ]
+        if not actuator_actions:
+            continue
+
+        actions_tuple = tuple((a["entity_id"], a["state"]) for a in actions)
+        pat_key = (trigger_entity, trigger_state, actions_tuple)
+
+        if pat_key not in pattern_counts:
+            pattern_counts[pat_key] = []
+            pattern_actions[pat_key] = actions
+        pattern_counts[pat_key].append(trigger_ts)
+
+    proposals = []
+    for (trigger_entity, trigger_state, _), timestamps in pattern_counts.items():
+        if len(timestamps) < min_occurrences:
+            continue
+
+        actions = pattern_actions[(trigger_entity, trigger_state, _)]
+        actuator_actions = [
+            a for a in actions if a["entity_id"].split(".", 1)[0] in actuator_domains
+        ]
+        if not actuator_actions:
+            continue
+
+        avg_ts = sum(timestamps) / len(timestamps)
+        hours = []
+        for ts in timestamps:
+            try:
+                if (
+                    hass
+                    and hasattr(hass, "config")
+                    and hasattr(hass.config, "time_zone")
+                    and hass.config.time_zone
+                ):
+                    import zoneinfo
+
+                    tz = zoneinfo.ZoneInfo(hass.config.time_zone)
+                    dt = datetime.fromtimestamp(ts, tz=tz)
+                else:
+                    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                hours.append(dt.hour)
+            except Exception:
+                hours.append(8)
+        hour = int(round(sum(hours) / len(hours))) if hours else 8
+
+        if 5 <= hour < 12:
+            time_prefix = "Morning"
+        elif 12 <= hour < 17:
+            time_prefix = "Afternoon"
+        elif 17 <= hour < 22:
+            time_prefix = "Evening"
+        else:
+            time_prefix = "Night"
+
+        all_entities = [trigger_entity] + [a["entity_id"] for a in actuator_actions]
+        combined_text = " ".join(all_entities).lower()
+
+        if "gym" in combined_text or "workout" in combined_text:
+            context_label = "Gym"
+        elif "bed" in combined_text or "sleep" in combined_text:
+            context_label = "Bedtime" if time_prefix in ("Evening", "Night") else "Wakeup"
+        elif "kitchen" in combined_text or "coffee" in combined_text:
+            context_label = "Kitchen"
+        elif "office" in combined_text or "desk" in combined_text or "study" in combined_text:
+            context_label = "Office"
+        elif "theater" in combined_text or "cinema" in combined_text or "tv" in combined_text or "movie" in combined_text:
+            context_label = "Media & Theater"
+        else:
+            first_action = actuator_actions[0]["entity_id"].split(".")[-1].replace("_", " ").title()
+            context_label = first_action
+
+        routine_name = f"{time_prefix} {context_label} Routine"
+        confidence = min(0.98, max(0.70, round(len(timestamps) / (len(timestamps) + 1.0) + 0.25, 2)))
+
+        action_payloads = []
+        for act in actuator_actions:
+            act_entity = act["entity_id"]
+            act_state = act["state"]
+            domain = act_entity.split(".")[0]
+            if domain in ("light", "switch", "media_player", "fan"):
+                service = f"{domain}.turn_{act_state}" if act_state in ("on", "off") else f"{domain}.turn_on"
+                action_payloads.append({"service": service, "target": {"entity_id": act_entity}})
+            elif domain == "cover":
+                service = "cover.open_cover" if act_state in ("open", "opening", "on") else "cover.close_cover"
+                action_payloads.append({"service": service, "target": {"entity_id": act_entity}})
+            elif domain == "select":
+                action_payloads.append({
+                    "service": "select.select_option",
+                    "target": {"entity_id": act_entity},
+                    "data": {"option": act_state},
+                })
+            elif domain == "lock":
+                service = "lock.lock" if act_state in ("locked", "lock", "on") else "lock.unlock"
+                action_payloads.append({"service": service, "target": {"entity_id": act_entity}})
+            elif domain == "climate":
+                action_payloads.append({
+                    "service": "climate.set_hvac_mode",
+                    "target": {"entity_id": act_entity},
+                    "data": {"hvac_mode": act_state},
+                })
+            else:
+                action_payloads.append({
+                    "service": "homeassistant.turn_on" if act_state == "on" else "homeassistant.turn_off",
+                    "target": {"entity_id": act_entity},
+                })
+
+        clean_trig = trigger_entity.replace(".", "_")
+        proposals.append({
+            "id": f"habit_routine_{clean_trig}_{int(avg_ts)}",
+            "name": routine_name,
+            "title": routine_name,
+            "category": "habit_routine",
+            "priority": "medium",
+            "confidence": confidence,
+            "occurrences": len(timestamps),
+            "trigger_entity": trigger_entity,
+            "trigger_state": trigger_state,
+            "mean_hour": hour,
+            "actions": actions,
+            "description": (
+                f"Mined from your recurring habit patterns ({len(timestamps)} occurrences): "
+                f"When {trigger_entity} turns {trigger_state}, {len(actuator_actions)} device action(s) consistently follow."
+            ),
+            "action_type": "create_automation",
+            "action_payload": {
+                "alias": routine_name,
+                "description": f"Automated habit routine mined by Otis AI Companion ({len(timestamps)} occurrences)",
+                "trigger": [{"platform": "state", "entity_id": trigger_entity, "to": trigger_state}],
+                "action": action_payloads,
+                "mode": "single",
+            },
+        })
+
+    return proposals
+
+
 class BehavioralHabitManager:
     """Manages self-supervised habit mining, pattern deviation detection, and seasonal curves."""
 
@@ -90,6 +308,9 @@ class BehavioralHabitManager:
                    OR entity_id LIKE 'media_player.%'
                    OR entity_id LIKE 'climate.%'
                    OR entity_id LIKE 'cover.%'
+                   OR entity_id LIKE 'select.%'
+                   OR entity_id LIKE 'fan.%'
+                   OR entity_id LIKE 'lock.%'
                 """
             )
             meta_rows = cursor.fetchall()
@@ -131,14 +352,30 @@ class BehavioralHabitManager:
             if not raw_states:
                 return []
 
-            # Map rows to (entity_id, state, timestamp)
-            rows = [
-                (meta_map[m_id], state, float(ts))
-                for m_id, state, ts in raw_states
-                if m_id in meta_map
-            ]
+            transition_rows: list[tuple[str, str, float]] = []
+            last_state_by_entity: dict[str, str] = {}
+            for m_id, state, ts in raw_states:
+                ent = meta_map.get(m_id)
+                if not ent:
+                    continue
+                if last_state_by_entity.get(ent) != state:
+                    last_state_by_entity[ent] = state
+                    transition_rows.append((ent, state, float(ts)))
 
-            return self.cluster_temporal_sequences(rows, min_occurrences=min_occurrences)
+            entity_area_map: dict[str, str] | None = None
+            adjacencies: dict[str, list[str]] | None = None
+            if self.spatial_manager:
+                try:
+                    adjacencies = getattr(self.spatial_manager, "adjacencies", None)
+                except Exception:
+                    pass
+
+            return self.cluster_temporal_sequences(
+                transition_rows,
+                min_occurrences=min_occurrences,
+                entity_area_map=entity_area_map,
+                adjacencies=adjacencies,
+            )
 
         except Exception as err:
             _LOGGER.debug("Error mining habit recorder trends: %s", err)
@@ -147,164 +384,20 @@ class BehavioralHabitManager:
     def cluster_temporal_sequences(
         self,
         rows: list[tuple[str, str, float]],
-        window_seconds: float = 180.0,
-        min_occurrences: int = 3,
+        window_seconds: float = 300.0,
+        min_occurrences: int = 2,
+        entity_area_map: dict[str, str] | None = None,
+        adjacencies: dict[str, list[str]] | None = None,
     ) -> list[dict[str, Any]]:
         """Cluster recurring temporal sequences of state transitions into habit routine proposals."""
-        if not rows:
-            return []
-
-        sorted_rows = sorted(rows, key=lambda x: x[2])
-        episodes: list[list[tuple[str, str, float]]] = []
-        current_ep: list[tuple[str, str, float]] = []
-
-        for item in sorted_rows:
-            if not current_ep:
-                current_ep.append(item)
-            else:
-                prev_ts = current_ep[-1][2]
-                if item[2] - prev_ts <= window_seconds:
-                    current_ep.append(item)
-                else:
-                    if len(current_ep) >= 2:
-                        episodes.append(current_ep)
-                    current_ep = [item]
-        if len(current_ep) >= 2:
-            episodes.append(current_ep)
-
-        if not episodes:
-            return []
-
-        actuator_domains = {"light", "switch", "media_player", "climate", "cover", "fan"}
-        pattern_counts: dict[tuple, list[float]] = {}
-        pattern_actions: dict[tuple, list[dict[str, str]]] = {}
-
-        for ep in episodes:
-            trigger_eid, trigger_state, trigger_ts = ep[0]
-            # Habit triggers must be binary sensors (motion, door, bed occupancy)
-            if not trigger_eid.startswith("binary_sensor."):
-                continue
-
-            actions = []
-            seen = {trigger_eid}
-            for act_eid, act_state, _ in ep[1:]:
-                dom = act_eid.split(".", 1)[0]
-                if act_eid not in seen and dom in actuator_domains:
-                    seen.add(act_eid)
-                    actions.append({"entity_id": act_eid, "state": act_state})
-
-            if not actions:
-                continue
-
-            act_tuple = tuple((a["entity_id"], a["state"]) for a in actions)
-            key = (trigger_eid, trigger_state, act_tuple)
-
-            if key not in pattern_counts:
-                pattern_counts[key] = []
-                pattern_actions[key] = actions
-            pattern_counts[key].append(trigger_ts)
-
-        proposals = []
-        for (trigger_eid, trigger_state, _), timestamps in pattern_counts.items():
-            if len(timestamps) < min_occurrences:
-                continue
-
-            actions = pattern_actions[(trigger_eid, trigger_state, _)]
-            avg_ts = sum(timestamps) / len(timestamps)
-            hours = []
-            for ts in timestamps:
-                try:
-                    if (
-                        self.hass
-                        and hasattr(self.hass, "config")
-                        and hasattr(self.hass.config, "time_zone")
-                        and self.hass.config.time_zone
-                    ):
-                        import zoneinfo
-
-                        tz = zoneinfo.ZoneInfo(self.hass.config.time_zone)
-                        dt = datetime.fromtimestamp(ts, tz=tz)
-                    else:
-                        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-                    hours.append(dt.hour)
-                except Exception:
-                    hours.append(8)
-            hour = int(round(sum(hours) / len(hours))) if hours else 8
-
-            # Determine temporal lifestyle category
-            if 5 <= hour < 12:
-                time_prefix = "Morning"
-            elif 12 <= hour < 17:
-                time_prefix = "Afternoon"
-            elif 17 <= hour < 22:
-                time_prefix = "Evening"
-            else:
-                time_prefix = "Night"
-
-            all_eids = [trigger_eid] + [a["entity_id"] for a in actions]
-            combined = " ".join(all_eids).lower()
-
-            if "gym" in combined or "workout" in combined:
-                context_label = "Workout"
-            elif "bed" in combined or "sleep" in combined:
-                context_label = "Bedtime" if time_prefix in ("Evening", "Night") else "Wakeup"
-            elif "office" in combined or "desk" in combined or "study" in combined:
-                context_label = "Productivity"
-            elif "theater" in combined or "movie" in combined or "tv" in combined:
-                context_label = "Cinema & Media"
-            elif "kitchen" in combined or "coffee" in combined:
-                context_label = "Kitchen"
-            else:
-                context_label = actions[0]["entity_id"].split(".")[-1].replace("_", " ").title()
-
-            routine_name = f"{time_prefix} {context_label} Routine"
-            confidence = min(0.98, round(len(timestamps) / (len(timestamps) + 2.0) + 0.25, 2))
-
-            action_payloads = []
-            for act in actions:
-                a_eid = act["entity_id"]
-                a_st = act["state"]
-                dom = a_eid.split(".")[0]
-                if dom in ("light", "switch", "media_player", "fan"):
-                    svc = f"{dom}.turn_{a_st}" if a_st in ("on", "off") else f"{dom}.turn_on"
-                    action_payloads.append({"service": svc, "target": {"entity_id": a_eid}})
-                elif dom == "cover":
-                    svc = "cover.open_cover" if a_st in ("open", "opening", "on") else "cover.close_cover"
-                    action_payloads.append({"service": svc, "target": {"entity_id": a_eid}})
-                else:
-                    action_payloads.append({
-                        "service": "homeassistant.turn_on" if a_st == "on" else "homeassistant.turn_off",
-                        "target": {"entity_id": a_eid},
-                    })
-
-            clean_trig_id = trigger_eid.replace(".", "_")
-            proposals.append({
-                "id": f"habit_routine_{clean_trig_id}_{int(avg_ts)}",
-                "name": routine_name,
-                "title": routine_name,
-                "category": "habit_routine",
-                "priority": "medium",
-                "confidence": confidence,
-                "occurrences": len(timestamps),
-                "trigger_entity": trigger_eid,
-                "trigger_state": trigger_state,
-                "mean_hour": hour,
-                "actions": actions,
-                "description": (
-                    f"Mined from your recurring habit patterns ({len(timestamps)} occurrences): "
-                    f"When {trigger_eid} turns {trigger_state}, {len(actions)} device action(s) consistently follow."
-                ),
-                "action_type": "create_automation",
-                "action_payload": {
-                    "alias": routine_name,
-                    "description": f"Automated habit routine mined by Otis AI Companion ({len(timestamps)} occurrences)",
-                    "trigger": [{"platform": "state", "entity_id": trigger_eid, "to": trigger_state}],
-                    "action": action_payloads,
-                    "mode": "single",
-                },
-            })
-
-        return proposals
+        return cluster_sequences_to_routines(
+            rows=rows,
+            window_seconds=window_seconds,
+            min_occurrences=min_occurrences,
+            entity_area_map=entity_area_map,
+            adjacencies=adjacencies,
+            hass=self.hass,
+        )
 
     async def async_detect_habit_deviations(self) -> list[dict[str, Any]]:
         """Detect live house state deviations against learned behavioral baselines."""

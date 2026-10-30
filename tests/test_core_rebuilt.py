@@ -157,6 +157,8 @@ class TestOtisAICore(unittest.TestCase):
         self.hass.async_add_executor_job = AsyncMock(side_effect=mock_async_add_executor_job)
 
         self.hass.config = MagicMock()
+        self.temp_test_dir = tempfile.TemporaryDirectory()
+        self.hass.config.path = lambda *args: os.path.join(self.temp_test_dir.name, *args)
         self.hass.config.components = ["sensor", "light", "conversation", "webostv", "hue", "mqtt"]
         self.hass.config_entries = MagicMock()
         self.hass.config_entries.async_entries = MagicMock(return_value=[])
@@ -959,6 +961,10 @@ class TestOtisAICore(unittest.TestCase):
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
+
+    def tearDown(self):
+        if hasattr(self, "temp_test_dir"):
+            self.temp_test_dir.cleanup()
 
 
 class TestSpatialGraphManager(unittest.TestCase):
@@ -2086,7 +2092,10 @@ class TestSentinelManager(unittest.TestCase):
     """Test suite for Phase 3 Otis Sentinel Telemetry Watchdog & Self-Healing."""
 
     def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
         self.hass = MagicMock()
+        self.hass.config = MagicMock()
+        self.hass.config.path = lambda *args: os.path.join(self.temp_dir.name, *args)
         self.hass.data = {DOMAIN: {"sessions": {}}}
         self.hass.states = MagicMock()
         self.hass.services = MagicMock()
@@ -2666,6 +2675,10 @@ class TestSentinelManager(unittest.TestCase):
                 theater_view["cards"][1]["tap_action"]["navigation_path"],
                 "/command-center/media",
             )
+
+    def tearDown(self):
+        if hasattr(self, "temp_dir"):
+            self.temp_dir.cleanup()
 
 
 class TestMacroManager(unittest.TestCase):

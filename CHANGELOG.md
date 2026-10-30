@@ -2,6 +2,23 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.11.1] - 2026-10-30
+
+### Fixed & Refactored
+- **Architectural Code Analysis & De-duplication**:
+  - Unified habit sequence temporal clustering algorithm into a single shared implementation in `habit_manager.py` (`cluster_sequences_to_routines`), removing over 300 lines of duplicated code across `__init__.py` and `habit_manager.py`.
+  - Streamlined `DiscoveryEngine.async_mine_historical_habits` to delegate directly to `BehavioralHabitManager.async_mine_habits` with shared TTL caching, eliminating duplicate SQLite recorder queries.
+  - Standardized `entity_registry` resolution in `audio_manager.py` to use canonical `homeassistant.helpers.entity_registry.async_get(self.hass)`.
+  - Replaced hardcoded version strings across backend managers (`federation_manager.py`) with `const.INTEGRATION_VERSION`.
+  - Enhanced unit test isolation in `TestOtisAICore` and `TestSentinelManager` with dedicated `tempfile.TemporaryDirectory` paths, preventing stray disk directory generation during test runs.
+  - Removed legacy orphaned test files (`tools/test_core_rebuilt.py`).
+
+### Documentation & Wiki Overhaul
+- **Comprehensive Documentation Refresh Across All 10 Phases**:
+  - Updated `README.md` with complete Phase 1–10 capabilities, updated test suite metrics (85/85 unit tests passing), and organized service reference table covering all 41 services.
+  - Completely refreshed GitHub Wiki repository (`otis-ai-companion-wiki`) including full parameter references, JSON return schemas, and YAML examples for all 41 registered services in `Services.md`.
+  - Authored new dedicated wiki guides for **Autonomous Home Commissioning & Multi-Node Federation**, **Energy & Predictive Load Orchestration**, **Multi-Modal Vision & Presence Intelligence**, and updated **Automation & Habit Mining** with Phase 9 algorithms.
+
 ## [1.11.0] - 2026-10-30
 
 ### Added

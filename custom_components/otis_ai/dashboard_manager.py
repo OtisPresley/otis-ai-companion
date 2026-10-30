@@ -39,7 +39,7 @@ class DashboardManager:
         if hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
             try:
                 p = self.hass.config.path(".storage")
-                if isinstance(p, str):
+                if isinstance(p, str) and "MagicMock" not in p:
                     return p
             except Exception:
                 pass

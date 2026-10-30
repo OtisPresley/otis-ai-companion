@@ -7,10 +7,8 @@ import logging
 import os
 import re
 import shutil
-import sqlite3
 import time
 import uuid
-from datetime import datetime
 from typing import Any, Literal
 import yaml
 
@@ -88,7 +86,10 @@ from .spatial_manager import (
     resolve_area_identifier,
 )
 from .floorplan_parser import FloorplanParser
-from .habit_manager import BehavioralHabitManager
+from .habit_manager import (
+    BehavioralHabitManager,
+    cluster_sequences_to_routines as cluster_sequences_to_routines,
+)
 from .commissioning_manager import AutonomousCommissioningManager
 from .federation_manager import FederationManager
 from .theme_manager import PRESET_THEMES, ThemeManager, slugify_theme_name
@@ -2541,192 +2542,6 @@ async def async_get_prioritized_agents(hass: HomeAssistant, preferred_agent_id: 
     return prioritized
 
 
-def cluster_sequences_to_routines(
-    rows: list[tuple[str, str, float]],
-    window_seconds: float = 300.0,
-    min_occurrences: int = 2,
-    entity_area_map: dict[str, str] | None = None,
-    adjacencies: dict[str, list[str]] | None = None,
-) -> list[dict[str, Any]]:
-    """Cluster recurring temporal sequences of state transitions into habit routine proposals.
-
-    Args:
-        rows: List of (entity_id, state, timestamp) tuples sorted by timestamp.
-        window_seconds: Maximum time window between trigger and subsequent action events.
-        min_occurrences: Minimum times the sequence must occur across distinct episodes/days.
-        entity_area_map: Optional mapping of entity_id -> area_id for spatial coherence filtering.
-        adjacencies: Optional mapping of area_id -> list of adjacent area_ids.
-
-    Returns:
-        List of routine proposals containing name, trigger, actions, and confidence.
-    """
-    if not rows:
-        return []
-
-    sorted_rows = sorted(rows, key=lambda x: x[2])
-    episodes: list[list[tuple[str, str, float]]] = []
-    current_episode: list[tuple[str, str, float]] = []
-
-    for item in sorted_rows:
-        if not current_episode:
-            current_episode.append(item)
-        else:
-            prev_ts = current_episode[-1][2]
-            if item[2] - prev_ts <= window_seconds:
-                current_episode.append(item)
-            else:
-                if len(current_episode) >= 2:
-                    episodes.append(current_episode)
-                current_episode = [item]
-    if len(current_episode) >= 2:
-        episodes.append(current_episode)
-
-    if not episodes:
-        return []
-
-    actuator_domains = {"light", "switch", "media_player", "select", "fan", "cover", "lock", "climate"}
-    rear_tokens = {"backyard", "back_deck", "back_door", "pool", "spa", "patio"}
-    front_tokens = {"frontdoor", "front_door", "frontyard", "driveway", "foyer", "entry", "porch"}
-
-    def _is_spatially_coherent(trig_eid: str, act_eid: str) -> bool:
-        t_low = trig_eid.lower()
-        a_low = act_eid.lower()
-        # Never pair rear/backyard sensors with front/driveway entities (or vice versa)
-        if (any(rt in t_low for rt in rear_tokens) and any(ft in a_low for ft in front_tokens)) or (
-            any(ft in t_low for ft in front_tokens) and any(rt in a_low for rt in rear_tokens)
-        ):
-            return False
-        if entity_area_map:
-            t_area = entity_area_map.get(trig_eid)
-            a_area = entity_area_map.get(act_eid)
-            if t_area and a_area and t_area != a_area:
-                if adjacencies and a_area not in (adjacencies.get(t_area) or []):
-                    return False
-        return True
-
-    pattern_counts: dict[tuple, list[float]] = {}
-    pattern_actions: dict[tuple, list[dict[str, str]]] = {}
-
-    for ep in episodes:
-        trigger_entity, trigger_state, trigger_ts = ep[0]
-        if not trigger_entity.startswith("binary_sensor."):
-            continue
-        actions = []
-        seen_entities = {trigger_entity}
-        for act_entity, act_state, _ in ep[1:]:
-            if act_entity not in seen_entities and _is_spatially_coherent(trigger_entity, act_entity):
-                seen_entities.add(act_entity)
-                actions.append({"entity_id": act_entity, "state": act_state})
-
-        # Require at least one controllable actuator in the sequence (never propose sensor-only sequences)
-        actuator_actions = [
-            a for a in actions if a["entity_id"].split(".", 1)[0] in actuator_domains
-        ]
-        if not actuator_actions:
-            continue
-
-        actions_tuple = tuple((a["entity_id"], a["state"]) for a in actions)
-        pat_key = (trigger_entity, trigger_state, actions_tuple)
-
-        if pat_key not in pattern_counts:
-            pattern_counts[pat_key] = []
-            pattern_actions[pat_key] = actions
-        pattern_counts[pat_key].append(trigger_ts)
-
-    proposals = []
-    for (trigger_entity, trigger_state, _), timestamps in pattern_counts.items():
-        if len(timestamps) < min_occurrences:
-            continue
-
-        actions = pattern_actions[(trigger_entity, trigger_state, _)]
-        actuator_actions = [
-            a for a in actions if a["entity_id"].split(".", 1)[0] in actuator_domains
-        ]
-        if not actuator_actions:
-            continue
-        avg_ts = sum(timestamps) / len(timestamps)
-        try:
-            dt = datetime.fromtimestamp(avg_ts)
-            hour = dt.hour
-        except Exception:
-            hour = 8
-
-        if 5 <= hour < 12:
-            time_prefix = "Morning"
-        elif 12 <= hour < 17:
-            time_prefix = "Afternoon"
-        elif 17 <= hour < 22:
-            time_prefix = "Evening"
-        else:
-            time_prefix = "Night"
-
-        all_entities = [trigger_entity] + [a["entity_id"] for a in actuator_actions]
-        combined_text = " ".join(all_entities).lower()
-
-        if "gym" in combined_text:
-            context_label = "Gym"
-        elif "bed" in combined_text or "sleep" in combined_text:
-            context_label = "Bedtime" if time_prefix in ("Evening", "Night") else "Wakeup"
-        elif "kitchen" in combined_text or "coffee" in combined_text:
-            context_label = "Kitchen"
-        elif "office" in combined_text or "desk" in combined_text:
-            context_label = "Office"
-        elif "theater" in combined_text or "cinema" in combined_text or "tv" in combined_text:
-            context_label = "Media & Theater"
-        else:
-            first_action = actuator_actions[0]["entity_id"].split(".")[-1].replace("_", " ").title()
-            context_label = first_action
-
-        routine_name = f"{time_prefix} {context_label} Routine"
-        confidence = min(1.0, len(timestamps) / (len(timestamps) + 1.0) + 0.25)
-
-        action_payloads = []
-        for act in actuator_actions:
-            act_entity = act["entity_id"]
-            act_state = act["state"]
-            domain = act_entity.split(".")[0]
-            if domain in ("light", "switch", "media_player", "fan"):
-                service = f"{domain}.turn_{act_state}" if act_state in ("on", "off") else f"{domain}.turn_on"
-                action_payloads.append({"service": service, "target": {"entity_id": act_entity}})
-            elif domain == "select":
-                action_payloads.append({
-                    "service": "select.select_option",
-                    "target": {"entity_id": act_entity},
-                    "data": {"option": act_state},
-                })
-            else:
-                action_payloads.append({
-                    "service": "homeassistant.turn_on" if act_state == "on" else "homeassistant.turn_off",
-                    "target": {"entity_id": act_entity},
-                })
-
-        proposals.append({
-            "name": routine_name,
-            "title": routine_name,
-            "category": "habit_routine",
-            "priority": "medium",
-            "confidence": round(confidence, 2),
-            "occurrences": len(timestamps),
-            "trigger_entity": trigger_entity,
-            "trigger_state": trigger_state,
-            "actions": actions,
-            "description": (
-                f"Mined from your recurring habit patterns ({len(timestamps)} occurrences): "
-                f"When {trigger_entity} turns {trigger_state}, {len(actuator_actions)} device action(s) consistently follow."
-            ),
-            "action_type": "create_automation",
-            "action_payload": {
-                "alias": routine_name,
-                "description": f"Automated habit routine mined by Otis AI Companion ({len(timestamps)} occurrences)",
-                "trigger": [{"platform": "state", "entity_id": trigger_entity, "to": trigger_state}],
-                "action": action_payloads,
-                "mode": "single",
-            },
-        })
-
-    return proposals
-
-
 class DiscoveryEngine:
     """Discovers and maps the Home Assistant registries and active integrations."""
 
@@ -5001,118 +4816,7 @@ class DiscoveryEngine:
         return suggestions
 
     async def async_mine_historical_habits(self, days: int = 7) -> list[dict[str, Any]]:
-        """Asynchronously mine Home Assistant SQLite recorder trends for habit routine patterns (with 15m TTL cache)."""
-        db_path = None
-        if hasattr(self.hass, "config") and hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
-            try:
-                db_path = self.hass.config.path("home-assistant_v2.db")
-            except Exception:
-                db_path = None
-
-        cache_key = (days, db_path if isinstance(db_path, str) else None)
-        now = time.monotonic()
-        if (
-            self._cached_habits is not None
-            and self._habits_cache_key == cache_key
-            and (now - self._habits_cache_ts) < self.HABITS_CACHE_TTL
-        ):
-            return list(self._cached_habits)
-
-        res = await self.hass.async_add_executor_job(self._mine_habits_sync, days)
-        self._cached_habits = list(res)
-        self._habits_cache_ts = now
-        self._habits_cache_key = cache_key
-        return res
-
-    def _mine_habits_sync(self, days: int = 7) -> list[dict[str, Any]]:
-        """Synchronously query the SQLite recorder database in read-only mode to extract sequence transitions."""
-        if not hasattr(self.hass, "config") or not hasattr(self.hass.config, "path"):
-            return []
-        try:
-            db_path = self.hass.config.path("home-assistant_v2.db")
-            if not isinstance(db_path, str) or not os.path.isfile(db_path):
-                return []
-        except Exception:
-            return []
-
-        try:
-            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
-            cursor = conn.cursor()
-
-            cursor.execute(
-                """
-                SELECT metadata_id, entity_id FROM states_meta
-                WHERE entity_id LIKE 'binary_sensor.%'
-                   OR entity_id LIKE 'light.%'
-                   OR entity_id LIKE 'switch.%'
-                   OR entity_id LIKE 'select.%'
-                   OR entity_id LIKE 'media_player.%'
-                """
-            )
-            meta_rows = cursor.fetchall()
-            if not meta_rows:
-                conn.close()
-                return []
-
-            relevant_meta_map = {}
-            for meta_id, entity_id in meta_rows:
-                if entity_id.startswith("binary_sensor."):
-                    if any(kw in entity_id.lower() for kw in ("motion", "occupancy", "presence", "bed", "sleep", "door")):
-                        relevant_meta_map[meta_id] = entity_id
-                else:
-                    relevant_meta_map[meta_id] = entity_id
-
-            if not relevant_meta_map:
-                conn.close()
-                return []
-
-            candidate_meta_ids = list(relevant_meta_map.keys())[:40]
-            placeholders = ",".join("?" for _ in candidate_meta_ids)
-            cutoff_ts = time.time() - (days * 86400)
-
-            query = f"""
-                SELECT metadata_id, state, last_updated_ts
-                FROM states
-                WHERE metadata_id IN ({placeholders})
-                  AND last_updated_ts >= ?
-                  AND state NOT IN ('unknown', 'unavailable', '')
-                ORDER BY last_updated_ts ASC
-                LIMIT 5000
-            """
-            cursor.execute(query, candidate_meta_ids + [cutoff_ts])
-            raw_states = cursor.fetchall()
-            conn.close()
-
-            transition_rows = []
-            last_state_by_entity = {}
-            for meta_id, st, ts in raw_states:
-                ent = relevant_meta_map.get(meta_id)
-                if not ent:
-                    continue
-                if last_state_by_entity.get(ent) != st:
-                    last_state_by_entity[ent] = st
-                    transition_rows.append((ent, st, float(ts)))
-
-            _LOGGER.debug(
-                "Discovery Engine: Mined %d state transitions across %d entities",
-                len(transition_rows),
-                len(relevant_meta_map),
-            )
-
-            entity_area_map: dict[str, str] = {}
-            adjacencies: dict[str, list[str]] = {}
-            if isinstance(self._cached_cap_map, dict):
-                for e in self._cached_cap_map.get("entities", []):
-                    if e.get("entity_id") and e.get("area_id"):
-                        entity_area_map[e["entity_id"]] = e["area_id"]
-                adjacencies = (self._cached_cap_map.get("spatial_graph") or {}).get("adjacencies", {})
-
-            return cluster_sequences_to_routines(
-                transition_rows,
-                entity_area_map=entity_area_map or None,
-                adjacencies=adjacencies or None,
-            )
-
-        except Exception as err:
-            _LOGGER.warning("Discovery Engine: Could not mine historical sensor trends: %s", err)
-            return []
+        """Asynchronously mine Home Assistant SQLite recorder trends for habit routine patterns."""
+        if getattr(self, "habit_manager", None):
+            return await self.habit_manager.async_mine_habits(days=days, min_occurrences=2)
+        return []

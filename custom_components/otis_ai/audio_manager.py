@@ -31,9 +31,9 @@ class AudioHandoffManager:
         other_players: list[dict[str, Any]] = []
 
         try:
-            ent_reg = None
-            if hasattr(self.hass.helpers, "entity_registry"):
-                ent_reg = self.hass.helpers.entity_registry.async_get(self.hass)
+            from homeassistant.helpers import entity_registry as er
+
+            ent_reg = er.async_get(self.hass)
         except Exception as reg_err:
             _LOGGER.debug("Could not get entity registry for audio zones: %s", reg_err)
             ent_reg = None

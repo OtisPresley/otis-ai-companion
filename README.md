@@ -3,7 +3,7 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-41BDF5?logo=home-assistant&logoColor=white&style=flat)](https://www.home-assistant.io/)
 [![HACS Badge](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://hacs.xyz)
 [![HA installs](https://img.shields.io/badge/dynamic/json?url=https://analytics.home-assistant.io/custom_integrations.json&query=$.otis-ai-companion.total&label=Installs&color=41BDF5)](https://analytics.home-assistant.io/custom_integrations.json)
-[![Version](https://img.shields.io/badge/version-1.11.0-blue.svg)](https://github.com/OtisPresley/otis-ai-companion/blob/main/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.11.1-blue.svg)](https://github.com/OtisPresley/otis-ai-companion/blob/main/CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-e0b416.svg)](https://github.com/OtisPresley/otis-ai-companion/blob/main/LICENSE)
 [![hassfest](https://img.shields.io/github/actions/workflow/status/OtisPresley/otis-ai-companion/hassfest.yaml?branch=main&label=hassfest)](https://github.com/OtisPresley/otis-ai-companion/actions/workflows/hassfest.yaml)
 [![HACS](https://img.shields.io/github/actions/workflow/status/OtisPresley/otis-ai-companion/hacs.yaml?branch=main&label=HACS)](https://github.com/OtisPresley/otis-ai-companion/actions/workflows/hacs.yaml)
@@ -36,18 +36,15 @@ It replaces fragile Jinja2 templates, hardcoded entity mappings, and rigid autom
 
 ## ✨ Core Highlights
 
-- 🗺️ **Zero-Hardcoding Spatial Intelligence**: Dynamically discovers Area, Device, and Entity registries. Maintains an in-memory physical topological adjacency graph with Breadth-First Search (BFS) pathfinding between rooms.
-- 🎥 **Multimodal Walkthrough Video-to-FloorPlan**: Record smartphone video walkthroughs of your home; the integrated pipeline parses spoken room callouts, extracts container audio via FFmpeg, transcribes transitions using Gemini, and renders interactive, multi-floor vector SVG blueprints.
-- 🔄 **Non-Blocking SQLite Habit Mining**: Executes high-speed, index-assisted queries against `home-assistant_v2.db` in under **50ms** via asynchronous background workers to uncover recurring lifestyle patterns and cluster them into 1-click routine proposals.
-- 🛡️ **Actuator-Verified Safety Clustering**: Enforces strict safety rules on routine proposals—requiring controllable actuators (`light`, `switch`, `media_player`, `climate`, `cover`, `lock`) and rejecting opposite-perimeter false pairings.
-- 🔊 **Dynamic Presence-Based Audio Routing**: Automatically directs TTS announcements (`notify_router`) and media streams to currently occupied rooms using real-time presence sensors, with smart fallbacks and idle power guards for multi-zone matrix amplifiers (e.g. Control4).
-- 📊 **Smart Home Maturity Scoring**: Continuously audits your installation across 5 core dimensions (**Spatial**, **Hygiene**, **Automations**, **Security**, **Media**) with a 0–100 score and 1-click auto-assignment for unassigned devices.
-- 📋 **Surgical YAML & Blueprint Repair**: Repairs broken entity typos, fixes wrapped multiline strings, corrects `input_select` whitespace mismatches, and upgrades automations from `mode: single` to `mode: queued` with scoped block protection.
-- 🎛️ **Admin-Only Panel Mode Dashboard (`/otis-ai`)**: Automatically creates and synchronizes an Admin-only dashboard in full-width Panel Mode (`ha_native` theme default) with Home Assistant's live `DashboardsCollection`.
-- 🧭 **Hub-and-Spoke Subview Architecture**: Generates specialized domain subviews (`subview: true`) for **Media Studio** (`/otis-ai/media`), **Security Center** (`/otis-ai/security`), **Climate & Pool** (`/otis-ai/climate`), and **Floor Plan Studio** (`/otis-ai/floorplan`) with native header back navigation (`←`) and card launchpad chips.
-- 📐 **Interactive Canvas Editor & Visual Boundary Adjuster**: Floor Plan Studio provides full-width canvas editing (`mode: "floorplan_studio"`) with drag-and-drop device pin repositioning, interactive corner resize handles for room footprints, and 1-click binding to Home Assistant registered areas (`otis_ai.update_floorplan_layout`).
-- 🎨 **Dynamic AI Themes with Instant Activation**: Natural language theme synthesizer with zero-profile-switching live activation and robust contrast variables across dark and light palettes.
-- ⚡ **Dynamic Macro Orchestrator & Atomic Rollback**: Multi-step conversational pipelines (Movie Night, Goodnight Routine, Party Mode, Lockdown, Welcome Home) with automatic pre-flight safety checks and 1-click state rollback.
+- 🗺️ **Zero-Hardcoding Spatial Intelligence (Phase 1 & 4)**: Dynamically discovers Area, Device, and Entity registries. Maintains an in-memory physical topological adjacency graph with Breadth-First Search (BFS) pathfinding between rooms. Full visual canvas editor (`mode: "floorplan_studio"`) with drag-and-drop pin repositioning and interactive boundary resizing.
+- 🎨 **Dynamic AI Themes Studio (Phase 2)**: Natural language theme generator synthesizing modern CSS variables with instant zero-profile-switching live activation and robust dark/light contrast.
+- 🛡️ **Otis Sentinel Watchdog & Self-Healing (Phase 3)**: Continuous background telemetry watchdog monitoring battery depletion, short-cycling climate compressors, unattended garage doors, and failed integrations with 1-click atomic remediation.
+- ⚡ **Dynamic Macro Orchestrator & Assist Pipelines (Phase 5)**: Multi-step atomic lifestyle macros (Movie Night, Goodnight, Party Mode, Lockdown) with prior state snapshotting, pre-flight safety gates, and 1-click state rollback.
+- 🔊 **Voice Feedback & Dynamic Audio Follow-Me (Phase 6)**: Presence-based TTS notifications (`notify_router`) and seamless multi-room audio handoff across matrix amplifiers (e.g. Control4) with idle amplifier power guards.
+- ⚡ **Energy & Predictive Load Orchestrator (Phase 7)**: TOU tariff awareness, solar surplus utilization, battery/UPS storage monitoring, and tiered dynamic load shedding during grid peak hours.
+- 👁️ **Multi-Modal Vision & Presence Intelligence (Phase 8)**: Multi-sensor room occupancy fusion combining mmWave radar, PIR, media playback, and micro-BLE beacons; RTSP camera stream deduplication and Gemini Vision anomaly detection.
+- 🔄 **Self-Supervised Habit Learning & Behavioral Modeling (Phase 9)**: Non-blocking SQLite recorder habit sequence mining, habit deviation guards (e.g. missed bedtime routine), and dynamic circadian lighting & seasonal temperature curves.
+- 🌐 **Autonomous Home Commissioning & Multi-Node Federation (Phase 10)**: Zero-config heuristic spatial assignment for unassigned entities and multi-instance Home Assistant edge node synchronization with remote service orchestration.
 - 💬 **Assist AI Co-Pilot with Real-Time Audio Streaming**: Interactive multi-turn chat co-pilot (`otis_ai.chat`) with direct Web Speech microphone input, 5-bar animated audio waveform visualizer, and instant Markdown live preview.
 
 <div align="center">
@@ -159,18 +156,88 @@ data:
 
 ## 🏷️ Services Reference
 
+Otis AI Companion provides **41 registered services** structured by architectural subsystem:
+
+### 1. AI Co-Pilot & Suggestion Engine
 | Service Name | Description | Example Target |
 | :--- | :--- | :--- |
-| `otis_ai.chat` | Conversational query with spatial context and LLM failover. | `text: "Turn off lights in vacant rooms"` |
+| `otis_ai.chat` | Multi-turn conversational query with spatial context and LLM failover. | `text: "Turn off lights in vacant rooms"` |
 | `otis_ai.get_capability_map` | Retrieve system maturity score, active entities, and suggestions. | `response_variable: capabilities` |
-| `otis_ai.get_suggestions` | Retrieve active proactive recommendations. | `response_variable: suggestions` |
-| `otis_ai.apply_suggestion` | Execute a recommendation (YAML automation, script, or cleanup). | `data: { suggestion_id: "..." }` |
+| `otis_ai.get_suggestions` | Retrieve active proactive recommendations feed. | `response_variable: suggestions` |
+| `otis_ai.apply_suggestion` | Execute recommendation (YAML automation, script, or cleanup). | `data: { suggestion_id: "..." }` |
+
+### 2. Spatial Topology & Floor Plan Studio
+| Service Name | Description | Example Target |
+| :--- | :--- | :--- |
 | `otis_ai.get_spatial_map` | Retrieve room adjacency topology and connection types. | `response_variable: spatial_graph` |
 | `otis_ai.update_spatial_map` | Connect or disconnect physical rooms. | `data: { area_1: "foyer", area_2: "study" }` |
 | `otis_ai.generate_floorplan` | Synthesize an interactive vector SVG floor plan. | `data: { theme: "cyberpunk" }` |
-| `otis_ai.execute_macro` | Execute multi-step atomic macro with prior state snapshot. | `data: { macro_name: "movie_night" }` |
+| `otis_ai.update_floorplan_layout`| Update floor plan room bounds, dimensions, and device pin coordinates. | `data: { updates: [...] }` |
+
+### 3. Dynamic Themes & Dashboard Studio
+| Service Name | Description | Example Target |
+| :--- | :--- | :--- |
+| `otis_ai.generate_theme` | Synthesize custom CSS theme from natural language prompt. | `data: { prompt: "Deep space obsidian with neon cyan" }` |
+| `otis_ai.apply_theme` | Apply theme globally or to a specific user profile. | `data: { theme_name: "cyberpunk" }` |
+| `otis_ai.list_themes` | List all available built-in presets and user-created themes. | `response_variable: themes` |
+| `otis_ai.delete_theme` | Remove a previously saved custom theme. | `data: { theme_name: "custom_theme" }` |
+| `otis_ai.create_command_center`| Provision user Command Center and admin Otis AI dashboards. | `data: { mode: "command_center" }` |
+| `otis_ai.sync_dashboards` | Resynchronize dashboard views and subviews with Home Assistant. | `data: { force_overwrite: false }` |
+
+### 4. Otis Sentinel Watchdog & Self-Healing
+| Service Name | Description | Example Target |
+| :--- | :--- | :--- |
+| `otis_ai.run_sentinel_watchdog`| Run full system diagnostic audit across climate, battery, security, and integrations. | `response_variable: anomalies` |
+| `otis_ai.remediate_anomaly` | Execute 1-click self-healing remediation for a detected anomaly. | `data: { anomaly_id: "..." }` |
+| `otis_ai.get_sentinel_telemetry`| Retrieve health score, active anomalies, and remediation history. | `response_variable: telemetry` |
+| `otis_ai.ignore_sentinel_alert`| Mute a specific alert or category (e.g., low battery, offline node). | `data: { anomaly_id: "...", category: "battery" }` |
+
+### 5. Dynamic Macro Orchestrator
+| Service Name | Description | Example Target |
+| :--- | :--- | :--- |
+| `otis_ai.execute_macro` | Execute multi-step atomic macro with prior state snapshotting. | `data: { macro_name: "movie_night" }` |
 | `otis_ai.rollback_macro` | Roll back most recent macro and restore entities to prior states. | `data: { macro_id: "..." }` |
 | `otis_ai.list_macros` | List built-in macro templates and recent execution history. | `response_variable: macros` |
+
+### 6. Voice Feedback & Multi-Room Audio Routing
+| Service Name | Description | Example Target |
+| :--- | :--- | :--- |
+| `otis_ai.audio_handoff` | Transfer or follow media stream between source and target rooms. | `data: { source_area: "living_room", target_area: "patio" }` |
+| `otis_ai.media_follow_me` | Follow user media playback as they move across rooms. | `data: { target_area: "kitchen" }` |
+| `otis_ai.release_idle_sources` | Power down idle multi-zone amplifier channels and matrix streamers. | `data: { idle_threshold_minutes: 15 }` |
+| `otis_ai.notify_voice` | Broadcast targeted presence-aware TTS announcement via `notify_router`. | `data: { message: "Front gate open", area_id: "office" }` |
+
+### 7. Energy & Predictive Load Orchestrator
+| Service Name | Description | Example Target |
+| :--- | :--- | :--- |
+| `otis_ai.get_energy_summary` | Discover power meters, solar surplus, battery state, and TOU tariff period. | `response_variable: energy_summary` |
+| `otis_ai.load_shed` | Dynamically shed Tier 1 (EV, pool) or Tier 2 (climate, AV) electrical loads. | `data: { tier: 1 }` |
+| `otis_ai.restore_shed_loads` | Restore previously shed appliances and HVAC setpoints. | `data: { tier: 1 }` |
+
+### 8. Multi-Modal Vision & Presence Intelligence
+| Service Name | Description | Example Target |
+| :--- | :--- | :--- |
+| `otis_ai.get_presence_states` | Return fused occupancy probabilities (mmWave + PIR + media + BLE) per room. | `response_variable: presence` |
+| `otis_ai.analyze_camera` | Capture camera snapshot and analyze visual scene via Gemini Vision. | `data: { camera_entity_id: "camera.frontdoor" }` |
+| `otis_ai.evaluate_contextual_alerts`| Evaluate perimeter security context and suspicious occupancy anomalies. | `response_variable: alerts` |
+
+### 9. Self-Supervised Habit Learning & Behavioral Modeling
+| Service Name | Description | Example Target |
+| :--- | :--- | :--- |
+| `otis_ai.mine_habits` | Mine SQLite recorder transitions for recurring routine proposals. | `data: { days: 14, min_occurrences: 3 }` |
+| `otis_ai.get_circadian_curves` | Compute dynamic solar circadian lighting and seasonal climate curves. | `response_variable: curves` |
+| `otis_ai.audit_habit_deviations`| Audit home state against behavioral baselines (e.g. Missed bedtime). | `response_variable: deviations` |
+
+### 10. Autonomous Home Commissioning & Multi-Node Federation
+| Service Name | Description | Example Target |
+| :--- | :--- | :--- |
+| `otis_ai.audit_unassigned_entities`| Audit unassigned entities and infer room mappings with confidence scores. | `response_variable: audit` |
+| `otis_ai.auto_commission_entities`| 1-click batch assign eligible unassigned entities into their rooms. | `data: { min_confidence: 0.85 }` |
+| `otis_ai.register_federated_node`| Register remote Home Assistant edge node with host, port, and token. | `data: { node_id: "guest_house", host: "10.0.12.247" }` |
+| `otis_ai.remove_federated_node` | Unregister a remote federated node. | `data: { node_id: "guest_house" }` |
+| `otis_ai.sync_federated_nodes` | Synchronize state machines from all registered satellite nodes. | `data: { node_id: "all" }` |
+| `otis_ai.call_remote_service` | Execute a Home Assistant service call on a satellite edge node. | `data: { node_id: "guest_house", domain: "light", service: "turn_off" }` |
+| `otis_ai.get_federation_status` | Retrieve connectivity, latency, entity counts, and version across nodes. | `response_variable: status` |
 
 ---
 
@@ -197,19 +264,17 @@ show_chat: true
 
 ## 🧪 Testing & Validation
 
-Otis AI Companion includes a unit-testing suite running against an asynchronous mock Home Assistant core:
+Otis AI Companion includes a comprehensive test suite running against an asynchronous mock Home Assistant core:
 
 ```bash
-python3 -m pytest tools/test_core_rebuilt.py
+python3 -m unittest discover tests
 ```
 
-### Coverage (32/32 Passing):
-- DiscoveryEngine registry traversal, orphan filtering, and maturity score calculation.
-- SpatialGraphManager adjacency topologies, BFS shortest path, and room transition updates.
-- AutomationManager scoped multiline regex string repair and mode upgrades.
-- DashboardManager in-memory `DashboardsCollection` synchronization and panel view mounting.
-- Multi-agent failover cascade across Gemini, OpenAI, and local LLMs.
-- Walkthrough audio extraction and SVG layout generation.
+### Coverage (85/85 Passing):
+- **Core Engine & Registries (`test_core_rebuilt.py`)**: Registry discovery, maturity scoring, BFS spatial pathfinding, floor plan rendering, themes, Sentinel watchdog, and atomic macros.
+- **Vision & Presence Fusion (`test_vision_presence.py`)**: mmWave + PIR + media fusion, camera stream deduplication, and Gemini Vision anomaly detection.
+- **Habit Learning & Behavioral Modeling (`test_habit_manager.py`)**: SQLite recorder mining, habit routine clustering, bedtime deviation guards, and circadian curves.
+- **Autonomous Commissioning & Federation (`test_node_federation_commissioning.py`)**: Zero-config heuristic room mapping, satellite node sync, and remote service proxying.
 
 ---
 
