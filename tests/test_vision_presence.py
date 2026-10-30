@@ -61,6 +61,7 @@ class TestVisionPresenceManager(unittest.TestCase):
             "media_player.living_room_tv": MockEntityEntry("media_player.living_room_tv", "living_room"),
             "person.jamie": MockEntityEntry("person.jamie", "office"),
             "switch.kitchen_oven": MockEntityEntry("switch.kitchen_oven", "kitchen"),
+            "device_tracker.kitchen_smart_plug": MockEntityEntry("device_tracker.kitchen_smart_plug", "kitchen"),
         }
         mock_er.return_value = ent_reg
 
@@ -70,6 +71,7 @@ class TestVisionPresenceManager(unittest.TestCase):
             MockEntityState("binary_sensor.office_pir_motion", "on", {"device_class": "motion", "friendly_name": "Office PIR"}),
             MockEntityState("person.jamie", "office", {"friendly_name": "Jamie"}),
             MockEntityState("switch.kitchen_oven", "off", {"friendly_name": "Kitchen Oven"}),
+            MockEntityState("device_tracker.kitchen_smart_plug", "home", {"friendly_name": "Kitchen Plug Tracker"}),
         ]
         self.hass.states.async_all.return_value = states
 
@@ -106,19 +108,33 @@ class TestVisionPresenceManager(unittest.TestCase):
         ent_reg = MagicMock()
         ent_reg.entities = {
             "camera.doorbell": MockEntityEntry("camera.doorbell", "front_porch"),
+            "camera.foyer_clear": MockEntityEntry("camera.foyer_clear", "foyer"),
+            "camera.foyer_fluent": MockEntityEntry("camera.foyer_fluent", "foyer"),
+            "camera.foyer_snapshots_fluent": MockEntityEntry("camera.foyer_snapshots_fluent", "foyer"),
+            "camera.larry_poppins_saved_map": MockEntityEntry("camera.larry_poppins_saved_map", "living_room"),
         }
         mock_er.return_value = ent_reg
 
         states = [
             MockEntityState("camera.doorbell", "idle", {"friendly_name": "Front Doorbell Camera", "brand": "Reolink"}),
             MockEntityState("binary_sensor.doorbell_package", "on", {"friendly_name": "Doorbell Package"}),
+            MockEntityState("camera.foyer_clear", "idle", {"friendly_name": "Clear"}),
+            MockEntityState("camera.foyer_fluent", "idle", {"friendly_name": "Fluent"}),
+            MockEntityState("camera.foyer_snapshots_fluent", "idle", {"friendly_name": "Snapshots fluent"}),
+            MockEntityState("camera.larry_poppins_saved_map", "idle", {"friendly_name": "Larry Poppins Saved Map"}),
         ]
         self.hass.states.async_all.return_value = states
         self.hass.states.get.side_effect = lambda eid: next((s for s in states if s.entity_id == eid), None)
 
         mgr = VisionPresenceManager(self.hass)
         cams = asyncio.run(mgr.async_get_cameras())
-        self.assertEqual(len(cams), 1)
+        # Vacuum map excluded, Foyer multi-streams deduplicated to 1, Doorbell retained -> 2 total
+        self.assertEqual(len(cams), 2)
+        cam_eids = [c["entity_id"] for c in cams]
+        self.assertIn("camera.doorbell", cam_eids)
+        self.assertIn("camera.foyer_clear", cam_eids)
+        self.assertNotIn("camera.foyer_fluent", cam_eids)
+        self.assertNotIn("camera.larry_poppins_saved_map", cam_eids)
         self.assertTrue(cams[0]["is_doorbell"])
 
         analysis = asyncio.run(mgr.async_analyze_camera("camera.doorbell"))

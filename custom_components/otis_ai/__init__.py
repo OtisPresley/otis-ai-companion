@@ -79,7 +79,7 @@ from .spatial_manager import (
 )
 from .floorplan_parser import FloorplanParser
 from .theme_manager import PRESET_THEMES, ThemeManager, slugify_theme_name
-from .vision_manager import VisionPresenceManager
+from .vision_manager import VisionPresenceManager, get_canonical_camera_key, stream_priority
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -2877,11 +2877,21 @@ class DiscoveryEngine:
         ]
         locks = [e["entity_id"] for e in entities_list if e.get("domain") == "lock"]
         sirens = [e["entity_id"] for e in entities_list if e.get("domain") == "siren"]
-        cameras = [
+        raw_cameras = [
             e["entity_id"]
             for e in entities_list
             if e.get("domain") == "camera" and e.get("state") not in ("unavailable", "unknown")
         ]
+        cam_groups: dict[str, list[str]] = {}
+        for c_eid in raw_cameras:
+            if any(k in c_eid.lower() for k in ("map", "vacuum", "cleaning")):
+                continue
+            ckey = get_canonical_camera_key(c_eid)
+            cam_groups.setdefault(ckey, []).append(c_eid)
+        cameras = []
+        for ckey, c_list in cam_groups.items():
+            c_list.sort(key=lambda x: stream_priority(x, x))
+            cameras.append(c_list[0])
         persons = [
             e["entity_id"]
             for e in entities_list

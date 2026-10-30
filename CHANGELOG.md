@@ -2,6 +2,20 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.9.9] - 2026-10-30
+
+### Fixed & Improved
+- **Room Occupancy Fusion Accuracy (`vision_manager.py`)**:
+  - Fixed a major false-occupancy issue where generic network Wi-Fi device trackers (`device_tracker.*`) with state `"home"` were erroneously counted as room BLE micro-presence, falsely marking every room with a connected device as 65% occupied.
+  - Restricted room micro-tracking to explicit room-level beacon integrations (ESPresense, Bermuda, Room-Assistant, Find3) where entity state/attributes explicitly match the target room identifier.
+  - Fixed `person` entity evaluation so general `"home"` state sets household presence without claiming simultaneous presence across all rooms. Vacant rooms with no motion or media (e.g. Dining Room, Downstairs Bath, Guest Room, Master, Theater) now accurately report 0% Vacant.
+- **Camera Stream Deduplication & Token Authentication (`vision_manager.py`, `dashboard_manager.py`, `otis-companion-card.js`)**:
+  - Implemented `get_canonical_camera_key` and `stream_priority` to deduplicate multi-stream RTSP cameras (such as Reolink Clear, Fluent, Snapshots fluent, Snapshots clear, ONVIF `_2` duplicates) across both the Vision & Presence card and Room subviews into a single optimal stream per physical camera.
+  - Filtered out robot vacuum map and cleaning map entities (`camera.*_map`).
+  - Automatically cleaned up camera friendly names from raw stream tags (e.g. "Fluent", "Clear") to the actual physical camera name (e.g. "Mudroom Camera", "Foyer Camera").
+  - Fixed camera image proxy rendering by supplying Home Assistant authorized `entity_picture` tokens (`?token=...`), eliminating 403 Forbidden errors.
+  - Added click-to-open live stream (`hass-more-info`) on camera preview cards.
+
 ## [1.9.8] - 2026-10-30
 
 ### Fixed

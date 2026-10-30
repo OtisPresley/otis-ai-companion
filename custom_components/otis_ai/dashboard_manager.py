@@ -16,6 +16,7 @@ from .const import (
     COMMAND_CENTER_DASHBOARD_TITLE,
     COMMAND_CENTER_DASHBOARD_URL_PATH,
 )
+from .vision_manager import get_canonical_camera_key, stream_priority
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1593,39 +1594,12 @@ class DashboardManager:
                 continue
 
             # Group streams belonging to the same physical camera
-            dev_id = c.get("device_id")
-            if dev_id:
-                group_key = f"dev_{dev_id}"
-            else:
-                base = eid.replace("camera.", "")
-                for sfx in (
-                    "_snapshots_fluent", "_snapshots", "_recording", "_clear",
-                    "_fluent", "_sub", "_main", "_high", "_low", "_stream", "_live", "_snapshot"
-                ):
-                    if base.endswith(sfx):
-                        base = base[:-len(sfx)]
-                        break
-                group_key = base or eid
-
+            group_key = get_canonical_camera_key(eid)
             camera_groups.setdefault(group_key, []).append(c)
-
-        def _stream_priority(cam: dict[str, Any]) -> int:
-            cid = cam.get("entity_id", "").lower()
-            cname = str(cam.get("name") or "").lower()
-            t = f"{cid} {cname}"
-            if "clear" in t or "high" in t or "main" in t:
-                return 0
-            if "recording" in t:
-                return 1
-            if "fluent" in t or "sub" in t or "low" in t:
-                return 2
-            if "snapshot" in t:
-                return 4
-            return 3
 
         deduped_cameras: list[str] = []
         for gkey, cams in camera_groups.items():
-            cams.sort(key=_stream_priority)
+            cams.sort(key=lambda x: stream_priority(x.get("entity_id", ""), str(x.get("name") or "")))
             deduped_cameras.append(cams[0]["entity_id"])
 
         if deduped_cameras:
@@ -2003,6 +1977,17 @@ class DashboardManager:
             locks = _filter_valid([e["entity_id"] for e in entities if e.get("domain") == "lock"])
         if not cameras:
             cameras = _filter_valid([e["entity_id"] for e in entities if e.get("domain") == "camera"])
+
+        # Deduplicate cameras to ensure only one optimal stream per physical camera
+        cam_groups: dict[str, list[str]] = {}
+        for c_eid in cameras:
+            ckey = get_canonical_camera_key(c_eid)
+            cam_groups.setdefault(ckey, []).append(c_eid)
+        deduped_sec_cameras = []
+        for ckey, c_list in cam_groups.items():
+            c_list.sort(key=lambda x: stream_priority(x, x))
+            deduped_sec_cameras.append(c_list[0])
+        cameras = deduped_sec_cameras
 
         cards: list[dict[str, Any]] = [
             {

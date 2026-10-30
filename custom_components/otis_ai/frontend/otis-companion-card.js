@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.9.8";
+const CARD_VERSION = "1.9.9";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -5138,14 +5138,29 @@ class OtisCompanionCard extends HTMLElement {
                     const isAnalyzing = this._analyzingCamera === cam.entity_id;
                     const tagList = audit?.detected_objects || [];
 
+                    const camState = this._hass?.states?.[cam.entity_id];
+                    const token = camState?.attributes?.access_token || cam.access_token;
+                    const entityPic = camState?.attributes?.entity_picture || cam.entity_picture;
+                    let imgSrc = entityPic;
+                    if (!imgSrc && token) {
+                      imgSrc = `/api/camera_proxy/${cam.entity_id}?token=${token}&time=${Date.now()}`;
+                    }
+
                     return `
                     <div class="camera-card">
-                      <div class="camera-preview-container">
-                        <img class="camera-preview-img" 
-                             src="/api/camera_proxy/${cam.entity_id}?time=${Date.now()}" 
-                             alt="${cam.name}" 
-                             loading="lazy" 
-                             onerror="this.style.opacity='0.2';" />
+                      <div class="camera-preview-container" data-cam-id="${cam.entity_id}" title="Click to view live stream" style="cursor: pointer;">
+                        ${
+                          imgSrc
+                            ? `<img class="camera-preview-img" 
+                                   src="${imgSrc}" 
+                                   alt="${cam.name}" 
+                                   loading="lazy" 
+                                   onerror="this.style.display='none'; if (this.nextElementSibling) this.nextElementSibling.style.display='flex';" />`
+                            : ""
+                        }
+                        <div class="camera-preview-fallback" style="display: ${imgSrc ? "none" : "flex"}; align-items: center; justify-content: center; height: 100%; min-height: 140px; background: #0f172a; color: var(--otis-text-muted);">
+                          <span>📹 Live Camera Ready</span>
+                        </div>
                         <span class="camera-cam-badge">
                           ${cam.is_doorbell ? "🔔 Doorbell" : cam.is_perimeter ? "🛡️ Perimeter" : "📹 Interior"}
                         </span>
@@ -5389,6 +5404,20 @@ class OtisCompanionCard extends HTMLElement {
         } finally {
           this._analyzingCamera = null;
           this._render();
+        }
+      };
+    });
+
+    root.querySelectorAll(".camera-preview-container").forEach((el) => {
+      el.onclick = () => {
+        const camId = el.getAttribute("data-cam-id");
+        if (camId) {
+          const ev = new CustomEvent("hass-more-info", {
+            detail: { entityId: camId },
+            bubbles: true,
+            composed: true,
+          });
+          this.dispatchEvent(ev);
         }
       };
     });

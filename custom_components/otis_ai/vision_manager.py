@@ -20,6 +20,46 @@ from homeassistant.helpers import area_registry as ar, device_registry as dr, en
 _LOGGER = logging.getLogger(__name__)
 
 
+def get_canonical_camera_key(eid: str) -> str:
+    """Extract a canonical physical camera key from an entity_id."""
+    base = eid.lower().replace("camera.", "")
+    for sfx in (
+        "_snapshots_fluent", "_snapshots_clear", "_snapshots_sub", "_snapshots_main",
+        "_snapshots", "_snapshot", "_fluent", "_clear", "_sub", "_main",
+        "_balanced", "_recording", "_high", "_low", "_stream", "_live",
+        "_2", "_3", "_4",
+    ):
+        if base.endswith(sfx):
+            base = base[:-len(sfx)]
+            break
+    if "doorbell" in base:
+        base = "front_doorbell" if "front" in base else "doorbell"
+    elif "frontdoor" in base:
+        base = "front_doorbell"
+    return base
+
+
+def stream_priority(eid: str, name: str) -> int:
+    """Score camera stream preference (0 = most preferred for live UI)."""
+    t = f"{eid.lower()} {name.lower()}"
+    # Prefer Clear / Main / High HD streams for crisp rendering
+    if "clear" in t or "main" in t or "high" in t:
+        return 0
+    # Secondary: standard stream without suffixes (e.g. camera.garage, camera.frontdoor)
+    if not any(k in t for k in ("snapshot", "map", "recording", "balanced", "_2", "_3", "fluent", "sub", "low")):
+        return 1
+    # Tertiary: Fluent / Sub streams if clear is not present
+    if "fluent" in t or "sub" in t or "low" in t:
+        return 2
+    if "balanced" in t:
+        return 3
+    if "recording" in t:
+        return 4
+    if "snapshot" in t:
+        return 5
+    return 6
+
+
 class VisionPresenceManager:
     """Manages multi-sensor room occupancy fusion, camera vision analysis, and contextual perimeter alerts."""
 
@@ -80,14 +120,18 @@ class VisionPresenceManager:
             if s.entity_id.startswith("person."):
                 state_val = s.state.lower()
                 matched_area = area_name_to_id.get(state_val) or (state_val if any(a.id == state_val for a in areas) else None)
+                area_source = "state" if matched_area else None
                 if not matched_area:
                     matched_area = entity_to_area.get(s.entity_id)
+                    area_source = "registry" if matched_area else None
                 is_home = (state_val in ("home", "on")) or (matched_area is not None and state_val not in ("not_home", "away"))
                 persons_home.append({
                     "entity_id": s.entity_id,
                     "name": s.attributes.get("friendly_name", s.entity_id),
                     "is_home": is_home,
+                    "state": state_val,
                     "area_id": matched_area,
+                    "area_source": area_source,
                 })
 
         room_results: dict[str, dict[str, Any]] = {}
@@ -169,20 +213,34 @@ class VisionPresenceManager:
                     if s.state == "playing":
                         media_active = True
 
-                # 4. BLE Beacon / Room Tracker
-                if eid.startswith("device_tracker.") or "espresence" in eid_lower or "beacon" in eid_lower:
+                # 4. BLE Beacon / Room Tracker (Only true room-level micro-location, NOT generic zone "home")
+                is_room_tracker = (
+                    "espresence" in eid_lower
+                    or "bermuda" in eid_lower
+                    or "room_assistant" in eid_lower
+                    or "find3" in eid_lower
+                    or (eid.startswith("device_tracker.") and "beacon" in eid_lower)
+                )
+                if is_room_tracker:
                     ble_entities.append(eid)
-                    if s.state in ("home", "on") or s.state.lower() == a_lower:
+                    st_lower = s.state.lower()
+                    attr_room = str(s.attributes.get("room") or s.attributes.get("area") or "").lower()
+                    if st_lower in (a_lower, a_id) or attr_room in (a_lower, a_id):
                         ble_active = True
 
-                # 5. Lights / Switches active
-                if eid.startswith("light.") or (eid.startswith("switch.") and "plug" in eid_lower):
-                    if s.state == "on":
-                        light_entities.append(eid)
-                        lights_active = True
+                # 5. Lights active
+                if eid.startswith("light.") and s.state == "on":
+                    light_entities.append(eid)
+                    lights_active = True
 
-            # Also check if any Person entity is explicitly in this room
-            person_in_room = any(p["is_home"] and p.get("area_id") == a_id for p in persons_home)
+            # Also check if any Person entity is explicitly in this room (state matches room name, not generic "home")
+            person_in_room = any(
+                p["is_home"] and (
+                    str(p.get("state") or "").lower() in (a_lower, a_id)
+                    or (p.get("area_id") == a_id and p.get("area_source") == "state")
+                )
+                for p in persons_home
+            )
             if person_in_room:
                 ble_active = True
 
@@ -282,41 +340,97 @@ class VisionPresenceManager:
         return res
 
     async def async_get_cameras(self) -> list[dict[str, Any]]:
-        """Discover all security cameras and doorbells across Home Assistant."""
+        """Discover all security cameras and doorbells across Home Assistant with smart stream deduplication."""
         area_reg = ar.async_get(self.hass)
         areas_by_id = {a.id: a.name for a in area_reg.async_list_areas()} if hasattr(area_reg, "async_list_areas") else {}
         entity_to_area = self._build_entity_to_area_map()
 
+        ent_reg = None
+        dev_reg = None
+        try:
+            ent_reg = er.async_get(self.hass)
+            dev_reg = dr.async_get(self.hass)
+        except Exception:
+            pass
+
         all_states = self.hass.states.async_all() if hasattr(self.hass.states, "async_all") else []
-        cameras: list[dict[str, Any]] = []
+        VACUUM_MAP_KEYWORDS = ("map", "saved_map", "current_map", "cleaning_map", "vacuum")
+
+        camera_groups: dict[str, list[tuple[Any, str, str]]] = {}
 
         for s in all_states:
             if not s.entity_id.startswith("camera."):
                 continue
 
-            area_id = entity_to_area.get(s.entity_id)
-            area_name = areas_by_id.get(area_id, "Unknown Area")
-            name = s.attributes.get("friendly_name") or s.entity_id
+            eid = s.entity_id
+            name = s.attributes.get("friendly_name") or eid
+            cam_lower = (eid + " " + name).lower()
 
-            # Detect camera classification
-            cam_lower = (s.entity_id + " " + name).lower()
-            is_doorbell = "doorbell" in cam_lower
+            # Skip vacuum cleaning maps and map data
+            if any(k in cam_lower for k in VACUUM_MAP_KEYWORDS):
+                continue
+            platform = str(s.attributes.get("platform") or "").lower()
+            if platform in ("roborock", "valetudo", "dreame", "ecovacs", "roomba", "xiaomi_miio"):
+                continue
+
+            canonical_key = get_canonical_camera_key(eid)
+            camera_groups.setdefault(canonical_key, []).append((s, eid, name))
+
+        cameras: list[dict[str, Any]] = []
+
+        for canonical_key, stream_list in camera_groups.items():
+            # Sort by stream priority to pick the stream that makes the most sense (fluent/sub first)
+            stream_list.sort(key=lambda item: stream_priority(item[1], item[2]))
+            best_s, best_eid, best_name = stream_list[0]
+
+            area_id = entity_to_area.get(best_eid)
+            area_name = areas_by_id.get(area_id, "Unknown Area")
+
+            # Clean name if integration provided generic stream label like "Fluent" or "Clear"
+            clean_name = best_name
+            if best_name.lower().strip() in (
+                "fluent", "clear", "sub", "main", "snapshots fluent",
+                "snapshots clear", "balanced", "snapshots sub", "snapshots main"
+            ):
+                device_name = None
+                if ent_reg and dev_reg and hasattr(ent_reg, "entities") and best_eid in ent_reg.entities:
+                    entry = ent_reg.entities[best_eid]
+                    if getattr(entry, "device_id", None) and hasattr(dev_reg, "devices") and entry.device_id in dev_reg.devices:
+                        dev = dev_reg.devices[entry.device_id]
+                        device_name = dev.name_by_user or dev.name
+
+                if device_name:
+                    clean_name = device_name
+                else:
+                    pretty_key = canonical_key.replace("_", " ").title()
+                    clean_name = pretty_key if ("camera" in pretty_key.lower() or "doorbell" in pretty_key.lower()) else f"{pretty_key} Camera"
+
+            cam_lower = (best_eid + " " + clean_name).lower()
+            is_doorbell = "doorbell" in cam_lower or "frontdoor" in cam_lower
             is_perimeter = any(k in cam_lower for k in ("front", "back", "patio", "yard", "driveway", "porch", "exterior"))
-            is_interior = any(k in cam_lower for k in ("living", "kitchen", "study", "nursery", "office", "hallway", "garage"))
+            is_interior = any(k in cam_lower for k in ("living", "kitchen", "study", "nursery", "office", "hallway", "garage", "mudroom", "foyer"))
 
             cameras.append({
-                "entity_id": s.entity_id,
-                "name": name,
-                "state": s.state,
+                "entity_id": best_eid,
+                "name": clean_name,
+                "state": best_s.state,
                 "area_id": area_id,
                 "area_name": area_name,
                 "is_doorbell": is_doorbell,
                 "is_perimeter": is_perimeter,
                 "is_interior": is_interior,
-                "model": s.attributes.get("model_name") or s.attributes.get("brand"),
-                "stream_source": s.attributes.get("frontend_stream_type"),
+                "model": best_s.attributes.get("model_name") or best_s.attributes.get("brand"),
+                "stream_source": best_s.attributes.get("frontend_stream_type"),
+                "entity_picture": best_s.attributes.get("entity_picture"),
+                "access_token": best_s.attributes.get("access_token"),
             })
 
+        # Sort cameras: doorbells first, then perimeter, then interior, then alphabetically
+        def _cam_sort_key(c: dict[str, Any]) -> tuple[int, str]:
+            rank = 0 if c["is_doorbell"] else (1 if c["is_perimeter"] else 2)
+            return (rank, c["name"].lower())
+
+        cameras.sort(key=_cam_sort_key)
         return cameras
 
     async def async_analyze_camera(
