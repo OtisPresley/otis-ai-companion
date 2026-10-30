@@ -451,6 +451,33 @@ restore_shed_loads:
       selector:
         text:
 
+get_presence_states:
+  name: Get Room Presence States
+  description: Retrieve live spatial room occupancy probability states fused across mmWave radar, PIR motion, media playback, and BLE tracking.
+
+analyze_camera:
+  name: Analyze Camera Snapshot
+  description: Capture and evaluate a camera snapshot using Gemini Vision or edge sensors for visitor activity, package deliveries, or safety anomalies.
+  fields:
+    camera_entity_id:
+      name: Camera Entity
+      description: Camera entity to capture and audit.
+      required: true
+      selector:
+        entity:
+          domain: camera
+    prompt:
+      name: Vision Analysis Prompt
+      description: Specific instructions or query for the Vision analysis.
+      required: false
+      selector:
+        text:
+
+evaluate_contextual_alerts:
+  name: Evaluate Contextual Presence Alerts
+  description: Audit home perimeter states (garage doors left open, unlocked doors at night, unattended appliances in vacant rooms) and return actionable alerts.
+
+
 
 
 

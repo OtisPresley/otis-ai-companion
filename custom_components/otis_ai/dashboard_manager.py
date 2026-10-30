@@ -2014,6 +2014,23 @@ class DashboardManager:
             }
         ]
 
+        vision_topo = capability_map.get("vision_topology", {})
+        pres_summary = vision_topo.get("presence", {})
+        if pres_summary and pres_summary.get("rooms"):
+            occ_rooms = pres_summary.get("occupied_areas", [])
+            likely_rooms = pres_summary.get("likely_areas", [])
+            vacant_count = pres_summary.get("vacant_count", 0)
+            status_text = (
+                f"**Occupied ({len(occ_rooms)}):** {', '.join(occ_rooms) if occ_rooms else 'None'}  \n"
+                f"**Likely Occupied ({len(likely_rooms)}):** {', '.join(likely_rooms) if likely_rooms else 'None'}  \n"
+                f"**Vacant Rooms:** {vacant_count} &nbsp;|&nbsp; **Household Present:** {'Yes' if pres_summary.get('household_present') else 'No'}"
+            )
+            cards.append({
+                "type": "markdown",
+                "title": "👁️ Multi-Sensor Room Presence Intelligence",
+                "content": status_text,
+            })
+
         if alarms:
             cards.extend([{"type": "alarm-panel", "entity": a} for a in alarms[:2]])
 

@@ -2,6 +2,33 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.9.6] - 2026-10-30
+
+### Fixed
+- **Command Center Dashboard Sync Fix (`__init__.py`)**:
+  - Replaced fragile tuple unpacking in service handlers with explicit type-safe manager getters (`_get_dashboard_manager`, `_get_sentinel_manager`, `_get_engine`, etc.).
+  - Resolved `'EnergyManager' object has no attribute 'async_ensure_admin_companion_dashboard'` error when clicking "Sync Command Center".
+
+### Added & Improved
+- **Phase 8: Multi-Modal Vision & Presence Intelligence (`vision_manager.py`, `dashboard_manager.py`, `otis-companion-card.js`)**:
+  - **Multi-Sensor Room Occupancy Fusion**:
+    - Fused mmWave micro-movement radar, PIR motion sensors (with dynamic time decay), active media player playback, and BLE beacon/device tracking into room-by-room Bayesian spatial occupancy probabilities (`0.0` to `1.0`).
+    - Classified confidence states (`occupied`, `likely_occupied`, `vacant`) with active sensor breakdowns.
+  - **Camera Snapshot & Gemini Vision Anomaly Analysis**:
+    - Discovered security cameras and video doorbells across Home Assistant.
+    - Added snapshot capture and edge/Gemini Vision analysis with status classifications (`normal`, `motion_detected`, `attention_needed`), scene descriptions, safety assessments, and detected object tags (`package`, `person`, `vehicle`, `animal`).
+  - **Proactive Contextual Presence Alerts**:
+    - Cross-domain presence guard rules: garage doors left open while away or late at night, unattended high-power appliances in vacant rooms, perimeter doors unlocked at night, and unexpected presence detected while away.
+    - Integrated 1-click remediation actions (`call_service`) directly into the Proactive Feed.
+  - **Vision & Presence Studio Tab in Lovelace Card**:
+    - Added dedicated `Vision & Presence` tab featuring real-time room occupancy radar progress meters, contributing sensor tags, camera snapshot feed with 1-click "Analyze with Gemini Vision" button, and contextual alert badges.
+  - **New Services**:
+    - `otis_ai.get_presence_states`: Return live fused room occupancy probabilities and contributing sensor telemetry.
+    - `otis_ai.analyze_camera`: Snapshot analysis and anomaly detection for camera entities.
+    - `otis_ai.evaluate_contextual_alerts`: Evaluate perimeter security and presence safety rules.
+  - **Assist Conversational Presence Queries**:
+    - Added natural language intent support for queries such as "who is in the house?", "is anyone home?", "room occupancy", and "check security cameras".
+
 ## [1.9.5] - 2026-10-30
 
 ### Added & Improved

@@ -40,6 +40,9 @@ SERVICE_NOTIFY_VOICE = "notify_voice"
 SERVICE_GET_ENERGY_SUMMARY = "get_energy_summary"
 SERVICE_LOAD_SHED = "load_shed"
 SERVICE_RESTORE_SHED_LOADS = "restore_shed_loads"
+SERVICE_GET_PRESENCE_STATES = "get_presence_states"
+SERVICE_ANALYZE_CAMERA = "analyze_camera"
+SERVICE_EVALUATE_CONTEXTUAL_ALERTS = "evaluate_contextual_alerts"
 
 # Dashboard Constants
 COMMAND_CENTER_DASHBOARD_ID = "command-center"

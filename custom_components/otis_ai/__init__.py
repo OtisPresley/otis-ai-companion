@@ -59,6 +59,9 @@ from .const import (
     SERVICE_GET_ENERGY_SUMMARY,
     SERVICE_LOAD_SHED,
     SERVICE_RESTORE_SHED_LOADS,
+    SERVICE_GET_PRESENCE_STATES,
+    SERVICE_ANALYZE_CAMERA,
+    SERVICE_EVALUATE_CONTEXTUAL_ALERTS,
 )
 from .audio_manager import AudioHandoffManager
 from .automation_manager import AutomationManager
@@ -76,6 +79,7 @@ from .spatial_manager import (
 )
 from .floorplan_parser import FloorplanParser
 from .theme_manager import PRESET_THEMES, ThemeManager, slugify_theme_name
+from .vision_manager import VisionPresenceManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -364,6 +368,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     macro_manager = MacroManager(hass)
     audio_manager = AudioHandoffManager(hass, spatial_manager=spatial_manager)
     energy_manager = EnergyManager(hass, spatial_manager=spatial_manager)
+    vision_manager = VisionPresenceManager(hass, spatial_manager=spatial_manager, energy_manager=energy_manager)
     await asyncio.gather(
         spatial_manager.async_load(),
         floorplan_parser.async_load(),
@@ -379,6 +384,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         theme_manager=theme_manager,
         sentinel_manager=sentinel_manager,
         energy_manager=energy_manager,
+        vision_manager=vision_manager,
     )
 
     # Register Walkthrough Upload View
@@ -402,6 +408,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         macro_manager=macro_manager,
         audio_manager=audio_manager,
         energy_manager=energy_manager,
+        vision_manager=vision_manager,
     )
     if hasattr(conversation, "async_register_agent"):
         conversation.async_register_agent(hass, agent)
@@ -421,6 +428,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "macro_manager": macro_manager,
         "audio_manager": audio_manager,
         "energy_manager": energy_manager,
+        "vision_manager": vision_manager,
     }
 
     async def _async_update_listener(hass_inst: HomeAssistant, updated_entry: ConfigEntry) -> None:
@@ -438,28 +446,61 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as err:
             _LOGGER.debug("Could not register entry update listener: %s", err)
 
+    def _get_entry_data() -> dict:
+        return hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+
+    def _get_engine() -> DiscoveryEngine:
+        return _get_entry_data().get("engine", engine)
+
+    def _get_automation_manager() -> AutomationManager:
+        return _get_entry_data().get("automation_manager", automation_manager)
+
+    def _get_spatial_manager() -> SpatialGraphManager:
+        return _get_entry_data().get("spatial_manager", spatial_manager)
+
+    def _get_floorplan_parser() -> FloorplanParser:
+        return _get_entry_data().get("floorplan_parser", floorplan_parser)
+
+    def _get_theme_manager() -> ThemeManager:
+        return _get_entry_data().get("theme_manager", theme_manager)
+
+    def _get_sentinel_manager() -> SentinelManager:
+        return _get_entry_data().get("sentinel_manager", sentinel_manager)
+
+    def _get_dashboard_manager() -> DashboardManager:
+        return _get_entry_data().get("dashboard_manager", dashboard_manager)
+
+    def _get_macro_manager() -> MacroManager:
+        return _get_entry_data().get("macro_manager", macro_manager)
+
+    def _get_audio_manager() -> AudioHandoffManager:
+        return _get_entry_data().get("audio_manager", audio_manager)
+
     def _get_energy_manager() -> EnergyManager:
-        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
-        return entry_data.get("energy_manager", energy_manager)
+        return _get_entry_data().get("energy_manager", energy_manager)
+
+    def _get_vision_manager() -> VisionPresenceManager:
+        return _get_entry_data().get("vision_manager", vision_manager)
 
     def _get_active_managers():
-        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
-        eng = entry_data.get("engine", engine)
-        mgr = entry_data.get("automation_manager", automation_manager)
-        s_mgr = entry_data.get("spatial_manager", spatial_manager)
-        fp = entry_data.get("floorplan_parser", floorplan_parser)
-        tm = entry_data.get("theme_manager", theme_manager)
-        sm = entry_data.get("sentinel_manager", sentinel_manager)
-        dm = entry_data.get("dashboard_manager", dashboard_manager)
-        mm = entry_data.get("macro_manager", macro_manager)
-        am = entry_data.get("audio_manager", audio_manager)
-        em = entry_data.get("energy_manager", energy_manager)
-        return eng, mgr, s_mgr, fp, tm, sm, dm, mm, am, em
+        return (
+            _get_engine(),
+            _get_automation_manager(),
+            _get_spatial_manager(),
+            _get_floorplan_parser(),
+            _get_theme_manager(),
+            _get_sentinel_manager(),
+            _get_dashboard_manager(),
+            _get_macro_manager(),
+            _get_audio_manager(),
+            _get_energy_manager(),
+            _get_vision_manager(),
+        )
 
     async def handle_get_capability_map(call) -> ServiceResponse:
         """Handle service call to get the capability map."""
         _LOGGER.debug("Service 'get_capability_map' triggered")
-        eng, *_ = _get_active_managers()
+        eng = _get_engine()
         capability_map = await eng.async_build_capability_map()
         capability_map["conversation_agent_id"] = entry.entry_id
         return capability_map
@@ -467,7 +508,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_get_suggestions(call) -> ServiceResponse:
         """Handle service call to retrieve proactive suggestions."""
         _LOGGER.debug("Service 'get_suggestions' triggered")
-        eng, *_ = _get_active_managers()
+        eng = _get_engine()
         capability_map = await eng.async_build_capability_map()
         return {"suggestions": capability_map.get("proactive_suggestions", [])}
 
@@ -478,7 +519,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not suggestion_id:
             return {"success": False, "error": "Missing suggestion_id parameter"}
 
-        eng, mgr, *_, sm, _ = _get_active_managers()
+        eng = _get_engine()
+        mgr = _get_automation_manager()
+        sm = _get_sentinel_manager()
         target = None
         if hasattr(eng, "get_cached_suggestion") and callable(getattr(eng, "get_cached_suggestion", None)):
             cached = eng.get_cached_suggestion(suggestion_id)
@@ -727,6 +770,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             res = await em.async_execute_load_shed(tier=tier, target_watts=target_watts)
             _invalidate()
             return res
+        elif action_type in ("call_service", "remediate_contextual_alert"):
+            svc = payload.get("service")
+            target = payload.get("target") or {}
+            s_data = payload.get("service_data") or payload.get("data") or {}
+            if svc:
+                s_domain, s_name = svc.split(".", 1)
+                await hass.services.async_call(s_domain, s_name, s_data, target=target, context=call.context)
+                _invalidate()
+                btn_lbl = payload.get("button_label") or svc
+                return {"success": True, "message": f"Successfully performed: {btn_lbl}"}
+            return {"success": False, "error": "Missing service for contextual alert remediation"}
         elif action_type == "chat_prompt":
             return {
                 "success": True,
@@ -801,7 +855,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_get_spatial_map(call) -> ServiceResponse:
         """Handle service call to retrieve the spatial area adjacency graph."""
         _LOGGER.debug("Service 'get_spatial_map' triggered")
-        _, _, s_mgr, *_ = _get_active_managers()
+        s_mgr = _get_spatial_manager()
         graph = await s_mgr.async_get_graph()
         return graph
 
@@ -823,7 +877,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return {"success": False, "error": "Both 'area_1' and 'area_2' are required parameters"}
 
         try:
-            eng, _, s_mgr, *_ = _get_active_managers()
+            eng = _get_engine()
+            s_mgr = _get_spatial_manager()
             graph = await s_mgr.async_update_connection(area_1, area_2, connected, connection_type)
             if hasattr(eng, "invalidate_cache"):
                 eng.invalidate_cache()
@@ -840,7 +895,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_generate_floorplan(call) -> ServiceResponse:
         """Handle service call to generate SVG floorplan."""
         _LOGGER.debug("Service 'generate_floorplan' triggered")
-        eng, _, _, fp, tm, sm, dm = _get_active_managers()
+        eng = _get_engine()
+        fp = _get_floorplan_parser()
+        dm = _get_dashboard_manager()
         capability_map = await eng.async_build_capability_map()
         video_path = call.data.get("video_path")
         spoken_order = call.data.get("spoken_order")
@@ -874,7 +931,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_update_floorplan_layout(call) -> ServiceResponse:
         """Handle service call to adjust floorplan marker and room layout coordinates."""
         _LOGGER.debug("Service 'update_floorplan_layout' triggered with: %s", call.data)
-        eng, _, _, fp, tm, sm, dm = _get_active_managers()
+        eng = _get_engine()
+        fp = _get_floorplan_parser()
+        dm = _get_dashboard_manager()
         badges = call.data.get("badges")
         rooms = call.data.get("rooms")
         deleted_rooms = call.data.get("deleted_rooms")
@@ -906,7 +965,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_sync_dashboards(call) -> ServiceResponse:
         """Handle service call to synchronize Studios and Rooms across Otis AI and Command Center."""
         _LOGGER.debug("Service 'sync_dashboards' triggered")
-        eng, *_, dm = _get_active_managers()
+        eng = _get_engine()
+        dm = _get_dashboard_manager()
         cap_map = (
             await eng.async_build_capability_map()
             if hasattr(eng, "async_build_capability_map")
@@ -924,7 +984,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_generate_theme(call) -> ServiceResponse:
         """Handle service call to generate and persist a custom theme."""
         _LOGGER.debug("Service 'generate_theme' triggered with: %s", call.data)
-        eng, _, _, _, tm, *_ = _get_active_managers()
+        eng = _get_engine()
+        tm = _get_theme_manager()
         prompt = call.data.get("prompt", "")
         name = call.data.get("name")
         base_palette = call.data.get("base_palette")
@@ -961,14 +1022,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         if not theme_name:
             return {"success": False, "error": "Missing theme 'name' parameter"}
-        _, _, _, _, tm, *_ = _get_active_managers()
+        tm = _get_theme_manager()
         ok = await tm.async_apply_theme(theme_name, mode=mode, user_id=user_id, all_users=all_users)
         return {"success": ok, "theme": theme_name}
 
     async def handle_list_themes(call) -> ServiceResponse:
         """Handle service call to list generated Otis themes."""
         _LOGGER.debug("Service 'list_themes' triggered")
-        _, _, _, _, tm, *_ = _get_active_managers()
+        tm = _get_theme_manager()
         themes = await tm.async_list_otis_themes()
         return {"themes": themes, "presets": list(PRESET_THEMES.keys())}
 
@@ -978,7 +1039,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Service 'delete_theme' triggered for: %s", theme_name)
         if not theme_name:
             return {"success": False, "error": "Missing theme 'name' parameter"}
-        eng, _, _, _, tm, *_ = _get_active_managers()
+        eng = _get_engine()
+        tm = _get_theme_manager()
         deleted = await tm.async_delete_theme(theme_name)
         if hasattr(eng, "invalidate_cache"):
             eng.invalidate_cache()
@@ -987,7 +1049,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_run_sentinel_watchdog(call) -> ServiceResponse:
         """Handle service call to run Sentinel watchdog audit."""
         _LOGGER.debug("Service 'run_sentinel_watchdog' triggered")
-        eng, *_, sm, _ = _get_active_managers()
+        eng = _get_engine()
+        sm = _get_sentinel_manager()
         anomalies = await sm.async_scan_all_anomalies()
         if hasattr(eng, "invalidate_cache"):
             eng.invalidate_cache()
@@ -1000,7 +1063,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Service 'remediate_anomaly' triggered for: %s (action=%s)", anomaly_id, action)
         if not anomaly_id:
             return {"success": False, "error": "Missing 'anomaly_id' parameter"}
-        eng, *_, sm, _ = _get_active_managers()
+        eng = _get_engine()
+        sm = _get_sentinel_manager()
         res = await sm.async_remediate_anomaly(anomaly_id, action=action)
         if hasattr(eng, "invalidate_cache"):
             eng.invalidate_cache()
@@ -1009,7 +1073,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_get_sentinel_telemetry(call) -> ServiceResponse:
         """Handle service call to retrieve Sentinel telemetry."""
         _LOGGER.debug("Service 'get_sentinel_telemetry' triggered")
-        *_, sm, _ = _get_active_managers()
+        sm = _get_sentinel_manager()
         anomalies = sm.get_active_anomalies()
         return {"anomalies": anomalies, "count": len(anomalies)}
 
@@ -1024,7 +1088,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             category,
             all_in_category,
         )
-        eng, *_, sm, _ = _get_active_managers()
+        eng = _get_engine()
+        sm = _get_sentinel_manager()
         if sm:
             if category:
                 await sm.async_ignore_category(category)
@@ -1039,19 +1104,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_create_command_center(call) -> ServiceResponse:
         """Handle service call to create or sync the User role Command Center dashboard."""
         _LOGGER.debug("Service 'create_command_center' triggered")
-        eng, *_, dm = _get_active_managers()
+        eng = _get_engine()
+        dm = _get_dashboard_manager()
         cap_map = await eng.async_get_capability_map() if hasattr(eng, "async_get_capability_map") else {}
         res = await dm.async_ensure_user_command_center_dashboard(cap_map)
         return {"success": True, "dashboard": res}
 
-    def _get_macro_manager() -> MacroManager:
-        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
-        return entry_data.get("macro_manager", macro_manager)
-
     async def handle_execute_macro(call) -> ServiceResponse:
         """Handle service call to execute a multi-step smart macro pipeline."""
         _LOGGER.debug("Service 'execute_macro' triggered: %s", call.data)
-        eng, *_ = _get_active_managers()
+        eng = _get_engine()
         mm = _get_macro_manager()
         macro_name = call.data.get("macro_name") or "Custom Macro"
         steps = call.data.get("steps")
@@ -1192,6 +1254,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         em = _get_energy_manager()
         record_id = call.data.get("record_id")
         return await em.async_restore_shed_loads(record_id=record_id)
+
+    async def handle_get_presence_states(call) -> ServiceResponse:
+        """Handle service call to retrieve fused room occupancy states."""
+        _LOGGER.debug("Service 'get_presence_states' triggered")
+        vm = _get_vision_manager()
+        return await vm.async_get_presence_states()
+
+    async def handle_analyze_camera(call) -> ServiceResponse:
+        """Handle service call to analyze camera snapshot."""
+        camera_entity_id = call.data.get("camera_entity_id")
+        prompt = call.data.get("prompt")
+        _LOGGER.debug("Service 'analyze_camera' triggered for %s", camera_entity_id)
+        if not camera_entity_id:
+            return {"success": False, "error": "Missing 'camera_entity_id' parameter"}
+        vm = _get_vision_manager()
+        return await vm.async_analyze_camera(camera_entity_id, prompt=prompt)
+
+    async def handle_evaluate_contextual_alerts(call) -> ServiceResponse:
+        """Handle service call to evaluate contextual presence alerts."""
+        _LOGGER.debug("Service 'evaluate_contextual_alerts' triggered")
+        vm = _get_vision_manager()
+        alerts = await vm.async_evaluate_contextual_alerts()
+        return {"alerts": alerts, "count": len(alerts)}
 
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
@@ -1362,6 +1447,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_restore_shed_loads,
         supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_PRESENCE_STATES,
+        handle_get_presence_states,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_ANALYZE_CAMERA,
+        handle_analyze_camera,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_EVALUATE_CONTEXTUAL_ALERTS,
+        handle_evaluate_contextual_alerts,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
 
     _LOGGER.info("Otis AI Companion entry set up successfully")
     return True
@@ -1418,6 +1521,7 @@ class OtisAIConversationAgent(AbstractAgent):
         macro_manager: MacroManager | None = None,
         audio_manager: AudioHandoffManager | None = None,
         energy_manager: EnergyManager | None = None,
+        vision_manager: VisionPresenceManager | None = None,
     ) -> None:
         """Initialize the agent."""
         self.hass = hass
@@ -1430,6 +1534,7 @@ class OtisAIConversationAgent(AbstractAgent):
         self.macro_manager = macro_manager or MacroManager(hass)
         self.audio_manager = audio_manager or AudioHandoffManager(hass, spatial_manager=self.spatial_manager)
         self.energy_manager = energy_manager or EnergyManager(hass, spatial_manager=self.spatial_manager)
+        self.vision_manager = vision_manager or VisionPresenceManager(hass, spatial_manager=self.spatial_manager)
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -1779,6 +1884,48 @@ class OtisAIConversationAgent(AbstractAgent):
             fire_progress("macro", "Restoring Loads", "Restoring shedded loads to prior snapshot states")
             res = await self.energy_manager.async_restore_shed_loads()
             return self._create_response(user_input, res.get("message", res.get("error", "")))
+
+        # Check for Presence / Occupancy queries (Phase 8)
+        if getattr(self, "vision_manager", None) and any(w in user_lower for w in (
+            "who is in the house", "who is home", "is anyone home", "is anybody home",
+            "room occupancy", "which rooms are occupied", "presence status",
+            "house occupancy", "who is in"
+        )):
+            fire_progress("domain", "Fusing Presence Sensors", "Calculating multi-sensor room occupancy probabilities")
+            pres = await self.vision_manager.async_get_presence_states()
+            occ = pres.get("occupied_areas", [])
+            likely = pres.get("likely_areas", [])
+            lines = ["👁️ **Otis Multi-Modal Presence Intelligence**\n"]
+            if occ:
+                lines.append(f"• **Occupied Rooms ({len(occ)}):** {', '.join(occ)}")
+            if likely:
+                lines.append(f"• **Likely Occupied ({len(likely)}):** {', '.join(likely)}")
+            if not occ and not likely:
+                lines.append("• **All Rooms Vacant:** No active room motion or mmWave presence detected.")
+            household = "Yes, residents detected" if pres.get("household_present") else "No, all residents away"
+            lines.append(f"• **Household Status:** {household}")
+            return self._create_response(user_input, "\n".join(lines))
+
+        # Check for Camera / Vision Audit queries (Phase 8)
+        if getattr(self, "vision_manager", None) and any(w in user_lower for w in (
+            "check cameras", "check security cameras", "analyze camera", "camera audit",
+            "check front door", "check doorbell", "security audit"
+        )):
+            fire_progress("domain", "Auditing Cameras", "Capturing snapshots and evaluating scene tags")
+            cams = await self.vision_manager.async_get_cameras()
+            if not cams:
+                return self._create_response(user_input, "No security cameras discovered in Home Assistant.")
+            target_cam = next((c for c in cams if c.get("is_doorbell") or c.get("is_perimeter")), cams[0])
+            res = await self.vision_manager.async_analyze_camera(target_cam["entity_id"])
+            audit = res.get("audit", {})
+            speech = (
+                f"📷 **Otis Vision Audit: {audit.get('name', target_cam['name'])}**\n\n"
+                f"• **Status:** `{audit.get('status', 'normal').upper()}`\n"
+                f"• **Summary:** {audit.get('summary', 'Scene clear.')}\n"
+                f"• **Safety Assessment:** {audit.get('safety_assessment', 'Normal baseline.')}\n"
+                f"• **Detected Tags:** `{', '.join(audit.get('detected_objects', [])) or 'None'}`"
+            )
+            return self._create_response(user_input, speech)
 
         # 1. Resolve prioritized AI agent cascade (Primary + Fallbacks)
         options = self.entry.options
@@ -2292,6 +2439,7 @@ class DiscoveryEngine:
         theme_manager: ThemeManager | None = None,
         sentinel_manager: SentinelManager | None = None,
         energy_manager: EnergyManager | None = None,
+        vision_manager: VisionPresenceManager | None = None,
     ) -> None:
         """Initialize the discovery engine."""
         self.hass = hass
@@ -2301,6 +2449,7 @@ class DiscoveryEngine:
         self.theme_manager = theme_manager or ThemeManager(hass)
         self.sentinel_manager = sentinel_manager or SentinelManager(hass)
         self.energy_manager = energy_manager or EnergyManager(hass, spatial_manager=self.spatial_manager)
+        self.vision_manager = vision_manager or VisionPresenceManager(hass, spatial_manager=self.spatial_manager)
         self._cached_cap_map: dict[str, Any] | None = None
         self._cache_ts: float = 0.0
         self._cache_signature: tuple[Any, ...] | None = None
@@ -2553,6 +2702,20 @@ class DiscoveryEngine:
             except Exception as err:
                 _LOGGER.debug("Error running Energy summary during discovery scan: %s", err)
         cap_map["energy_topology"] = energy_data
+
+        vision_data = {}
+        if getattr(self, "vision_manager", None):
+            try:
+                presence_states = await self.vision_manager.async_get_presence_states(use_cache=True)
+                cameras = await self.vision_manager.async_get_cameras()
+                vision_data = {
+                    "presence": presence_states,
+                    "cameras": cameras,
+                    "recent_audits": self.vision_manager.get_audit_history(),
+                }
+            except Exception as err:
+                _LOGGER.debug("Error retrieving Vision presence states during discovery scan: %s", err)
+        cap_map["vision_topology"] = vision_data
 
         themes = []
         if self.theme_manager:
@@ -4424,6 +4587,15 @@ class DiscoveryEngine:
                 "action_type": "chat_prompt",
                 "action_payload": {"prompt": "Optimize high loads for solar production surplus"},
             })
+
+        # 11. Multi-Modal Vision & Presence Contextual Alerts (Phase 8)
+        if getattr(self, "vision_manager", None):
+            try:
+                ctx_alerts = await self.vision_manager.async_evaluate_contextual_alerts()
+                for alert in ctx_alerts:
+                    suggestions.append(alert)
+            except Exception as err:
+                _LOGGER.debug("Error evaluating contextual alerts: %s", err)
 
         # Sort suggestions by priority: Critical -> High -> Medium -> Low
         priority_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}

@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.9.5";
+const CARD_VERSION = "1.9.6";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -40,13 +40,17 @@ class OtisCompanionCard extends HTMLElement {
     this._unsubReasoningEvents = null;
     this._isListening = false;
     this._recognition = null;
-    this._activeTab = this._loadActiveTab(); // 'suggestions' | 'chat' | 'capabilities' | 'floorplan'
+    this._activeTab = this._loadActiveTab(); // 'suggestions' | 'chat' | 'capabilities' | 'floorplan' | 'vision'
     this._selectedCategory = "all"; // 'all' | 'lighting' | 'media' | 'security' | 'cleanup' | 'system'
     this._conversationId = null;
     this._conversationAgentId = null;
     this._cachedAgentId = null;
     this._draftChatText = "";
     this._previewDismissed = false;
+
+    // Phase 8: Multi-Modal Vision & Presence
+    this._cameraAudits = {};
+    this._analyzingCamera = null;
 
     // Phase 6: Floorplan & Walkthrough state
     this._floorplanModalOpen = false;
@@ -3534,6 +3538,290 @@ class OtisCompanionCard extends HTMLElement {
           background: rgba(255, 255, 255, 0.08);
           border-color: var(--otis-primary);
         }
+
+        /* Phase 8: Multi-Modal Vision & Presence Studio Styles */
+        .vision-panel {
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+          margin-top: 14px;
+        }
+
+        .vision-overview-card {
+          background: color-mix(in srgb, var(--otis-surface) 90%, transparent);
+          border: 1px solid var(--otis-surface-border);
+          border-radius: 14px;
+          padding: 14px 18px;
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        .vision-stats-row {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          flex-wrap: wrap;
+        }
+
+        .vision-stat-chip {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 0.76rem;
+          font-weight: 600;
+          padding: 4px 10px;
+          border-radius: 8px;
+          background: rgba(255, 255, 255, 0.05);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .vision-stat-chip.occupied {
+          background: rgba(16, 185, 129, 0.15);
+          border-color: rgba(16, 185, 129, 0.4);
+          color: #34d399;
+        }
+
+        .vision-stat-chip.likely {
+          background: rgba(245, 158, 11, 0.15);
+          border-color: rgba(245, 158, 11, 0.4);
+          color: #fbbf24;
+        }
+
+        .vision-stat-chip.vacant {
+          color: var(--otis-text-muted);
+        }
+
+        .vision-section-title {
+          font-size: 0.88rem;
+          font-weight: 700;
+          color: var(--otis-text);
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          margin-top: 6px;
+        }
+
+        .presence-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+          gap: 12px;
+        }
+
+        .presence-card {
+          background: color-mix(in srgb, var(--otis-surface) 80%, transparent);
+          border: 1px solid var(--otis-surface-border);
+          border-radius: 12px;
+          padding: 12px 14px;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          transition: transform 0.15s ease, border-color 0.15s ease;
+        }
+
+        .presence-card:hover {
+          transform: translateY(-2px);
+          border-color: var(--otis-primary);
+        }
+
+        .presence-card-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+        }
+
+        .presence-room-name {
+          font-weight: 700;
+          font-size: 0.85rem;
+          color: var(--otis-text);
+        }
+
+        .presence-badge {
+          font-size: 0.68rem;
+          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+          padding: 2px 8px;
+          border-radius: 6px;
+        }
+
+        .presence-badge.occupied {
+          background: rgba(16, 185, 129, 0.2);
+          color: #34d399;
+          border: 1px solid rgba(16, 185, 129, 0.4);
+        }
+
+        .presence-badge.likely_occupied {
+          background: rgba(245, 158, 11, 0.2);
+          color: #fbbf24;
+          border: 1px solid rgba(245, 158, 11, 0.4);
+        }
+
+        .presence-badge.vacant {
+          background: rgba(255, 255, 255, 0.05);
+          color: var(--otis-text-muted);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .presence-bar-track {
+          width: 100%;
+          height: 6px;
+          background: rgba(255, 255, 255, 0.08);
+          border-radius: 4px;
+          overflow: hidden;
+        }
+
+        .presence-bar-fill {
+          height: 100%;
+          border-radius: 4px;
+          transition: width 0.3s ease;
+        }
+
+        .presence-bar-fill.occupied {
+          background: linear-gradient(90deg, #10b981, #059669);
+          box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
+        }
+
+        .presence-bar-fill.likely_occupied {
+          background: linear-gradient(90deg, #f59e0b, #d97706);
+        }
+
+        .presence-bar-fill.vacant {
+          background: rgba(255, 255, 255, 0.2);
+        }
+
+        .presence-sensors-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+          font-size: 0.70rem;
+        }
+
+        .presence-sensor-pill {
+          padding: 2px 6px;
+          border-radius: 4px;
+          background: rgba(255, 255, 255, 0.04);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          color: var(--otis-text-muted);
+        }
+
+        .presence-sensor-pill.active {
+          background: rgba(14, 165, 233, 0.15);
+          border-color: rgba(14, 165, 233, 0.4);
+          color: #38bdf8;
+          font-weight: 600;
+        }
+
+        .camera-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+          gap: 14px;
+        }
+
+        .camera-card {
+          background: color-mix(in srgb, var(--otis-surface) 85%, transparent);
+          border: 1px solid var(--otis-surface-border);
+          border-radius: 14px;
+          overflow: hidden;
+          display: flex;
+          flex-direction: column;
+        }
+
+        .camera-preview-container {
+          position: relative;
+          width: 100%;
+          height: 180px;
+          background: #090d16;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          overflow: hidden;
+        }
+
+        .camera-preview-img {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+        }
+
+        .camera-cam-badge {
+          position: absolute;
+          top: 8px;
+          left: 8px;
+          background: rgba(0, 0, 0, 0.65);
+          backdrop-filter: blur(4px);
+          border: 1px solid rgba(255, 255, 255, 0.2);
+          color: #ffffff;
+          padding: 2px 8px;
+          border-radius: 6px;
+          font-size: 0.70rem;
+          font-weight: 600;
+        }
+
+        .camera-card-body {
+          padding: 12px 14px;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+
+        .camera-card-title {
+          font-weight: 700;
+          font-size: 0.85rem;
+          color: var(--otis-text);
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+        }
+
+        .btn-analyze-camera {
+          background: linear-gradient(135deg, var(--otis-primary), color-mix(in srgb, var(--otis-primary) 70%, #9333ea));
+          color: var(--otis-btn-text, #ffffff);
+          border: none;
+          border-radius: 8px;
+          padding: 6px 12px;
+          font-size: 0.76rem;
+          font-weight: 600;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          transition: filter 0.15s ease;
+        }
+
+        .btn-analyze-camera:hover:not(:disabled) {
+          filter: brightness(1.15);
+        }
+
+        .btn-analyze-camera:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+
+        .vision-audit-result {
+          background: rgba(0, 0, 0, 0.25);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          border-radius: 8px;
+          padding: 8px 10px;
+          font-size: 0.74rem;
+          display: flex;
+          flex-direction: column;
+          gap: 4px;
+        }
+
+        .tag-pill {
+          display: inline-block;
+          padding: 1px 6px;
+          border-radius: 4px;
+          font-size: 0.68rem;
+          font-weight: 600;
+          background: rgba(255, 255, 255, 0.08);
+          border: 1px solid rgba(255, 255, 255, 0.15);
+          color: var(--otis-text);
+        }
       </style>
 
       <ha-card class="card-container ${themeClass} ${isStudioMode ? "mode-floorplan-studio" : ""}">
@@ -3677,6 +3965,9 @@ class OtisCompanionCard extends HTMLElement {
               Floor Plan
               ${this._capabilityMap?.floorplan?.exists ? "" : `<span class="tab-badge" style="background: var(--otis-accent, #a855f7);">New</span>`}
             </button>
+            <button type="button" class="tab-btn ${this._activeTab === "vision" ? "active" : ""}" id="tab-vision">
+              Vision &amp; Presence
+            </button>
             <button type="button" class="tab-btn ${this._activeTab === "capabilities" ? "active" : ""}" id="tab-capabilities">
               Capabilities
             </button>
@@ -3686,6 +3977,7 @@ class OtisCompanionCard extends HTMLElement {
           ${this._activeTab === "chat" ? this._renderChatTab() : ""}
           ${this._activeTab === "capabilities" ? this._renderCapabilitiesTab(stats) : ""}
           ${this._activeTab === "floorplan" ? this._renderFloorplanTab() : ""}
+          ${this._activeTab === "vision" ? this._renderVisionTab() : ""}
         `
         }
 
@@ -4748,6 +5040,162 @@ class OtisCompanionCard extends HTMLElement {
     }
   }
 
+  _renderVisionTab() {
+    const visionTopo = this._capabilityMap?.vision_topology || {};
+    const pres = visionTopo.presence || {};
+    const rooms = pres.rooms || {};
+    const cameras = visionTopo.cameras || [];
+    const recentAudits = visionTopo.recent_audits || [];
+    const occCount = pres.occupied_count ?? 0;
+    const likelyCount = pres.likely_count ?? 0;
+    const vacantCount = pres.vacant_count ?? 0;
+    const roomEntries = Object.values(rooms);
+
+    return `
+      <div class="vision-panel">
+        <div class="vision-overview-card">
+          <div class="vision-stats-row">
+            <span style="font-weight: 700; font-size: 0.88rem; color: var(--otis-primary);">👁️ Presence Status:</span>
+            <span class="vision-stat-chip ${pres.household_present ? 'occupied' : 'vacant'}">
+              ${pres.household_present ? "🏠 Household Present" : "🚪 Away Mode"}
+            </span>
+            <span class="vision-stat-chip occupied">🟢 ${occCount} Occupied</span>
+            ${likelyCount > 0 ? `<span class="vision-stat-chip likely">🟡 ${likelyCount} Likely</span>` : ""}
+            <span class="vision-stat-chip vacant">⚪ ${vacantCount} Vacant</span>
+          </div>
+          <button type="button" class="btn-toolbar" id="btn-refresh-vision" style="font-size: 0.76rem; padding: 4px 10px;">
+            🔄 Refresh Sensors
+          </button>
+        </div>
+
+        <div class="vision-section-title">
+          <span>📡 Multi-Sensor Room Occupancy Fusion (mmWave + PIR + Media + BLE)</span>
+        </div>
+
+        <div class="presence-grid">
+          ${
+            roomEntries.length === 0
+              ? `<div style="grid-column: 1/-1; padding: 20px; text-align: center; color: var(--otis-text-muted);">
+                  Scanning presence sensors and spatial areas...
+                </div>`
+              : roomEntries
+                  .map((r) => {
+                    const statusClass = r.status || "vacant";
+                    const pct = r.confidence_percent ?? 0;
+                    const s = r.sensors || {};
+                    const mmwave = s.mmwave || {};
+                    const pir = s.pir || {};
+                    const media = s.media || {};
+                    const ble = s.ble_beacon || {};
+                    const lightsOn = s.lights_on || 0;
+
+                    let pirText = pir.active ? "Motion Active" : pir.seconds_since_motion ? `${Math.round(pir.seconds_motion / 60) || 1}m ago` : "Idle";
+
+                    return `
+                    <div class="presence-card">
+                      <div class="presence-card-head">
+                        <span class="presence-room-name">${r.area_name}</span>
+                        <span class="presence-badge ${statusClass}">
+                          ${statusClass === "occupied" ? "🟢 OCCUPIED" : statusClass === "likely_occupied" ? "🟡 LIKELY" : "⚪ VACANT"} • ${pct}%
+                        </span>
+                      </div>
+                      <div class="presence-bar-track">
+                        <div class="presence-bar-fill ${statusClass}" style="width: ${Math.max(4, pct)}%;"></div>
+                      </div>
+                      <div class="presence-sensors-row">
+                        <span class="presence-sensor-pill ${mmwave.active ? 'active' : ''}" title="mmWave Micro-movement Radar">
+                          📡 mmWave: ${mmwave.active ? 'Detecting' : 'Idle'}
+                        </span>
+                        <span class="presence-sensor-pill ${pir.active ? 'active' : ''}" title="PIR Motion Sensor">
+                          🏃 PIR: ${pirText}
+                        </span>
+                        <span class="presence-sensor-pill ${media.playing ? 'active' : ''}" title="Audio/Video Playback Presence">
+                          🎵 Media: ${media.playing ? 'Playing' : 'Off'}
+                        </span>
+                        ${ble.active ? `<span class="presence-sensor-pill active" title="BLE Beacon Tracker">📍 BLE: Detected</span>` : ""}
+                        ${lightsOn > 0 ? `<span class="presence-sensor-pill active" title="Lights On">💡 ${lightsOn} On</span>` : ""}
+                      </div>
+                    </div>
+                  `;
+                  })
+                  .join("")
+          }
+        </div>
+
+        <div class="vision-section-title" style="margin-top: 10px;">
+          <span>📷 Security Cameras &amp; Gemini Vision Anomaly Analysis</span>
+        </div>
+
+        <div class="camera-grid">
+          ${
+            cameras.length === 0
+              ? `<div style="grid-column: 1/-1; padding: 20px; text-align: center; color: var(--otis-text-muted);">
+                  No security cameras discovered in Home Assistant.
+                </div>`
+              : cameras
+                  .map((cam) => {
+                    const audit = this._cameraAudits[cam.entity_id] || recentAudits.find((a) => a.camera === cam.entity_id);
+                    const isAnalyzing = this._analyzingCamera === cam.entity_id;
+                    const tagList = audit?.detected_objects || [];
+
+                    return `
+                    <div class="camera-card">
+                      <div class="camera-preview-container">
+                        <img class="camera-preview-img" 
+                             src="/api/camera_proxy/${cam.entity_id}?time=${Date.now()}" 
+                             alt="${cam.name}" 
+                             loading="lazy" 
+                             onerror="this.style.opacity='0.2';" />
+                        <span class="camera-cam-badge">
+                          ${cam.is_doorbell ? "🔔 Doorbell" : cam.is_perimeter ? "🛡️ Perimeter" : "📹 Interior"}
+                        </span>
+                      </div>
+                      <div class="camera-card-body">
+                        <div class="camera-card-title">
+                          <span>${cam.name}</span>
+                          <span style="font-size: 0.72rem; color: var(--otis-text-muted);">${cam.area_name || ""}</span>
+                        </div>
+                        <button type="button" 
+                                class="btn-analyze-camera" 
+                                data-camera="${cam.entity_id}" 
+                                ${isAnalyzing ? "disabled" : ""}>
+                          ${isAnalyzing ? "⏳ Analyzing Frame..." : "✨ Analyze with Gemini Vision"}
+                        </button>
+                        ${
+                          audit
+                            ? `
+                            <div class="vision-audit-result">
+                              <div style="display: flex; align-items: center; justify-content: space-between;">
+                                <strong style="color: ${audit.status === 'normal' ? '#34d399' : '#fbbf24'};">
+                                  ${audit.status?.toUpperCase() || 'AUDIT'}
+                                </strong>
+                                <span style="font-size: 0.66rem; color: var(--otis-text-muted);">
+                                  ${new Date(audit.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                              </div>
+                              <div>${audit.summary || audit.safety_assessment || ''}</div>
+                              ${
+                                tagList.length > 0
+                                  ? `<div style="display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px;">
+                                      ${tagList.map((t) => `<span class="tag-pill">${t === 'package' ? '📦 package' : t === 'person' ? '👤 person' : t === 'vehicle' ? '🚗 vehicle' : t}</span>`).join('')}
+                                    </div>`
+                                  : ''
+                              }
+                            </div>
+                          `
+                            : ""
+                        }
+                      </div>
+                    </div>
+                  `;
+                  })
+                  .join("")
+          }
+        </div>
+      </div>
+    `;
+  }
+
   _bindEvents() {
     const root = this.shadowRoot;
 
@@ -4899,6 +5347,51 @@ class OtisCompanionCard extends HTMLElement {
         }
       };
     }
+
+    const tabVision = root.querySelector("#tab-vision");
+    if (tabVision) {
+      tabVision.onclick = (e) => {
+        if (e) e.preventDefault();
+        if (this._isListening) this._stopVoiceRecording();
+        this._saveActiveTab("vision");
+        this._render();
+      };
+    }
+
+    const refreshVisionBtn = root.querySelector("#btn-refresh-vision");
+    if (refreshVisionBtn) {
+      refreshVisionBtn.onclick = async () => {
+        this._showToast("🔄 Refreshing presence and camera telemetry...");
+        await this._fetchData();
+        this._showToast("✨ Presence telemetry updated!");
+      };
+    }
+
+    root.querySelectorAll(".btn-analyze-camera").forEach((btn) => {
+      btn.onclick = async (e) => {
+        const camId = e.currentTarget.getAttribute("data-camera");
+        if (!camId || this._analyzingCamera) return;
+        this._analyzingCamera = camId;
+        this._render();
+        this._showToast(`🔍 Analyzing snapshot for ${camId}...`);
+        try {
+          const res = await this._hass.callService("otis_ai", "analyze_camera", {
+            camera_entity_id: camId,
+          });
+          if (res?.audit) {
+            this._cameraAudits[camId] = res.audit;
+          }
+          this._showToast("✨ Gemini Vision analysis complete!");
+          await this._fetchData();
+        } catch (err) {
+          console.error("Camera analysis failed:", err);
+          this._showToast(`Camera analysis failed: ${err.message || err}`, true);
+        } finally {
+          this._analyzingCamera = null;
+          this._render();
+        }
+      };
+    });
 
     // Category filter pills
     root.querySelectorAll("[data-category-pill]").forEach((pill) => {
