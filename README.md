@@ -3,7 +3,7 @@
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-41BDF5?logo=home-assistant&logoColor=white&style=flat)](https://www.home-assistant.io/)
 [![HACS Badge](https://img.shields.io/badge/HACS-Default-41BDF5.svg)](https://hacs.xyz)
 [![HA installs](https://img.shields.io/badge/dynamic/json?url=https://analytics.home-assistant.io/custom_integrations.json&query=$.otis-ai-companion.total&label=Installs&color=41BDF5)](https://analytics.home-assistant.io/custom_integrations.json)
-[![Version](https://img.shields.io/badge/version-1.8.1-blue.svg)](https://github.com/OtisPresley/otis-ai-companion/blob/main/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.9.0-blue.svg)](https://github.com/OtisPresley/otis-ai-companion/blob/main/CHANGELOG.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-e0b416.svg)](https://github.com/OtisPresley/otis-ai-companion/blob/main/LICENSE)
 [![hassfest](https://img.shields.io/github/actions/workflow/status/OtisPresley/otis-ai-companion/hassfest.yaml?branch=main&label=hassfest)](https://github.com/OtisPresley/otis-ai-companion/actions/workflows/hassfest.yaml)
 [![HACS](https://img.shields.io/github/actions/workflow/status/OtisPresley/otis-ai-companion/hacs.yaml?branch=main&label=HACS)](https://github.com/OtisPresley/otis-ai-companion/actions/workflows/hacs.yaml)
@@ -47,6 +47,7 @@ It replaces fragile Jinja2 templates, hardcoded entity mappings, and rigid autom
 - 🧭 **Hub-and-Spoke Subview Architecture**: Generates specialized domain subviews (`subview: true`) for **Media Studio** (`/otis-ai/media`), **Security Center** (`/otis-ai/security`), **Climate & Pool** (`/otis-ai/climate`), and **Floor Plan Studio** (`/otis-ai/floorplan`) with native header back navigation (`←`) and card launchpad chips.
 - 📐 **Interactive Canvas Editor & Visual Boundary Adjuster**: Floor Plan Studio provides full-width canvas editing (`mode: "floorplan_studio"`) with drag-and-drop device pin repositioning, interactive corner resize handles for room footprints, and 1-click binding to Home Assistant registered areas (`otis_ai.update_floorplan_layout`).
 - 🎨 **Dynamic AI Themes with Instant Activation**: Natural language theme synthesizer with zero-profile-switching live activation and robust contrast variables across dark and light palettes.
+- ⚡ **Dynamic Macro Orchestrator & Atomic Rollback**: Multi-step conversational pipelines (Movie Night, Goodnight Routine, Party Mode, Lockdown, Welcome Home) with automatic pre-flight safety checks and 1-click state rollback.
 - 💬 **Assist AI Co-Pilot with Real-Time Audio Streaming**: Interactive multi-turn chat co-pilot (`otis_ai.chat`) with direct Web Speech microphone input, 5-bar animated audio waveform visualizer, and instant Markdown live preview.
 
 <div align="center">
@@ -167,6 +168,9 @@ data:
 | `otis_ai.get_spatial_map` | Retrieve room adjacency topology and connection types. | `response_variable: spatial_graph` |
 | `otis_ai.update_spatial_map` | Connect or disconnect physical rooms. | `data: { area_1: "foyer", area_2: "study" }` |
 | `otis_ai.generate_floorplan` | Synthesize an interactive vector SVG floor plan. | `data: { theme: "cyberpunk" }` |
+| `otis_ai.execute_macro` | Execute multi-step atomic macro with prior state snapshot. | `data: { macro_name: "movie_night" }` |
+| `otis_ai.rollback_macro` | Roll back most recent macro and restore entities to prior states. | `data: { macro_id: "..." }` |
+| `otis_ai.list_macros` | List built-in macro templates and recent execution history. | `response_variable: macros` |
 
 ---
 

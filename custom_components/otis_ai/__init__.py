@@ -9,6 +9,7 @@ import re
 import shutil
 import sqlite3
 import time
+import uuid
 from datetime import datetime
 from typing import Any, Literal
 import yaml
@@ -48,9 +49,13 @@ from .const import (
     SERVICE_IGNORE_SENTINEL_ALERT,
     SERVICE_CREATE_COMMAND_CENTER,
     SERVICE_SYNC_DASHBOARDS,
+    SERVICE_EXECUTE_MACRO,
+    SERVICE_ROLLBACK_MACRO,
+    SERVICE_LIST_MACROS,
 )
 from .automation_manager import AutomationManager
 from .dashboard_manager import DashboardManager
+from .macro_manager import MacroManager
 from .sentinel_manager import SentinelManager
 from .spatial_manager import (
     SpatialGraphManager,
@@ -347,6 +352,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     dashboard_manager = DashboardManager(hass, floorplan_parser=floorplan_parser)
     theme_manager = ThemeManager(hass)
     sentinel_manager = SentinelManager(hass)
+    macro_manager = MacroManager(hass)
     await asyncio.gather(
         spatial_manager.async_load(),
         floorplan_parser.async_load(),
@@ -381,6 +387,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         spatial_manager=spatial_manager,
         theme_manager=theme_manager,
         sentinel_manager=sentinel_manager,
+        macro_manager=macro_manager,
     )
     if hasattr(conversation, "async_register_agent"):
         conversation.async_register_agent(hass, agent)
@@ -397,6 +404,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "dashboard_manager": dashboard_manager,
         "theme_manager": theme_manager,
         "sentinel_manager": sentinel_manager,
+        "macro_manager": macro_manager,
     }
 
     async def _async_update_listener(hass_inst: HomeAssistant, updated_entry: ConfigEntry) -> None:
@@ -988,6 +996,77 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         res = await dm.async_ensure_user_command_center_dashboard(cap_map)
         return {"success": True, "dashboard": res}
 
+    def _get_macro_manager() -> MacroManager:
+        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        return entry_data.get("macro_manager", macro_manager)
+
+    async def handle_execute_macro(call) -> ServiceResponse:
+        """Handle service call to execute a multi-step smart macro pipeline."""
+        _LOGGER.debug("Service 'execute_macro' triggered: %s", call.data)
+        eng, *_ = _get_active_managers()
+        mm = _get_macro_manager()
+        macro_name = call.data.get("macro_name") or "Custom Macro"
+        steps = call.data.get("steps")
+        confirmed = call.data.get("confirmed", False)
+        macro_id = call.data.get("macro_id")
+
+        if not steps and macro_name:
+            cap_map = await eng.async_build_capability_map()
+            smart = mm.build_smart_macro(macro_name, capability_map=cap_map)
+            macro_name = smart["name"]
+            steps = smart["steps"]
+
+        res = await mm.async_execute_macro(
+            macro_name=macro_name,
+            steps=steps or [],
+            confirmed=confirmed,
+            macro_id=macro_id,
+            context=call.context,
+        )
+        return res
+
+    async def handle_rollback_macro(call) -> ServiceResponse:
+        """Handle service call to roll back an executed macro."""
+        _LOGGER.debug("Service 'rollback_macro' triggered: %s", call.data)
+        mm = _get_macro_manager()
+        macro_id = call.data.get("macro_id")
+        res = await mm.async_rollback_macro(macro_id=macro_id)
+        return res
+
+    async def handle_list_macros(call) -> ServiceResponse:
+        """Handle service call to list available macros and execution history."""
+        _LOGGER.debug("Service 'list_macros' triggered")
+        mm = _get_macro_manager()
+        templates = [
+            {
+                "template": "movie_night",
+                "name": "Movie Night Mode",
+                "description": "Dim media room lights, power on TV and select HDMI source, adjust climate, and set soundbar/AVR volume.",
+            },
+            {
+                "template": "goodnight",
+                "name": "Goodnight Routine",
+                "description": "Extinguish common lights, engage deadbolts, close garage doors, set night climate, and arm perimeter security.",
+            },
+            {
+                "template": "party_mode",
+                "name": "Entertain & Party Mode",
+                "description": "Broadcast matrix audio across output zones, set warm scene lighting, and social climate.",
+            },
+            {
+                "template": "away_mode",
+                "name": "Away & Lockdown Mode",
+                "description": "Extinguish all lighting, secure deadbolts, close garage doors, and arm security away.",
+            },
+            {
+                "template": "welcome_home",
+                "name": "Welcome Home Arrival",
+                "description": "Pathway lighting, comfortable temperature, entry door unlock, and alarm disarm.",
+            },
+        ]
+        history = mm.get_history()
+        return {"templates": templates, "history": history}
+
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
         DOMAIN,
@@ -1097,6 +1176,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_sync_dashboards,
         supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_EXECUTE_MACRO,
+        handle_execute_macro,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_ROLLBACK_MACRO,
+        handle_rollback_macro,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LIST_MACROS,
+        handle_list_macros,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
 
     _LOGGER.info("Otis AI Companion entry set up successfully")
     return True
@@ -1150,6 +1247,7 @@ class OtisAIConversationAgent(AbstractAgent):
         spatial_manager: SpatialGraphManager | None = None,
         theme_manager: ThemeManager | None = None,
         sentinel_manager: SentinelManager | None = None,
+        macro_manager: MacroManager | None = None,
     ) -> None:
         """Initialize the agent."""
         self.hass = hass
@@ -1159,6 +1257,7 @@ class OtisAIConversationAgent(AbstractAgent):
         self.spatial_manager = spatial_manager or SpatialGraphManager(hass)
         self.theme_manager = theme_manager or ThemeManager(hass)
         self.sentinel_manager = sentinel_manager or SentinelManager(hass)
+        self.macro_manager = macro_manager or MacroManager(hass)
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -1234,6 +1333,115 @@ class OtisAIConversationAgent(AbstractAgent):
                     user_input,
                     "Okay, I have discarded the proposed configuration."
                 )
+
+        # Check for pending macro confirmation
+        if conv_id in sessions and sessions[conv_id].get("pending_macro"):
+            if user_text in confirmations:
+                pending_m = sessions[conv_id].pop("pending_macro")
+                try:
+                    res = await self.macro_manager.async_execute_macro(
+                        macro_name=pending_m["name"],
+                        steps=pending_m["steps"],
+                        confirmed=True,
+                        macro_id=pending_m.get("macro_id"),
+                    )
+                    if res.get("success"):
+                        speech = (
+                            f"🚀 **{pending_m['name']} Activated!**\n\n"
+                            f"• {res.get('steps_executed', 0)} of {res.get('steps_total', 0)} step(s) executed successfully.\n"
+                            f"• State snapshot saved for {res.get('snapshot_entities_count', 0)} entities.\n\n"
+                            "*(Say 'undo' or 'rollback' anytime to revert devices to prior states)*"
+                        )
+                    else:
+                        speech = f"⚠️ Macro execution encountered an issue: {res.get('summary', res.get('error'))}"
+                    return self._create_response(user_input, speech)
+                except Exception as err:
+                    _LOGGER.error("Failed to execute pending macro: %s", err, exc_info=True)
+                    return self._create_response(
+                        user_input,
+                        f"I encountered an error while executing the macro: {err}."
+                    )
+            elif user_text in rejections:
+                sessions[conv_id].pop("pending_macro")
+                return self._create_response(
+                    user_input,
+                    "Okay, I have cancelled the pending macro sequence."
+                )
+
+        # Check for rollback / undo commands
+        if any(w in user_text for w in ("rollback", "undo macro", "revert macro", "undo last macro", "rollback macro", "undo action", "revert changes", "undo changes")):
+            if self.macro_manager:
+                res = await self.macro_manager.async_rollback_macro()
+                if res.get("success"):
+                    count = res.get("restored_count", 0)
+                    speech = (
+                        f"↺ **Macro Rolled Back Successfully!**\n\n"
+                        f"Restored {count} entity/entities to their exact pre-execution state for **{res.get('name', 'macro')}**."
+                    )
+                else:
+                    speech = f"⚠️ Could not roll back macro: {res.get('error', 'No restorable execution record found.')}"
+                return self._create_response(user_input, speech)
+
+        # Check for list macros command
+        if any(w in user_text for w in ("list macros", "available macros", "show macros", "what macros", "macro list")):
+            speech = (
+                "⚡ **Otis Macro Orchestrator: Built-in Sequences**\n\n"
+                "• 🎬 **Movie Night** (`prep movie night`): Dims entertainment lights, selects TV/HDMI source, lowers climate, adjusts audio volume.\n"
+                "• 🌙 **Goodnight** (`bedtime routine`): Extinguishes common lights, locks deadbolts, closes garage, sets night climate, arms security.\n"
+                "• 🥂 **Entertain / Party** (`party mode`): Multi-room matrix audio streaming, ambient lighting scene, social climate.\n"
+                "• 🛡️ **Lockdown / Away** (`lockdown home`): Turns off non-essentials, locks all doors, closes garage, arms away security.\n"
+                "• 🏡 **Welcome Home** (`arriving home`): Pathway lighting, comfortable temperature, entryway disarm & unlock.\n\n"
+                "*(You can say 'run movie night' or 'undo' at any time)*"
+            )
+            return self._create_response(user_input, speech)
+
+        # Check for direct multi-step macro trigger phrases
+        macro_template_target = None
+        if any(w in user_text for w in ("prep movie night", "movie night", "start movie night", "cinema mode", "film mode", "theater mode")):
+            macro_template_target = "movie_night"
+        elif any(w in user_text for w in ("bedtime routine", "goodnight routine", "goodnight mode", "time for bed", "go to sleep", "sleep mode", "goodnight")):
+            macro_template_target = "goodnight"
+        elif any(w in user_text for w in ("party mode", "entertain mode", "party time", "entertainment mode")):
+            macro_template_target = "party_mode"
+        elif any(w in user_text for w in ("lockdown home", "lock down home", "lockdown house", "away mode", "leaving home", "leaving house", "secure home")):
+            macro_template_target = "away_mode"
+        elif any(w in user_text for w in ("welcome home", "arriving home", "arrived home", "i'm home", "im home")):
+            macro_template_target = "welcome_home"
+
+        if macro_template_target and self.macro_manager:
+            cap_map = await self.engine.async_build_capability_map()
+            macro_plan = self.macro_manager.build_smart_macro(macro_template_target, capability_map=cap_map)
+            safety = self.macro_manager.inspect_safety(macro_plan["steps"])
+
+            if safety["requires_confirmation"]:
+                m_id = f"macro_{int(time.time())}_{uuid.uuid4().hex[:6]}"
+                sessions[conv_id] = {
+                    "pending_macro": {
+                        "macro_id": m_id,
+                        "name": macro_plan["name"],
+                        "steps": macro_plan["steps"],
+                    }
+                }
+                lines = [f"⚠️ **{macro_plan['name']} Prepared ({len(macro_plan['steps'])} Steps)**:"]
+                for s_i, s in enumerate(macro_plan["steps"], 1):
+                    lines.append(f"{s_i}. {s['name']}")
+                lines.append("\n**Safety Checks:**")
+                for w in safety["safety_warnings"]:
+                    lines.append(f"• {w}")
+                lines.append("\nWould you like me to execute this sequence now? Say 'yes' or 'confirm' to execute, or 'cancel'.")
+                return self._create_response(user_input, "\n".join(lines))
+            else:
+                res = await self.macro_manager.async_execute_macro(
+                    macro_name=macro_plan["name"],
+                    steps=macro_plan["steps"],
+                    confirmed=True,
+                )
+                lines = [f"🚀 **{macro_plan['name']} Activated!**\n"]
+                for s_i, s in enumerate(macro_plan["steps"], 1):
+                    lines.append(f"{s_i}. {s['name']}")
+                lines.append(f"\n• State snapshot saved for {res.get('snapshot_entities_count', 0)} entities.")
+                lines.append("*(Say 'undo' or 'rollback' anytime to revert your devices to their prior states)*")
+                return self._create_response(user_input, "\n".join(lines))
 
         # Check for theme styling commands
         if any(w in user_text for w in ("create theme", "generate theme", "new theme", "make theme", "build theme")):
@@ -1423,6 +1631,7 @@ Instructions:
 4. Offer to clean up orphaned entities, assign unassigned devices to areas, and recommend high-value integrations/addons when relevant.
 5. Keep your responses concise, structured, and actionable.
 6. Use the Spatial Adjacency topology for room transition queries, pathway lighting automations, and tracking movements between connected rooms.
+7. When the user requests multi-step routines (such as movie night, bedtime, party, lockdown, or arrival), you can propose or trigger Otis dynamic macros, which feature atomic snapshotting and 1-click state rollback.
 
 User: {user_input.text}
 """

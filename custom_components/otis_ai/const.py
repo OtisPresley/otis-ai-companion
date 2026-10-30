@@ -30,6 +30,9 @@ SERVICE_GET_SENTINEL_TELEMETRY = "get_sentinel_telemetry"
 SERVICE_IGNORE_SENTINEL_ALERT = "ignore_sentinel_alert"
 SERVICE_CREATE_COMMAND_CENTER = "create_command_center"
 SERVICE_SYNC_DASHBOARDS = "sync_dashboards"
+SERVICE_EXECUTE_MACRO = "execute_macro"
+SERVICE_ROLLBACK_MACRO = "rollback_macro"
+SERVICE_LIST_MACROS = "list_macros"
 
 # Dashboard Constants
 COMMAND_CENTER_DASHBOARD_ID = "command-center"

@@ -2084,6 +2084,7 @@ class TestSentinelManager(unittest.TestCase):
 
     def setUp(self):
         self.hass = MagicMock()
+        self.hass.data = {DOMAIN: {"sessions": {}}}
         self.hass.states = MagicMock()
         self.hass.services = MagicMock()
         self.hass.services.has_service = MagicMock(return_value=True)
@@ -2662,6 +2663,319 @@ class TestSentinelManager(unittest.TestCase):
                 theater_view["cards"][1]["tap_action"]["navigation_path"],
                 "/command-center/media",
             )
+
+
+class TestMacroManager(unittest.TestCase):
+    """Test suite for Phase 5 Dynamic Macro Orchestrator & Multi-Step Assist Pipelines."""
+
+    def setUp(self):
+        self.hass = MagicMock()
+        self.hass.data = {DOMAIN: {"sessions": {}}}
+        self.hass.states = MagicMock()
+        self.hass.services = MagicMock()
+        self.hass.services.has_service = MagicMock(return_value=True)
+
+        async def _mock_call(domain, service, service_data=None, blocking=True, context=None):
+            return True
+
+        self.hass.services.async_call = MagicMock(side_effect=_mock_call)
+
+    def test_smart_macro_builder(self):
+        """Verify dynamic macro synthesis from hardware topology."""
+        from custom_components.otis_ai.macro_manager import MacroManager
+
+        light_living = MagicMock()
+        light_living.entity_id = "light.living_room_ceiling"
+        light_living.state = "on"
+        light_living.attributes = {"friendly_name": "Living Room Ceiling"}
+
+        tv = MagicMock()
+        tv.entity_id = "media_player.living_room_tv"
+        tv.state = "off"
+        tv.attributes = {"friendly_name": "Living Room TV"}
+
+        climate = MagicMock()
+        climate.entity_id = "climate.thermostat"
+        climate.state = "heat"
+        climate.attributes = {"temperature": 72}
+
+        self.hass.states.async_all.return_value = [light_living, tv, climate]
+
+        mm = MacroManager(self.hass)
+        macro = mm.build_smart_macro("movie_night")
+        self.assertEqual(macro["name"], "Movie Night Mode")
+        self.assertTrue(len(macro["steps"]) >= 3)
+
+        # Check light dim step
+        step_light = next(s for s in macro["steps"] if s["domain"] == "light")
+        self.assertEqual(step_light["data"]["brightness_pct"], 15)
+
+        # Check climate step
+        step_clim = next(s for s in macro["steps"] if s["domain"] == "climate")
+        self.assertEqual(step_clim["data"]["temperature"], 68)
+
+    def test_safety_inspector(self):
+        """Verify critical security & access steps trigger pre-flight confirmation."""
+        from custom_components.otis_ai.macro_manager import MacroManager
+
+        mm = MacroManager(self.hass)
+
+        safe_steps = [
+            {"domain": "light", "service": "turn_on", "target": {"entity_id": "light.living"}},
+            {"domain": "climate", "service": "set_temperature", "target": {"entity_id": "climate.main"}},
+        ]
+        safety_safe = mm.inspect_safety(safe_steps)
+        self.assertFalse(safety_safe["requires_confirmation"])
+        self.assertEqual(len(safety_safe["safety_warnings"]), 0)
+
+        critical_steps = [
+            {"domain": "lock", "service": "unlock", "target": {"entity_id": "lock.front_door"}},
+            {"domain": "alarm_control_panel", "service": "alarm_disarm", "target": {"entity_id": "alarm_control_panel.home"}},
+            {"domain": "cover", "service": "open_cover", "target": {"entity_id": "cover.garage"}},
+        ]
+        safety_crit = mm.inspect_safety(critical_steps)
+        self.assertTrue(safety_crit["requires_confirmation"])
+        self.assertEqual(len(safety_crit["critical_steps"]), 3)
+        self.assertEqual(len(safety_crit["safety_warnings"]), 3)
+
+    def test_macro_execution_with_atomic_snapshot(self):
+        """Verify atomic snapshot capturing prior state and sequential step execution."""
+        from custom_components.otis_ai.macro_manager import MacroManager
+
+        state_light = MagicMock()
+        state_light.state = "on"
+        state_light.attributes = {"brightness": 255, "friendly_name": "Living Light"}
+
+        state_clim = MagicMock()
+        state_clim.state = "cool"
+        state_clim.attributes = {"temperature": 74}
+
+        def mock_get_state(eid):
+            if eid == "light.living":
+                return state_light
+            if eid == "climate.main":
+                return state_clim
+            return None
+
+        self.hass.states.get.side_effect = mock_get_state
+
+        mm = MacroManager(self.hass)
+        steps = [
+            {"domain": "light", "service": "turn_on", "target": {"entity_id": "light.living"}, "data": {"brightness_pct": 20}},
+            {"domain": "climate", "service": "set_temperature", "target": {"entity_id": "climate.main"}, "data": {"temperature": 68}},
+        ]
+
+        res = asyncio.run(mm.async_execute_macro(macro_name="Test Macro", steps=steps, confirmed=True))
+        self.assertTrue(res["success"])
+        self.assertEqual(res["steps_executed"], 2)
+        self.assertEqual(res["snapshot_entities_count"], 2)
+
+        history = mm.get_history()
+        self.assertEqual(len(history), 1)
+        record = history[0]
+        self.assertEqual(record["status"], "executed")
+        self.assertEqual(record["snapshot"]["light.living"]["state"], "on")
+        self.assertEqual(record["snapshot"]["light.living"]["attributes"]["brightness"], 255)
+
+    def test_macro_confirmation_guard(self):
+        """Verify unconfirmed macro with critical steps is guarded until confirmed."""
+        from custom_components.otis_ai.macro_manager import MacroManager
+
+        mm = MacroManager(self.hass)
+        steps = [
+            {"domain": "lock", "service": "unlock", "target": {"entity_id": "lock.front_door"}},
+        ]
+
+        # First run: unconfirmed
+        res = asyncio.run(mm.async_execute_macro(macro_name="Unlock Arrival", steps=steps, confirmed=False))
+        self.assertFalse(res["success"])
+        self.assertEqual(res["status"], "requires_confirmation")
+        m_id = res["macro_id"]
+        self.assertIsNotNone(mm.get_pending_macro(m_id))
+
+        # Second run: confirmed
+        res_conf = asyncio.run(mm.async_execute_macro(macro_name="Unlock Arrival", steps=steps, confirmed=True, macro_id=m_id))
+        self.assertTrue(res_conf["success"])
+        self.assertIsNone(mm.get_pending_macro(m_id))
+
+    def test_macro_rollback(self):
+        """Verify complete state restoration on rollback."""
+        from custom_components.otis_ai.macro_manager import MacroManager
+
+        state_light = MagicMock()
+        state_light.state = "on"
+        state_light.attributes = {"brightness": 200, "color_temp": 300}
+
+        state_clim = MagicMock()
+        state_clim.state = "cool"
+        state_clim.attributes = {"temperature": 75}
+
+        state_mp = MagicMock()
+        state_mp.state = "playing"
+        state_mp.attributes = {"source": "Spotify Bridge", "volume_level": 0.25}
+
+        state_lock = MagicMock()
+        state_lock.state = "locked"
+        state_lock.attributes = {}
+
+        def mock_get_state(eid):
+            if eid == "light.living":
+                return state_light
+            if eid == "climate.thermostat":
+                return state_clim
+            if eid == "media_player.great_room":
+                return state_mp
+            if eid == "lock.front_door":
+                return state_lock
+            return None
+
+        self.hass.states.get.side_effect = mock_get_state
+
+        mm = MacroManager(self.hass)
+        steps = [
+            {"domain": "light", "service": "turn_off", "target": {"entity_id": "light.living"}},
+            {"domain": "climate", "service": "set_temperature", "target": {"entity_id": "climate.thermostat"}, "data": {"temperature": 66}},
+            {"domain": "media_player", "service": "volume_set", "target": {"entity_id": "media_player.great_room"}, "data": {"volume_level": 0.5}},
+            {"domain": "lock", "service": "unlock", "target": {"entity_id": "lock.front_door"}},
+        ]
+
+        exec_res = asyncio.run(mm.async_execute_macro(macro_name="Night Lockdown", steps=steps, confirmed=True))
+        self.assertTrue(exec_res["success"])
+
+        # Execute rollback
+        rb_res = asyncio.run(mm.async_rollback_macro())
+        self.assertTrue(rb_res["success"])
+        self.assertEqual(rb_res["restored_count"], 4)
+        self.assertIn("light.living", rb_res["restored_entities"])
+        self.assertIn("climate.thermostat", rb_res["restored_entities"])
+        self.assertIn("media_player.great_room", rb_res["restored_entities"])
+        self.assertIn("lock.front_door", rb_res["restored_entities"])
+
+        # Attempting rollback again should fail gracefully
+        rb_again = asyncio.run(mm.async_rollback_macro())
+        self.assertFalse(rb_again["success"])
+        self.assertIn("already been rolled back", rb_again["error"])
+
+    def test_conversational_macro_execution_and_rollback(self):
+        """Verify conversational macro trigger ('prep movie night') and rollback ('undo')."""
+        from custom_components.otis_ai import OtisAIConversationAgent
+        from custom_components.otis_ai.macro_manager import MacroManager
+
+        light = MagicMock()
+        light.entity_id = "light.living_room_ceiling"
+        light.state = "on"
+        light.attributes = {"friendly_name": "Living Room Ceiling", "brightness": 255}
+
+        tv = MagicMock()
+        tv.entity_id = "media_player.living_room_tv"
+        tv.state = "off"
+        tv.attributes = {"friendly_name": "Living Room TV"}
+
+        climate = MagicMock()
+        climate.entity_id = "climate.thermostat"
+        climate.state = "heat"
+        climate.attributes = {"temperature": 72}
+
+        self.hass.states.async_all.return_value = [light, tv, climate]
+        self.hass.states.get.side_effect = lambda eid: {
+            "light.living_room_ceiling": light,
+            "media_player.living_room_tv": tv,
+            "climate.thermostat": climate,
+        }.get(eid)
+
+        entry = MagicMock()
+        engine = MagicMock()
+        engine.async_build_capability_map = AsyncMock(return_value={"media_topology": {}})
+        manager = MagicMock()
+        macro_manager = MacroManager(self.hass)
+
+        agent = OtisAIConversationAgent(
+            self.hass, entry, engine, manager, macro_manager=macro_manager
+        )
+
+        # 1. Trigger "prep movie night"
+        user_input_1 = MagicMock()
+        user_input_1.text = "Prep home for movie night"
+        user_input_1.conversation_id = "conv_movie"
+        user_input_1.create_response = MagicMock(return_value="mock_resp")
+
+        asyncio.run(agent.async_process(user_input_1))
+        speech_1 = user_input_1.create_response.call_args[1]["speech"]
+        self.assertIn("Movie Night Mode Activated", speech_1)
+        self.assertIn("State snapshot saved", speech_1)
+
+        # Verify history has 1 executed macro
+        self.assertEqual(len(macro_manager.get_history()), 1)
+        self.assertEqual(macro_manager.get_history()[0]["status"], "executed")
+
+        # 2. Trigger "undo"
+        user_input_2 = MagicMock()
+        user_input_2.text = "undo macro"
+        user_input_2.conversation_id = "conv_movie"
+        user_input_2.create_response = MagicMock(return_value="mock_resp")
+
+        asyncio.run(agent.async_process(user_input_2))
+        speech_2 = user_input_2.create_response.call_args[1]["speech"]
+        self.assertIn("Macro Rolled Back Successfully", speech_2)
+        self.assertEqual(macro_manager.get_history()[0]["status"], "rolled_back")
+
+    def test_conversational_macro_safety_confirmation(self):
+        """Verify conversational macro with safety critical steps requires confirmation."""
+        from custom_components.otis_ai import OtisAIConversationAgent
+        from custom_components.otis_ai.macro_manager import MacroManager
+
+        lock = MagicMock()
+        lock.entity_id = "lock.front_door"
+        lock.state = "locked"
+        lock.attributes = {"friendly_name": "Front Door"}
+
+        alarm = MagicMock()
+        alarm.entity_id = "alarm_control_panel.security"
+        alarm.state = "armed_home"
+        alarm.attributes = {}
+
+        self.hass.states.async_all.return_value = [lock, alarm]
+        self.hass.states.get.side_effect = lambda eid: {
+            "lock.front_door": lock,
+            "alarm_control_panel.security": alarm,
+        }.get(eid)
+
+        entry = MagicMock()
+        engine = MagicMock()
+        engine.async_build_capability_map = AsyncMock(return_value={})
+        manager = MagicMock()
+        macro_manager = MacroManager(self.hass)
+
+        agent = OtisAIConversationAgent(
+            self.hass, entry, engine, manager, macro_manager=macro_manager
+        )
+
+        # 1. Trigger "welcome home" (contains unlock / disarm)
+        user_input_1 = MagicMock()
+        user_input_1.text = "I'm home"
+        user_input_1.conversation_id = "conv_welcome"
+        user_input_1.create_response = MagicMock(return_value="mock_resp")
+
+        asyncio.run(agent.async_process(user_input_1))
+        speech_1 = user_input_1.create_response.call_args[1]["speech"]
+        self.assertIn("Safety Checks", speech_1)
+        self.assertIn("Say 'yes' or 'confirm' to execute", speech_1)
+
+        # Verify session holds pending_macro
+        sessions = self.hass.data[DOMAIN]["sessions"]
+        self.assertIn("conv_welcome", sessions)
+        self.assertIn("pending_macro", sessions["conv_welcome"])
+
+        # 2. Say "confirm"
+        user_input_2 = MagicMock()
+        user_input_2.text = "confirm"
+        user_input_2.conversation_id = "conv_welcome"
+        user_input_2.create_response = MagicMock(return_value="mock_resp")
+
+        asyncio.run(agent.async_process(user_input_2))
+        speech_2 = user_input_2.create_response.call_args[1]["speech"]
+        self.assertIn("Activated", speech_2)
+        self.assertNotIn("pending_macro", sessions["conv_welcome"])
 
 
 if __name__ == "__main__":

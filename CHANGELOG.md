@@ -2,6 +2,30 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.9.0] - 2026-10-29
+
+### Added & Improved
+- **Phase 5 Dynamic Macro Orchestrator & Multi-Step Assist Pipelines (`macro_manager.py`, `__init__.py`, `const.py`, `services.yaml`, `otis-companion-card.js`)**:
+  - Expanded Assist Co-Pilot conversational execution into intelligent multi-step atomic sequences:
+    - **Movie Night Mode**: Dims media/living room lights to 15%, selects TV/HDMI matrix source (e.g. 'Apple TV' or streamer), adjusts comfort climate to 68°F, sets soundbar/AVR volume to 45%, and closes window shades.
+    - **Goodnight Routine**: Extinguishes common area lights, engages perimeter security deadbolts, closes garage doors, lowers climate to 66°F, powers off media players, and arms security alarm.
+    - **Entertain & Party Mode**: Broadcasts matrix audio across multi-room zones, sets warm ambient scene lighting, and balances climate for social comfort.
+    - **Away & Lockdown Mode**: Extinguishes non-essential lights, locks deadbolts, closes garage doors, shuts down media zones, and arms security to Away mode.
+    - **Welcome Home Arrival**: Illuminates entryway and living pathway lighting, restores comfort climate, unlocks entryway deadbolt, and disarms security.
+  - **Atomic Prior State Snapshotting & 1-Click Rollback (`async_rollback_macro`)**:
+    - Captures an atomic state snapshot of all affected entities immediately prior to macro sequence execution.
+    - Maintained ring-buffer execution history allowing users to say "undo", "rollback", or "revert", or call the `otis_ai.rollback_macro` service to restore every entity to its exact prior state (including light brightness/color, thermostat setpoint, media player source/volume, lock states, and cover positions).
+  - **Pre-Flight Safety Checks & Step Confirmation**:
+    - Guarded high-impact security actions (`lock.unlock`, `alarm_control_panel.alarm_disarm`, `cover.open_cover`).
+    - Prompts the user with structured multi-step previews, safety warnings, and explicit confirmation requirements before running critical sequences.
+  - **Assist Co-Pilot Frontend Integration (`otis-companion-card.js`)**:
+    - Added quick macro action chips (`🎬 Movie Night`, `🌙 Goodnight`, `🥂 Party Mode`, `🛡️ Lockdown`, `↺ Undo`) to the Assist Co-Pilot tab.
+    - Added interactive inline confirmation buttons (`✅ Confirm & Execute`, `✕ Cancel`, `↺ Rollback / Undo Macro`) directly inside Otis conversational chat bubbles for 1-click execution.
+  - **Services Registered (`otis_ai`)**:
+    - `otis_ai.execute_macro`: Executes built-in or custom multi-step macro sequences with confirmation guards and state snapshotting.
+    - `otis_ai.rollback_macro`: Restores entities from recent macro executions.
+    - `otis_ai.list_macros`: Lists available macro templates and execution history.
+
 ## [1.8.1] - 2026-10-29
 
 ### Fixed & Improved

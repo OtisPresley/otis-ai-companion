@@ -272,4 +272,49 @@ create_command_center:
   name: Create / Sync User Command Center
   description: Generate or refresh the non-admin User Command Center dashboard (/command-center) connecting Studios and Room subviews for family members.
 
+execute_macro:
+  name: Execute Macro Sequence
+  description: Execute a multi-step smart home macro sequence with pre-flight safety checks and prior state snapshotting for 1-click rollback.
+  fields:
+    macro_name:
+      name: Macro Name / Template
+      description: Built-in macro template name ('movie_night', 'goodnight', 'party_mode', 'away_mode', 'welcome_home') or custom display name.
+      required: false
+      selector:
+        text:
+    steps:
+      name: Macro Steps
+      description: Optional list of customized action steps to execute sequentially.
+      required: false
+      selector:
+        object:
+    confirmed:
+      name: Confirmed
+      description: Explicit confirmation flag to bypass pre-flight safety prompts for critical steps (e.g. locks/disarm).
+      default: false
+      selector:
+        boolean:
+    macro_id:
+      name: Macro ID
+      description: Unique identifier for tracking and pending confirmations.
+      required: false
+      selector:
+        text:
+
+rollback_macro:
+  name: Rollback Macro
+  description: Roll back the most recently executed macro (or specified macro ID), restoring all target entities to their exact pre-execution state.
+  fields:
+    macro_id:
+      name: Macro ID
+      description: Specific macro execution ID to roll back (defaults to latest executed macro).
+      required: false
+      selector:
+        text:
+
+list_macros:
+  name: List Macros & Execution History
+  description: List available built-in smart macro templates and recent execution history with rollback statuses.
+
+
 

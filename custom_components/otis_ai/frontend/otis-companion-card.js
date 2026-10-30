@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.8.1";
+const CARD_VERSION = "1.9.0";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -1757,6 +1757,58 @@ class OtisCompanionCard extends HTMLElement {
           opacity: 0.8;
         }
 
+        .chat-macro-actions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          margin-top: 10px;
+          padding-top: 8px;
+          border-top: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .macro-action-btn {
+          font-size: 0.72rem;
+          font-weight: 600;
+          padding: 5px 11px;
+          border-radius: 8px;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          border: none;
+        }
+
+        .macro-action-btn.confirm {
+          background: rgba(34, 197, 94, 0.18);
+          border: 1px solid rgba(34, 197, 94, 0.45);
+          color: #4ade80;
+        }
+        .macro-action-btn.confirm:hover {
+          background: rgba(34, 197, 94, 0.35);
+          transform: translateY(-1px);
+        }
+
+        .macro-action-btn.cancel {
+          background: rgba(239, 68, 68, 0.18);
+          border: 1px solid rgba(239, 68, 68, 0.45);
+          color: #f87171;
+        }
+        .macro-action-btn.cancel:hover {
+          background: rgba(239, 68, 68, 0.35);
+          transform: translateY(-1px);
+        }
+
+        .macro-action-btn.rollback {
+          background: rgba(14, 165, 233, 0.18);
+          border: 1px solid rgba(14, 165, 233, 0.45);
+          color: #38bdf8;
+        }
+        .macro-action-btn.rollback:hover {
+          background: rgba(14, 165, 233, 0.35);
+          transform: translateY(-1px);
+        }
+
         .chat-bubble code {
           background: color-mix(in srgb, var(--otis-primary) 12%, transparent);
           color: var(--otis-primary);
@@ -2996,14 +3048,38 @@ class OtisCompanionCard extends HTMLElement {
     `;
   }
 
+  _renderChatActionButtons(m) {
+    if (m.sender !== "otis" || m.isError) return "";
+    const txt = m.text || "";
+    if (txt.includes("Say 'yes' or 'confirm'") || txt.includes("Say 'yes' or 'apply'")) {
+      return `
+        <div class="chat-macro-actions">
+          <button class="macro-action-btn confirm" data-chip="confirm">✅ Confirm & Execute</button>
+          <button class="macro-action-btn cancel" data-chip="cancel">✕ Cancel</button>
+        </div>
+      `;
+    }
+    if (txt.includes("Say 'undo' or 'rollback'")) {
+      return `
+        <div class="chat-macro-actions">
+          <button class="macro-action-btn rollback" data-chip="undo macro">↺ Rollback / Undo Macro</button>
+        </div>
+      `;
+    }
+    return "";
+  }
+
   _renderChatTab() {
     return `
       <div class="chat-container">
         <div class="chat-chips">
-          <button class="chip-btn" data-chip="Suggest automations for my active areas">💡 Suggest automations</button>
-          <button class="chip-btn" data-chip="What can I improve in my smart home?">🔍 Improvement audit</button>
+          <button class="chip-btn" data-chip="Prep home for movie night">🎬 Movie Night</button>
+          <button class="chip-btn" data-chip="Goodnight routine">🌙 Goodnight</button>
+          <button class="chip-btn" data-chip="Party mode">🥂 Party Mode</button>
+          <button class="chip-btn" data-chip="Lockdown home">🛡️ Lockdown</button>
+          <button class="chip-btn" data-chip="Undo last macro">↺ Undo</button>
+          <button class="chip-btn" data-chip="Suggest automations for my active areas">💡 Automations</button>
           <button class="chip-btn" data-chip="Clean up orphaned entities">🧹 Clean orphans</button>
-          <button class="chip-btn" data-chip="Create an evening bedtime routine">🌙 Goodnight routine</button>
         </div>
         <div class="chat-history" id="chat-history">
           ${
@@ -3014,6 +3090,7 @@ class OtisCompanionCard extends HTMLElement {
                     (m) => `
                 <div class="chat-bubble ${m.sender} ${m.isError ? "error" : ""}">
                   ${this._renderMarkdown(m.text)}
+                  ${this._renderChatActionButtons(m)}
                 </div>
               `
                   )
