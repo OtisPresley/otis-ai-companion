@@ -2,6 +2,14 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.9.8] - 2026-10-30
+
+### Fixed
+- **Vision & Presence Tab Navigation in Lovelace Card (`otis-companion-card.js`)**:
+  - Added `"vision"` to the allowed tab whitelist in `_loadActiveTab` and `_saveActiveTab` across `OtisCompanionCard` and `OtisCompanionCardEditor`.
+  - Fixed an issue where clicking the "Vision & Presence" tab button was rejected by `_saveActiveTab`, preventing tab switching.
+  - Fixed undefined variable access `pir.seconds_motion` -> `pir.seconds_since_motion` in the presence sensor pill formatter.
+
 ## [1.9.7] - 2026-10-30
 
 ### Fixed

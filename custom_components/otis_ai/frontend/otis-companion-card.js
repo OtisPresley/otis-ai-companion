@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.9.7";
+const CARD_VERSION = "1.9.8";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -87,7 +87,7 @@ class OtisCompanionCard extends HTMLElement {
   _loadActiveTab() {
     try {
       const saved = sessionStorage.getItem("otis_active_tab");
-      if (saved && ["suggestions", "chat", "capabilities", "floorplan"].includes(saved)) {
+      if (saved && ["suggestions", "chat", "capabilities", "floorplan", "vision"].includes(saved)) {
         return saved;
       }
     } catch (_) {}
@@ -95,7 +95,7 @@ class OtisCompanionCard extends HTMLElement {
   }
 
   _saveActiveTab(tab) {
-    if (["suggestions", "chat", "capabilities", "floorplan"].includes(tab)) {
+    if (["suggestions", "chat", "capabilities", "floorplan", "vision"].includes(tab)) {
       this._activeTab = tab;
       try {
         sessionStorage.setItem("otis_active_tab", tab);
@@ -5089,7 +5089,7 @@ class OtisCompanionCard extends HTMLElement {
                     const ble = s.ble_beacon || {};
                     const lightsOn = s.lights_on || 0;
 
-                    let pirText = pir.active ? "Motion Active" : pir.seconds_since_motion ? `${Math.round(pir.seconds_motion / 60) || 1}m ago` : "Idle";
+                    let pirText = pir.active ? "Motion Active" : pir.seconds_since_motion ? `${Math.round(pir.seconds_since_motion / 60) || 1}m ago` : "Idle";
 
                     return `
                     <div class="presence-card">
@@ -6981,7 +6981,7 @@ class OtisCompanionCardEditor extends HTMLElement {
   _loadActiveTab() {
     try {
       const saved = sessionStorage.getItem("otis_active_tab");
-      if (saved && ["suggestions", "chat", "capabilities", "floorplan"].includes(saved)) {
+      if (saved && ["suggestions", "chat", "capabilities", "floorplan", "vision"].includes(saved)) {
         return saved;
       }
     } catch (_) {}
@@ -6989,7 +6989,7 @@ class OtisCompanionCardEditor extends HTMLElement {
   }
 
   _saveActiveTab(tab) {
-    if (["suggestions", "chat", "capabilities", "floorplan"].includes(tab)) {
+    if (["suggestions", "chat", "capabilities", "floorplan", "vision"].includes(tab)) {
       this._activeTab = tab;
       try {
         sessionStorage.setItem("otis_active_tab", tab);
