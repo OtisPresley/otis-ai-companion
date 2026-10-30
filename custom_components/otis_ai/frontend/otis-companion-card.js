@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.9.9";
+const CARD_VERSION = "1.10.0";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -1207,7 +1207,8 @@ class OtisCompanionCard extends HTMLElement {
     if (!filterKey || filterKey === "all") return true;
     const cat = String(suggestion?.category || "automation").toLowerCase();
     const map = {
-      lighting: ["lighting", "automation", "habit_routine"],
+      habits: ["habit_routine", "habit_deviation", "habits", "behavioral"],
+      lighting: ["lighting", "automation"],
       media: ["media"],
       security: ["security"],
       dashboard: ["dashboard", "visualization"],
@@ -1221,6 +1222,8 @@ class OtisCompanionCard extends HTMLElement {
 
   _getActionLabel(actionType) {
     switch (actionType) {
+      case "create_automation":
+        return "⚡ Create Habit Automation";
       case "create_package":
         return "📦 Deploy Coordinator Package";
       case "auto_assign_areas":
@@ -3996,6 +3999,7 @@ class OtisCompanionCard extends HTMLElement {
   _renderSuggestionsTab(visibleSuggestions) {
     const categories = [
       { key: "all", label: "All" },
+      { key: "habits", label: "Habits & Routines" },
       { key: "lighting", label: "Lighting & Auto" },
       { key: "media", label: "Media" },
       { key: "security", label: "Security" },

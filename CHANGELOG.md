@@ -2,6 +2,20 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.10.0] - 2026-10-30
+
+### Added
+- **Phase 9: Self-Supervised Habit Learning & Behavioral Modeling (`habit_manager.py`)**:
+  - **Temporal Sequence Clustering**: Mined SQLite recorder event transitions (in read-only mode) across the last 14 days without manual YAML or configuration. Automatically clusters recurring daily sequences (e.g. bed occupancy off $\to$ vanity light on $\to$ espresso switch on) within parameterized sliding windows into habit automation proposals with high confidence rankings.
+  - **Habit Deviation Detection (`async_detect_habit_deviations`)**: Proactive background auditing for lifestyle deviations and security oversights (e.g. unlatched exterior doors or perimeter lighting left on during late-night bedtime windows; closed master shades during sunny daylight mornings).
+  - **Circadian & Seasonal Curves (`calculate_circadian_curves`)**: Real-time solar elevation profile computation converting current sun angles to dynamic circadian lighting color temperatures (2200K warm night $\to$ 5500K crisp daylight focus) and seasonal HVAC comfort targets (Winter heating vs. Summer cooling setpoints).
+  - **Conversational Habit & Circadian Queries**: Otis Assist pipeline integration responding to natural language queries regarding learned habits and circadian curve statuses.
+  - **Proactive Feed Integration**: "Habits & Routines" category filter in the Otis Companion Card with one-click "Create Habit Automation" execution directly saving and reloading Home Assistant automations.
+  - **Dedicated HA Services**:
+    - `otis_ai.mine_habits`: Query historical recorder trends and return learned routines.
+    - `otis_ai.get_circadian_curves`: Return current circadian Kelvin lighting and seasonal climate curves.
+    - `otis_ai.audit_habit_deviations`: Proactively audit deviations from learned household routines.
+
 ## [1.9.9] - 2026-10-30
 
 ### Fixed & Improved

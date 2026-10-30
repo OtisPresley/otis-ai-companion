@@ -477,6 +477,37 @@ evaluate_contextual_alerts:
   name: Evaluate Contextual Presence Alerts
   description: Audit home perimeter states (garage doors left open, unlocked doors at night, unattended appliances in vacant rooms) and return actionable alerts.
 
+mine_habits:
+  name: Mine Historical Habits
+  description: Mine Home Assistant SQLite recorder trends for recurring trigger-action lifestyle routines.
+  fields:
+    days:
+      name: Days
+      description: Number of days of historical recorder trends to analyze (default 14).
+      required: false
+      default: 14
+      selector:
+        number:
+          min: 1
+          max: 60
+
+get_circadian_curves:
+  name: Get Circadian & Seasonal Curves
+  description: Calculate adaptive color temperature, brightness, and seasonal HVAC comfort curves.
+  fields:
+    solar_elevation:
+      name: Solar Elevation
+      description: Explicit solar elevation in degrees (computed automatically if omitted).
+      required: false
+      selector:
+        number:
+          min: -90
+          max: 90
+
+audit_habit_deviations:
+  name: Audit Habit Deviations
+  description: Audit live home state against learned behavioral baselines for missed routines (e.g. bedtime, morning daylight).
+
 
 
 

@@ -78,6 +78,7 @@ from .spatial_manager import (
     resolve_area_identifier,
 )
 from .floorplan_parser import FloorplanParser
+from .habit_manager import BehavioralHabitManager
 from .theme_manager import PRESET_THEMES, ThemeManager, slugify_theme_name
 from .vision_manager import VisionPresenceManager, get_canonical_camera_key, stream_priority
 
@@ -369,6 +370,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     audio_manager = AudioHandoffManager(hass, spatial_manager=spatial_manager)
     energy_manager = EnergyManager(hass, spatial_manager=spatial_manager)
     vision_manager = VisionPresenceManager(hass, spatial_manager=spatial_manager, energy_manager=energy_manager)
+    habit_manager = BehavioralHabitManager(hass, spatial_manager=spatial_manager, energy_manager=energy_manager, vision_manager=vision_manager)
     await asyncio.gather(
         spatial_manager.async_load(),
         floorplan_parser.async_load(),
@@ -385,6 +387,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         sentinel_manager=sentinel_manager,
         energy_manager=energy_manager,
         vision_manager=vision_manager,
+        habit_manager=habit_manager,
     )
 
     # Register Walkthrough Upload View
@@ -409,6 +412,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         audio_manager=audio_manager,
         energy_manager=energy_manager,
         vision_manager=vision_manager,
+        habit_manager=habit_manager,
     )
     if hasattr(conversation, "async_register_agent"):
         conversation.async_register_agent(hass, agent)
@@ -429,6 +433,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "audio_manager": audio_manager,
         "energy_manager": energy_manager,
         "vision_manager": vision_manager,
+        "habit_manager": habit_manager,
     }
 
     async def _async_update_listener(hass_inst: HomeAssistant, updated_entry: ConfigEntry) -> None:
@@ -482,6 +487,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     def _get_vision_manager() -> VisionPresenceManager:
         return _get_entry_data().get("vision_manager", vision_manager)
 
+    def _get_habit_manager() -> BehavioralHabitManager:
+        return _get_entry_data().get("habit_manager", habit_manager)
+
     def _get_active_managers():
         return (
             _get_engine(),
@@ -495,6 +503,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _get_audio_manager(),
             _get_energy_manager(),
             _get_vision_manager(),
+            _get_habit_manager(),
         )
 
     async def handle_get_capability_map(call) -> ServiceResponse:
@@ -1278,6 +1287,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         alerts = await vm.async_evaluate_contextual_alerts()
         return {"alerts": alerts, "count": len(alerts)}
 
+    async def handle_mine_habits(call) -> ServiceResponse:
+        """Handle service call to mine historical habit routines."""
+        _LOGGER.debug("Service 'mine_habits' triggered")
+        hm = _get_habit_manager()
+        days = call.data.get("days", 14)
+        routines = await hm.async_mine_habits(days=days)
+        return {"routines": routines, "count": len(routines)}
+
+    async def handle_get_circadian_curves(call) -> ServiceResponse:
+        """Handle service call to calculate circadian & seasonal curves."""
+        _LOGGER.debug("Service 'get_circadian_curves' triggered")
+        hm = _get_habit_manager()
+        elevation = call.data.get("solar_elevation")
+        return hm.calculate_circadian_curves(solar_elevation=elevation)
+
+    async def handle_audit_habit_deviations(call) -> ServiceResponse:
+        """Handle service call to audit habit deviations."""
+        _LOGGER.debug("Service 'audit_habit_deviations' triggered")
+        hm = _get_habit_manager()
+        deviations = await hm.async_detect_habit_deviations()
+        return {"deviations": deviations, "count": len(deviations)}
+
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
         DOMAIN,
@@ -1465,6 +1496,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_evaluate_contextual_alerts,
         supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.services.async_register(
+        DOMAIN,
+        "mine_habits",
+        handle_mine_habits,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "get_circadian_curves",
+        handle_get_circadian_curves,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "audit_habit_deviations",
+        handle_audit_habit_deviations,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
 
     _LOGGER.info("Otis AI Companion entry set up successfully")
     return True
@@ -1522,6 +1571,7 @@ class OtisAIConversationAgent(AbstractAgent):
         audio_manager: AudioHandoffManager | None = None,
         energy_manager: EnergyManager | None = None,
         vision_manager: VisionPresenceManager | None = None,
+        habit_manager: BehavioralHabitManager | None = None,
     ) -> None:
         """Initialize the agent."""
         self.hass = hass
@@ -1535,6 +1585,7 @@ class OtisAIConversationAgent(AbstractAgent):
         self.audio_manager = audio_manager or AudioHandoffManager(hass, spatial_manager=self.spatial_manager)
         self.energy_manager = energy_manager or EnergyManager(hass, spatial_manager=self.spatial_manager)
         self.vision_manager = vision_manager or VisionPresenceManager(hass, spatial_manager=self.spatial_manager)
+        self.habit_manager = habit_manager or BehavioralHabitManager(hass, spatial_manager=self.spatial_manager)
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -1926,6 +1977,35 @@ class OtisAIConversationAgent(AbstractAgent):
                 f"• **Detected Tags:** `{', '.join(audit.get('detected_objects', [])) or 'None'}`"
             )
             return self._create_response(user_input, speech)
+
+        # Check for Habit Mining and Behavioral queries (Phase 9)
+        if getattr(self, "habit_manager", None) and any(w in user_lower for w in (
+            "habits", "learned habits", "habit routines", "behavioral", "circadian curve", "circadian lighting"
+        )):
+            if "circadian" in user_lower:
+                curve = self.habit_manager.calculate_circadian_curves()
+                light = curve["lighting_curve"]
+                clim = curve["climate_curve"]
+                resp = (
+                    f"☀️ **Otis Seasonal & Circadian Intelligence ({curve['season']})**\n\n"
+                    f"• **Circadian Phase:** `{light['circadian_phase']}` ({light['color_temp_kelvin']}K, {light['brightness_percent']}%)\n"
+                    f"• **Calculated Solar Elevation:** {curve['solar_elevation']}°\n"
+                    f"• **Seasonal Comfort Setpoints:** Heat {clim['target_temp_heat_f']}°F / Cool {clim['target_temp_cool_f']}°F\n"
+                    f"• **Recommendation:** {clim['seasonal_recommendation']}"
+                )
+                return self._create_response(user_input, resp)
+            else:
+                fire_progress("domain", "Mining Habits", "Auditing recorder trends for recurring sequences")
+                habits = await self.habit_manager.async_mine_habits()
+                if not habits:
+                    return self._create_response(
+                        user_input,
+                        "Otis hasn't discovered enough recurring trigger-action sequences in recorder history yet (needs 3+ occurrences)."
+                    )
+                lines = [f"📊 **Mined Behavioral Habits ({len(habits)} discovered):**\n"]
+                for h in habits[:4]:
+                    lines.append(f"• **{h['title']}** (Confidence: {int(h['confidence']*100)}%, {h['occurrences']}x): {h['description']}")
+                return self._create_response(user_input, "\n".join(lines))
 
         # 1. Resolve prioritized AI agent cascade (Primary + Fallbacks)
         options = self.entry.options
@@ -2440,6 +2520,7 @@ class DiscoveryEngine:
         sentinel_manager: SentinelManager | None = None,
         energy_manager: EnergyManager | None = None,
         vision_manager: VisionPresenceManager | None = None,
+        habit_manager: BehavioralHabitManager | None = None,
     ) -> None:
         """Initialize the discovery engine."""
         self.hass = hass
@@ -2450,6 +2531,7 @@ class DiscoveryEngine:
         self.sentinel_manager = sentinel_manager or SentinelManager(hass)
         self.energy_manager = energy_manager or EnergyManager(hass, spatial_manager=self.spatial_manager)
         self.vision_manager = vision_manager or VisionPresenceManager(hass, spatial_manager=self.spatial_manager)
+        self.habit_manager = habit_manager or BehavioralHabitManager(hass, spatial_manager=self.spatial_manager)
         self._cached_cap_map: dict[str, Any] | None = None
         self._cache_ts: float = 0.0
         self._cache_signature: tuple[Any, ...] | None = None
@@ -4606,6 +4688,19 @@ class DiscoveryEngine:
                     suggestions.append(alert)
             except Exception as err:
                 _LOGGER.debug("Error evaluating contextual alerts: %s", err)
+
+        # 12. Self-Supervised Habit Learning & Behavioral Routines (Phase 9)
+        if getattr(self, "habit_manager", None):
+            try:
+                deviations = await self.habit_manager.async_detect_habit_deviations()
+                for dev in deviations:
+                    suggestions.append(dev)
+
+                mined_habits = await self.habit_manager.async_mine_habits(days=14, min_occurrences=3)
+                for routine in mined_habits[:2]:
+                    suggestions.append(routine)
+            except Exception as err:
+                _LOGGER.debug("Error evaluating habit routine suggestions: %s", err)
 
         # Sort suggestions by priority: Critical -> High -> Medium -> Low
         priority_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
