@@ -35,8 +35,8 @@ It replaces fragile Jinja2 templates, hardcoded entity mappings, and rigid autom
 
 ## ✨ Core Highlights
 
-- 🗺️ **Zero-Hardcoding Spatial Intelligence (Phase 1 & 4)**: Dynamically discovers Area, Device, and Entity registries. Maintains an in-memory physical topological adjacency graph with Breadth-First Search (BFS) pathfinding between rooms. Full visual canvas editor (`mode: "floorplan_studio"`) with drag-and-drop pin repositioning and interactive boundary resizing.
-- 🎨 **Dynamic AI Themes Studio (Phase 2)**: Natural language theme generator synthesizing modern CSS variables with instant zero-profile-switching live activation and robust dark/light contrast.
+- 🗺️ **Zero-Hardcoding Spatial Intelligence (Phase 1 & 4)**: Dynamically discovers Area, Device, and Entity registries. Maintains an in-memory physical topological adjacency graph with Breadth-First Search (BFS) pathfinding between rooms. Full visual canvas editor (`mode: "floorplan_studio"`) with dynamic SVG matrix transforms (`getScreenCTM()`), dual `ResizeObserver`, drag-and-drop pin repositioning, and interactive boundary resizing.
+- 🎨 **Dynamic AI Themes Studio (Phase 2)**: Natural language theme generator synthesizing modern CSS variables with instant zero-profile-switching live activation, live STT voice microphone input with animated waveform equalizer, and robust dark/light contrast.
 - 🛡️ **Otis Sentinel Watchdog & Self-Healing (Phase 3)**: Continuous background telemetry watchdog monitoring battery depletion, short-cycling climate compressors, unattended garage doors, and failed integrations with 1-click atomic remediation.
 - ⚡ **Dynamic Macro Orchestrator & Assist Pipelines (Phase 5)**: Multi-step atomic lifestyle macros (Movie Night, Goodnight, Party Mode, Lockdown) with prior state snapshotting, pre-flight safety gates, and 1-click state rollback.
 - 🔊 **Voice Feedback & Dynamic Audio Follow-Me (Phase 6)**: Presence-based TTS notifications (`notify_router`) and seamless multi-room audio handoff across matrix amplifiers (e.g. Control4) with idle amplifier power guards.
@@ -44,7 +44,9 @@ It replaces fragile Jinja2 templates, hardcoded entity mappings, and rigid autom
 - 👁️ **Multi-Modal Vision & Presence Intelligence (Phase 8)**: Multi-sensor room occupancy fusion combining mmWave radar, PIR, media playback, and micro-BLE beacons; RTSP camera stream deduplication and Gemini Vision anomaly detection.
 - 🔄 **Self-Supervised Habit Learning & Behavioral Modeling (Phase 9)**: Non-blocking SQLite recorder habit sequence mining, habit deviation guards (e.g. missed bedtime routine), and dynamic circadian lighting & seasonal temperature curves.
 - 🌐 **Autonomous Home Commissioning & Multi-Node Federation (Phase 10)**: Zero-config heuristic spatial assignment for unassigned entities and multi-instance Home Assistant edge node synchronization with remote service orchestration.
-- 💬 **Assist AI Co-Pilot with Real-Time Audio Streaming**: Interactive multi-turn chat co-pilot (`otis_ai.chat`) with direct Web Speech microphone input, 5-bar animated audio waveform visualizer, and instant Markdown live preview.
+- ⚙️ **User Behavioral Rules & Interactive Onboarding (Roadmap Item 7)**: Persistent persona engine (`rules_manager.py`) governing assistant personality (Concierge, Butler, Minimalist, Custom), conversational tone, response verbosity, autonomy safeguards (explicit deadbolt/alarm confirmations), quiet hours volume limiting, and custom household rules. Dynamic prompt injection into Assist conversation turns and an interactive 4-tab onboarding modal.
+- ⛅ **Command Center Home View Resilience**: Weather forecast (`weather.home`) and calendar agenda glance strip seamlessly integrated between Studios and Rooms. Automatic direct registry fallback and storage overwrite guards for all 16 room and area subviews.
+- 💬 **Assist AI Co-Pilot with Real-Time Audio Streaming & Failover**: Interactive multi-turn chat co-pilot (`otis_ai.chat`) with direct Web Speech microphone input, 5-bar animated audio waveform visualizer, instant Markdown live preview, compacted entity representations resolving Groq HTTP 413, and automated failover cascade across Google Generative AI / Gemini.
 
 <div align="center">
   <img width="900" alt="image" src="https://github.com/user-attachments/assets/317266e6-1470-4d90-afa9-5f7f0432de53" />
@@ -155,7 +157,7 @@ data:
 
 ## 🏷️ Services Reference
 
-Otis AI Companion provides **41 registered services** structured by architectural subsystem:
+Otis AI Companion provides **43 registered services** structured by architectural subsystem:
 
 ### 1. AI Co-Pilot & Suggestion Engine
 | Service Name | Description | Example Target |
@@ -238,6 +240,12 @@ Otis AI Companion provides **41 registered services** structured by architectura
 | `otis_ai.call_remote_service` | Execute a Home Assistant service call on a satellite edge node. | `data: { node_id: "guest_house", domain: "light", service: "turn_off" }` |
 | `otis_ai.get_federation_status` | Retrieve connectivity, latency, entity counts, and version across nodes. | `response_variable: status` |
 
+### 11. User Behavioral Rules & Persona Management
+| Service Name | Description | Example Target |
+| :--- | :--- | :--- |
+| `otis_ai.get_user_rules` | Retrieve persisted user behavioral rules, persona guidelines, and onboarding preferences. | `response_variable: user_rules` |
+| `otis_ai.set_user_rules` | Save or update persona profile, autonomy policies, quiet hours, and household instructions. | `data: { rules: { persona: "concierge", tone: "friendly" } }` |
+
 ---
 
 ## 🎛️ Otis Companion Lovelace Card
@@ -254,8 +262,10 @@ show_chat: true
 ```
 
 ### Features:
-* **6 Theme Presets**: `ha_native` (Default, follows HA theme), `cyberpunk`, `midnight`, `emerald`, `sunset`, and `light_frost`.
-* **Voice Speech Input**: Built-in microphone streaming with a 5-bar animated audio waveform equalizer.
+* **Interactive Rules Launchpad & Onboarding Wizard**: `⚙️ Rules` chip launches a 4-tab modal for persona selection (Concierge, Butler, Minimalist, Custom), response verbosity, autonomy safeguards (deadbolt & alarm confirmation), quiet hours volume limiting, and custom household rules with first-run onboarding banner.
+* **Resilient Command Center Home View**: Glance strip seamlessly displaying live weather forecast (`weather.home`) and calendar agenda events, with automatic registry fallback and persistence protection across all 16 room subviews.
+* **6 Theme Presets & Voice STT**: `ha_native` (Default, follows HA theme), `cyberpunk`, `midnight`, `emerald`, `sunset`, and `light_frost`, with integrated microphone streaming and 5-bar animated audio equalizer in both Chat and Theme Studio.
+* **Vector Floor Plan Studio & Dynamic Pins**: High-performance SVG canvas editor with dynamic matrix transforms (`getScreenCTM()`), dual `ResizeObserver` for zero-drift responsive pin tracking across all aspect ratios, native `ha-state-icon` rendering, and drag-and-drop pin editing.
 * **Live Markdown Preview**: Auto-expanding live markdown preview above the chat input box.
 * **Visual Card Editor**: Complete visual configuration via Home Assistant's dashboard editor.
 
@@ -269,11 +279,13 @@ Otis AI Companion includes a comprehensive test suite running against an asynchr
 python3 -m unittest discover tests
 ```
 
-### Coverage (85/85 Passing):
+### Coverage (91/91 Passing):
 - **Core Engine & Registries (`test_core_rebuilt.py`)**: Registry discovery, maturity scoring, BFS spatial pathfinding, floor plan rendering, themes, Sentinel watchdog, and atomic macros.
+- **User Behavioral Rules (`test_rules_manager.py`)**: Persona profiles, tone guidelines, autonomy policies, quiet hours volume limiting, dynamic prompt injection, and services.
 - **Vision & Presence Fusion (`test_vision_presence.py`)**: mmWave + PIR + media fusion, camera stream deduplication, and Gemini Vision anomaly detection.
 - **Habit Learning & Behavioral Modeling (`test_habit_manager.py`)**: SQLite recorder mining, habit routine clustering, bedtime deviation guards, and circadian curves.
 - **Autonomous Commissioning & Federation (`test_node_federation_commissioning.py`)**: Zero-config heuristic room mapping, satellite node sync, and remote service proxying.
+- **Groq Context Compaction & LLM Failover**: Compact entity representations preventing Groq HTTP 413 payload errors, dynamic token limits, and transparent cascade failover to Google Generative AI / Gemini.
 
 ---
 
