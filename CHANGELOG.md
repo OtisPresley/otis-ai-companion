@@ -2,6 +2,19 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.11.6] - 2026-10-30
+
+### Fixed & Enhanced
+- **Floor Plan Tab as Single Configurable Source of Truth (Roadmap Item 1)**:
+  - Fixed issue where entity icons were hidden on the Floor Plan tab by removing `display: none` from the SVG stylesheet and enforcing permanent inline visibility (`display: inline-block !important`).
+  - Added live state-based styling for all entity pins across normal and edit modes: circles glow with domain accent colors when active (`#f59e0b` light, `#ec4899` media, `#a855f7` switch, `#06b6d4` fan, `#8b5cf6` vacuum, `#eab308` cover) and display domain vector icons.
+  - In Normal Mode: Entity pins are directly interactive. Tapping toggles lights, switches, fans, and covers, or opens `more-info` for media players, climates, vacuums, locks, and cameras. Hover displays friendly name and state.
+  - In Edit Mode (Admin/Owner only): Full GUI drag & drop repositioning, Pin Inspector modal with fine-tuning coordinates and `🗑️ Remove Pin`, and searchable `➕ Add Entity` modal.
+  - Bidirectional Metadata Sync: `dashboard_manager.py` reads `custom_layout.badges` from metadata as the source of truth for the Interactive Floor Plan view (`picture-elements`), ensuring moved, added, or deleted pins immediately reflect across the entire dashboard.
+- **AI Failover Redundancy Guide - Dedicated HACS Groq Integration (`ha-groq`)**:
+  - Updated the Groq Cloud provider section to feature the dedicated **Groq** integration from HACS (`ha-groq` by barneyonline).
+  - Clarified that no Base URL or complex proxy settings are needed—users can install `ha-groq` via HACS, enter their free Groq API key, select their model (`llama-3.3-70b-versatile`), and get an instant conversational failover agent.
+
 ## [1.11.5] - 2026-10-30
 
 ### Fixed & Enhanced

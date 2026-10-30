@@ -1373,7 +1373,7 @@ class FloorplanParser:
         letter-spacing: 0.6px;
       }}
       .entity-badge {{
-        display: none;
+        display: inline;
         cursor: pointer;
         transition: transform 0.2s ease;
       }}
@@ -1565,16 +1565,21 @@ class FloorplanParser:
 
         for domain_key, icon_char in (
             ("lights", "💡"),
-            ("motion", "🚶"),
-            ("climates", "🌡️"),
             ("media", "📺"),
+            ("fans", "🌀"),
+            ("vacuums", "🧹"),
+            ("covers", "🚪"),
+            ("switches", "🔌"),
+            ("climates", "🌡️"),
+            ("motion", "🚶"),
             ("cameras", "📹"),
+            ("locks", "🔒"),
         ):
             domain_entities = buckets.get(domain_key, [])
             if domain_entities:
                 parts.append(
                     f'    <g class="entity-badge" data-entity-id="{domain_entities[0]}" transform="translate({badge_start_x + badge_idx * badge_spacing}, {badge_y})">'
-                    f'<circle cx="0" cy="0" r="9" class="badge-circle" />'
+                    f'<circle cx="0" cy="0" r="10" class="badge-circle" />'
                     f'<text class="badge-icon">{icon_char}</text></g>\n'
                 )
                 badge_idx += 1

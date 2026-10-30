@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.11.5";
+const CARD_VERSION = "1.11.6";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -449,6 +449,8 @@ class OtisCompanionCard extends HTMLElement {
             return `<text x="${xVal}" y="${yVal}" class="${clsName}">${cleanContent}</text>`;
           }
         );
+        // Ensure entity-badge elements are never hidden by legacy display:none in SVG stylesheet
+        rawSvg = rawSvg.replace(/\.entity-badge\s*\{[^}]*display:\s*none;?[^}]*\}/gi, ".entity-badge { display: inline; cursor: pointer; }");
         this._floorplanSvg = rawSvg;
       }
     } catch (err) {
@@ -3548,8 +3550,19 @@ class OtisCompanionCard extends HTMLElement {
           border-color: var(--otis-primary);
         }
 
+        .floorplan-svg-viewport .entity-badge {
+          display: inline-block !important;
+          cursor: pointer;
+          transition: transform 0.2s ease, filter 0.2s ease;
+        }
+
+        .floorplan-svg-viewport .entity-badge:hover {
+          transform: scale(1.22);
+          filter: drop-shadow(0 0 8px rgba(56, 189, 248, 0.7));
+        }
+
         .floorplan-svg-viewport.editor-mode .entity-badge {
-          display: inline !important;
+          display: inline-block !important;
           cursor: grab !important;
           filter: drop-shadow(0 0 6px var(--otis-primary)) !important;
         }
@@ -5687,13 +5700,13 @@ class OtisCompanionCard extends HTMLElement {
               <!-- Groq Cloud -->
               <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #f59e0b;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
-                  <span class="failover-agent-name" data-domain="openai_conversation" style="font-weight: 700; font-size: 0.84rem; color: #fbbf24; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add via OpenAI Conversation integration">
+                  <span class="failover-agent-name" data-domain="groq" style="font-weight: 700; font-size: 0.84rem; color: #fbbf24; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add Groq integration in Home Assistant">
                     ⚡ Groq Cloud (Llama 3.3 70B / 3.1 8B) ↗
                   </span>
                   <div style="display: flex; align-items: center; gap: 6px;">
                     <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4);">FREE TIER</span>
-                    <button type="button" class="btn-setup-agent" data-domain="openai_conversation" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); cursor: pointer;">
-                      + Add via OpenAI in HA ↗
+                    <button type="button" class="btn-setup-agent" data-domain="groq" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); cursor: pointer;">
+                      + Add Groq in HA ↗
                     </button>
                   </div>
                 </div>
@@ -5702,26 +5715,20 @@ class OtisCompanionCard extends HTMLElement {
                 </div>
                 <div style="margin-top: 6px; padding: 8px 10px; background: rgba(245, 158, 11, 0.08); border: 1px dashed rgba(245, 158, 11, 0.4); border-radius: 8px; font-size: 0.73rem; line-height: 1.45; color: var(--otis-text);">
                   <div style="font-weight: 700; color: #fbbf24; margin-bottom: 4px; display: flex; align-items: center; gap: 5px;">
-                    <span>⚠️</span> Where to Enter Base URL (Groq):
+                    <span>✨</span> Setup via HACS (ha-groq integration):
                   </div>
-                  <div>Home Assistant's <em>native</em> OpenAI Conversation integration does <strong>not</strong> expose a Base URL field. To use Groq, install <strong>Extended OpenAI Conversation</strong> from <strong>HACS</strong> (Home Assistant Community Store):</div>
+                  <div>Install the dedicated <strong>Groq</strong> integration from <strong>HACS</strong> (no Base URL required!):</div>
                   <ol style="margin: 4px 0 6px 18px; padding: 0; color: var(--otis-text-muted); font-size: 0.71rem;">
-                    <li>Open <strong>HACS ➔ Integrations</strong>, search for <em>Extended OpenAI Conversation</em>, and download it.</li>
-                    <li>Go to <em>Settings ➔ Devices &amp; Services ➔ Add Integration</em> and select <strong>Extended OpenAI Conversation</strong>.</li>
-                    <li>Enter your free Groq API key (from <em>console.groq.com</em>) and set:</li>
+                    <li>Open <strong>HACS ➔ Integrations</strong>, search for <strong>Groq</strong> (<code>ha-groq</code> by barneyonline), and download it.</li>
+                    <li>Restart Home Assistant when prompted by HACS.</li>
+                    <li>Go to <em>Settings ➔ Devices &amp; Services ➔ Add Integration</em>, search for <strong>Groq</strong>, and paste your free API key from <a href="https://console.groq.com" target="_blank" style="color: #fbbf24; text-decoration: underline;">console.groq.com</a>.</li>
                   </ol>
-                  <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 5px; padding: 4px 8px; background: rgba(0,0,0,0.35); border-radius: 5px; font-family: monospace; font-size: 0.7rem;">
-                    <span>Base URL: <strong>https://api.groq.com/openai/v1</strong></span>
-                    <button type="button" class="btn-copy-base-url" data-url="https://api.groq.com/openai/v1" style="font-size: 0.65rem; padding: 2px 7px; border-radius: 4px; background: rgba(245, 158, 11, 0.25); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.5); cursor: pointer;">
-                      📋 Copy URL
-                    </button>
-                  </div>
-                  <div style="display: flex; gap: 6px; margin-top: 6px;">
+                  <div style="display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap;">
                     <button type="button" class="btn-open-hacs" style="font-size: 0.68rem; padding: 3px 8px; border-radius: 5px; background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); cursor: pointer;">
                       🛒 Open HACS Integrations ↗
                     </button>
-                    <button type="button" class="btn-setup-agent" data-domain="extended_openai_conversation" style="font-size: 0.68rem; padding: 3px 8px; border-radius: 5px; background: rgba(255, 255, 255, 0.05); color: var(--otis-text); border: 1px solid var(--otis-surface-border); cursor: pointer;">
-                      + Add Extended OpenAI in HA ↗
+                    <button type="button" class="btn-setup-agent" data-domain="groq" style="font-size: 0.68rem; padding: 3px 8px; border-radius: 5px; background: rgba(255, 255, 255, 0.05); color: var(--otis-text); border: 1px solid var(--otis-surface-border); cursor: pointer;">
+                      + Add Groq in HA ↗
                     </button>
                   </div>
                 </div>
@@ -6772,6 +6779,83 @@ class OtisCompanionCard extends HTMLElement {
     const isAdmin = Boolean(this._hass?.user?.is_admin || this._hass?.user?.is_owner);
 
     if (svgViewport && svgEl) {
+      // 0. Update live states, colors, tooltips & domain icons on all entity badges
+      svgEl.querySelectorAll(".entity-badge").forEach((badge) => {
+        const entityId = badge.getAttribute("data-entity-id");
+        if (!entityId) return;
+        const domain = entityId.split(".")[0];
+        const stateObj = this._hass?.states?.[entityId];
+        const state = stateObj?.state || "unknown";
+        const isActive = ["on", "playing", "open", "unlocked", "active", "cleaning"].includes(state);
+        const name = stateObj?.attributes?.friendly_name || entityId;
+
+        badge.setAttribute("title", `${name} (${state})`);
+
+        const circle = badge.querySelector(".badge-circle");
+        if (circle) {
+          circle.setAttribute("r", "11");
+          if (isActive) {
+            const color =
+              domain === "light"
+                ? "#f59e0b"
+                : domain === "media_player"
+                ? "#ec4899"
+                : domain === "switch"
+                ? "#a855f7"
+                : domain === "climate"
+                ? "#f97316"
+                : domain === "fan"
+                ? "#06b6d4"
+                : domain === "vacuum"
+                ? "#8b5cf6"
+                : domain === "cover"
+                ? "#eab308"
+                : domain === "lock"
+                ? "#10b981"
+                : "#38bdf8";
+            circle.setAttribute("fill", color);
+            circle.setAttribute("stroke", "#ffffff");
+            circle.setAttribute("stroke-width", "1.5");
+            circle.style.filter = `drop-shadow(0 0 6px ${color})`;
+          } else {
+            circle.setAttribute("fill", "rgba(15, 23, 42, 0.85)");
+            circle.setAttribute("stroke", "rgba(148, 163, 184, 0.5)");
+            circle.setAttribute("stroke-width", "1.2");
+            circle.style.filter = "none";
+          }
+        }
+
+        const iconEl = badge.querySelector(".badge-icon");
+        if (iconEl) {
+          iconEl.style.fontSize = "11px";
+          iconEl.style.dominantBaseline = "central";
+          iconEl.style.textAnchor = "middle";
+          const iconChar =
+            domain === "light"
+              ? "💡"
+              : domain === "media_player"
+              ? "📺"
+              : domain === "switch"
+              ? "🔌"
+              : domain === "fan"
+              ? "🌀"
+              : domain === "vacuum"
+              ? "🧹"
+              : domain === "cover"
+              ? "🚪"
+              : domain === "lock"
+              ? "🔒"
+              : domain === "climate"
+              ? "🌡️"
+              : domain === "camera"
+              ? "📹"
+              : domain === "binary_sensor"
+              ? "🚶"
+              : "⚡";
+          iconEl.textContent = iconChar;
+        }
+      });
+
       if (this._editorActive && isAdmin) {
         // --- Canvas Editor Active Mode ---
 
@@ -7341,11 +7425,11 @@ class OtisCompanionCard extends HTMLElement {
             const entityId = badge.getAttribute("data-entity-id");
             if (!entityId || !this._hass) return;
             const domain = entityId.split(".")[0];
-            if (domain === "light" || domain === "switch") {
+            if (["light", "switch", "fan", "cover"].includes(domain)) {
               this._hass.callService("homeassistant", "toggle", { entity_id: entityId });
               const st = this._hass.states[entityId];
               const newState = st?.state === "on" ? "off" : "on";
-              this._showToast(`${st?.attributes?.friendly_name || entityId} turned ${newState}`);
+              this._showToast(`${st?.attributes?.friendly_name || entityId} toggled (${newState})`);
             } else {
               const ev = new CustomEvent("hass-more-info", {
                 detail: { entityId },

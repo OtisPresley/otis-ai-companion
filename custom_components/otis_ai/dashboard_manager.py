@@ -1217,15 +1217,19 @@ class DashboardManager:
 
                 # Check custom badge coordinates from metadata
                 custom_badges_map: dict[str, dict[str, float]] = {}
+                deleted_badges_set: set[str] = set()
                 if hasattr(parser, "_metadata") and isinstance(parser._metadata, dict):
                     c_layout = parser._metadata.get("custom_layout", {})
                     if isinstance(c_layout, dict) and "badges" in c_layout:
                         for cb in c_layout["badges"]:
-                            if isinstance(cb, dict) and cb.get("entity_id") and "x" in cb and "y" in cb:
-                                custom_badges_map[cb["entity_id"]] = {
-                                    "x": float(cb["x"]),
-                                    "y": float(cb["y"]),
-                                }
+                            if isinstance(cb, dict) and cb.get("entity_id"):
+                                if cb.get("delete") or cb.get("deleted"):
+                                    deleted_badges_set.add(cb["entity_id"])
+                                elif "x" in cb and "y" in cb:
+                                    custom_badges_map[cb["entity_id"]] = {
+                                        "x": float(cb["x"]),
+                                        "y": float(cb["y"]),
+                                    }
 
                 for zone, rooms in layout_by_zone.items():
                     for r in rooms:
@@ -1306,6 +1310,8 @@ class DashboardManager:
 
                             for idx, ctrl in enumerate(ctrl_items):
                                 eid = ctrl["entity"]
+                                if eid in deleted_badges_set:
+                                    continue
                                 if eid in custom_badges_map:
                                     item_left_pct = round(custom_badges_map[eid]["x"] / 1300.0 * 100, 1)
                                     item_top_pct = round(custom_badges_map[eid]["y"] / canvas_h * 100, 1)
@@ -1324,6 +1330,37 @@ class DashboardManager:
                                     },
                                     "tap_action": {"action": ctrl["action"]},
                                 })
+
+                # Also include any user-added custom badges that were not in default room controls
+                seen_eids = {e.get("entity") for e in elements if e.get("type") == "state-icon"}
+                cfg_badge_map = {
+                    "light": {"color": "#38bdf8", "action": "toggle"},
+                    "switch": {"color": "#a855f7", "action": "toggle"},
+                    "media_player": {"color": "#ec4899", "action": "more-info"},
+                    "fan": {"color": "#06b6d4", "action": "toggle"},
+                    "climate": {"color": "#f97316", "action": "more-info"},
+                    "cover": {"color": "#eab308", "action": "toggle"},
+                    "lock": {"color": "#10b981", "action": "more-info"},
+                    "vacuum": {"color": "#8b5cf6", "action": "more-info"},
+                }
+                for cb_eid, cb_pos in custom_badges_map.items():
+                    if cb_eid not in seen_eids and cb_eid not in deleted_badges_set:
+                        cb_left_pct = round(cb_pos["x"] / 1300.0 * 100, 1)
+                        cb_top_pct = round(cb_pos["y"] / canvas_h * 100, 1)
+                        cb_dom = cb_eid.split(".")[0] if "." in cb_eid else "unknown"
+                        cb_color = cfg_badge_map.get(cb_dom, {}).get("color", "#38bdf8")
+                        cb_action = cfg_badge_map.get(cb_dom, {}).get("action", "toggle")
+                        elements.append({
+                            "type": "state-icon",
+                            "entity": cb_eid,
+                            "style": {
+                                "top": f"{cb_top_pct}%",
+                                "left": f"{cb_left_pct}%",
+                                "--paper-item-icon-active-color": cb_color,
+                                "cursor": "pointer",
+                            },
+                            "tap_action": {"action": cb_action},
+                        })
             except Exception as elem_err:
                 _LOGGER.debug("Could not build picture-elements room badges: %s", elem_err)
 

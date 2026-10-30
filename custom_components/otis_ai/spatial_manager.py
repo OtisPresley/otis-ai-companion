@@ -127,6 +127,8 @@ def classify_area_entities(entity_ids: list[str]) -> dict[str, list[str]]:
         "locks": [],
         "covers": [],
         "switches": [],
+        "vacuums": [],
+        "fans": [],
     }
     for eid in entity_ids or []:
         if not isinstance(eid, str):
@@ -149,6 +151,10 @@ def classify_area_entities(entity_ids: list[str]) -> dict[str, list[str]]:
             buckets["covers"].append(eid)
         elif eid.startswith("switch."):
             buckets["switches"].append(eid)
+        elif eid.startswith("vacuum."):
+            buckets["vacuums"].append(eid)
+        elif eid.startswith("fan."):
+            buckets["fans"].append(eid)
     return buckets
 
 
