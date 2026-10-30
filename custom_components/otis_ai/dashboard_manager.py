@@ -175,6 +175,34 @@ class DashboardManager:
             },
         ]
 
+        # Weather & Calendar Glance cards
+        weather_eid = next((e["entity_id"] for e in entities_list if e["entity_id"].startswith("weather.")), None)
+        calendar_eids = [e["entity_id"] for e in entities_list if e["entity_id"].startswith("calendar.")][:3]
+
+        glance_cards = []
+        if weather_eid:
+            glance_cards.append({
+                "type": "weather-forecast",
+                "entity": weather_eid,
+                "show_current": True,
+                "show_forecast": True,
+                "forecast_type": "daily",
+            })
+        if calendar_eids:
+            glance_cards.append({
+                "type": "calendar",
+                "entities": calendar_eids,
+                "initial_view": "listDay",
+            })
+        if glance_cards:
+            home_cards.append({
+                "type": "grid",
+                "title": "Glance & Schedule",
+                "columns": len(glance_cards),
+                "square": False,
+                "cards": glance_cards,
+            })
+
         if active_areas:
             home_cards.append({
                 "type": "grid",

@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.11.10";
+const CARD_VERSION = "1.11.11";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -1833,6 +1833,67 @@ class OtisCompanionCard extends HTMLElement {
 
         .stat-item.warning .stat-value {
           color: #f59e0b;
+        }
+
+        /* Weather & Calendar Glance Strip */
+        .glance-strip {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+          gap: 10px;
+          margin-bottom: 14px;
+        }
+
+        .glance-chip {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          background: var(--otis-surface);
+          border: 1px solid var(--otis-surface-border);
+          border-radius: 12px;
+          padding: 10px 14px;
+          cursor: pointer;
+          transition: all 0.25s ease;
+          user-select: none;
+        }
+
+        .glance-chip:hover {
+          border-color: var(--otis-primary);
+          background: color-mix(in srgb, var(--otis-primary) 8%, var(--otis-surface));
+          transform: translateY(-1px);
+          box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25), 0 0 10px var(--otis-glow);
+        }
+
+        .glance-icon {
+          font-size: 1.5rem;
+          line-height: 1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+
+        .glance-text {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+          overflow: hidden;
+        }
+
+        .glance-primary {
+          font-size: 0.85rem;
+          font-weight: 700;
+          color: var(--otis-text);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .glance-secondary {
+          font-size: 0.72rem;
+          color: var(--otis-text-muted);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
         }
 
         /* Subview Hub Launchpad */
@@ -4294,6 +4355,9 @@ class OtisCompanionCard extends HTMLElement {
               : ""
           }
 
+          <!-- Weather & Calendar Glance Strip -->
+          ${this._renderGlanceStrip()}
+
           <!-- Studio & Room Subviews Launchpad -->
           <div class="subviews-launchpad">
             <div class="launchpad-row">
@@ -4378,6 +4442,101 @@ class OtisCompanionCard extends HTMLElement {
     `;
 
     this._bindEvents();
+  }
+
+  _renderGlanceStrip() {
+    if (this._config.show_glance === false) return "";
+
+    // 1. Weather entity
+    const weatherEntities = Object.keys(this._hass?.states || {}).filter((k) => k.startsWith("weather."));
+    const weatherEid = this._config.weather_entity || (weatherEntities.includes("weather.home") ? "weather.home" : weatherEntities[0]);
+    const weatherObj = weatherEid ? this._hass?.states?.[weatherEid] : null;
+
+    // 2. Calendar entity
+    const calendarEntities = Object.keys(this._hass?.states || {}).filter((k) => k.startsWith("calendar."));
+    const calendarEid = this._config.calendar_entity || (calendarEntities.includes("calendar.united_states_nc") ? "calendar.united_states_nc" : calendarEntities[0]);
+    const calendarObj = calendarEid ? this._hass?.states?.[calendarEid] : null;
+
+    if (!weatherObj && !calendarObj) return "";
+
+    const weatherIcons = {
+      "clear-night": "🌙",
+      "cloudy": "☁️",
+      "exceptional": "⚠️",
+      "fog": "🌫️",
+      "hail": "🌨️",
+      "lightning": "⚡",
+      "lightning-rainy": "⛈️",
+      "partlycloudy": "⛅",
+      "pouring": "🌧️",
+      "rainy": "🌧️",
+      "snowy": "❄️",
+      "snowy-rainy": "🌨️",
+      "sunny": "☀️",
+      "windy": "💨",
+      "windy-variant": "🌬️",
+    };
+
+    let weatherHtml = "";
+    if (weatherObj) {
+      const cond = String(weatherObj.state || "unknown").toLowerCase();
+      const icon = weatherIcons[cond] || "🌤️";
+      const temp = weatherObj.attributes?.temperature != null ? Math.round(weatherObj.attributes.temperature) : "--";
+      const unit = weatherObj.attributes?.temperature_unit || this._hass?.config?.unit_system?.temperature || "°F";
+      const cleanCond = cond.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+      const hum = weatherObj.attributes?.humidity;
+      const wind = weatherObj.attributes?.wind_speed;
+      const subtitle = hum != null ? `${hum}% Humidity` : (wind != null ? `${wind} mph Wind` : (weatherObj.attributes?.friendly_name || "Outdoor Weather"));
+
+      weatherHtml = `
+        <div class="glance-chip weather-chip" id="glance-weather" data-entity-id="${weatherEid}" title="Weather: ${cleanCond} • Tap for detailed forecast">
+          <span class="glance-icon">${icon}</span>
+          <div class="glance-text">
+            <span class="glance-primary">${temp}°${unit} • ${cleanCond}</span>
+            <span class="glance-secondary">${subtitle}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    let calendarHtml = "";
+    if (calendarObj) {
+      const msg = calendarObj.attributes?.message || calendarObj.attributes?.friendly_name || "Calendar";
+      const hasEvent = Boolean(calendarObj.attributes?.message);
+      let timeText = "No upcoming events scheduled";
+      if (hasEvent) {
+        const startTime = calendarObj.attributes?.start_time;
+        if (startTime) {
+          try {
+            const dt = new Date(startTime);
+            const isToday = dt.toDateString() === new Date().toDateString();
+            const timeStr = dt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+            timeText = isToday ? `Today at ${timeStr}` : dt.toLocaleDateString([], { month: "short", day: "numeric" });
+          } catch (_) {
+            timeText = startTime;
+          }
+        } else {
+          timeText = "Active Agenda";
+        }
+      }
+
+      calendarHtml = `
+        <div class="glance-chip calendar-chip" id="glance-calendar" data-entity-id="${calendarEid}" title="Calendar: ${this._escapeHtml(msg)} • Tap for agenda view">
+          <span class="glance-icon">📅</span>
+          <div class="glance-text">
+            <span class="glance-primary">${this._escapeHtml(hasEvent ? msg : "Calendar Agenda")}</span>
+            <span class="glance-secondary">${this._escapeHtml(timeText)}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="glance-strip">
+        ${weatherHtml}
+        ${calendarHtml}
+      </div>
+    `;
   }
 
   _renderSuggestionsTab(visibleSuggestions) {
@@ -6215,6 +6374,36 @@ class OtisCompanionCard extends HTMLElement {
     const refreshBtn = root.querySelector("#refresh-btn");
     if (refreshBtn) {
       refreshBtn.onclick = () => this._fetchData();
+    }
+
+    // Weather & Calendar Glance Chips
+    const glanceWeather = root.querySelector("#glance-weather");
+    if (glanceWeather) {
+      glanceWeather.onclick = () => {
+        const eid = glanceWeather.getAttribute("data-entity-id");
+        if (eid) {
+          const event = new CustomEvent("hass-more-info", {
+            detail: { entityId: eid },
+            bubbles: true,
+            composed: true,
+          });
+          this.dispatchEvent(event);
+        }
+      };
+    }
+    const glanceCalendar = root.querySelector("#glance-calendar");
+    if (glanceCalendar) {
+      glanceCalendar.onclick = () => {
+        const eid = glanceCalendar.getAttribute("data-entity-id");
+        if (eid) {
+          const event = new CustomEvent("hass-more-info", {
+            detail: { entityId: eid },
+            bubbles: true,
+            composed: true,
+          });
+          this.dispatchEvent(event);
+        }
+      };
     }
 
     // Autonomous Commissioning & Multi-Node Federation Tab Buttons

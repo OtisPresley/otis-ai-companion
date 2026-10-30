@@ -2,6 +2,16 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.11.11] - 2026-10-30
+
+### Added & Enhanced
+- **Weather & Calendar Glance Info (Roadmap Item 6)**:
+  - Added a real-time Weather and Calendar Glance strip on the AI Command Center home card header.
+  - Automatically queries active `weather.*` entities (`weather.home`) for live conditions, temperatures, humidity, wind, and custom dynamic condition icons.
+  - Automatically queries active `calendar.*` entities (`calendar.united_states_nc`, etc.) for upcoming agenda events, start times, and date summaries.
+  - Integrated interactive 1-tap `hass-more-info` modals directly from the chips for full weather forecasts and agenda calendars.
+  - Added native Home Assistant `weather-forecast` and `calendar` grid cards on the Non-Admin User Command Center (`/command-center`) home view.
+
 ## [1.11.10] - 2026-10-30
 
 ### Fixed & Enhanced
