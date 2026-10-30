@@ -75,12 +75,15 @@ from .const import (
     SERVICE_SYNC_FEDERATED_NODES,
     SERVICE_CALL_REMOTE_SERVICE,
     SERVICE_GET_FEDERATION_STATUS,
+    SERVICE_GET_USER_RULES,
+    SERVICE_SET_USER_RULES,
 )
 from .audio_manager import AudioHandoffManager
 from .automation_manager import AutomationManager
 from .dashboard_manager import DashboardManager
 from .energy_manager import EnergyManager
 from .macro_manager import MacroManager
+from .rules_manager import BehavioralRulesManager
 from .sentinel_manager import SentinelManager
 from .spatial_manager import (
     SpatialGraphManager,
@@ -391,6 +394,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     habit_manager = BehavioralHabitManager(hass, spatial_manager=spatial_manager, energy_manager=energy_manager, vision_manager=vision_manager)
     commissioning_manager = AutonomousCommissioningManager(hass, spatial_manager=spatial_manager)
     federation_manager = FederationManager(hass)
+    rules_manager = BehavioralRulesManager(hass)
     await asyncio.gather(
         spatial_manager.async_load(),
         floorplan_parser.async_load(),
@@ -398,6 +402,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         dashboard_manager.async_ensure_user_command_center_dashboard(),
         sentinel_manager.async_load_preferences(),
         federation_manager.async_load(),
+        rules_manager.async_load(),
     )
     engine = DiscoveryEngine(
         hass,
@@ -411,6 +416,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         habit_manager=habit_manager,
         commissioning_manager=commissioning_manager,
         federation_manager=federation_manager,
+        rules_manager=rules_manager,
     )
 
     async def _async_sync_dashboards_on_startup() -> None:
@@ -463,6 +469,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         habit_manager=habit_manager,
         commissioning_manager=commissioning_manager,
         federation_manager=federation_manager,
+        rules_manager=rules_manager,
     )
 
     if hasattr(conversation, "async_register_agent"):
@@ -496,6 +503,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "habit_manager": habit_manager,
         "commissioning_manager": commissioning_manager,
         "federation_manager": federation_manager,
+        "rules_manager": rules_manager,
     }
 
     async def _async_update_listener(hass_inst: HomeAssistant, updated_entry: ConfigEntry) -> None:
@@ -557,6 +565,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     def _get_federation_manager() -> FederationManager:
         return _get_entry_data().get("federation_manager", federation_manager)
+
+    def _get_rules_manager() -> BehavioralRulesManager:
+        return _get_entry_data().get("rules_manager", rules_manager)
 
     def _get_active_managers():
         return (
@@ -1498,6 +1509,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         fm = _get_federation_manager()
         return await fm.async_get_federation_summary()
 
+    async def handle_get_user_rules(call) -> ServiceResponse:
+        """Handle service call to retrieve user behavioral rules and persona guidelines."""
+        _LOGGER.debug("Service 'get_user_rules' triggered")
+        rm = _get_rules_manager()
+        return {"rules": rm.get_rules()}
+
+    async def handle_set_user_rules(call) -> ServiceResponse:
+        """Handle service call to update user behavioral rules and persona guidelines."""
+        _LOGGER.debug("Service 'set_user_rules' triggered with: %s", call.data)
+        rm = _get_rules_manager()
+        eng = _get_engine()
+        rules_payload = call.data.get("rules") if isinstance(call.data.get("rules"), dict) else call.data
+        updated = await rm.async_save(rules_payload)
+        if hasattr(eng, "invalidate_cache"):
+            eng.invalidate_cache()
+        return {"success": True, "rules": updated}
+
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
         DOMAIN,
@@ -1745,6 +1773,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_get_federation_status,
         supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_USER_RULES,
+        handle_get_user_rules,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SET_USER_RULES,
+        handle_set_user_rules,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
 
     _LOGGER.info("Otis AI Companion entry set up successfully")
     return True
@@ -1773,6 +1813,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             SERVICE_UPDATE_SPATIAL_MAP,
             SERVICE_GENERATE_FLOORPLAN,
             SERVICE_UPDATE_FLOORPLAN_LAYOUT,
+            SERVICE_GET_USER_RULES,
+            SERVICE_SET_USER_RULES,
         ):
             if hass.services.has_service(DOMAIN, srv):
                 _LOGGER.debug("Removing service: %s", srv)
@@ -1805,6 +1847,7 @@ class OtisAIConversationAgent(AbstractAgent):
         habit_manager: BehavioralHabitManager | None = None,
         commissioning_manager: AutonomousCommissioningManager | None = None,
         federation_manager: FederationManager | None = None,
+        rules_manager: BehavioralRulesManager | None = None,
     ) -> None:
         """Initialize the agent."""
         self.hass = hass
@@ -1821,6 +1864,7 @@ class OtisAIConversationAgent(AbstractAgent):
         self.habit_manager = habit_manager or BehavioralHabitManager(hass, spatial_manager=self.spatial_manager)
         self.commissioning_manager = commissioning_manager or AutonomousCommissioningManager(hass, spatial_manager=self.spatial_manager)
         self.federation_manager = federation_manager or FederationManager(hass)
+        self.rules_manager = rules_manager or BehavioralRulesManager(hass)
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -2438,6 +2482,10 @@ class OtisAIConversationAgent(AbstractAgent):
         turn_count = session_data.get("turn_count", 0) + 1
         session_data["turn_count"] = turn_count
 
+        rules_snippet = ""
+        if getattr(self, "rules_manager", None):
+            rules_snippet = self.rules_manager.get_system_prompt_snippet()
+
         if turn_count > 1:
             # On follow-up turns, HA conversation agents retain conversational context.
             # Avoid re-sending thousands of tokens of static topology which triggers Groq/LLM HTTP 413 (Payload Too Large).
@@ -2445,12 +2493,16 @@ class OtisAIConversationAgent(AbstractAgent):
 Continue assisting the user in this conversation. Leverage the home's hardware architecture (Control4 Matrix Audio, Alarmo, Climate, Energy) previously established.
 Keep your response concise, structured, and actionable.
 
+{rules_snippet}
+
 User: {user_input.text}
 """
         else:
             prompt = f"""You are the Otis AI Companion, an intelligent, proactive smart home architect, co-pilot, and butler.
 Your goal is to guide the user from a bare Home Assistant installation to a fully optimized, cohesive, automated smart home—and offer to build and configure everything for them.
 Always prioritize native Home Assistant solutions, minimize frontend dependencies, and synthesize right-sized, modular coordinator automations and scripts (avoiding thousands of tiny per-entity automations or brittle monoliths).
+
+{rules_snippet}
 
 Here is the current capability and architecture map of the home:
 - System Maturity: {maturity_summary}
@@ -2675,6 +2727,7 @@ class DiscoveryEngine:
         habit_manager: BehavioralHabitManager | None = None,
         commissioning_manager: AutonomousCommissioningManager | None = None,
         federation_manager: FederationManager | None = None,
+        rules_manager: BehavioralRulesManager | None = None,
     ) -> None:
         """Initialize the discovery engine."""
         self.hass = hass
@@ -2688,6 +2741,7 @@ class DiscoveryEngine:
         self.habit_manager = habit_manager or BehavioralHabitManager(hass, spatial_manager=self.spatial_manager)
         self.commissioning_manager = commissioning_manager or AutonomousCommissioningManager(hass, spatial_manager=self.spatial_manager)
         self.federation_manager = federation_manager or FederationManager(hass)
+        self.rules_manager = rules_manager or BehavioralRulesManager(hass)
         self._cached_cap_map: dict[str, Any] | None = None
         self._cache_ts: float = 0.0
         self._cache_signature: tuple[Any, ...] | None = None
@@ -2980,6 +3034,12 @@ class DiscoveryEngine:
             {"key": k, "name": v["name"], "description": v["description"], "preview": v["preview"], "dark_mode": v.get("dark_mode", True)}
             for k, v in PRESET_THEMES.items()
         ]
+
+        user_rules = {}
+        if getattr(self, "rules_manager", None):
+            user_rules = self.rules_manager.get_rules()
+        cap_map["user_rules"] = user_rules
+
         cap_map["proactive_suggestions"] = await self.async_generate_proactive_suggestions(cap_map)
         self._cached_cap_map = dict(cap_map)
         self._cache_ts = now

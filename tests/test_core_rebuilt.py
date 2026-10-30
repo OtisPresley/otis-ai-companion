@@ -3435,6 +3435,80 @@ class TestMacroManager(unittest.TestCase):
         self.assertTrue("maturity_reach_20_media" in s_ids or any(s.get("category") == "media" for s in suggestions))
 
 
+class TestBehavioralRulesManager(unittest.TestCase):
+    """Test suite for Roadmap Item 7: User Behavioral Rules, Persona Customization & Onboarding."""
+
+    def setUp(self):
+        self.hass = MagicMock()
+        self.hass.data = {DOMAIN: {}}
+
+    def test_rules_defaults_and_loading(self):
+        """Verify default behavioral rules and persistent loading."""
+        from custom_components.otis_ai.rules_manager import BehavioralRulesManager
+
+        rm = BehavioralRulesManager(self.hass)
+        rules = asyncio.run(rm.async_load())
+
+        self.assertFalse(rules["onboarding_completed"])
+        self.assertEqual(rules["persona"], "concierge")
+        self.assertEqual(rules["tone"], "friendly")
+        self.assertEqual(rules["autonomy_level"], "balanced")
+        self.assertTrue(rules["require_lock_confirmation"])
+        self.assertEqual(rm.is_onboarding_completed(), False)
+
+    def test_rules_saving_and_prompt_snippet(self):
+        """Verify updating rules, volume clamping, and prompt snippet generation."""
+        from custom_components.otis_ai.rules_manager import BehavioralRulesManager
+
+        rm = BehavioralRulesManager(self.hass)
+        asyncio.run(rm.async_load())
+
+        # Update to Butler persona with strict autonomy and quiet hours
+        updated = asyncio.run(rm.async_save({
+            "onboarding_completed": True,
+            "persona": "butler",
+            "tone": "formal",
+            "autonomy_level": "strict",
+            "quiet_hours_enabled": True,
+            "quiet_hours_start": "23:00",
+            "quiet_hours_end": "06:30",
+            "quiet_hours_volume": 120,  # Should clamp to 100
+            "custom_instructions": "Always greet Jamie politely. Never arm perimeter when guest room is occupied.",
+        }))
+
+        self.assertTrue(updated["onboarding_completed"])
+        self.assertEqual(updated["persona"], "butler")
+        self.assertEqual(updated["quiet_hours_volume"], 100)
+        self.assertTrue(rm.is_onboarding_completed())
+
+        # Check prompt snippet
+        snippet = rm.get_system_prompt_snippet()
+        self.assertIn("Butler", snippet)
+        self.assertIn("Formal", snippet)
+        self.assertIn("STRICT", snippet)
+        self.assertIn("23:00 to 06:30", snippet)
+        self.assertIn("Always greet Jamie politely", snippet)
+
+    def test_minimalist_and_high_autonomy_snippet(self):
+        """Verify Minimalist persona and High Autonomy prompt snippet formatting."""
+        from custom_components.otis_ai.rules_manager import BehavioralRulesManager
+
+        rm = BehavioralRulesManager(self.hass)
+        asyncio.run(rm.async_load())
+
+        asyncio.run(rm.async_save({
+            "persona": "minimalist",
+            "tone": "concise",
+            "autonomy_level": "high",
+            "quiet_hours_enabled": False,
+        }))
+
+        snippet = rm.get_system_prompt_snippet()
+        self.assertIn("Minimalist", snippet)
+        self.assertIn("HIGH. Act immediately", snippet)
+        self.assertNotIn("Quiet Hours:", snippet)
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -1,7 +1,7 @@
 """Constants for the Otis AI Companion integration."""
 
 DOMAIN = "otis_ai"
-INTEGRATION_VERSION = "1.11.12"
+INTEGRATION_VERSION = "1.11.13"
 
 # Configuration Keys
 CONF_CONVERSATION_AGENT = "conversation_agent"
@@ -56,6 +56,10 @@ SERVICE_REMOVE_FEDERATED_NODE = "remove_federated_node"
 SERVICE_SYNC_FEDERATED_NODES = "sync_federated_nodes"
 SERVICE_CALL_REMOTE_SERVICE = "call_remote_service"
 SERVICE_GET_FEDERATION_STATUS = "get_federation_status"
+
+# User Behavioral Rules & Onboarding Services (Roadmap Item 7)
+SERVICE_GET_USER_RULES = "get_user_rules"
+SERVICE_SET_USER_RULES = "set_user_rules"
 
 # Dashboard Constants
 COMMAND_CENTER_DASHBOARD_ID = "command-center"

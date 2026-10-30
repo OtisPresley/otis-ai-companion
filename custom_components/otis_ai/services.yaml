@@ -650,3 +650,19 @@ call_remote_service:
 get_federation_status:
   name: Get Federation Status
   description: Retrieve live health, latency, online status, and synchronization metrics for all federated edge nodes.
+
+get_user_rules:
+  name: Get User Rules
+  description: Retrieve the user behavioral rules, persona guidelines, and onboarding preferences.
+
+set_user_rules:
+  name: Set User Rules
+  description: Save or update the user behavioral rules, persona guidelines, and onboarding preferences.
+  fields:
+    rules:
+      name: Rules
+      description: The dictionary of behavioral preferences, persona settings, and household rules to persist.
+      required: true
+      selector:
+        object:
+

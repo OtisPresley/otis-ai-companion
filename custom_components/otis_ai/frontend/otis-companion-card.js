@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.11.12";
+const CARD_VERSION = "1.11.13";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -57,6 +57,12 @@ class OtisCompanionCard extends HTMLElement {
     this._floorplanModalOpen = false;
     this._themeModalOpen = false;
     this._failoverModalOpen = false;
+    this._rulesModalOpen = false;
+    this._rulesActiveTab = "persona";
+    this._rulesDraft = null;
+    this._savingRules = false;
+    this._onboardingDismissed = false;
+    this._userRules = null;
     this._isListeningTheme = false;
     this._themeRecognition = null;
     this._draftThemePrompt = "";
@@ -413,6 +419,10 @@ class OtisCompanionCard extends HTMLElement {
       this._capabilityMap = capMap;
       if (capMap.conversation_agent_id) {
         this._conversationAgentId = capMap.conversation_agent_id;
+      }
+      this._userRules = capMap.user_rules || {};
+      if (!this._rulesDraft) {
+        this._rulesDraft = { ...this._userRules };
       }
       this._suggestions = capMap.proactive_suggestions || [];
       this._hasWalkthrough = Boolean(capMap.floorplan?.walkthrough_completed);
@@ -1990,6 +2000,74 @@ class OtisCompanionCard extends HTMLElement {
 
         .room-chip {
           background: color-mix(in srgb, var(--otis-surface) 80%, var(--otis-primary) 8%);
+        }
+
+        /* Persona & Behavioral Rules Modal */
+        .persona-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+          gap: 10px;
+        }
+
+        .persona-card {
+          background: color-mix(in srgb, var(--otis-surface) 80%, transparent);
+          border: 1px solid var(--otis-surface-border);
+          border-radius: 12px;
+          padding: 12px;
+          cursor: pointer;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          transition: all 0.15s ease;
+        }
+
+        .persona-card:hover {
+          border-color: var(--otis-primary);
+          transform: translateY(-1px);
+        }
+
+        .persona-card.selected {
+          border-color: var(--otis-primary);
+          background: color-mix(in srgb, var(--otis-primary) 12%, var(--otis-surface));
+          box-shadow: 0 0 12px rgba(56, 189, 248, 0.25);
+        }
+
+        .persona-title {
+          font-weight: 700;
+          font-size: 0.88rem;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          color: var(--otis-text);
+        }
+
+        .persona-desc {
+          font-size: 0.74rem;
+          color: var(--otis-text-muted);
+          line-height: 1.35;
+        }
+
+        .rules-setting-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 10px 12px;
+          background: color-mix(in srgb, var(--otis-surface) 60%, transparent);
+          border: 1px solid var(--otis-surface-border);
+          border-radius: 10px;
+          gap: 12px;
+        }
+
+        .rules-setting-label {
+          font-weight: 600;
+          font-size: 0.82rem;
+          color: var(--otis-text);
+        }
+
+        .rules-setting-desc {
+          font-size: 0.72rem;
+          color: var(--otis-text-muted);
+          margin-top: 2px;
         }
 
         /* Navigation Tabs */
@@ -4358,6 +4436,29 @@ class OtisCompanionCard extends HTMLElement {
           <!-- Weather & Calendar Glance Strip -->
           ${this._renderGlanceStrip()}
 
+          ${
+            !this._userRules?.onboarding_completed && !this._onboardingDismissed
+              ? `
+            <!-- Onboarding Wizard Callout Banner -->
+            <div class="onboarding-banner" id="onboarding-banner" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; margin-bottom: 12px; background: linear-gradient(135deg, rgba(14, 165, 233, 0.15), rgba(168, 85, 247, 0.15)); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.2);">
+              <div>
+                <div style="display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 0.88rem; color: var(--otis-primary, #38bdf8);">
+                  <span>✨ Welcome to Otis AI</span>
+                  <span style="font-size: 0.7rem; padding: 1px 6px; border-radius: 4px; background: rgba(56,189,248,0.2); text-transform: uppercase;">Setup</span>
+                </div>
+                <div style="font-size: 0.78rem; color: var(--otis-text-muted, #94a3b8); margin-top: 2px;">
+                  Personalize Otis for your home: choose your assistant's persona, voice guidelines, quiet hours, and custom household rules.
+                </div>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <button type="button" class="subview-chip" id="btn-start-onboarding" style="background: var(--otis-primary, #0ea5e9); color: #fff; font-weight: 600; padding: 6px 14px; border: none;">Start Setup →</button>
+                <button type="button" class="modal-close-btn" id="btn-dismiss-onboarding" title="Dismiss" style="font-size: 0.9rem; width: 24px; height: 24px; border: none; background: transparent; cursor: pointer; color: var(--otis-text-muted);">✕</button>
+              </div>
+            </div>
+          `
+              : ""
+          }
+
           <!-- Studio & Room Subviews Launchpad -->
           <div class="subviews-launchpad">
             <div class="launchpad-row">
@@ -4368,7 +4469,8 @@ class OtisCompanionCard extends HTMLElement {
               <button type="button" class="subview-chip" data-subview="${dashPrefix}/energy">⚡ Energy Studio</button>
               <button type="button" class="subview-chip" data-subview="${dashPrefix}/floorplan">🗺️ Floor Plan</button>
               ${isAdmin ? `<button type="button" class="subview-chip" id="btn-sync-dashboards" title="Sync all Studios & Rooms to Command Center" style="margin-left: auto;">🔄 Sync Command Center</button>` : ""}
-              <button type="button" class="subview-chip" id="btn-open-themes" style="${isAdmin ? "" : "margin-left: auto;"}">🎨 Themes</button>
+              <button type="button" class="subview-chip" id="btn-open-rules" title="Configure Household Persona, Rules & Behavioral Guidelines" style="${isAdmin ? "" : "margin-left: auto;"}">⚙️ Rules</button>
+              <button type="button" class="subview-chip" id="btn-open-themes">🎨 Themes</button>
             </div>
             ${
               activeAreas.length > 0
@@ -4435,6 +4537,7 @@ class OtisCompanionCard extends HTMLElement {
         ${this._editMarkerModalOpen ? this._renderEditMarkerModal() : ""}
         ${this._guideModalOpen ? this._renderGuideModal() : ""}
         ${this._failoverModalOpen ? this._renderFailoverModal() : ""}
+        ${this._rulesModalOpen ? this._renderRulesModal() : ""}
 
         <!-- Feedback Toast -->
         <div class="toast" id="toast"></div>
@@ -5886,6 +5989,283 @@ class OtisCompanionCard extends HTMLElement {
     `;
   }
 
+  _renderRulesModal() {
+    const rules = this._rulesDraft || this._userRules || {
+      persona: "concierge",
+      tone: "friendly",
+      response_length: "balanced",
+      autonomy_level: "balanced",
+      require_lock_confirmation: true,
+      require_security_confirmation: true,
+      quiet_hours_enabled: true,
+      quiet_hours_start: "22:00",
+      quiet_hours_end: "07:00",
+      quiet_hours_volume: 25,
+      preferred_speaker: "",
+      custom_instructions: "",
+    };
+
+    const activeTab = this._rulesActiveTab || "persona";
+
+    return `
+      <div class="modal-overlay" id="rules-modal-backdrop">
+        <div class="modal-card" style="max-width: 660px; max-height: 85vh; display: flex; flex-direction: column;">
+          <div class="modal-header">
+            <div>
+              <div class="modal-title">
+                <span>⚙️</span>
+                <span>Otis Persona & Household Rules</span>
+              </div>
+              <div class="modal-subtitle">
+                Configure your smart home AI assistant's personality, autonomy safeguards, voice etiquette, and custom guidelines.
+              </div>
+            </div>
+            <button type="button" class="modal-close-btn" id="rules-modal-close-btn">✕</button>
+          </div>
+
+          <!-- Tabs Navigation -->
+          <div style="display: flex; gap: 8px; border-bottom: 1px solid var(--otis-surface-border); padding: 0 0 10px 0; margin-bottom: 16px;">
+            <button type="button" class="tab-btn ${activeTab === "persona" ? "active" : ""}" id="rules-tab-persona" style="font-size: 0.78rem; padding: 6px 12px;">🎭 Persona & Tone</button>
+            <button type="button" class="tab-btn ${activeTab === "safety" ? "active" : ""}" id="rules-tab-safety" style="font-size: 0.78rem; padding: 6px 12px;">🛡️ Autonomy & Safety</button>
+            <button type="button" class="tab-btn ${activeTab === "voice" ? "active" : ""}" id="rules-tab-voice" style="font-size: 0.78rem; padding: 6px 12px;">🔊 Voice & Quiet Hours</button>
+            <button type="button" class="tab-btn ${activeTab === "instructions" ? "active" : ""}" id="rules-tab-instructions" style="font-size: 0.78rem; padding: 6px 12px;">📝 Custom Instructions</button>
+          </div>
+
+          <!-- Tab Content (Scrollable) -->
+          <div style="overflow-y: auto; flex: 1; padding-right: 4px; display: flex; flex-direction: column; gap: 14px;">
+            ${activeTab === "persona" ? this._renderRulesPersonaTab(rules) : ""}
+            ${activeTab === "safety" ? this._renderRulesSafetyTab(rules) : ""}
+            ${activeTab === "voice" ? this._renderRulesVoiceTab(rules) : ""}
+            ${activeTab === "instructions" ? this._renderRulesInstructionsTab(rules) : ""}
+          </div>
+
+          <!-- Modal Footer -->
+          <div style="display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding-top: 16px; margin-top: 10px; border-top: 1px solid var(--otis-surface-border);">
+            <button type="button" class="subview-chip" id="rules-btn-cancel" style="padding: 6px 14px;">Cancel</button>
+            <button type="button" class="subview-chip" id="rules-btn-save" style="background: var(--otis-primary, #0ea5e9); color: #fff; font-weight: 600; padding: 6px 18px; border: none;">
+              ${this._savingRules ? "Saving..." : "Save Preferences"}
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  _renderRulesPersonaTab(rules) {
+    const currentPersona = rules.persona || "concierge";
+    const currentTone = rules.tone || "friendly";
+    const currentLength = rules.response_length || "balanced";
+
+    const personas = [
+      {
+        id: "concierge",
+        emoji: "🛎️",
+        name: "Friendly Concierge",
+        desc: "Warm, proactive, and thoughtful. Suggests helpful automation tips and guides you through smart home enhancements.",
+      },
+      {
+        id: "butler",
+        emoji: "🎩",
+        name: "Professional Butler",
+        desc: "Formal, discreet, and impeccably polite. Dedicated to perfection, privacy, and understated execution.",
+      },
+      {
+        id: "minimalist",
+        emoji: "⚡",
+        name: "Technical Minimalist",
+        desc: "Ultra-concise, direct, and telegraphic. Delivers raw answers and fast actions with zero conversational fluff.",
+      },
+      {
+        id: "custom",
+        emoji: "🛠️",
+        name: "Custom Persona",
+        desc: "Tailored directly by your personal household instructions, quirks, nicknames, and behavioral rules.",
+      },
+    ];
+
+    return `
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">Select Assistant Persona:</div>
+        <div class="persona-grid">
+          ${personas
+            .map(
+              (p) => `
+            <div class="persona-card ${currentPersona === p.id ? "selected" : ""}" data-persona-id="${p.id}">
+              <div class="persona-title">
+                <span>${p.emoji}</span>
+                <span>${p.name}</span>
+              </div>
+              <div class="persona-desc">${p.desc}</div>
+            </div>
+          `
+            )
+            .join("")}
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 6px;">
+          <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start;">
+            <div class="rules-setting-label">Conversational Tone:</div>
+            <select id="rules-input-tone" style="width: 100%; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);">
+              <option value="friendly" ${currentTone === "friendly" ? "selected" : ""}>Warm & Friendly</option>
+              <option value="formal" ${currentTone === "formal" ? "selected" : ""}>Formal & Respectful</option>
+              <option value="concise" ${currentTone === "concise" ? "selected" : ""}>Ultra-Concise</option>
+              <option value="witty" ${currentTone === "witty" ? "selected" : ""}>Witty & Lighthearted</option>
+            </select>
+          </div>
+
+          <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start;">
+            <div class="rules-setting-label">Response Length:</div>
+            <select id="rules-input-length" style="width: 100%; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);">
+              <option value="concise" ${currentLength === "concise" ? "selected" : ""}>Concise (1-2 sentences)</option>
+              <option value="balanced" ${currentLength === "balanced" ? "selected" : ""}>Balanced (Default)</option>
+              <option value="detailed" ${currentLength === "detailed" ? "selected" : ""}>Detailed & Explanatory</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  _renderRulesSafetyTab(rules) {
+    const autonomy = rules.autonomy_level || "balanced";
+    const requireLock = rules.require_lock_confirmation !== false;
+    const requireSec = rules.require_security_confirmation !== false;
+
+    const tiers = [
+      {
+        id: "high",
+        badge: "🟢 High Autonomy",
+        desc: "Acts immediately on all requests. Executes state changes, locks, and routines with zero redundant confirmation.",
+      },
+      {
+        id: "balanced",
+        badge: "🟡 Balanced with Safeguards",
+        desc: "Proactively controls lighting, media, and climate, but requires explicit confirmation before deadbolts or alarm panel changes.",
+      },
+      {
+        id: "strict",
+        badge: "🔴 Strict Confirmation",
+        desc: "Always asks for explicit confirmation before changing any device states or firing automations.",
+      },
+    ];
+
+    return `
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">Autonomy & Safety Policy:</div>
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          ${tiers
+            .map(
+              (t) => `
+            <div class="persona-card ${autonomy === t.id ? "selected" : ""}" data-autonomy-tier="${t.id}">
+              <div class="persona-title">${t.badge}</div>
+              <div class="persona-desc">${t.desc}</div>
+            </div>
+          `
+            )
+            .join("")}
+        </div>
+
+        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 6px;">Confirmation Guardrails:</div>
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <label class="rules-setting-row" style="cursor: pointer;">
+            <div>
+              <div class="rules-setting-label">Require confirmation for Door Deadbolts</div>
+              <div class="rules-setting-desc">Otis asks before locking or unlocking smart deadbolts.</div>
+            </div>
+            <input type="checkbox" id="rules-input-lock-confirm" ${requireLock ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
+          </label>
+
+          <label class="rules-setting-row" style="cursor: pointer;">
+            <div>
+              <div class="rules-setting-label">Require confirmation for Perimeter Security & Alarms</div>
+              <div class="rules-setting-desc">Otis asks before arming or disarming Alarmo / security panels.</div>
+            </div>
+            <input type="checkbox" id="rules-input-sec-confirm" ${requireSec ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
+          </label>
+        </div>
+      </div>
+    `;
+  }
+
+  _renderRulesVoiceTab(rules) {
+    const quietEnabled = rules.quiet_hours_enabled !== false;
+    const quietStart = rules.quiet_hours_start || "22:00";
+    const quietEnd = rules.quiet_hours_end || "07:00";
+    const quietVol = rules.quiet_hours_volume !== undefined ? rules.quiet_hours_volume : 25;
+    const preferredSpeaker = rules.preferred_speaker || "";
+
+    return `
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">Quiet Hours Etiquette:</div>
+
+        <label class="rules-setting-row" style="cursor: pointer;">
+          <div>
+            <div class="rules-setting-label">Enable Quiet Hours</div>
+            <div class="rules-setting-desc">Ducks voice announcements and lowers audio playback volume during sleeping hours.</div>
+          </div>
+          <input type="checkbox" id="rules-input-quiet-enabled" ${quietEnabled ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
+        </label>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start;">
+            <div class="rules-setting-label">Quiet Hours Start:</div>
+            <input type="time" id="rules-input-quiet-start" value="${this._escapeHtml(quietStart)}" style="width: 100%; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+          </div>
+
+          <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start;">
+            <div class="rules-setting-label">Quiet Hours End:</div>
+            <input type="time" id="rules-input-quiet-end" value="${this._escapeHtml(quietEnd)}" style="width: 100%; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+          </div>
+        </div>
+
+        <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 8px;">
+          <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
+            <div class="rules-setting-label">Max Spoken Volume during Quiet Hours:</div>
+            <span id="rules-vol-val" style="font-weight: 700; font-size: 0.82rem; color: var(--otis-primary);">${quietVol}%</span>
+          </div>
+          <input type="range" id="rules-input-quiet-vol" min="5" max="100" value="${quietVol}" style="width: 100%; cursor: pointer;" />
+        </div>
+
+        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 6px;">Voice Endpoint:</div>
+        <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start;">
+          <div class="rules-setting-label">Preferred Spoken Speaker / Room:</div>
+          <div class="rules-setting-desc">Primary speaker used for proactive vocal alerts (e.g., media_player.great_room or Great Room). Leave blank for auto.</div>
+          <input type="text" id="rules-input-speaker" value="${this._escapeHtml(preferredSpeaker)}" placeholder="e.g. media_player.great_room or Study" style="width: 100%; padding: 6px 8px; margin-top: 6px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+        </div>
+      </div>
+    `;
+  }
+
+  _renderRulesInstructionsTab(rules) {
+    const customInst = rules.custom_instructions || "";
+
+    return `
+      <div style="display: flex; flex-direction: column; gap: 12px;">
+        <div>
+          <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">Custom Household Rules & Persona Guidelines:</div>
+          <div style="font-size: 0.74rem; color: var(--otis-text-muted); margin-top: 2px;">
+            Specify unique house rules, resident preferences, nicknames, or room guidelines. These instructions are injected directly into every conversation turn.
+          </div>
+        </div>
+
+        <textarea
+          id="rules-input-instructions"
+          rows="8"
+          placeholder="e.g.:
+- Jamie works in the Study from 9:00 AM to 5:00 PM.
+- Always keep the Great Room cooler than the rest of the house.
+- When guests are staying over, never arm the guest room motion sensors.
+- Refer to the backyard patio as 'The Oasis'."
+          style="width: 100%; box-sizing: border-box; padding: 10px; border-radius: 8px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-family: monospace; font-size: 0.8rem; resize: vertical;"
+        >${this._escapeHtml(customInst)}</textarea>
+
+        <div style="font-size: 0.72rem; color: var(--otis-text-muted); line-height: 1.4; background: rgba(56, 189, 248, 0.08); padding: 8px 10px; border-radius: 6px; border-left: 3px solid var(--otis-primary);">
+          💡 <strong>Tip:</strong> You can also speak or chat naturally with Otis anytime (e.g. <em>\"Otis, remember that I like the theater temperature at 68 degrees\"</em>) and Otis will adapt.
+        </div>
+      </div>
+    `;
+  }
+
   _renderFailoverModal() {
     return `
       <div class="modal-overlay" id="failover-modal-backdrop">
@@ -6441,6 +6821,15 @@ class OtisCompanionCard extends HTMLElement {
 
     // Subview Launchpad
     root.querySelectorAll(".subview-chip").forEach((chip) => {
+      if (chip.id === "btn-open-rules") {
+        chip.onclick = (e) => {
+          e.stopPropagation();
+          this._rulesDraft = { ...(this._userRules || {}) };
+          this._rulesModalOpen = true;
+          this._render();
+        };
+        return;
+      }
       if (chip.id === "btn-open-themes") {
         chip.onclick = (e) => {
           e.stopPropagation();
@@ -6478,6 +6867,175 @@ class OtisCompanionCard extends HTMLElement {
         }
       };
     });
+
+    // Onboarding Banner Controls
+    const btnStartOnboard = root.querySelector("#btn-start-onboarding");
+    if (btnStartOnboard) {
+      btnStartOnboard.onclick = () => {
+        this._rulesDraft = { ...(this._userRules || {}) };
+        this._rulesModalOpen = true;
+        this._rulesActiveTab = "persona";
+        this._render();
+      };
+    }
+    const btnDismissOnboard = root.querySelector("#btn-dismiss-onboarding");
+    if (btnDismissOnboard) {
+      btnDismissOnboard.onclick = () => {
+        this._onboardingDismissed = true;
+        this._render();
+      };
+    }
+
+    // Rules Modal Controls & Navigation
+    if (this._rulesModalOpen) {
+      const closeRules = () => {
+        this._rulesModalOpen = false;
+        this._render();
+      };
+      const rulesCloseBtn = root.querySelector("#rules-modal-close-btn");
+      if (rulesCloseBtn) rulesCloseBtn.onclick = closeRules;
+      const rulesCancelBtn = root.querySelector("#rules-btn-cancel");
+      if (rulesCancelBtn) rulesCancelBtn.onclick = closeRules;
+      const rulesBackdrop = root.querySelector("#rules-modal-backdrop");
+      if (rulesBackdrop) {
+        rulesBackdrop.onclick = (e) => {
+          if (e.target === rulesBackdrop) closeRules();
+        };
+      }
+
+      // Rules Tab Switching
+      ["persona", "safety", "voice", "instructions"].forEach((tab) => {
+        const tabBtn = root.querySelector(`#rules-tab-${tab}`);
+        if (tabBtn) {
+          tabBtn.onclick = () => {
+            this._rulesActiveTab = tab;
+            this._render();
+          };
+        }
+      });
+
+      // Persona Selection Cards
+      root.querySelectorAll(".persona-card[data-persona-id]").forEach((card) => {
+        card.onclick = () => {
+          const pid = card.getAttribute("data-persona-id");
+          if (pid) {
+            this._rulesDraft = { ...(this._rulesDraft || {}), persona: pid };
+            this._render();
+          }
+        };
+      });
+
+      // Tone & Length Dropdowns
+      const toneSelect = root.querySelector("#rules-input-tone");
+      if (toneSelect) {
+        toneSelect.onchange = () => {
+          this._rulesDraft = { ...(this._rulesDraft || {}), tone: toneSelect.value };
+        };
+      }
+      const lengthSelect = root.querySelector("#rules-input-length");
+      if (lengthSelect) {
+        lengthSelect.onchange = () => {
+          this._rulesDraft = { ...(this._rulesDraft || {}), response_length: lengthSelect.value };
+        };
+      }
+
+      // Autonomy Tier Cards
+      root.querySelectorAll(".persona-card[data-autonomy-tier]").forEach((card) => {
+        card.onclick = () => {
+          const tier = card.getAttribute("data-autonomy-tier");
+          if (tier) {
+            this._rulesDraft = { ...(this._rulesDraft || {}), autonomy_level: tier };
+            this._render();
+          }
+        };
+      });
+
+      // Confirmation Toggles
+      const lockToggle = root.querySelector("#rules-input-lock-confirm");
+      if (lockToggle) {
+        lockToggle.onchange = () => {
+          this._rulesDraft = { ...(this._rulesDraft || {}), require_lock_confirmation: lockToggle.checked };
+        };
+      }
+      const secToggle = root.querySelector("#rules-input-sec-confirm");
+      if (secToggle) {
+        secToggle.onchange = () => {
+          this._rulesDraft = { ...(this._rulesDraft || {}), require_security_confirmation: secToggle.checked };
+        };
+      }
+
+      // Quiet Hours Controls
+      const quietToggle = root.querySelector("#rules-input-quiet-enabled");
+      if (quietToggle) {
+        quietToggle.onchange = () => {
+          this._rulesDraft = { ...(this._rulesDraft || {}), quiet_hours_enabled: quietToggle.checked };
+        };
+      }
+      const quietStart = root.querySelector("#rules-input-quiet-start");
+      if (quietStart) {
+        quietStart.onchange = () => {
+          this._rulesDraft = { ...(this._rulesDraft || {}), quiet_hours_start: quietStart.value };
+        };
+      }
+      const quietEnd = root.querySelector("#rules-input-quiet-end");
+      if (quietEnd) {
+        quietEnd.onchange = () => {
+          this._rulesDraft = { ...(this._rulesDraft || {}), quiet_hours_end: quietEnd.value };
+        };
+      }
+      const quietVol = root.querySelector("#rules-input-quiet-vol");
+      const volVal = root.querySelector("#rules-vol-val");
+      if (quietVol) {
+        quietVol.oninput = () => {
+          if (volVal) volVal.textContent = `${quietVol.value}%`;
+          this._rulesDraft = { ...(this._rulesDraft || {}), quiet_hours_volume: parseInt(quietVol.value, 10) };
+        };
+      }
+      const speakerInput = root.querySelector("#rules-input-speaker");
+      if (speakerInput) {
+        speakerInput.onchange = () => {
+          this._rulesDraft = { ...(this._rulesDraft || {}), preferred_speaker: speakerInput.value.trim() };
+        };
+      }
+
+      // Custom Instructions Textarea
+      const instArea = root.querySelector("#rules-input-instructions");
+      if (instArea) {
+        instArea.oninput = () => {
+          this._rulesDraft = { ...(this._rulesDraft || {}), custom_instructions: instArea.value };
+        };
+      }
+
+      // Save Rules Button
+      const saveBtn = root.querySelector("#rules-btn-save");
+      if (saveBtn) {
+        saveBtn.onclick = async () => {
+          if (this._savingRules) return;
+          this._savingRules = true;
+          this._render();
+          try {
+            const payload = {
+              ...(this._rulesDraft || {}),
+              onboarding_completed: true,
+            };
+            this._showToast("⚙️ Saving household rules & persona...");
+            const res = await this._hass.callService("otis_ai", "set_user_rules", { rules: payload });
+            const saved = res?.rules || payload;
+            this._userRules = saved;
+            this._rulesDraft = { ...saved };
+            this._rulesModalOpen = false;
+            this._showToast("✨ Household persona & rules saved successfully!");
+            await this._fetchData();
+          } catch (err) {
+            console.error("Failed to save user rules:", err);
+            this._showToast(`Failed to save rules: ${err.message || err}`, true);
+          } finally {
+            this._savingRules = false;
+            this._render();
+          }
+        };
+      }
+    }
 
     // Theme Studio Modal Events
     const themeCloseBtn = root.querySelector("#theme-modal-close-btn");

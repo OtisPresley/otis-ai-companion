@@ -2,6 +2,21 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.11.13] - 2026-10-30
+
+### Added & Enhanced
+- **User Behavioral Rules & Interactive Onboarding Dialog (Roadmap Item 7)**:
+  - **Behavioral Rules Manager**: Added `rules_manager.py` with persistent storage (`.storage/otis_ai_rules`) managing assistant persona, conversational tone, response length, autonomy safeguards, quiet hours, and custom household instructions.
+  - **System Prompt Injection**: Dynamically injects user persona, tone, autonomy guardrails, quiet hours limits, and custom household rules directly into Assist conversational prompts on both initial and follow-up turns.
+  - **Interactive Onboarding & Rules Modal**:
+    - **Persona & Tone**: Presets for *Friendly Concierge*, *Professional Butler*, *Technical Minimalist*, and *Custom Persona* with conversational tone and response length selectors.
+    - **Autonomy & Safety**: 3-tiered autonomy policies (*High Autonomy*, *Balanced with Safeguards*, *Strict Confirmation*) with discrete confirmation toggles for smart deadbolts and perimeter security alarms.
+    - **Voice & Quiet Hours**: Quiet hours scheduling with night audio ducking volume slider (0-100%) and preferred vocal announcement speaker routing.
+    - **Custom Instructions**: Freeform textarea for household rules, resident nicknames, and room guidelines (e.g. sleep temperatures, working hours).
+  - **Onboarding Callout Banner**: Displays a stylish setup banner for unconfigured homes with 1-click launch into the onboarding wizard, dismissible at any time.
+  - **Dedicated Launchpad Entry**: Added persistent `⚙️ Rules` chip on the Otis AI Command Center card header for instant customization.
+  - **Services**: Registered `otis_ai.get_user_rules` and `otis_ai.set_user_rules` with comprehensive `services.yaml` schemas.
+
 ## [1.11.12] - 2026-10-30
 
 ### Fixed & Enhanced
