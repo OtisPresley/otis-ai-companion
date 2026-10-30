@@ -2,6 +2,34 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.11.0] - 2026-10-30
+
+### Added
+- **Phase 10: Autonomous Home Commissioning & Multi-Node Federation (`commissioning_manager.py`, `federation_manager.py`)**:
+  - **Zero-Config Autonomous Commissioning (`AutonomousCommissioningManager`)**:
+    - Discovers all unassigned and orphaned entities and devices across Home Assistant registries (`entity_registry` & `device_registry`).
+    - Multi-tiered spatial similarity and heuristic deduction engine matching tokens, compound area slugs, spatial synonyms (e.g. powder room/bath $\to$ bathroom, study/desk $\to$ office, lanai/deck $\to$ patio), parent device inheritance, and topological neighbor cues.
+    - Confidence scoring (0.0 to 1.0) with plain-English rationales for each inferred room mapping.
+    - 1-click batch auto-commissioning (`async_auto_commission`) assigning eligible entities directly into their designated Home Assistant rooms.
+  - **Multi-Node Federation & Edge Synchronizer (`FederationManager`)**:
+    - Multi-instance Home Assistant federation connecting satellite edge nodes (e.g. Guest House, Workshop, RV / Marine edge, Gate controller).
+    - Persistent node registry in Home Assistant storage (`otis_ai_federation_nodes`).
+    - REST-based edge synchronization fetching `/api/states` concurrently with token authentication and caching remote state machines namespaced as `federated.{node_id}.{entity_id}`.
+    - Real-time round-trip latency tracking, online/offline health monitoring, and remote core version queries.
+    - Remote service orchestrator (`async_call_remote_service`) dispatching commands directly to federated edge nodes.
+  - **Lovelace Companion Card Hub & Assist Updates**:
+    - Added Autonomous Commissioning and Multi-Node Federation Hub blocks to the Capabilities studio tab.
+    - 1-click "Auto-Commission Rooms" and "Resync Edge Nodes" action buttons with live status badges.
+    - Conversational queries in Assist for auditing unassigned entities, triggering autonomous room commissioning, and inspecting edge node federation health.
+  - **Dedicated Services**:
+    - `otis_ai.audit_unassigned_entities`: Audit unassigned entities and return suggested room mappings with confidence scores.
+    - `otis_ai.auto_commission_entities`: Automatically commission eligible unassigned entities and devices into rooms.
+    - `otis_ai.register_federated_node`: Register or update a remote Home Assistant instance for multi-node federation.
+    - `otis_ai.remove_federated_node`: Deregister a remote Home Assistant edge node.
+    - `otis_ai.sync_federated_nodes`: Synchronize state machine caches and latency metrics across federated nodes.
+    - `otis_ai.call_remote_service`: Dispatch a service call to a remote federated node.
+    - `otis_ai.get_federation_status`: Retrieve live health, latency, and synchronization metrics for edge nodes.
+
 ## [1.10.0] - 2026-10-30
 
 ### Added

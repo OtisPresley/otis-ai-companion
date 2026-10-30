@@ -513,3 +513,140 @@ audit_habit_deviations:
 
 
 
+
+audit_unassigned_entities:
+  name: Audit Unassigned Entities
+  description: Scan Home Assistant entity and device registries for unassigned rooms and compute heuristic & spatial similarity suggestions.
+  fields:
+    min_confidence:
+      name: Minimum Confidence Threshold
+      description: Confidence threshold for auto-assignment eligibility (0.0 to 1.0, default 0.85).
+      required: false
+      default: 0.85
+      selector:
+        number:
+          min: 0.50
+          max: 1.00
+          step: 0.05
+
+auto_commission_entities:
+  name: Autonomous Entity Commissioning
+  description: Automatically commission all eligible unassigned entities and devices into matching rooms using zero-config heuristics.
+  fields:
+    min_confidence:
+      name: Minimum Confidence Threshold
+      description: Minimum confidence score required to auto-assign (0.0 to 1.0, default 0.85).
+      required: false
+      default: 0.85
+      selector:
+        number:
+          min: 0.50
+          max: 1.00
+          step: 0.05
+
+register_federated_node:
+  name: Register Federated Edge Node
+  description: Register or update a remote Home Assistant instance for multi-node federation and edge synchronization.
+  fields:
+    node_id:
+      name: Node Identifier
+      description: Unique identifier slug for the remote node (e.g. guest_house, workshop, camper).
+      required: true
+      selector:
+        text:
+    name:
+      name: Friendly Name
+      description: Descriptive name for the remote edge node.
+      required: true
+      selector:
+        text:
+    host:
+      name: Hostname or IP
+      description: IP address or hostname of the remote Home Assistant instance.
+      required: true
+      selector:
+        text:
+    port:
+      name: Port
+      description: Remote instance HTTP/HTTPS port (default 8123).
+      required: false
+      default: 8123
+      selector:
+        number:
+          min: 1
+          max: 65535
+    token:
+      name: Long-Lived Access Token
+      description: Bearer access token generated on the remote Home Assistant node.
+      required: false
+      selector:
+        text:
+    ssl:
+      name: Use HTTPS / SSL
+      description: Whether the remote node requires HTTPS.
+      required: false
+      default: false
+      selector:
+        boolean:
+    enabled:
+      name: Enabled
+      description: Whether edge synchronization is enabled for this node.
+      required: false
+      default: true
+      selector:
+        boolean:
+
+remove_federated_node:
+  name: Remove Federated Edge Node
+  description: Deregister a remote Home Assistant node from multi-node federation.
+  fields:
+    node_id:
+      name: Node Identifier
+      description: Identifier of the node to remove.
+      required: true
+      selector:
+        text:
+
+sync_federated_nodes:
+  name: Sync Federated Nodes
+  description: Synchronize live state machine caches and latency metrics across federated edge nodes.
+  fields:
+    node_id:
+      name: Node Identifier
+      description: Specific node to sync (omit to synchronize all active nodes).
+      required: false
+      selector:
+        text:
+
+call_remote_service:
+  name: Call Remote Node Service
+  description: Dispatch a service call to be executed on a remote federated Home Assistant instance.
+  fields:
+    node_id:
+      name: Node Identifier
+      description: Target federated edge node identifier.
+      required: true
+      selector:
+        text:
+    domain:
+      name: Service Domain
+      description: Domain of the remote service (e.g. light, switch, climate).
+      required: true
+      selector:
+        text:
+    service:
+      name: Service Name
+      description: Name of the remote service (e.g. turn_on, turn_off, toggle).
+      required: true
+      selector:
+        text:
+    service_data:
+      name: Service Data
+      description: Key-value parameters passed to the remote service.
+      required: false
+      selector:
+        object:
+
+get_federation_status:
+  name: Get Federation Status
+  description: Retrieve live health, latency, online status, and synchronization metrics for all federated edge nodes.

@@ -62,6 +62,16 @@ from .const import (
     SERVICE_GET_PRESENCE_STATES,
     SERVICE_ANALYZE_CAMERA,
     SERVICE_EVALUATE_CONTEXTUAL_ALERTS,
+    SERVICE_MINE_HABITS,
+    SERVICE_GET_CIRCADIAN_CURVES,
+    SERVICE_AUDIT_HABIT_DEVIATIONS,
+    SERVICE_AUDIT_UNASSIGNED_ENTITIES,
+    SERVICE_AUTO_COMMISSION_ENTITIES,
+    SERVICE_REGISTER_FEDERATED_NODE,
+    SERVICE_REMOVE_FEDERATED_NODE,
+    SERVICE_SYNC_FEDERATED_NODES,
+    SERVICE_CALL_REMOTE_SERVICE,
+    SERVICE_GET_FEDERATION_STATUS,
 )
 from .audio_manager import AudioHandoffManager
 from .automation_manager import AutomationManager
@@ -79,6 +89,8 @@ from .spatial_manager import (
 )
 from .floorplan_parser import FloorplanParser
 from .habit_manager import BehavioralHabitManager
+from .commissioning_manager import AutonomousCommissioningManager
+from .federation_manager import FederationManager
 from .theme_manager import PRESET_THEMES, ThemeManager, slugify_theme_name
 from .vision_manager import VisionPresenceManager, get_canonical_camera_key, stream_priority
 
@@ -371,12 +383,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     energy_manager = EnergyManager(hass, spatial_manager=spatial_manager)
     vision_manager = VisionPresenceManager(hass, spatial_manager=spatial_manager, energy_manager=energy_manager)
     habit_manager = BehavioralHabitManager(hass, spatial_manager=spatial_manager, energy_manager=energy_manager, vision_manager=vision_manager)
+    commissioning_manager = AutonomousCommissioningManager(hass, spatial_manager=spatial_manager)
+    federation_manager = FederationManager(hass)
     await asyncio.gather(
         spatial_manager.async_load(),
         floorplan_parser.async_load(),
         dashboard_manager.async_ensure_admin_companion_dashboard(),
         dashboard_manager.async_ensure_user_command_center_dashboard(),
         sentinel_manager.async_load_preferences(),
+        federation_manager.async_load(),
     )
     engine = DiscoveryEngine(
         hass,
@@ -388,6 +403,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         energy_manager=energy_manager,
         vision_manager=vision_manager,
         habit_manager=habit_manager,
+        commissioning_manager=commissioning_manager,
+        federation_manager=federation_manager,
     )
 
     # Register Walkthrough Upload View
@@ -413,6 +430,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         energy_manager=energy_manager,
         vision_manager=vision_manager,
         habit_manager=habit_manager,
+        commissioning_manager=commissioning_manager,
+        federation_manager=federation_manager,
     )
     if hasattr(conversation, "async_register_agent"):
         conversation.async_register_agent(hass, agent)
@@ -434,6 +453,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "energy_manager": energy_manager,
         "vision_manager": vision_manager,
         "habit_manager": habit_manager,
+        "commissioning_manager": commissioning_manager,
+        "federation_manager": federation_manager,
     }
 
     async def _async_update_listener(hass_inst: HomeAssistant, updated_entry: ConfigEntry) -> None:
@@ -490,6 +511,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     def _get_habit_manager() -> BehavioralHabitManager:
         return _get_entry_data().get("habit_manager", habit_manager)
 
+    def _get_commissioning_manager() -> AutonomousCommissioningManager:
+        return _get_entry_data().get("commissioning_manager", commissioning_manager)
+
+    def _get_federation_manager() -> FederationManager:
+        return _get_entry_data().get("federation_manager", federation_manager)
+
     def _get_active_managers():
         return (
             _get_engine(),
@@ -504,6 +531,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _get_energy_manager(),
             _get_vision_manager(),
             _get_habit_manager(),
+            _get_commissioning_manager(),
+            _get_federation_manager(),
         )
 
     async def handle_get_capability_map(call) -> ServiceResponse:
@@ -797,6 +826,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "prompt": payload.get("prompt", ""),
                 "message": f"Prompt queued for Assist Co-Pilot: '{payload.get('prompt', '')}'",
             }
+        elif action_type == "auto_commission_entities":
+            cm = _get_commissioning_manager()
+            min_conf = float(payload.get("min_confidence", 0.85))
+            res = await cm.async_auto_commission(min_confidence=min_conf)
+            _invalidate()
+            return res
+        elif action_type == "sync_federated_nodes":
+            fm = _get_federation_manager()
+            node_id = payload.get("node_id")
+            if node_id:
+                res = await fm.async_sync_node(node_id)
+            else:
+                res = await fm.async_sync_all_nodes()
+            _invalidate()
+            return {"success": True, "sync_results": res}
 
         return {"success": False, "error": f"Unsupported action_type '{action_type}'"}
 
@@ -1309,6 +1353,79 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         deviations = await hm.async_detect_habit_deviations()
         return {"deviations": deviations, "count": len(deviations)}
 
+    async def handle_audit_unassigned_entities(call) -> ServiceResponse:
+        """Handle service call to audit unassigned entities."""
+        _LOGGER.debug("Service 'audit_unassigned_entities' triggered")
+        cm = _get_commissioning_manager()
+        min_conf = float(call.data.get("min_confidence", 0.85))
+        return await cm.async_audit_unassigned(min_confidence=min_conf)
+
+    async def handle_auto_commission_entities(call) -> ServiceResponse:
+        """Handle service call to auto-commission unassigned entities."""
+        _LOGGER.debug("Service 'auto_commission_entities' triggered")
+        cm = _get_commissioning_manager()
+        min_conf = float(call.data.get("min_confidence", 0.85))
+        return await cm.async_auto_commission(min_confidence=min_conf)
+
+    async def handle_register_federated_node(call) -> ServiceResponse:
+        """Handle service call to register a remote federated node."""
+        _LOGGER.debug("Service 'register_federated_node' triggered")
+        fm = _get_federation_manager()
+        node_id = call.data["node_id"]
+        name = call.data.get("name", node_id)
+        host = call.data["host"]
+        port = int(call.data.get("port", 8123))
+        token = call.data.get("token", "")
+        ssl = bool(call.data.get("ssl", False))
+        enabled = bool(call.data.get("enabled", True))
+        return await fm.async_register_node(
+            node_id=node_id,
+            name=name,
+            host=host,
+            port=port,
+            token=token,
+            ssl=ssl,
+            enabled=enabled,
+        )
+
+    async def handle_remove_federated_node(call) -> ServiceResponse:
+        """Handle service call to remove a remote federated node."""
+        _LOGGER.debug("Service 'remove_federated_node' triggered")
+        fm = _get_federation_manager()
+        node_id = call.data["node_id"]
+        removed = await fm.async_remove_node(node_id)
+        return {"success": removed, "node_id": node_id}
+
+    async def handle_sync_federated_nodes(call) -> ServiceResponse:
+        """Handle service call to sync federated edge nodes."""
+        _LOGGER.debug("Service 'sync_federated_nodes' triggered")
+        fm = _get_federation_manager()
+        node_id = call.data.get("node_id")
+        if node_id:
+            return await fm.async_sync_node(node_id)
+        return await fm.async_sync_all_nodes()
+
+    async def handle_call_remote_service(call) -> ServiceResponse:
+        """Handle service call to execute service on a remote federated node."""
+        _LOGGER.debug("Service 'call_remote_service' triggered")
+        fm = _get_federation_manager()
+        node_id = call.data["node_id"]
+        domain = call.data["domain"]
+        service = call.data["service"]
+        service_data = call.data.get("service_data")
+        return await fm.async_call_remote_service(
+            node_id=node_id,
+            domain=domain,
+            service=service,
+            service_data=service_data,
+        )
+
+    async def handle_get_federation_status(call) -> ServiceResponse:
+        """Handle service call to retrieve federation summary and node status."""
+        _LOGGER.debug("Service 'get_federation_status' triggered")
+        fm = _get_federation_manager()
+        return await fm.async_get_federation_summary()
+
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
         DOMAIN,
@@ -1498,20 +1615,62 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     hass.services.async_register(
         DOMAIN,
-        "mine_habits",
+        SERVICE_MINE_HABITS,
         handle_mine_habits,
         supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
-        "get_circadian_curves",
+        SERVICE_GET_CIRCADIAN_CURVES,
         handle_get_circadian_curves,
         supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
-        "audit_habit_deviations",
+        SERVICE_AUDIT_HABIT_DEVIATIONS,
         handle_audit_habit_deviations,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_AUDIT_UNASSIGNED_ENTITIES,
+        handle_audit_unassigned_entities,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_AUTO_COMMISSION_ENTITIES,
+        handle_auto_commission_entities,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REGISTER_FEDERATED_NODE,
+        handle_register_federated_node,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REMOVE_FEDERATED_NODE,
+        handle_remove_federated_node,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SYNC_FEDERATED_NODES,
+        handle_sync_federated_nodes,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CALL_REMOTE_SERVICE,
+        handle_call_remote_service,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_FEDERATION_STATUS,
+        handle_get_federation_status,
         supports_response=SupportsResponse.OPTIONAL,
     )
 
@@ -1572,6 +1731,8 @@ class OtisAIConversationAgent(AbstractAgent):
         energy_manager: EnergyManager | None = None,
         vision_manager: VisionPresenceManager | None = None,
         habit_manager: BehavioralHabitManager | None = None,
+        commissioning_manager: AutonomousCommissioningManager | None = None,
+        federation_manager: FederationManager | None = None,
     ) -> None:
         """Initialize the agent."""
         self.hass = hass
@@ -1586,6 +1747,8 @@ class OtisAIConversationAgent(AbstractAgent):
         self.energy_manager = energy_manager or EnergyManager(hass, spatial_manager=self.spatial_manager)
         self.vision_manager = vision_manager or VisionPresenceManager(hass, spatial_manager=self.spatial_manager)
         self.habit_manager = habit_manager or BehavioralHabitManager(hass, spatial_manager=self.spatial_manager)
+        self.commissioning_manager = commissioning_manager or AutonomousCommissioningManager(hass, spatial_manager=self.spatial_manager)
+        self.federation_manager = federation_manager or FederationManager(hass)
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -2006,6 +2169,66 @@ class OtisAIConversationAgent(AbstractAgent):
                 for h in habits[:4]:
                     lines.append(f"• **{h['title']}** (Confidence: {int(h['confidence']*100)}%, {h['occurrences']}x): {h['description']}")
                 return self._create_response(user_input, "\n".join(lines))
+
+        # Check for Autonomous Home Commissioning & Multi-Node Federation queries (Phase 10)
+        if getattr(self, "commissioning_manager", None) and any(w in user_lower for w in (
+            "commission", "unassigned entities", "orphaned entities", "assign rooms", "assign areas"
+        )):
+            if any(w in user_lower for w in ("auto", "apply", "execute", "yes")):
+                fire_progress("domain", "Commissioning Entities", "Executing zero-config room assignments")
+                comm_res = await self.commissioning_manager.async_auto_commission(min_confidence=0.85)
+                resp = (
+                    f"🏠 **Otis Autonomous Home Commissioning Complete**\n\n"
+                    f"• **Assigned Entities:** {comm_res.get('assigned_entities', 0)}\n"
+                    f"• **Assigned Devices:** {comm_res.get('assigned_devices', 0)}\n"
+                    f"• **Status:** {comm_res.get('message', 'Complete')}"
+                )
+                return self._create_response(user_input, resp)
+            else:
+                fire_progress("domain", "Auditing Unassigned", "Scanning registries for orphaned entities")
+                audit = await self.commissioning_manager.async_audit_unassigned()
+                total = audit.get("total_unassigned_entities", 0)
+                high_conf = audit.get("high_confidence_count", 0)
+                if total == 0:
+                    return self._create_response(
+                        user_input,
+                        "✨ All entities and devices are already assigned to rooms! Your home registry is 100% organized."
+                    )
+                lines = [
+                    f"📋 **Otis Commissioning Audit ({total} unassigned entities, {high_conf} eligible for auto-commissioning):**\n"
+                ]
+                for s in audit.get("suggested_assignments", [])[:5]:
+                    lines.append(f"• `{s['entity_id']}` ➔ **{s['suggested_area_name']}** ({int(s['confidence']*100)}% confidence, {s['reason']})")
+                if high_conf > 0:
+                    lines.append("\n💡 Say *'Otis, auto commission unassigned entities'* to apply high-confidence assignments automatically.")
+                return self._create_response(user_input, "\n".join(lines))
+
+        if getattr(self, "federation_manager", None) and any(w in user_lower for w in (
+            "federation", "edge node", "edge nodes", "remote node", "remote instance", "sync nodes"
+        )):
+            fire_progress("domain", "Federation Inspection", "Querying remote edge nodes and synchronization health")
+            fed_summary = await self.federation_manager.async_get_federation_summary()
+            total_nodes = fed_summary.get("total_nodes", 0)
+            if total_nodes == 0:
+                return self._create_response(
+                    user_input,
+                    "🌐 **Otis Multi-Node Federation:** No remote Home Assistant edge nodes registered yet. "
+                    "Use the `otis_ai.register_federated_node` service to connect guest houses, workshops, or outbuildings."
+                )
+            online = fed_summary.get("online_nodes", 0)
+            avg_lat = fed_summary.get("avg_latency_ms", 0.0)
+            ents = fed_summary.get("total_federated_entities", 0)
+            lines = [
+                "🌐 **Otis Multi-Node Federation & Edge Synchronizer**\n",
+                f"• **Active Nodes:** {online} / {total_nodes} Online",
+                f"• **Synchronized Entities:** {ents}",
+                f"• **Average Latency:** {avg_lat} ms\n",
+                "**Nodes:**"
+            ]
+            for n in fed_summary.get("nodes", []):
+                stat_icon = "🟢" if n.get("status") == "online" else "🔴"
+                lines.append(f"• {stat_icon} **{n.get('name')}** (`{n.get('node_id')}`): {n.get('status')}, {n.get('latency_ms', 0)}ms, v{n.get('remote_version', 'unknown')}")
+            return self._create_response(user_input, "\n".join(lines))
 
         # 1. Resolve prioritized AI agent cascade (Primary + Fallbacks)
         options = self.entry.options
@@ -2521,6 +2744,8 @@ class DiscoveryEngine:
         energy_manager: EnergyManager | None = None,
         vision_manager: VisionPresenceManager | None = None,
         habit_manager: BehavioralHabitManager | None = None,
+        commissioning_manager: AutonomousCommissioningManager | None = None,
+        federation_manager: FederationManager | None = None,
     ) -> None:
         """Initialize the discovery engine."""
         self.hass = hass
@@ -2532,6 +2757,8 @@ class DiscoveryEngine:
         self.energy_manager = energy_manager or EnergyManager(hass, spatial_manager=self.spatial_manager)
         self.vision_manager = vision_manager or VisionPresenceManager(hass, spatial_manager=self.spatial_manager)
         self.habit_manager = habit_manager or BehavioralHabitManager(hass, spatial_manager=self.spatial_manager)
+        self.commissioning_manager = commissioning_manager or AutonomousCommissioningManager(hass, spatial_manager=self.spatial_manager)
+        self.federation_manager = federation_manager or FederationManager(hass)
         self._cached_cap_map: dict[str, Any] | None = None
         self._cache_ts: float = 0.0
         self._cache_signature: tuple[Any, ...] | None = None
@@ -2798,6 +3025,22 @@ class DiscoveryEngine:
             except Exception as err:
                 _LOGGER.debug("Error retrieving Vision presence states during discovery scan: %s", err)
         cap_map["vision_topology"] = vision_data
+
+        commissioning_data = {}
+        if getattr(self, "commissioning_manager", None):
+            try:
+                commissioning_data = await self.commissioning_manager.async_audit_unassigned()
+            except Exception as err:
+                _LOGGER.debug("Error auditing unassigned entities: %s", err)
+        cap_map["commissioning"] = commissioning_data
+
+        federation_data = {}
+        if getattr(self, "federation_manager", None):
+            try:
+                federation_data = await self.federation_manager.async_get_federation_summary()
+            except Exception as err:
+                _LOGGER.debug("Error retrieving federation summary: %s", err)
+        cap_map["federation"] = federation_data
 
         themes = []
         if self.theme_manager:
@@ -4701,6 +4944,52 @@ class DiscoveryEngine:
                     suggestions.append(routine)
             except Exception as err:
                 _LOGGER.debug("Error evaluating habit routine suggestions: %s", err)
+
+        # 13. Autonomous Home Commissioning (Phase 10)
+        if getattr(self, "commissioning_manager", None):
+            try:
+                comm_audit = await self.commissioning_manager.async_audit_unassigned()
+                high_conf = comm_audit.get("high_confidence_count", 0)
+                if high_conf > 0:
+                    suggestions.append({
+                        "id": f"auto_commission_{high_conf}_entities",
+                        "title": f"Autonomous Commissioning: {high_conf} Unassigned Entities Detected",
+                        "category": "cleanup",
+                        "priority": "high" if high_conf >= 3 else "medium",
+                        "icon": "mdi:home-plus",
+                        "description": (
+                            f"Otis discovered {high_conf} unassigned entities with strong heuristic & spatial "
+                            "room matches (e.g. naming tokens and parent device topology). "
+                            "Click to automatically commission them with zero manual configuration."
+                        ),
+                        "action_type": "auto_commission_entities",
+                        "action_payload": {"min_confidence": 0.85},
+                    })
+            except Exception as err:
+                _LOGGER.debug("Error generating commissioning suggestions: %s", err)
+
+        # 14. Multi-Node Federation Edge Sync (Phase 10)
+        if getattr(self, "federation_manager", None):
+            try:
+                fed_summary = await self.federation_manager.async_get_federation_summary()
+                offline = fed_summary.get("offline_nodes", 0)
+                total_nodes = fed_summary.get("total_nodes", 0)
+                if offline > 0:
+                    suggestions.append({
+                        "id": "federation_offline_alert",
+                        "title": f"Federation Alert: {offline} Remote Edge Node(s) Unreachable",
+                        "category": "system",
+                        "priority": "high",
+                        "icon": "mdi:server-network-off",
+                        "description": (
+                            f"{offline} of {total_nodes} federated Home Assistant edge nodes are unreachable. "
+                            "Inspect network link or trigger edge resynchronization."
+                        ),
+                        "action_type": "sync_federated_nodes",
+                        "action_payload": {},
+                    })
+            except Exception as err:
+                _LOGGER.debug("Error generating federation suggestions: %s", err)
 
         # Sort suggestions by priority: Critical -> High -> Medium -> Low
         priority_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}

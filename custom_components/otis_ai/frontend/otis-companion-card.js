@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 1.9.5
+ * Version: 1.11.0
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -10,9 +10,10 @@
  * - Multimodal Video-to-Floorplan SVG Parser & Interactive Viewer
  * - Phase 4 Visual Floor Plan Boundary & Marker Adjuster on Lovelace Canvas
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
+ * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.10.0";
+const CARD_VERSION = "1.11.0";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -1228,6 +1229,10 @@ class OtisCompanionCard extends HTMLElement {
         return "📦 Deploy Coordinator Package";
       case "auto_assign_areas":
         return "📍 Auto-Assign Areas";
+      case "auto_commission_entities":
+        return "🏠 Auto-Commission Rooms";
+      case "sync_federated_nodes":
+        return "🌐 Resync Edge Nodes";
       case "improve_automation":
         return "🔧 Upgrade Automation";
       case "optimize_system_config":
@@ -4308,6 +4313,9 @@ class OtisCompanionCard extends HTMLElement {
     const cameras = secTopo.cameras || [];
     const bedSensors = secTopo.bed_occupancy_sensors || [];
 
+    const comm = this._capabilityMap?.commissioning || {};
+    const fed = this._capabilityMap?.federation || {};
+
     return `
       <div class="capabilities-panel">
         <div class="cap-block">
@@ -4449,6 +4457,66 @@ class OtisCompanionCard extends HTMLElement {
               ? "Registry is clean! Zero orphaned entities detected."
               : `${stats.orphans} stale or disconnected entities found. Use the Proactive Feed to clean them up.`
           }</div>
+        </div>
+
+        <div class="cap-block">
+          <div class="cap-title">
+            <span>Autonomous Home Commissioning</span>
+            <span style="color: var(--otis-primary); font-weight: 700;">
+              ${comm.high_confidence_count ?? 0} Eligible / ${comm.total_unassigned_entities ?? 0} Unassigned
+            </span>
+          </div>
+          <div style="font-size: 0.75rem; line-height: 1.4;">
+            ${
+              (comm.total_unassigned_entities ?? 0) === 0
+                ? `<div style="color: #4ade80;">✨ All entities and devices are mapped to physical rooms!</div>`
+                : `
+                  <div>Found <strong>${comm.total_unassigned_entities}</strong> unassigned entities (${comm.high_confidence_count} high-confidence matches).</div>
+                  <div style="margin-top: 6px;">
+                    <button type="button" class="btn-toolbar" id="btn-auto-commission-tab" style="padding: 4px 10px; font-size: 0.72rem; color: var(--otis-primary); border-color: var(--otis-primary);">
+                      ⚡ 1-Click Auto Commission
+                    </button>
+                  </div>
+                `
+            }
+          </div>
+        </div>
+
+        <div class="cap-block">
+          <div class="cap-title">
+            <span>Multi-Node Federation &amp; Edge Sync</span>
+            <span style="color: var(--otis-secondary); font-weight: 700;">
+              ${fed.online_nodes ?? 0} / ${fed.total_nodes ?? 0} Online (${fed.avg_latency_ms ?? 0}ms avg)
+            </span>
+          </div>
+          <div style="font-size: 0.75rem; line-height: 1.4;">
+            ${
+              (fed.total_nodes ?? 0) === 0
+                ? `<div>No remote edge nodes registered yet. Register satellite Home Assistant instances to federate states.</div>`
+                : `
+                  <div style="display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px;">
+                    ${(fed.nodes || [])
+                      .map(
+                        (n) => `
+                        <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); padding: 4px 8px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center;">
+                          <div>
+                            <span style="color: ${n.status === "online" ? "#4ade80" : "#f87171"}; font-weight: bold; margin-right: 4px;">●</span>
+                            <strong>${n.name}</strong> <span style="font-size: 0.70rem; color: var(--otis-text-muted);">(${n.host}:${n.port})</span>
+                          </div>
+                          <span style="font-size: 0.70rem; color: var(--otis-text-muted);">${n.latency_ms > 0 ? n.latency_ms + "ms" : n.status}</span>
+                        </div>
+                      `
+                      )
+                      .join("")}
+                  </div>
+                  <div>
+                    <button type="button" class="btn-toolbar" id="btn-sync-federation-tab" style="padding: 4px 10px; font-size: 0.72rem; color: var(--otis-secondary); border-color: var(--otis-secondary);">
+                      🔄 Sync All Edge Nodes
+                    </button>
+                  </div>
+                `
+            }
+          </div>
         </div>
       </div>
     `;
@@ -5222,6 +5290,39 @@ class OtisCompanionCard extends HTMLElement {
     const refreshBtn = root.querySelector("#refresh-btn");
     if (refreshBtn) {
       refreshBtn.onclick = () => this._fetchData();
+    }
+
+    // Autonomous Commissioning & Multi-Node Federation Tab Buttons
+    const autoCommBtn = root.querySelector("#btn-auto-commission-tab");
+    if (autoCommBtn) {
+      autoCommBtn.onclick = async (e) => {
+        e.stopPropagation();
+        try {
+          this._showToast("🏠 Commissioning unassigned entities into rooms...");
+          const res = await this._hass.callService("otis_ai", "auto_commission_entities", { min_confidence: 0.85 });
+          this._showToast(res?.message || "✨ Autonomous commissioning complete!");
+          await this._fetchData();
+        } catch (err) {
+          console.error("Auto commissioning failed:", err);
+          this._showToast(`Commissioning failed: ${err.message || err}`, true);
+        }
+      };
+    }
+
+    const syncFedBtn = root.querySelector("#btn-sync-federation-tab");
+    if (syncFedBtn) {
+      syncFedBtn.onclick = async (e) => {
+        e.stopPropagation();
+        try {
+          this._showToast("🌐 Syncing all federated edge nodes...");
+          await this._hass.callService("otis_ai", "sync_federated_nodes", {});
+          this._showToast("✨ Edge nodes synchronized!");
+          await this._fetchData();
+        } catch (err) {
+          console.error("Federation sync failed:", err);
+          this._showToast(`Federation sync failed: ${err.message || err}`, true);
+        }
+      };
     }
 
     // Subview Launchpad

@@ -43,10 +43,21 @@ SERVICE_RESTORE_SHED_LOADS = "restore_shed_loads"
 SERVICE_GET_PRESENCE_STATES = "get_presence_states"
 SERVICE_ANALYZE_CAMERA = "analyze_camera"
 SERVICE_EVALUATE_CONTEXTUAL_ALERTS = "evaluate_contextual_alerts"
+SERVICE_MINE_HABITS = "mine_habits"
+SERVICE_GET_CIRCADIAN_CURVES = "get_circadian_curves"
+SERVICE_AUDIT_HABIT_DEVIATIONS = "audit_habit_deviations"
+
+# Autonomous Home Commissioning & Multi-Node Federation Services (Phase 10)
+SERVICE_AUDIT_UNASSIGNED_ENTITIES = "audit_unassigned_entities"
+SERVICE_AUTO_COMMISSION_ENTITIES = "auto_commission_entities"
+SERVICE_REGISTER_FEDERATED_NODE = "register_federated_node"
+SERVICE_REMOVE_FEDERATED_NODE = "remove_federated_node"
+SERVICE_SYNC_FEDERATED_NODES = "sync_federated_nodes"
+SERVICE_CALL_REMOTE_SERVICE = "call_remote_service"
+SERVICE_GET_FEDERATION_STATUS = "get_federation_status"
 
 # Dashboard Constants
 COMMAND_CENTER_DASHBOARD_ID = "command-center"
 COMMAND_CENTER_DASHBOARD_URL_PATH = "command-center"
 COMMAND_CENTER_DASHBOARD_TITLE = "Command Center"
 COMMAND_CENTER_DASHBOARD_ICON = "mdi:view-dashboard"
-
