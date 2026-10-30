@@ -2,7 +2,21 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
-## [1.11.1] - 2026-10-30
+## [1.11.2] - 2026-10-30
+
+### Fixed & Enhanced
+- **Autonomous Commissioning & Device Inheritance**:
+  - Resolved issue where child entities without custom friendly names caused `ValueError: An entity without a name of its own cannot have an area of its own, set the area on its device instead` during batch auto-commissioning.
+  - Entities whose parent devices already belong to an area in Home Assistant are now accurately recognized as assigned via device inheritance, preventing false unassigned entity alerts.
+  - Added automatic device-level fallback updating (`device_reg.async_update_device`) for unassigned hardware hubs and multi-sensor devices.
+- **Assist Co-Pilot Response & Code Copy**:
+  - Added 1-click clipboard copy buttons to all Otis responses in Assist Co-Pilot with toast notification and button feedback.
+  - Added dedicated code block header bars with language labels and 1-click "Copy" buttons for extracted code snippets.
+  - Moved the `↺ Undo` chip to the end of the quick-action chips row, immediately preceding `🗑️ Clear`.
+- **Card Height Utilization**:
+  - Configured flex containers across `:host`, `ha-card.card-container`, `.chat-container`, and `.floorplan-panel` to occupy 100% of available height in panel and grid layouts without artificial `max-height` clipping.
+- **Documentation**:
+  - Removed outdated version badge from `README.md`.
 
 ### Fixed & Refactored
 - **Architectural Code Analysis & De-duplication**:

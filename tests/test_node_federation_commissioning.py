@@ -160,7 +160,7 @@ class TestCommissioningManager(unittest.TestCase):
         self.device_reg.async_update_device.assert_called_with("dev_office_plug", area_id="office")
 
     def test_parent_device_inheritance(self):
-        """Test child entity inherits configured parent device's area with 100% confidence."""
+        """Test child entity inherits configured parent device's area and is recognized as already assigned."""
         self.device_reg.devices = {
             "dev_garage_opener": MockDevice("dev_garage_opener", "Overhead Door", area_id="garage"),
         }
@@ -176,11 +176,11 @@ class TestCommissioningManager(unittest.TestCase):
         mgr = AutonomousCommissioningManager(self.hass)
         audit = asyncio.run(mgr.async_audit_unassigned())
 
-        suggestions = audit["suggested_assignments"]
-        self.assertEqual(len(suggestions), 1)
-        self.assertEqual(suggestions[0]["suggested_area_id"], "garage")
-        self.assertEqual(suggestions[0]["confidence"], 1.0)
-        self.assertIn("parent device", suggestions[0]["reason"].lower())
+        # In Home Assistant, child entities inherit their parent device's area.
+        # Since dev_garage_opener already has area_id='garage', the entity is already assigned
+        # and should not be falsely reported as an unassigned entity.
+        self.assertEqual(audit["total_unassigned_entities"], 0)
+        self.assertEqual(len(audit["suggested_assignments"]), 0)
 
 
 class MockHttpResponse:

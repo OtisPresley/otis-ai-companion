@@ -200,7 +200,13 @@ class AutonomousCommissioningManager:
             dev_id = getattr(ent, "device_id", None)
             parent_dev = dev_map.get(dev_id) if dev_id else None
 
+            # Check if entity already has an area assigned directly or inherits from its parent device
             if ent_area:
+                continue
+
+            # In Home Assistant, an entity without an explicit area_id inherits its parent device's area.
+            # If the parent device already has an area, the entity is already assigned to that area.
+            if parent_dev and parent_dev.get("area_id"):
                 continue
 
             ent_name = (
@@ -316,17 +322,21 @@ class AutonomousCommissioningManager:
             aid = item["suggested_area_id"]
             dev_id = item.get("device_id")
 
+            if dev_id:
+                if dev_id not in device_to_areas:
+                    device_to_areas[dev_id] = []
+                device_to_areas[dev_id].append(aid)
+
             try:
                 if hasattr(entity_reg, "async_update_entity"):
                     entity_reg.async_update_entity(eid, area_id=aid)
                     assigned_ents += 1
                     applied_assignments.append(item)
                     _LOGGER.info("Commissioned entity '%s' into area '%s' (%s)", eid, aid, item["reason"])
-
-                if dev_id:
-                    if dev_id not in device_to_areas:
-                        device_to_areas[dev_id] = []
-                    device_to_areas[dev_id].append(aid)
+            except ValueError as val_err:
+                # In HA: An entity without a name of its own cannot have an area of its own; set area on its device instead
+                _LOGGER.debug("Entity '%s' area will be inherited from parent device '%s': %s", eid, dev_id, val_err)
+                applied_assignments.append(item)
             except Exception as err:
                 _LOGGER.warning("Failed to auto-commission entity '%s': %s", eid, err)
 

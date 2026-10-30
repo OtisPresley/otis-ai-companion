@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 1.11.1
+ * Version: 1.11.2
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.11.1";
+const CARD_VERSION = "1.11.2";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -1038,6 +1038,30 @@ class OtisCompanionCard extends HTMLElement {
     }
   }
 
+  async _copyToClipboard(text, successToast = "Copied to clipboard!") {
+    if (!text) return;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      if (successToast) {
+        this._showToast(successToast);
+      }
+    } catch (_) {
+      this._showToast("⚠️ Failed to copy to clipboard", true);
+    }
+  }
+
   _scrollChatToBottom() {
     const doScroll = () => {
       const container = this.shadowRoot ? this.shadowRoot.querySelector("#chat-history") : null;
@@ -1063,9 +1087,19 @@ class OtisCompanionCard extends HTMLElement {
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;");
-      const langLabel = lang ? `<div class="code-lang">${lang}</div>` : "";
+      const langLabel = lang ? `<span class="code-lang">${lang}</span>` : `<span class="code-lang">code</span>`;
+      const encodedCode = this._escapeHtml(cleanCode);
       codeBlocks.push(
-        `<div class="code-block-wrapper">${langLabel}<pre><code>${escapedCode}</code></pre></div>`
+        `<div class="code-block-wrapper">` +
+          `<div class="code-block-header">` +
+            `${langLabel}` +
+            `<button type="button" class="code-copy-btn" title="Copy code snippet" data-code="${encodedCode}">` +
+              `<svg viewBox="0 0 24 24" class="copy-icon"><path d="M16 1H4C2.9 1 2 1.9 2 3v14h2V3h12V1zm3 4H8C6.9 5 6 5.9 6 7v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>` +
+              `<span class="copy-label">Copy</span>` +
+            `</button>` +
+          `</div>` +
+          `<pre><code>${escapedCode}</code></pre>` +
+        `</div>`
       );
       return `\n\n@@@OTIS_CB_${idx}@@@\n\n`;
     });
@@ -1317,8 +1351,10 @@ class OtisCompanionCard extends HTMLElement {
     this.shadowRoot.innerHTML = `
       <style>
         :host {
-          display: block;
+          display: flex;
+          flex-direction: column;
           width: 100%;
+          height: 100%;
           box-sizing: border-box;
           font-family: var(--ha-card-font-family, 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
         }
@@ -1347,6 +1383,11 @@ class OtisCompanionCard extends HTMLElement {
 
           position: relative;
           width: 100%;
+          height: 100%;
+          display: flex;
+          flex-direction: column;
+          flex: 1 1 auto;
+          min-height: 0;
           max-width: 1600px;
           margin: 0 auto;
           background: var(--ha-card-background, var(--otis-bg));
@@ -2011,6 +2052,8 @@ class OtisCompanionCard extends HTMLElement {
           display: flex;
           flex-direction: column;
           gap: 12px;
+          flex: 1 1 auto;
+          min-height: 0;
         }
 
         .chat-chips {
@@ -2039,8 +2082,8 @@ class OtisCompanionCard extends HTMLElement {
         }
 
         .chat-history {
+          flex: 1 1 auto;
           min-height: 420px;
-          max-height: 560px;
           overflow-y: auto;
           display: flex;
           flex-direction: column;
@@ -2049,6 +2092,7 @@ class OtisCompanionCard extends HTMLElement {
         }
 
         .chat-bubble {
+          position: relative;
           max-width: 90%;
           padding: 10px 14px;
           border-radius: 14px;
@@ -2177,23 +2221,51 @@ class OtisCompanionCard extends HTMLElement {
         }
 
         .code-block-wrapper {
-          margin: 8px 0;
+          margin: 10px 0;
           border-radius: 8px;
           overflow: hidden;
-          background: rgba(15, 23, 42, 0.85);
+          background: rgba(15, 23, 42, 0.9);
           border: 1px solid var(--otis-surface-border);
         }
 
-        .code-lang {
+        .code-block-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 4px 10px;
+          background: rgba(0, 0, 0, 0.45);
+          border-bottom: 1px solid var(--otis-surface-border);
+        }
+
+        .code-block-header .code-lang {
           font-size: 0.68rem;
           color: var(--otis-primary);
           text-transform: uppercase;
           letter-spacing: 0.05em;
-          padding: 4px 10px;
-          background: rgba(0, 0, 0, 0.35);
-          border-bottom: 1px solid var(--otis-surface-border);
           font-family: ui-monospace, monospace;
           font-weight: 600;
+        }
+
+        .code-copy-btn {
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.18);
+          color: var(--otis-text-muted);
+          border-radius: 4px;
+          height: 22px;
+          padding: 0 8px;
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          cursor: pointer;
+          transition: all 0.15s ease;
+          font-size: 0.68rem;
+          font-weight: 500;
+        }
+
+        .code-copy-btn:hover {
+          color: #ffffff;
+          background: color-mix(in srgb, var(--otis-primary) 30%, transparent);
+          border-color: var(--otis-primary);
         }
 
         .code-block-wrapper pre {
@@ -2316,13 +2388,44 @@ class OtisCompanionCard extends HTMLElement {
           color: inherit;
         }
 
+        .response-copy-btn {
+          position: absolute;
+          top: 6px;
+          right: 6px;
+          background: rgba(0, 0, 0, 0.4);
+          border: 1px solid rgba(255, 255, 255, 0.18);
+          color: var(--otis-text-muted);
+          border-radius: 4px;
+          height: 22px;
+          padding: 0 6px;
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          cursor: pointer;
+          transition: all 0.15s ease;
+          font-size: 0.68rem;
+          font-weight: 500;
+          opacity: 0.7;
+          z-index: 2;
+        }
+
         .chat-bubble.otis {
+          position: relative;
           align-self: flex-start;
           background: var(--otis-surface);
           color: var(--otis-text);
           border-bottom-left-radius: 3px;
           border: 1px solid color-mix(in srgb, var(--otis-primary) 20%, transparent);
           box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+          padding-top: 26px;
+        }
+
+        .chat-bubble.otis:hover .response-copy-btn,
+        .response-copy-btn:hover {
+          opacity: 1;
+          color: #ffffff;
+          background: color-mix(in srgb, var(--otis-primary) 30%, transparent);
+          border-color: var(--otis-primary);
         }
 
         .chat-bubble.otis.thinking-bubble {
@@ -3082,6 +3185,8 @@ class OtisCompanionCard extends HTMLElement {
           display: flex;
           flex-direction: column;
           gap: 12px;
+          flex: 1 1 auto;
+          min-height: 0;
         }
 
         .floorplan-toolbar {
@@ -3206,8 +3311,8 @@ class OtisCompanionCard extends HTMLElement {
           border-radius: 12px;
           padding: 12px;
           overflow: auto;
-          min-height: 480px;
-          max-height: 520px;
+          flex: 1 1 auto;
+          min-height: 520px;
           display: flex;
           justify-content: center;
           align-items: center;
@@ -3234,8 +3339,9 @@ class OtisCompanionCard extends HTMLElement {
 
         .floorplan-svg-viewport svg {
           width: 100%;
-          height: auto;
-          max-height: 480px;
+          height: 100%;
+          max-height: 100%;
+          object-fit: contain;
           filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4));
         }
 
@@ -4148,9 +4254,9 @@ class OtisCompanionCard extends HTMLElement {
           <button type="button" class="chip-btn" data-chip="Shed non-essential loads">📉 Shed Loads</button>
           <button type="button" class="chip-btn" data-chip="Handoff audio to study">🎵 Audio Handoff</button>
           <button type="button" class="chip-btn" data-chip="Release idle sources">🔇 Idle Guard</button>
-          <button type="button" class="chip-btn" data-chip="Undo last macro">↺ Undo</button>
           <button type="button" class="chip-btn" data-chip="Suggest automations for my active areas">💡 Automations</button>
           <button type="button" class="chip-btn" data-chip="Clean up orphaned entities">🧹 Clean orphans</button>
+          <button type="button" class="chip-btn" data-chip="Undo last macro">↺ Undo</button>
           <button type="button" class="chip-btn" id="btn-clear-chat" title="Clear conversation history">🗑️ Clear</button>
         </div>
         <div class="chat-history" id="chat-history">
@@ -4170,7 +4276,14 @@ class OtisCompanionCard extends HTMLElement {
                       </svg>
                     </button>
                   `
-                      : ""
+                      : `
+                    <button type="button" class="response-copy-btn" title="Copy response to clipboard" data-response="${this._escapeHtml(m.text)}">
+                      <svg viewBox="0 0 24 24" class="copy-icon">
+                        <path d="M16 1H4C2.9 1 2 1.9 2 3v14h2V3h12V1zm3 4H8C6.9 5 6 5.9 6 7v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                      </svg>
+                      <span class="copy-label">Copy</span>
+                    </button>
+                  `
                   }
                   ${
                     m.sender === "otis" && m.reasoning && m.reasoning.steps && m.reasoning.steps.length
@@ -5604,6 +5717,50 @@ class OtisCompanionCard extends HTMLElement {
             input.dispatchEvent(new Event("input", { bubbles: true }));
           }
           this._showToast("📋 Copied prompt to input!");
+        }
+      };
+    });
+
+    // Otis response copy buttons
+    root.querySelectorAll(".response-copy-btn").forEach((btn) => {
+      btn.onclick = async (e) => {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        const text = btn.getAttribute("data-response");
+        if (text) {
+          await this._copyToClipboard(text, "📋 Response copied to clipboard!");
+          const label = btn.querySelector(".copy-label");
+          if (label) {
+            const old = label.textContent;
+            label.textContent = "Copied!";
+            setTimeout(() => {
+              label.textContent = old;
+            }, 1800);
+          }
+        }
+      };
+    });
+
+    // Code snippet copy buttons
+    root.querySelectorAll(".code-copy-btn").forEach((btn) => {
+      btn.onclick = async (e) => {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        const code = btn.getAttribute("data-code");
+        if (code) {
+          await this._copyToClipboard(code, "📋 Code snippet copied to clipboard!");
+          const label = btn.querySelector(".copy-label");
+          if (label) {
+            const old = label.textContent;
+            label.textContent = "Copied!";
+            setTimeout(() => {
+              label.textContent = old;
+            }, 1800);
+          }
         }
       };
     });
