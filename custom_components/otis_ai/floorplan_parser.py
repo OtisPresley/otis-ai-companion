@@ -258,6 +258,53 @@ class FloorplanParser:
         self._store = Store(hass, STORAGE_VERSION, storage_key)
         self._metadata: dict[str, Any] = {}
         self._initialized: bool = False
+        self._cached_svg_room_bounds: dict[str, dict[str, float]] = {}
+
+    def _parse_svg_room_bounds_sync(self, svg_file_path: str) -> dict[str, dict[str, float]]:
+        """Parse room coordinates from floorplan SVG synchronously in executor."""
+        bounds: dict[str, dict[str, float]] = {}
+        if not isinstance(svg_file_path, str) or not os.path.exists(svg_file_path):
+            return bounds
+        try:
+            with open(svg_file_path, "r", encoding="utf-8") as svg_f:
+                svg_txt = svg_f.read()
+            if not isinstance(svg_txt, str):
+                return bounds
+            for m in re.finditer(
+                r'<g\b[^>]*class="[^"]*room-group[^"]*"[^>]*data-area-id="([^"]*)"[^>]*>[\s\S]*?<rect\b[^>]*x="([0-9.]+)"\s+y="([0-9.]+)"\s+width="([0-9.]+)"\s+height="([0-9.]+)"',
+                svg_txt,
+            ):
+                aid_svg = m.group(1)
+                bounds[aid_svg] = {
+                    "id": aid_svg,
+                    "x": float(m.group(2)),
+                    "y": float(m.group(3)),
+                    "width": float(m.group(4)),
+                    "height": float(m.group(5)),
+                }
+        except Exception as err:
+            _LOGGER.debug("Error parsing SVG room bounds: %s", err)
+        return bounds
+
+    async def async_refresh_svg_cache(self, svg_relative_path: str = DEFAULT_OUTPUT_SVG_PATH) -> None:
+        """Asynchronously refresh cached SVG room bounds in executor to avoid blocking event loop."""
+        if hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
+            full_path = self.hass.config.path(svg_relative_path)
+        else:
+            full_path = svg_relative_path
+        if not isinstance(full_path, str):
+            self._cached_svg_room_bounds = {}
+            return
+        if hasattr(self.hass, "async_add_executor_job"):
+            res = self.hass.async_add_executor_job(
+                self._parse_svg_room_bounds_sync, full_path
+            )
+            if hasattr(res, "__await__"):
+                self._cached_svg_room_bounds = await res
+            else:
+                self._cached_svg_room_bounds = res
+        else:
+            self._cached_svg_room_bounds = self._parse_svg_room_bounds_sync(full_path)
 
     async def async_load(self) -> dict[str, Any]:
         """Load stored floorplan metadata."""
@@ -265,6 +312,7 @@ class FloorplanParser:
         if data and isinstance(data, dict):
             self._metadata = data
         self._initialized = True
+        await self.async_refresh_svg_cache()
         return self._metadata
 
     async def async_save_metadata(self, metadata: dict[str, Any]) -> None:
@@ -721,6 +769,7 @@ class FloorplanParser:
                 f.write(svg_content)
 
         await self.hass.async_add_executor_job(write_sync)
+        await self.async_refresh_svg_cache(output_relative_path)
         _LOGGER.info("Generated vector SVG floor plan saved to %s (walkthrough=%s)", output_full_path, is_walkthrough)
 
         # Generate Lovelace Picture-Elements Card YAML snippet
@@ -994,6 +1043,7 @@ class FloorplanParser:
                 f.write(svg_content)
 
         await self.hass.async_add_executor_job(write_sync)
+        await self.async_refresh_svg_cache(svg_relative_path)
         _LOGGER.info(
             "Updated floorplan layout in %s (badges=%d, rooms=%d, deleted=%d)",
             output_full_path,
@@ -1137,32 +1187,15 @@ class FloorplanParser:
                     if isinstance(cr, dict) and cr.get("id"):
                         custom_rooms_map[cr["id"]] = dict(cr)
 
-        if hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
-            try:
-                svg_file_path = self.hass.config.path("www/otis_floorplan.svg")
-                if isinstance(svg_file_path, str) and os.path.exists(svg_file_path):
-                    with open(svg_file_path, "r", encoding="utf-8") as svg_f:
-                        svg_txt = svg_f.read()
-                    for m in re.finditer(
-                        r'<g\b[^>]*class="[^"]*room-group[^"]*"[^>]*data-area-id="([^"]*)"[^>]*>[\s\S]*?<rect\b[^>]*x="([0-9.]+)"\s+y="([0-9.]+)"\s+width="([0-9.]+)"\s+height="([0-9.]+)"',
-                        svg_txt,
-                    ):
-                        aid_svg = m.group(1)
-                        if aid_svg not in custom_rooms_map:
-                            custom_rooms_map[aid_svg] = {
-                                "id": aid_svg,
-                                "x": float(m.group(2)),
-                                "y": float(m.group(3)),
-                                "width": float(m.group(4)),
-                                "height": float(m.group(5)),
-                            }
-                        else:
-                            custom_rooms_map[aid_svg]["x"] = float(m.group(2))
-                            custom_rooms_map[aid_svg]["y"] = float(m.group(3))
-                            custom_rooms_map[aid_svg]["width"] = float(m.group(4))
-                            custom_rooms_map[aid_svg]["height"] = float(m.group(5))
-            except Exception:
-                pass
+        # Apply room bounds from in-memory SVG cache (asynchronously parsed, non-blocking)
+        for aid_svg, b_val in getattr(self, "_cached_svg_room_bounds", {}).items():
+            if aid_svg not in custom_rooms_map:
+                custom_rooms_map[aid_svg] = dict(b_val)
+            else:
+                custom_rooms_map[aid_svg]["x"] = b_val["x"]
+                custom_rooms_map[aid_svg]["y"] = b_val["y"]
+                custom_rooms_map[aid_svg]["width"] = b_val["width"]
+                custom_rooms_map[aid_svg]["height"] = b_val["height"]
 
         for zone_k, room_list in layout.items():
             for r in room_list:

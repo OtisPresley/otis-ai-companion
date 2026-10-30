@@ -2,6 +2,21 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.9.3] - 2026-10-30
+
+### Fixed & Improved
+- **Non-Blocking Floor Plan SVG Cache (`floorplan_parser.py`)**:
+  - Resolved Home Assistant event loop startup warning (`Detected blocking call to open with args ('/config/www/otis_floorplan.svg', 'r') inside the event loop`).
+  - Implemented asynchronous SVG bounds parsing in the executor thread (`async_refresh_svg_cache()`) during integration setup (`async_load`) and post-update saves.
+  - Converted `_calculate_orthogonal_layout` to reference in-memory SVG bounds cache without any synchronous disk I/O, guaranteeing zero event loop blocking.
+- **Enhanced Assist Co-Pilot "Thinking & Reasoning" Visual Feedback (`otis-companion-card.js`)**:
+  - Added a pulsating, high-visibility "Thinking & Reasoning" indicator banner above the input bar during prompt evaluation (`🧠 Otis is reasoning... Analyzing devices, automations & synthesizing plan`).
+  - Upgraded the chat bubble thinking indicator with a branded Otis header, glowing purple left accent, animated typing wave dots, and stage description (`Synthesizing response...`).
+  - Added dynamic sending state to the `#chat-send` button with a spinner and "Thinking..." label.
+  - Temporarily disabled `#chat-input` with descriptive placeholder during reasoning (`Otis is reasoning & formulating response... please wait`) and guarded input listeners so user text is never wiped or dropped if Enter/Send is pressed while a request is in flight.
+  - Upgraded chat auto-scroll (`_scrollChatToBottom`) with `requestAnimationFrame` and staggered timers to ensure smooth, immediate scrolling to the thinking indicator.
+  - Boosted prompt copy button (`📋`) base opacity to 0.85 with bright hover glow so it is readily visible and accessible across both desktop and mobile/touch devices.
+
 ## [1.9.2] - 2026-10-30
 
 ### Added & Improved

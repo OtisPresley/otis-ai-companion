@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.9.2";
+const CARD_VERSION = "1.9.3";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -790,12 +790,15 @@ class OtisCompanionCard extends HTMLElement {
   }
 
   _scrollChatToBottom() {
-    setTimeout(() => {
-      const container = this.shadowRoot.querySelector("#chat-history");
+    const doScroll = () => {
+      const container = this.shadowRoot ? this.shadowRoot.querySelector("#chat-history") : null;
       if (container) {
         container.scrollTop = container.scrollHeight;
       }
-    }, 50);
+    };
+    requestAnimationFrame(doScroll);
+    setTimeout(doScroll, 80);
+    setTimeout(doScroll, 220);
   }
 
   _renderMarkdown(text) {
@@ -2014,19 +2017,20 @@ class OtisCompanionCard extends HTMLElement {
           position: absolute;
           top: 6px;
           right: 6px;
-          background: rgba(0, 0, 0, 0.25);
-          border: 1px solid rgba(255, 255, 255, 0.15);
-          color: rgba(255, 255, 255, 0.7);
+          background: rgba(0, 0, 0, 0.45);
+          border: 1px solid rgba(255, 255, 255, 0.25);
+          color: rgba(255, 255, 255, 0.9);
           border-radius: 4px;
-          width: 22px;
-          height: 22px;
+          width: 24px;
+          height: 24px;
           display: flex;
           align-items: center;
           justify-content: center;
           cursor: pointer;
           transition: all 0.15s ease;
           padding: 0;
-          opacity: 0.6;
+          opacity: 0.85;
+          z-index: 2;
         }
 
         .copy-icon {
@@ -2039,8 +2043,9 @@ class OtisCompanionCard extends HTMLElement {
         .prompt-copy-btn:hover {
           opacity: 1;
           color: #ffffff;
-          background: rgba(0, 0, 0, 0.55);
-          transform: scale(1.08);
+          background: rgba(14, 165, 233, 0.65);
+          border-color: rgba(56, 189, 248, 0.8);
+          transform: scale(1.1);
         }
 
         .chat-bubble.user h1,
@@ -2057,6 +2062,162 @@ class OtisCompanionCard extends HTMLElement {
           border-bottom-left-radius: 3px;
           border: 1px solid color-mix(in srgb, var(--otis-primary) 20%, transparent);
           box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+        }
+
+        .chat-bubble.otis.thinking-bubble {
+          border-left: 3px solid #c084fc;
+          background: linear-gradient(135deg, rgba(30, 41, 59, 0.95), rgba(15, 23, 42, 0.95));
+          box-shadow: 0 4px 20px rgba(168, 85, 247, 0.15);
+          padding: 12px 16px;
+          min-width: 220px;
+        }
+
+        .thinking-bubble-header {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          margin-bottom: 6px;
+          font-size: 0.74rem;
+        }
+
+        .otis-badge {
+          font-weight: 700;
+          color: #c084fc;
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+        }
+
+        .thinking-label {
+          color: var(--secondary-text-color, #94a3b8);
+          font-style: italic;
+        }
+
+        .thinking-wave-container {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          margin-top: 4px;
+        }
+
+        .typing-wave {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+        }
+
+        .typing-wave span {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: #c084fc;
+          display: inline-block;
+          animation: dotBounce 1.4s infinite ease-in-out both;
+        }
+
+        .typing-wave span:nth-child(1) { animation-delay: -0.32s; }
+        .typing-wave span:nth-child(2) { animation-delay: -0.16s; }
+
+        .thinking-stage-text {
+          font-size: 0.76rem;
+          color: #cbd5e1;
+          letter-spacing: 0.01em;
+        }
+
+        .chat-thinking-banner {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 9px 14px;
+          margin-bottom: 8px;
+          background: linear-gradient(135deg, rgba(168, 85, 247, 0.15), rgba(59, 130, 246, 0.12));
+          border: 1px solid rgba(168, 85, 247, 0.4);
+          border-radius: 12px;
+          animation: thinkingPulseGlow 2.5s infinite alternate ease-in-out;
+        }
+
+        @keyframes thinkingPulseGlow {
+          0% { border-color: rgba(168, 85, 247, 0.35); box-shadow: 0 0 8px rgba(168, 85, 247, 0.12); }
+          100% { border-color: rgba(59, 130, 246, 0.65); box-shadow: 0 0 16px rgba(59, 130, 246, 0.28); }
+        }
+
+        .thinking-avatar-pulse {
+          position: relative;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          width: 30px;
+          height: 30px;
+          border-radius: 50%;
+          background: rgba(168, 85, 247, 0.25);
+          flex-shrink: 0;
+        }
+
+        .thinking-brain {
+          font-size: 1.05rem;
+          z-index: 1;
+          animation: brainBounce 1.5s infinite ease-in-out;
+        }
+
+        @keyframes brainBounce {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(-2px); }
+        }
+
+        .thinking-pulse-ring {
+          position: absolute;
+          inset: -2px;
+          border-radius: 50%;
+          border: 2px solid rgba(168, 85, 247, 0.6);
+          animation: pulseRing 1.8s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+        }
+
+        @keyframes pulseRing {
+          0% { transform: scale(0.8); opacity: 1; }
+          100% { transform: scale(1.4); opacity: 0; }
+        }
+
+        .thinking-text-group {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+
+        .thinking-title {
+          font-size: 0.8rem;
+          font-weight: 700;
+          color: #c084fc;
+          letter-spacing: 0.02em;
+        }
+
+        .thinking-subtitle {
+          font-size: 0.69rem;
+          color: var(--secondary-text-color, #94a3b8);
+        }
+
+        .thinking-dots {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          flex-shrink: 0;
+        }
+
+        .thinking-dots span {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: #c084fc;
+          display: inline-block;
+          animation: dotBounce 1.4s infinite ease-in-out both;
+        }
+
+        .thinking-dots span:nth-child(1) { animation-delay: -0.32s; }
+        .thinking-dots span:nth-child(2) { animation-delay: -0.16s; }
+
+        @keyframes dotBounce {
+          0%, 80%, 100% { transform: scale(0); opacity: 0.3; }
+          40% { transform: scale(1); opacity: 1; }
         }
 
         .chat-bubble.error {
@@ -2302,6 +2463,16 @@ class OtisCompanionCard extends HTMLElement {
         .send-btn:disabled {
           opacity: 0.5;
           cursor: not-allowed;
+        }
+
+        .send-btn.sending {
+          background: linear-gradient(135deg, rgba(168, 85, 247, 0.5) 0%, rgba(59, 130, 246, 0.5) 100%);
+          border: 1px solid rgba(168, 85, 247, 0.6);
+          color: #f1f5f9;
+          opacity: 0.9 !important;
+          cursor: wait !important;
+          gap: 6px;
+          padding: 8px 12px;
         }
 
         .mic-btn {
@@ -3240,7 +3411,22 @@ class OtisCompanionCard extends HTMLElement {
           }
           ${
             this._isSendingChat
-              ? `<div class="chat-bubble otis"><div class="spinner" style="display:inline-block; vertical-align:middle; margin-right:6px;"></div> Thinking...</div>`
+              ? `
+            <div class="chat-bubble otis thinking-bubble">
+              <div class="thinking-bubble-header">
+                <span class="otis-badge">🤖 Otis</span>
+                <span class="thinking-label">Thinking & Reasoning...</span>
+              </div>
+              <div class="thinking-wave-container">
+                <div class="typing-wave">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </div>
+                <span class="thinking-stage-text">Synthesizing response...</span>
+              </div>
+            </div>
+          `
               : ""
           }
         </div>
@@ -3256,8 +3442,29 @@ class OtisCompanionCard extends HTMLElement {
           </div>
           <div class="chat-live-preview-body" id="chat-live-preview-body"></div>
         </div>
+        ${
+          this._isSendingChat
+            ? `
+          <div class="chat-thinking-banner">
+            <div class="thinking-avatar-pulse">
+              <span class="thinking-brain">🧠</span>
+              <span class="thinking-pulse-ring"></span>
+            </div>
+            <div class="thinking-text-group">
+              <div class="thinking-title">Otis is reasoning...</div>
+              <div class="thinking-subtitle">Analyzing devices, automations & synthesizing plan</div>
+            </div>
+            <div class="thinking-dots">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+          </div>
+        `
+            : ""
+        }
         <div class="chat-input-bar">
-          <div class="chat-input-wrapper ${this._isListening ? "listening" : ""}">
+          <div class="chat-input-wrapper ${this._isListening ? "listening" : ""} ${this._isSendingChat ? "sending" : ""}">
             ${
               this._isListening
                 ? `
@@ -3275,7 +3482,8 @@ class OtisCompanionCard extends HTMLElement {
               class="chat-input"
               id="chat-input"
               rows="1"
-              placeholder="${this._isListening ? "Listening... speak now" : "Ask Otis or give a voice/text command... (Shift+Enter for newline)"}"
+              ${this._isSendingChat ? "disabled" : ""}
+              placeholder="${this._isSendingChat ? "Otis is reasoning & formulating response... please wait" : (this._isListening ? "Listening... speak now" : "Ask Otis or give a voice/text command... (Shift+Enter for newline)")}"
             >${this._draftChatText || ""}</textarea>
           </div>
           <button type="button" class="mic-btn ${this._isListening ? "listening" : ""}" id="chat-mic" title="${this._isListening ? "Listening... click to stop" : "Voice command"}" ${this._isSendingChat ? "disabled" : ""}>
@@ -3284,7 +3492,13 @@ class OtisCompanionCard extends HTMLElement {
               <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
             </svg>
           </button>
-          <button type="button" class="send-btn" id="chat-send" ${this._isSendingChat ? "disabled" : ""}>Send</button>
+          <button type="button" class="send-btn ${this._isSendingChat ? "sending" : ""}" id="chat-send" ${this._isSendingChat ? "disabled" : ""}>
+            ${
+              this._isSendingChat
+                ? `<div class="spinner" style="display:inline-block; vertical-align:middle; width:12px; height:12px;"></div> Thinking...`
+                : "Send"
+            }
+          </button>
         </div>
       </div>
     `;
@@ -4352,6 +4566,7 @@ class OtisCompanionCard extends HTMLElement {
           e.preventDefault();
           e.stopPropagation();
           e.stopImmediatePropagation();
+          if (this._isSendingChat) return false;
           const text = chatInput.value;
           chatInput.value = "";
           this._draftChatText = "";
@@ -4370,6 +4585,7 @@ class OtisCompanionCard extends HTMLElement {
           e.preventDefault();
           e.stopPropagation();
         }
+        if (this._isSendingChat) return;
         const text = chatInput.value;
         chatInput.value = "";
         this._draftChatText = "";
