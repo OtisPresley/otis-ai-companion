@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.11.6";
+const CARD_VERSION = "1.11.7";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -449,8 +449,8 @@ class OtisCompanionCard extends HTMLElement {
             return `<text x="${xVal}" y="${yVal}" class="${clsName}">${cleanContent}</text>`;
           }
         );
-        // Ensure entity-badge elements are never hidden by legacy display:none in SVG stylesheet
-        rawSvg = rawSvg.replace(/\.entity-badge\s*\{[^}]*display:\s*none;?[^}]*\}/gi, ".entity-badge { display: inline; cursor: pointer; }");
+        // Strip any legacy burnt-in entity-badge circles/emojis from SVG so only clean HA icons show
+        rawSvg = rawSvg.replace(/<g\b[^>]*class="[^"]*entity-badge[^"]*"[^>]*>[\s\S]*?<\/g>\s*/gi, "");
         this._floorplanSvg = rawSvg;
       }
     } catch (err) {
@@ -3551,23 +3551,50 @@ class OtisCompanionCard extends HTMLElement {
         }
 
         .floorplan-svg-viewport .entity-badge {
-          display: inline-block !important;
+          display: none !important;
+        }
+
+        .floorplan-pins-overlay {
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          pointer-events: none;
+          z-index: 10;
+        }
+
+        .floorplan-device-pin {
+          position: absolute;
+          transform: translate(-50%, -50%);
+          display: flex;
+          align-items: center;
+          justify-content: center;
           cursor: pointer;
-          transition: transform 0.2s ease, filter 0.2s ease;
+          transition: transform 0.15s ease;
+          z-index: 20;
+          pointer-events: auto;
+          width: 26px;
+          height: 26px;
+          --mdc-icon-size: 22px;
+          color: #94a3b8;
+          user-select: none;
         }
 
-        .floorplan-svg-viewport .entity-badge:hover {
-          transform: scale(1.22);
-          filter: drop-shadow(0 0 8px rgba(56, 189, 248, 0.7));
+        .floorplan-device-pin:hover {
+          transform: translate(-50%, -50%) scale(1.3);
+          z-index: 30;
         }
 
-        .floorplan-svg-viewport.editor-mode .entity-badge {
-          display: inline-block !important;
+        .floorplan-device-pin.is-active ha-state-icon {
+          filter: drop-shadow(0 0 6px currentColor);
+        }
+
+        .floorplan-device-pin.is-draggable {
           cursor: grab !important;
-          filter: drop-shadow(0 0 6px var(--otis-primary)) !important;
         }
 
-        .floorplan-svg-viewport.editor-mode .entity-badge:active {
+        .floorplan-device-pin.is-draggable:active {
           cursor: grabbing !important;
         }
 
@@ -5007,6 +5034,7 @@ class OtisCompanionCard extends HTMLElement {
             <div class="floorplan-svg-viewport ${this._editorActive && isAdmin ? 'editor-mode' : ''}" id="floorplan-viewport">
               ${this._editorActive && isAdmin ? `<div class="editor-hud" id="editor-hud">📐 Pointer: --, --</div>` : ''}
               ${this._floorplanSvg}
+              ${this._renderFloorplanPins()}
               ${this._editorActive && isAdmin && this._selectedEditorRoomId ? this._renderRoomInspector() : ""}
             </div>
             ${
@@ -5123,6 +5151,64 @@ class OtisCompanionCard extends HTMLElement {
             <span>🗑️</span><span>Delete Room</span>
           </button>
         </div>
+      </div>
+    `;
+  }
+
+  _renderFloorplanPins() {
+    const rawBadges = this._capabilityMap?.floorplan?.custom_layout?.badges || [];
+    const badgesMap = {};
+    rawBadges.forEach((b) => {
+      if (b && b.entity_id) badgesMap[b.entity_id] = { ...b };
+    });
+    Object.entries(this._dirtyBadges || {}).forEach(([eid, b]) => {
+      if (b.delete) delete badgesMap[eid];
+      else badgesMap[eid] = { ...badgesMap[eid], ...b };
+    });
+
+    const badges = Object.values(badgesMap);
+    if (!badges.length) return "";
+
+    return `
+      <div class="floorplan-pins-overlay" id="floorplan-pins-overlay">
+        ${badges
+          .map((b) => {
+            const eid = b.entity_id;
+            const stateObj = this._hass?.states?.[eid];
+            const name = stateObj?.attributes?.friendly_name || eid;
+            const state = stateObj?.state || "unknown";
+            const isActive = ["on", "playing", "open", "unlocked", "active", "cleaning"].includes(state);
+            const dom = eid.split(".")[0];
+            const domainColors = {
+              light: "#f59e0b",
+              switch: "#a855f7",
+              media_player: "#ec4899",
+              fan: "#06b6d4",
+              climate: "#f97316",
+              cover: "#eab308",
+              lock: "#10b981",
+              vacuum: "#8b5cf6",
+            };
+            const activeColor = domainColors[dom] || "#38bdf8";
+            const bx = parseFloat(b.x || 300);
+            const by = parseFloat(b.y || 300);
+            const leftPct = ((bx / 1300.0) * 100).toFixed(2);
+            const topPct = ((by / 1250.0) * 100).toFixed(2);
+
+            return `
+              <div
+                class="floorplan-device-pin ${isActive ? "is-active" : ""} ${this._editorActive ? "is-draggable" : ""}"
+                data-entity-id="${eid}"
+                data-x="${bx}"
+                data-y="${by}"
+                title="${name}: ${state}"
+                style="top: ${topPct}%; left: ${leftPct}%; --paper-item-icon-active-color: ${activeColor}; color: ${isActive ? activeColor : "#94a3b8"};"
+              >
+                <ha-state-icon></ha-state-icon>
+              </div>
+            `;
+          })
+          .join("")}
       </div>
     `;
   }
@@ -6779,82 +6865,133 @@ class OtisCompanionCard extends HTMLElement {
     const isAdmin = Boolean(this._hass?.user?.is_admin || this._hass?.user?.is_owner);
 
     if (svgViewport && svgEl) {
-      // 0. Update live states, colors, tooltips & domain icons on all entity badges
-      svgEl.querySelectorAll(".entity-badge").forEach((badge) => {
-        const entityId = badge.getAttribute("data-entity-id");
-        if (!entityId) return;
-        const domain = entityId.split(".")[0];
-        const stateObj = this._hass?.states?.[entityId];
-        const state = stateObj?.state || "unknown";
-        const isActive = ["on", "playing", "open", "unlocked", "active", "cleaning"].includes(state);
-        const name = stateObj?.attributes?.friendly_name || entityId;
+      // 0. Set up interactive Home Assistant device pins (<ha-state-icon> overlays)
+      const pinsOverlay = root.querySelector("#floorplan-pins-overlay");
+      if (pinsOverlay) {
+        pinsOverlay.querySelectorAll(".floorplan-device-pin").forEach((pin) => {
+          const entityId = pin.getAttribute("data-entity-id");
+          if (!entityId) return;
 
-        badge.setAttribute("title", `${name} (${state})`);
-
-        const circle = badge.querySelector(".badge-circle");
-        if (circle) {
-          circle.setAttribute("r", "11");
-          if (isActive) {
-            const color =
-              domain === "light"
-                ? "#f59e0b"
-                : domain === "media_player"
-                ? "#ec4899"
-                : domain === "switch"
-                ? "#a855f7"
-                : domain === "climate"
-                ? "#f97316"
-                : domain === "fan"
-                ? "#06b6d4"
-                : domain === "vacuum"
-                ? "#8b5cf6"
-                : domain === "cover"
-                ? "#eab308"
-                : domain === "lock"
-                ? "#10b981"
-                : "#38bdf8";
-            circle.setAttribute("fill", color);
-            circle.setAttribute("stroke", "#ffffff");
-            circle.setAttribute("stroke-width", "1.5");
-            circle.style.filter = `drop-shadow(0 0 6px ${color})`;
-          } else {
-            circle.setAttribute("fill", "rgba(15, 23, 42, 0.85)");
-            circle.setAttribute("stroke", "rgba(148, 163, 184, 0.5)");
-            circle.setAttribute("stroke-width", "1.2");
-            circle.style.filter = "none";
+          const iconEl = pin.querySelector("ha-state-icon");
+          if (iconEl && this._hass) {
+            iconEl.hass = this._hass;
+            if (this._hass.states?.[entityId]) {
+              iconEl.stateObj = this._hass.states[entityId];
+            }
           }
-        }
 
-        const iconEl = badge.querySelector(".badge-icon");
-        if (iconEl) {
-          iconEl.style.fontSize = "11px";
-          iconEl.style.dominantBaseline = "central";
-          iconEl.style.textAnchor = "middle";
-          const iconChar =
-            domain === "light"
-              ? "💡"
-              : domain === "media_player"
-              ? "📺"
-              : domain === "switch"
-              ? "🔌"
-              : domain === "fan"
-              ? "🌀"
-              : domain === "vacuum"
-              ? "🧹"
-              : domain === "cover"
-              ? "🚪"
-              : domain === "lock"
-              ? "🔒"
-              : domain === "climate"
-              ? "🌡️"
-              : domain === "camera"
-              ? "📹"
-              : domain === "binary_sensor"
-              ? "🚶"
-              : "⚡";
-          iconEl.textContent = iconChar;
-        }
-      });
+          if (this._editorActive && isAdmin) {
+            pin.style.cursor = "grab";
+            pin.onpointerdown = (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const viewportRect = svgViewport.getBoundingClientRect();
+              const startPinX = parseFloat(pin.getAttribute("data-x") || 300);
+              const startPinY = parseFloat(pin.getAttribute("data-y") || 300);
+
+              this._draggingBadge = {
+                el: pin,
+                entityId,
+                startX: startPinX,
+                startY: startPinY,
+                startClientX: e.clientX,
+                startClientY: e.clientY,
+                viewportW: viewportRect.width || 1,
+                viewportH: viewportRect.height || 1,
+                moved: false,
+              };
+              try { pin.setPointerCapture(e.pointerId); } catch (_) {}
+            };
+
+            pin.onpointermove = (e) => {
+              if (!this._draggingBadge || this._draggingBadge.el !== pin) return;
+              e.preventDefault();
+              e.stopPropagation();
+              const dx = e.clientX - this._draggingBadge.startClientX;
+              const dy = e.clientY - this._draggingBadge.startClientY;
+
+              if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+                this._draggingBadge.moved = true;
+              }
+
+              const scaleX = 1300.0 / this._draggingBadge.viewportW;
+              const scaleY = 1250.0 / this._draggingBadge.viewportH;
+              const newX = Math.round(this._draggingBadge.startX + dx * scaleX);
+              const newY = Math.round(this._draggingBadge.startY + dy * scaleY);
+
+              pin.setAttribute("data-x", newX);
+              pin.setAttribute("data-y", newY);
+              pin.style.left = `${((newX / 1300.0) * 100).toFixed(2)}%`;
+              pin.style.top = `${((newY / 1250.0) * 100).toFixed(2)}%`;
+
+              if (editorHud) {
+                editorHud.textContent = `📍 ${this._draggingBadge.entityId} (X: ${newX}, Y: ${newY})`;
+              }
+
+              this._dirtyBadges[entityId] = {
+                entity_id: entityId,
+                x: newX,
+                y: newY,
+              };
+              this._hasUnsavedLayout = true;
+              const saveBtn = root.querySelector("#btn-save-layout");
+              if (saveBtn) saveBtn.textContent = "💾 Save Changes *";
+            };
+
+            pin.onpointerup = (e) => {
+              if (this._draggingBadge && this._draggingBadge.el === pin) {
+                try { pin.releasePointerCapture(e.pointerId); } catch (_) {}
+                const wasMoved = this._draggingBadge.moved;
+                const curX = parseFloat(pin.getAttribute("data-x") || 300);
+                const curY = parseFloat(pin.getAttribute("data-y") || 300);
+                this._draggingBadge = null;
+
+                if (!wasMoved) {
+                  this._selectedEditorEntityId = entityId;
+                  this._selectedEditorEntityCoords = { x: curX, y: curY };
+                  this._editMarkerModalOpen = true;
+                  this._render();
+                }
+              }
+            };
+
+            pin.onpointercancel = (e) => {
+              if (this._draggingBadge && this._draggingBadge.el === pin) {
+                try { pin.releasePointerCapture(e.pointerId); } catch (_) {}
+                this._draggingBadge = null;
+              }
+            };
+          } else {
+            // Normal mode -> Tap to toggle or open more-info
+            pin.style.cursor = "pointer";
+            pin.onclick = async (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              const domain = entityId.split(".")[0];
+              const stateObj = this._hass?.states?.[entityId];
+              const name = stateObj?.attributes?.friendly_name || entityId;
+              if (["light", "switch", "fan", "cover"].includes(domain)) {
+                try {
+                  await this._hass.callService("homeassistant", "toggle", { entity_id: entityId });
+                  const st = this._hass.states[entityId];
+                  const newState = st?.state === "on" ? "off" : "on";
+                  this._showToast(`${name} toggled (${newState})`);
+                } catch (err) {
+                  this._showToast(`Could not toggle ${name}: ${err.message || err}`, true);
+                }
+              } else {
+                const ev = new CustomEvent("hass-more-info", {
+                  detail: { entityId },
+                  bubbles: true,
+                  composed: true,
+                });
+                this.dispatchEvent(ev);
+                window.dispatchEvent(ev);
+              }
+            };
+          }
+        });
+      }
 
       if (this._editorActive && isAdmin) {
         // --- Canvas Editor Active Mode ---
@@ -6868,89 +7005,6 @@ class OtisCompanionCard extends HTMLElement {
             }
           }
         };
-
-        // 2. Drag & Drop repositioning & click-to-edit of entity badges
-        svgEl.querySelectorAll(".entity-badge").forEach((badge) => {
-          badge.style.cursor = "grab";
-          badge.onpointerdown = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            const p = getSvgPoint(svgEl, e.clientX, e.clientY);
-            const tr = badge.getAttribute("transform") || "";
-            const m = tr.match(/translate\(\s*([-\d.]+)[,\s]+([-\d.]+)\s*\)/);
-            const curX = m ? parseFloat(m[1]) : p.x;
-            const curY = m ? parseFloat(m[2]) : p.y;
-            const entityId = badge.getAttribute("data-entity-id");
-
-            this._draggingBadge = {
-              el: badge,
-              entityId,
-              startX: curX,
-              startY: curY,
-              offsetX: p.x - curX,
-              offsetY: p.y - curY,
-              moved: false,
-            };
-            try { badge.setPointerCapture(e.pointerId); } catch (_) {}
-          };
-
-          badge.onpointermove = (e) => {
-            if (!this._draggingBadge || this._draggingBadge.el !== badge) return;
-            e.preventDefault();
-            e.stopPropagation();
-            const p = getSvgPoint(svgEl, e.clientX, e.clientY);
-            const newX = Math.round(p.x - this._draggingBadge.offsetX);
-            const newY = Math.round(p.y - this._draggingBadge.offsetY);
-
-            if (
-              Math.abs(newX - this._draggingBadge.startX) > 4 ||
-              Math.abs(newY - this._draggingBadge.startY) > 4
-            ) {
-              this._draggingBadge.moved = true;
-            }
-
-            badge.setAttribute("transform", `translate(${newX}, ${newY})`);
-            if (editorHud) {
-              editorHud.textContent = `📍 ${this._draggingBadge.entityId} (X: ${newX}, Y: ${newY})`;
-            }
-            this._dirtyBadges[this._draggingBadge.entityId] = {
-              entity_id: this._draggingBadge.entityId,
-              x: newX,
-              y: newY,
-            };
-            this._hasUnsavedLayout = true;
-            const saveBtn = root.querySelector("#btn-save-layout");
-            if (saveBtn) saveBtn.textContent = "💾 Save Changes *";
-          };
-
-          badge.onpointerup = (e) => {
-            if (this._draggingBadge && this._draggingBadge.el === badge) {
-              try { badge.releasePointerCapture(e.pointerId); } catch (_) {}
-              const wasMoved = this._draggingBadge.moved;
-              const eid = this._draggingBadge.entityId;
-              const tr = badge.getAttribute("transform") || "";
-              const m = tr.match(/translate\(\s*([-\d.]+)[,\s]+([-\d.]+)\s*\)/);
-              const curX = m ? parseFloat(m[1]) : 0;
-              const curY = m ? parseFloat(m[2]) : 0;
-              this._draggingBadge = null;
-
-              if (!wasMoved && eid) {
-                // Clicked in edit mode -> Open Inspector Modal to edit or remove pin
-                this._selectedEditorEntityId = eid;
-                this._selectedEditorEntityCoords = { x: curX, y: curY };
-                this._editMarkerModalOpen = true;
-                this._render();
-              }
-            }
-          };
-
-          badge.onpointercancel = (e) => {
-            if (this._draggingBadge && this._draggingBadge.el === badge) {
-              try { badge.releasePointerCapture(e.pointerId); } catch (_) {}
-              this._draggingBadge = null;
-            }
-          };
-        });
 
         // Apply any pending dirty room dimensions onto SVG elements
         Object.entries(this._dirtyRooms).forEach(([roomId, rData]) => {
@@ -7417,31 +7471,7 @@ class OtisCompanionCard extends HTMLElement {
           }
         }
       } else {
-        // --- Normal Interactive Viewer Mode ---
-        svgViewport.querySelectorAll("[data-entity-id]").forEach((badge) => {
-          badge.style.cursor = "pointer";
-          badge.onclick = (e) => {
-            e.stopPropagation();
-            const entityId = badge.getAttribute("data-entity-id");
-            if (!entityId || !this._hass) return;
-            const domain = entityId.split(".")[0];
-            if (["light", "switch", "fan", "cover"].includes(domain)) {
-              this._hass.callService("homeassistant", "toggle", { entity_id: entityId });
-              const st = this._hass.states[entityId];
-              const newState = st?.state === "on" ? "off" : "on";
-              this._showToast(`${st?.attributes?.friendly_name || entityId} toggled (${newState})`);
-            } else {
-              const ev = new CustomEvent("hass-more-info", {
-                detail: { entityId },
-                bubbles: true,
-                composed: true,
-              });
-              this.dispatchEvent(ev);
-              window.dispatchEvent(ev);
-            }
-          };
-        });
-
+        // --- Normal Interactive Viewer Mode (Room navigation) ---
         svgViewport.querySelectorAll(".room-group").forEach((grp) => {
           grp.style.cursor = "pointer";
           grp.onclick = () => {

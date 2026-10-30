@@ -2,6 +2,20 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.11.7] - 2026-10-30
+
+### Fixed & Enhanced
+- **Modern Conversation Entity Discovery & Automatic Failover Dismissal**:
+  - Enhanced `_get_agents(hass)` in `config_flow.py` to inspect all active `conversation.*` entities registered in Home Assistant states (excluding default Assist and Otis itself).
+  - Automatically recognizes HACS-based and modern LLM conversation entities (including `conversation.text_generation_assist` from the Groq `ha-groq` integration).
+  - Verified multi-agent redundancy discovery: with 2+ active conversation agents present, the "Configure AI Failover Redundancy" recommendation card automatically dismisses upon refresh.
+- **Pure Home Assistant State Icons on Floor Plan Blueprint**:
+  - Replaced small, dark emoji circles with clean, native `<ha-state-icon>` overlays identical to Home Assistant's Lovelace `picture-elements` view.
+  - Stripped all legacy `<g class="entity-badge">` vector elements from `/config/www/otis_floorplan.svg` and enforced client-side stripping to prevent overlapping duplicate icons.
+  - Linked pin overlays to `custom_layout.badges` in metadata, guaranteeing full two-way synchronization between the Floor Plan tab and the Interactive Floor Plan view.
+  - Enhanced device pin styling: 22px native vector icons with domain-specific active accent colors (`#f59e0b` lighting, `#ec4899` media, `#a855f7` switches, `#06b6d4` fans, etc.) and subtle active glow effects.
+  - Preserved smooth admin drag & drop, the Pin Inspector modal, badge deletion, and normal mode tap-to-toggle/more-info.
+
 ## [1.11.6] - 2026-10-30
 
 ### Fixed & Enhanced

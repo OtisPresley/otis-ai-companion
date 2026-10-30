@@ -2806,6 +2806,7 @@ class DiscoveryEngine:
                 "walkthrough_completed": has_walkthrough,
                 "url": "/local/otis_floorplan.svg" if has_floorplan else None,
                 "lovelace_yaml": self.floorplan_parser.get_lovelace_yaml() if has_floorplan else None,
+                "custom_layout": getattr(self.floorplan_parser, "_metadata", {}).get("custom_layout", {}),
             },
             "media_topology": media_topology,
             "security_topology": security_topology,

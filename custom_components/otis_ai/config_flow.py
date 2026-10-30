@@ -40,12 +40,36 @@ def _get_agents(hass) -> list:
                 agents = [default_agent]
 
     filtered = []
+    seen_ids = set()
     for a in agents:
         aid = getattr(a, "id", str(a))
         name = getattr(a, "name", "")
         if DOMAIN in str(aid).lower() or "otis" in str(name).lower():
             continue
         filtered.append(a)
+        seen_ids.add(str(aid))
+
+    # Also discover all active conversation entities in Home Assistant (e.g., conversation.text_generation_assist)
+    class EntityAgentInfo:
+        def __init__(self, agent_id: str, agent_name: str) -> None:
+            self.id = agent_id
+            self.name = agent_name
+
+        def __repr__(self) -> str:
+            return f"<AgentInfo id={self.id} name={self.name}>"
+
+    if hass and hasattr(hass, "states"):
+        try:
+            for s in hass.states.async_all("conversation"):
+                eid = s.entity_id
+                if eid in ("conversation.home_assistant",) or DOMAIN in eid.lower() or "otis" in eid.lower():
+                    continue
+                if eid not in seen_ids:
+                    filtered.append(EntityAgentInfo(eid, s.attributes.get("friendly_name") or eid))
+                    seen_ids.add(eid)
+        except Exception:
+            pass
+
     return filtered
 
 
