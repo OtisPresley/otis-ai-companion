@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 1.9.1
+ * Version: 1.9.4
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.9.3";
+const CARD_VERSION = "1.9.4";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -32,6 +32,12 @@ class OtisCompanionCard extends HTMLElement {
     this._applyingIds = new Set();
     this._chatMessages = this._loadChatMessages();
     this._isSendingChat = false;
+    this._reasoningSteps = [];
+    this._reasoningStartTime = null;
+    this._reasoningTimer = null;
+    this._activeReasoningStep = 0;
+    this._expandedReasoningIds = new Set();
+    this._unsubReasoningEvents = null;
     this._isListening = false;
     this._recognition = null;
     this._activeTab = this._loadActiveTab(); // 'suggestions' | 'chat' | 'capabilities' | 'floorplan'
@@ -155,6 +161,159 @@ class OtisCompanionCard extends HTMLElement {
     // Load initial capability map and suggestions if not loaded
     if (!oldHass && hass) {
       this._fetchData();
+      this._subscribeReasoningEvents();
+    }
+  }
+
+  disconnectedCallback() {
+    if (this._unsubReasoningEvents) {
+      try {
+        this._unsubReasoningEvents();
+      } catch (_) {}
+      this._unsubReasoningEvents = null;
+    }
+    if (this._reasoningTimer) {
+      clearInterval(this._reasoningTimer);
+      this._reasoningTimer = null;
+    }
+  }
+
+  async _subscribeReasoningEvents() {
+    if (this._unsubReasoningEvents) return;
+    try {
+      if (this._hass && this._hass.connection && typeof this._hass.connection.subscribeEvents === "function") {
+        this._unsubReasoningEvents = await this._hass.connection.subscribeEvents((ev) => {
+          this._handleReasoningEvent(ev?.data);
+        }, "otis_ai_reasoning_step");
+      }
+    } catch (e) {
+      console.debug("Could not subscribe to otis_ai_reasoning_step events:", e);
+    }
+  }
+
+  _handleReasoningEvent(data) {
+    if (!data || !this._isSendingChat) return;
+    if (data.conversation_id && this._conversationId && data.conversation_id !== this._conversationId) {
+      return;
+    }
+    const elapsed = this._reasoningStartTime ? ((Date.now() - this._reasoningStartTime) / 1000).toFixed(1) : "0.0";
+    const stepId = data.step || "step_" + Date.now();
+    const title = data.title || "Processing";
+    const detail = data.detail || "";
+
+    const existingIdx = this._reasoningSteps.findIndex((s) => s.id === stepId);
+    if (existingIdx !== -1) {
+      this._reasoningSteps[existingIdx].status = "active";
+      if (detail) this._reasoningSteps[existingIdx].detail = detail;
+      if (title) this._reasoningSteps[existingIdx].title = title;
+      for (let i = 0; i < existingIdx; i++) {
+        this._reasoningSteps[i].status = "done";
+        if (!this._reasoningSteps[i].time) this._reasoningSteps[i].time = `${elapsed}s`;
+      }
+      this._activeReasoningStep = existingIdx;
+    } else {
+      if (this._reasoningSteps.length > 0) {
+        this._reasoningSteps[this._reasoningSteps.length - 1].status = "done";
+        if (!this._reasoningSteps[this._reasoningSteps.length - 1].time) {
+          this._reasoningSteps[this._reasoningSteps.length - 1].time = `${elapsed}s`;
+        }
+      }
+      this._reasoningSteps.push({
+        id: stepId,
+        title,
+        detail,
+        status: "active",
+        time: "",
+      });
+      this._activeReasoningStep = this._reasoningSteps.length - 1;
+    }
+    this._updateThinkingDisplay(elapsed);
+  }
+
+  _advanceReasoningStep(targetIdx, elapsed) {
+    if (!this._reasoningSteps || targetIdx >= this._reasoningSteps.length) return;
+    for (let i = 0; i < targetIdx; i++) {
+      if (this._reasoningSteps[i]) {
+        this._reasoningSteps[i].status = "done";
+        if (!this._reasoningSteps[i].time) {
+          this._reasoningSteps[i].time = `${elapsed.toFixed(1)}s`;
+        }
+      }
+    }
+    if (this._reasoningSteps[targetIdx]) {
+      this._reasoningSteps[targetIdx].status = "active";
+    }
+    this._activeReasoningStep = targetIdx;
+  }
+
+  _getCurrentThinkingTitle() {
+    if (!this._reasoningSteps || this._reasoningSteps.length === 0) return "Analyzing request";
+    const active = this._reasoningSteps.find((s) => s.status === "active") || this._reasoningSteps[this._reasoningSteps.length - 1];
+    return active ? active.title : "Analyzing request";
+  }
+
+  _getCurrentThinkingStatus() {
+    if (!this._reasoningSteps || this._reasoningSteps.length === 0) return "Evaluating home state...";
+    const active = this._reasoningSteps.find((s) => s.status === "active") || this._reasoningSteps[this._reasoningSteps.length - 1];
+    return active ? active.detail || active.title : "Formulating response...";
+  }
+
+  _renderThinkingStepsStream() {
+    if (!this._reasoningSteps || this._reasoningSteps.length === 0) return "";
+    return this._reasoningSteps
+      .map((s) => {
+        const isDone = s.status === "done";
+        const isActive = s.status === "active";
+        return `
+          <div class="thinking-step-row ${s.status}">
+            <span class="step-indicator ${s.status}">
+              ${
+                isDone
+                  ? "✓"
+                  : isActive
+                  ? `<span class="step-mini-spinner"></span>`
+                  : "○"
+              }
+            </span>
+            <div class="step-info">
+              <span class="step-name ${s.status}">${this._escapeHtml(s.title)}</span>
+              ${s.detail ? `<span class="step-sub ${s.status}">${this._escapeHtml(s.detail)}</span>` : ""}
+            </div>
+            ${s.time ? `<span class="step-badge">${this._escapeHtml(s.time)}</span>` : ""}
+          </div>
+        `;
+      })
+      .join("");
+  }
+
+  _updateThinkingDisplay(elapsed) {
+    const root = this.shadowRoot;
+    if (!root) return;
+
+    const timerEl = root.querySelector("#thinking-elapsed-timer");
+    if (timerEl) {
+      const secStr = typeof elapsed === "number" ? elapsed.toFixed(1) : elapsed;
+      timerEl.textContent = `⏱️ ${secStr}s`;
+    }
+
+    const stageEl = root.querySelector("#thinking-stage-text");
+    if (stageEl) {
+      stageEl.textContent = this._getCurrentThinkingStatus();
+    }
+
+    const bannerTitle = root.querySelector("#thinking-banner-title");
+    if (bannerTitle) {
+      bannerTitle.textContent = `Otis is reasoning: ${this._getCurrentThinkingTitle()}`;
+    }
+
+    const bannerSub = root.querySelector("#thinking-banner-sub");
+    if (bannerSub) {
+      bannerSub.textContent = this._getCurrentThinkingStatus();
+    }
+
+    const streamEl = root.querySelector("#thinking-steps-stream");
+    if (streamEl) {
+      streamEl.innerHTML = this._renderThinkingStepsStream();
     }
   }
 
@@ -546,11 +705,61 @@ class OtisCompanionCard extends HTMLElement {
     if (!userText || !this._hass || this._isSendingChat) return;
 
     this._saveActiveTab("chat");
-    this._chatMessages.push({ sender: "user", text: userText, timestamp: new Date().toISOString() });
+    const userMsgId = "user_" + Date.now();
+    this._chatMessages.push({ id: userMsgId, sender: "user", text: userText, timestamp: new Date().toISOString() });
     this._saveChatMessages();
     this._isSendingChat = true;
+
+    // Initialize contextual reasoning pipeline
+    this._reasoningStartTime = Date.now();
+    this._activeReasoningStep = 0;
+    const lower = userText.toLowerCase();
+    let domainDetail = "Scanning active devices & spatial adjacency";
+    if (/power|energy|load|watt|solar|battery|grid|consumption|tariff|kwh/.test(lower)) {
+      domainDetail = "Inspecting live power sensors, solar surplus & load balance";
+    } else if (/media|music|play|audio|handoff|volume|speaker|zone|amp|stream/.test(lower)) {
+      domainDetail = "Querying matrix audio zones & upstream media streamers";
+    } else if (/security|lock|alarm|door|guard|motion|sensor|camera|perimeter/.test(lower)) {
+      domainDetail = "Verifying security perimeter, locks & presence sensors";
+    } else if (/light|lamp|bright|color|dim|switch/.test(lower)) {
+      domainDetail = "Checking room lighting states, brightness & circadian curves";
+    } else if (/undo|rollback|macro|history|revert/.test(lower)) {
+      domainDetail = "Inspecting atomic state snapshots & rollback safety";
+    } else if (/automation|script|scene|routine/.test(lower)) {
+      domainDetail = "Auditing existing automations & cross-area coordinator scripts";
+    }
+
+    this._reasoningSteps = [
+      { id: "intent", title: "Parsing Intent", detail: "Analyzing natural language prompt & target domains", status: "active", time: "0.0s" },
+      { id: "topology", title: "Querying Topology", detail: "Inspecting spatial adjacency graph & active entities", status: "pending", time: "" },
+      { id: "domain", title: "Domain Inspection", detail: domainDetail, status: "pending", time: "" },
+      { id: "llm", title: "Consulting AI Model", detail: "Reasoning with prioritized agent & verifying safety guards", status: "pending", time: "" },
+      { id: "synthesizing", title: "Synthesizing Actions", detail: "Validating action safety guards & formatting plan", status: "pending", time: "" },
+    ];
+
     this._render();
     this._scrollChatToBottom();
+
+    // Start timer for real-time stopwatch & step advancement
+    if (this._reasoningTimer) clearInterval(this._reasoningTimer);
+    this._reasoningTimer = setInterval(() => {
+      if (!this._isSendingChat || !this._reasoningStartTime) {
+        clearInterval(this._reasoningTimer);
+        this._reasoningTimer = null;
+        return;
+      }
+      const elapsed = (Date.now() - this._reasoningStartTime) / 1000;
+      if (elapsed >= 0.8 && this._activeReasoningStep === 0) {
+        this._advanceReasoningStep(1, elapsed);
+      } else if (elapsed >= 2.0 && this._activeReasoningStep === 1) {
+        this._advanceReasoningStep(2, elapsed);
+      } else if (elapsed >= 3.8 && this._activeReasoningStep === 2) {
+        this._advanceReasoningStep(3, elapsed);
+      } else if (elapsed >= 6.5 && this._activeReasoningStep === 3) {
+        this._advanceReasoningStep(4, elapsed);
+      }
+      this._updateThinkingDisplay(elapsed);
+    }, 200);
 
     const extractSpeech = (resObj) => {
       if (!resObj) return "";
@@ -659,11 +868,22 @@ class OtisCompanionCard extends HTMLElement {
 
     try {
       const speech = await Promise.race([callPromise, timeoutPromise]);
+      const totalElapsedSec = ((Date.now() - this._reasoningStartTime) / 1000).toFixed(1);
+      this._reasoningSteps.forEach((s) => {
+        s.status = "done";
+        if (!s.time) s.time = `${totalElapsedSec}s`;
+      });
 
+      const otisMsgId = "otis_" + Date.now();
       this._chatMessages.push({
+        id: otisMsgId,
         sender: "otis",
         text: speech,
         timestamp: new Date().toISOString(),
+        reasoning: {
+          duration: `${totalElapsedSec}s`,
+          steps: JSON.parse(JSON.stringify(this._reasoningSteps)),
+        },
       });
       this._saveChatMessages();
 
@@ -676,14 +896,25 @@ class OtisCompanionCard extends HTMLElement {
       }
     } catch (err) {
       console.error("Error sending message to Otis:", err);
+      const totalElapsedSec = this._reasoningStartTime ? ((Date.now() - this._reasoningStartTime) / 1000).toFixed(1) : "0.0";
+      const otisErrId = "otis_err_" + Date.now();
       this._chatMessages.push({
+        id: otisErrId,
         sender: "otis",
         text: `⚠️ **Assist Co-Pilot:** ${err.message || "Failed to connect to the AI agent. Please try again."}`,
         timestamp: new Date().toISOString(),
         isError: true,
+        reasoning: {
+          duration: `${totalElapsedSec}s`,
+          steps: JSON.parse(JSON.stringify(this._reasoningSteps || [])),
+        },
       });
       this._saveChatMessages();
     } finally {
+      if (this._reasoningTimer) {
+        clearInterval(this._reasoningTimer);
+        this._reasoningTimer = null;
+      }
       this._isSendingChat = false;
       this._render();
       this._scrollChatToBottom();
@@ -2075,53 +2306,233 @@ class OtisCompanionCard extends HTMLElement {
         .thinking-bubble-header {
           display: flex;
           align-items: center;
-          gap: 6px;
-          margin-bottom: 6px;
+          gap: 8px;
+          margin-bottom: 8px;
           font-size: 0.74rem;
         }
 
-        .otis-badge {
-          font-weight: 700;
-          color: #c084fc;
+        .thinking-status-pill {
           display: inline-flex;
           align-items: center;
-          gap: 4px;
+          gap: 5px;
+          padding: 2px 8px;
+          background: rgba(168, 85, 247, 0.2);
+          border: 1px solid rgba(168, 85, 247, 0.5);
+          border-radius: 12px;
+          color: #e9d5ff;
+          font-size: 0.7rem;
+          font-weight: 600;
+          letter-spacing: 0.02em;
         }
 
-        .thinking-label {
-          color: var(--secondary-text-color, #94a3b8);
-          font-style: italic;
-        }
-
-        .thinking-wave-container {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          margin-top: 4px;
-        }
-
-        .typing-wave {
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-        }
-
-        .typing-wave span {
+        .pill-pulse-dot {
           width: 6px;
           height: 6px;
           border-radius: 50%;
-          background: #c084fc;
-          display: inline-block;
-          animation: dotBounce 1.4s infinite ease-in-out both;
+          background: #38bdf8;
+          box-shadow: 0 0 6px #38bdf8;
+          animation: dotBounce 1.2s infinite ease-in-out;
         }
 
-        .typing-wave span:nth-child(1) { animation-delay: -0.32s; }
-        .typing-wave span:nth-child(2) { animation-delay: -0.16s; }
+        .thinking-timer {
+          margin-left: auto;
+          font-family: monospace;
+          font-size: 0.74rem;
+          color: #38bdf8;
+          font-weight: 600;
+        }
 
-        .thinking-stage-text {
-          font-size: 0.76rem;
+        .thinking-steps-stream {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          margin-bottom: 10px;
+          padding: 8px 10px;
+          background: rgba(15, 23, 42, 0.6);
+          border-radius: 8px;
+          border: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .thinking-step-row {
+          display: flex;
+          align-items: flex-start;
+          gap: 8px;
+          font-size: 0.73rem;
+          transition: all 0.25s ease;
+        }
+
+        .thinking-step-row.pending {
+          opacity: 0.45;
+        }
+
+        .thinking-step-row.active {
+          opacity: 1;
+        }
+
+        .thinking-step-row.done {
+          opacity: 0.85;
+        }
+
+        .step-indicator {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          width: 16px;
+          height: 16px;
+          flex-shrink: 0;
+          font-size: 0.75rem;
+          margin-top: 1px;
+        }
+
+        .step-indicator.done {
+          color: #34d399;
+          font-weight: bold;
+          text-shadow: 0 0 8px rgba(52, 211, 153, 0.6);
+        }
+
+        .step-indicator.active {
+          color: #38bdf8;
+        }
+
+        .step-indicator.pending {
+          color: rgba(255, 255, 255, 0.3);
+        }
+
+        .step-mini-spinner {
+          display: inline-block;
+          width: 11px;
+          height: 11px;
+          border: 2px solid rgba(56, 189, 248, 0.25);
+          border-top-color: #38bdf8;
+          border-radius: 50%;
+          animation: spin 0.75s linear infinite;
+        }
+
+        .step-info {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          gap: 1px;
+        }
+
+        .step-name {
+          font-weight: 600;
+          color: #e2e8f0;
+        }
+
+        .step-name.active {
+          color: #38bdf8;
+        }
+
+        .step-name.done {
           color: #cbd5e1;
-          letter-spacing: 0.01em;
+        }
+
+        .step-sub {
+          font-size: 0.68rem;
+          color: #94a3b8;
+          line-height: 1.25;
+        }
+
+        .step-sub.active {
+          color: #a5f3fc;
+        }
+
+        .step-badge {
+          font-family: monospace;
+          font-size: 0.66rem;
+          color: rgba(255, 255, 255, 0.45);
+          align-self: center;
+        }
+
+        /* Reasoning Trace Historical View */
+        .reasoning-trace-container {
+          margin-bottom: 8px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+          padding-bottom: 6px;
+        }
+
+        .reasoning-trace-toggle {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          background: rgba(168, 85, 247, 0.12);
+          border: 1px solid rgba(168, 85, 247, 0.3);
+          color: #c084fc;
+          border-radius: 6px;
+          padding: 3px 8px;
+          font-size: 0.71rem;
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+
+        .reasoning-trace-toggle:hover {
+          background: rgba(168, 85, 247, 0.22);
+          border-color: rgba(168, 85, 247, 0.5);
+          color: #e9d5ff;
+        }
+
+        .reasoning-brain-icon {
+          font-size: 0.78rem;
+        }
+
+        .reasoning-summary-text {
+          font-weight: 500;
+        }
+
+        .reasoning-chevron {
+          width: 14px;
+          height: 14px;
+          fill: currentColor;
+          transition: transform 0.2s ease;
+        }
+
+        .reasoning-trace-toggle.expanded .reasoning-chevron {
+          transform: rotate(180deg);
+        }
+
+        .reasoning-steps-list {
+          margin-top: 6px;
+          padding: 6px 10px;
+          background: rgba(0, 0, 0, 0.25);
+          border-radius: 6px;
+          border-left: 2px solid #a855f7;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+
+        .reasoning-step-item {
+          display: flex;
+          align-items: flex-start;
+          gap: 8px;
+          font-size: 0.71rem;
+        }
+
+        .step-check {
+          color: #34d399;
+          font-weight: bold;
+          flex-shrink: 0;
+        }
+
+        .step-content {
+          flex: 1;
+        }
+
+        .step-content .step-title {
+          font-weight: 600;
+          color: #e2e8f0;
+        }
+
+        .step-content .step-detail {
+          font-size: 0.67rem;
+          color: #94a3b8;
+        }
+
+        .step-time {
+          font-family: monospace;
+          font-size: 0.65rem;
+          color: rgba(255, 255, 255, 0.4);
         }
 
         .chat-thinking-banner {
@@ -3368,6 +3779,42 @@ class OtisCompanionCard extends HTMLElement {
     return "";
   }
 
+  _renderReasoningTrace(m) {
+    const traceId = m.id || m.timestamp || m.text;
+    const isExpanded = this._expandedReasoningIds.has(traceId);
+    return `
+      <div class="reasoning-trace-container">
+        <button type="button" class="reasoning-trace-toggle ${isExpanded ? "expanded" : ""}" data-trace-id="${this._escapeHtml(traceId)}">
+          <span class="reasoning-brain-icon">🧠</span>
+          <span class="reasoning-summary-text">Thought for ${this._escapeHtml(m.reasoning.duration || "a moment")} (${m.reasoning.steps.length} steps)</span>
+          <svg class="reasoning-chevron" viewBox="0 0 24 24"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
+        </button>
+        ${
+          isExpanded
+            ? `
+          <div class="reasoning-steps-list">
+            ${m.reasoning.steps
+              .map(
+                (s) => `
+              <div class="reasoning-step-item done">
+                <span class="step-check">✓</span>
+                <div class="step-content">
+                  <div class="step-title">${this._escapeHtml(s.title || "Step")}</div>
+                  <div class="step-detail">${this._escapeHtml(s.detail || "")}</div>
+                </div>
+                <span class="step-time">${this._escapeHtml(s.time || "")}</span>
+              </div>
+            `
+              )
+              .join("")}
+          </div>
+        `
+            : ""
+        }
+      </div>
+    `;
+  }
+
   _renderChatTab() {
     return `
       <div class="chat-container">
@@ -3402,6 +3849,11 @@ class OtisCompanionCard extends HTMLElement {
                   `
                       : ""
                   }
+                  ${
+                    m.sender === "otis" && m.reasoning && m.reasoning.steps && m.reasoning.steps.length
+                      ? this._renderReasoningTrace(m)
+                      : ""
+                  }
                   ${this._renderMarkdown(m.text)}
                   ${this._renderChatActionButtons(m)}
                 </div>
@@ -3412,10 +3864,17 @@ class OtisCompanionCard extends HTMLElement {
           ${
             this._isSendingChat
               ? `
-            <div class="chat-bubble otis thinking-bubble">
+            <div class="chat-bubble otis thinking-bubble" id="active-thinking-bubble">
               <div class="thinking-bubble-header">
                 <span class="otis-badge">🤖 Otis</span>
-                <span class="thinking-label">Thinking & Reasoning...</span>
+                <span class="thinking-status-pill">
+                  <span class="pill-pulse-dot"></span>
+                  <span id="thinking-pill-text">Reasoning</span>
+                </span>
+                <span class="thinking-timer" id="thinking-elapsed-timer">⏱️ 0.0s</span>
+              </div>
+              <div class="thinking-steps-stream" id="thinking-steps-stream">
+                ${this._renderThinkingStepsStream()}
               </div>
               <div class="thinking-wave-container">
                 <div class="typing-wave">
@@ -3423,7 +3882,7 @@ class OtisCompanionCard extends HTMLElement {
                   <span></span>
                   <span></span>
                 </div>
-                <span class="thinking-stage-text">Synthesizing response...</span>
+                <span class="thinking-stage-text" id="thinking-stage-text">${this._escapeHtml(this._getCurrentThinkingStatus())}</span>
               </div>
             </div>
           `
@@ -3451,8 +3910,8 @@ class OtisCompanionCard extends HTMLElement {
               <span class="thinking-pulse-ring"></span>
             </div>
             <div class="thinking-text-group">
-              <div class="thinking-title">Otis is reasoning...</div>
-              <div class="thinking-subtitle">Analyzing devices, automations & synthesizing plan</div>
+              <div class="thinking-title" id="thinking-banner-title">Otis is reasoning: ${this._escapeHtml(this._getCurrentThinkingTitle())}</div>
+              <div class="thinking-subtitle" id="thinking-banner-sub">${this._escapeHtml(this._getCurrentThinkingStatus())}</div>
             </div>
             <div class="thinking-dots">
               <span></span>
@@ -4496,6 +4955,25 @@ class OtisCompanionCard extends HTMLElement {
             input.dispatchEvent(new Event("input", { bubbles: true }));
           }
           this._showToast("📋 Copied prompt to input!");
+        }
+      };
+    });
+
+    // Reasoning trace toggle buttons
+    root.querySelectorAll(".reasoning-trace-toggle").forEach((btn) => {
+      btn.onclick = (e) => {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        const traceId = btn.getAttribute("data-trace-id");
+        if (traceId) {
+          if (this._expandedReasoningIds.has(traceId)) {
+            this._expandedReasoningIds.delete(traceId);
+          } else {
+            this._expandedReasoningIds.add(traceId);
+          }
+          this._render();
         }
       };
     });

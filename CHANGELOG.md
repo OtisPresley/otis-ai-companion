@@ -2,6 +2,21 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.9.4] - 2026-10-30
+
+### Added & Improved
+- **Real-Time Assist Co-Pilot Reasoning Feedback & Progress Stream (`otis-companion-card.js`, `__init__.py`)**:
+  - Replaced static waiting state with dynamic, real-time reasoning feedback directly inside the Otis chat bubble:
+    - Live elapsed stopwatch timer (`⏱️ 2.4s`) updating every 200ms.
+    - Context-aware reasoning pipeline showing dynamic milestone stages (parsing prompt intent, querying spatial topology, inspecting domain-specific subsystems like audio matrix/security/energy/lighting, consulting prioritized AI model, and validating action safety guards).
+    - Animated live step indicators: rotating mini-spinners for active steps, green glowing checkmarks (`✓`) for completed milestones, and subtle dimmed indicators for pending steps.
+  - **Backend Event Bus Dispatching (`otis_ai_reasoning_step`)**:
+    - Dispatched `otis_ai_reasoning_step` bus events across `handle_chat` and `OtisAIConversationAgent.async_process` with real-time step metadata (`intent`, `topology`, `domain`, `llm`, `synthesizing`).
+    - Integrated native WebSocket `subscribeEvents` in `otis-companion-card.js` with responsive fallback time-stepping to guarantee smooth, immediate visual progression even across high-latency LLM calls.
+  - **Expandable Historical Reasoning Trace**:
+    - Persisted full reasoning trace (`duration` and `steps`) in conversational history objects.
+    - Added interactive collapsible reasoning toggle (`🧠 Thought for 3.4s (5 steps) ▼`) on Otis response bubbles allowing users to inspect or collapse detailed thought traces on demand.
+
 ## [1.9.3] - 2026-10-30
 
 ### Fixed & Improved

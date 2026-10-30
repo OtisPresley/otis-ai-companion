@@ -745,6 +745,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         self.device_id = None
                 user_input = SimpleInput(text, conv_id, call.context, language)
 
+        if hasattr(hass, "bus") and hasattr(hass.bus, "async_fire"):
+            try:
+                hass.bus.async_fire("otis_ai_reasoning_step", {
+                    "conversation_id": conv_id,
+                    "step": "intent",
+                    "title": "Parsing Intent",
+                    "detail": "Analyzing prompt requirements and spatial context",
+                })
+            except Exception:
+                pass
+
         result = await agent.async_process(user_input)
         speech = ""
         if result and getattr(result, "response", None):
@@ -1392,6 +1403,20 @@ class OtisAIConversationAgent(AbstractAgent):
         sessions = self.hass.data[DOMAIN]["sessions"]
         conv_id = user_input.conversation_id
         user_text = user_input.text.strip().lower()
+
+        def fire_progress(step_id: str, title: str, detail: str) -> None:
+            if hasattr(self.hass, "bus") and hasattr(self.hass.bus, "async_fire"):
+                try:
+                    self.hass.bus.async_fire("otis_ai_reasoning_step", {
+                        "conversation_id": user_input.conversation_id,
+                        "step": step_id,
+                        "title": title,
+                        "detail": detail,
+                    })
+                except Exception:
+                    pass
+
+        fire_progress("intent", "Parsing Intent", "Analyzing natural language prompt & target domains")
         
         confirmations = {"yes", "y", "apply", "confirm", "go ahead", "do it"}
         rejections = {"no", "n", "cancel", "don't", "stop", "reject"}
@@ -1642,8 +1667,10 @@ class OtisAIConversationAgent(AbstractAgent):
             )
 
         # 2. Build the capability map
+        fire_progress("topology", "Querying Topology", "Inspecting spatial adjacency graph & active entities")
         capability_map = await self.engine.async_build_capability_map()
 
+        fire_progress("domain", "Domain Inspection", "Evaluating active audio zones, security perimeter & state history")
         # Summarize active entities by domain
         from collections import Counter
         entity_domains = Counter(e['domain'] for e in capability_map['entities'])
@@ -1780,6 +1807,7 @@ User: {user_input.text}
             is_primary = (idx == 0)
             role_label = "Primary" if is_primary else f"Failover #{idx}"
             _LOGGER.debug("Attempting conversation with %s AI agent: %s", role_label, agent_id)
+            fire_progress("llm", f"Consulting {role_label} AI", f"Reasoning with model '{agent_id}'")
 
             try:
                 attempt_result = await conversation.async_converse(
@@ -1858,6 +1886,7 @@ User: {user_input.text}
         except Exception as parse_err:
             _LOGGER.error("Error parsing LLM response for YAML: %s", parse_err)
 
+        fire_progress("synthesizing", "Synthesizing Actions", "Validating action safety guards & formatting plan")
         return result
 ERROR_SIGNATURES = [
     "Sorry, I had a problem getting a response from",
