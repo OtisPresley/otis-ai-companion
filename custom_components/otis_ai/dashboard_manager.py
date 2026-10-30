@@ -600,14 +600,25 @@ class DashboardManager:
                     lovelace_data.dashboards[url_path].config = item
 
                 if overwrite_config:
+                    current_cfg = getattr(lovelace_data.dashboards[url_path], "config", None)
+                    is_changed = True
                     try:
-                        await lovelace_data.dashboards[url_path].async_save(merged_dashboard_config)
-                    except Exception as save_err:
-                        _LOGGER.debug("LovelaceStorage.async_save skipped: %s", save_err)
-                    try:
-                        self.hass.bus.async_fire("lovelace_updated", {"url_path": url_path})
+                        cur_str = json.dumps(current_cfg, sort_keys=True) if current_cfg else ""
+                        new_str = json.dumps(merged_dashboard_config, sort_keys=True)
+                        if cur_str and cur_str == new_str:
+                            is_changed = False
                     except Exception:
                         pass
+
+                    if is_changed:
+                        try:
+                            await lovelace_data.dashboards[url_path].async_save(merged_dashboard_config)
+                        except Exception as save_err:
+                            _LOGGER.debug("LovelaceStorage.async_save skipped: %s", save_err)
+                        try:
+                            self.hass.bus.async_fire("lovelace_updated", {"url_path": url_path})
+                        except Exception:
+                            pass
 
             # Sync with Home Assistant's in-memory DashboardsCollection so UI Settings > Dashboards can edit/delete
             if hasattr(self.hass, "data") and isinstance(self.hass.data, dict):

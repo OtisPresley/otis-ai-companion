@@ -438,6 +438,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         conversation.async_register_agent(hass, agent)
     else:
         conversation.async_set_agent(hass, entry, agent)
+
+    # Remediate any entity area assignments that trigger HA core repairs
+    try:
+        from .commissioning_manager import async_remediate_entity_area_repairs
+        remediated_count = await async_remediate_entity_area_repairs(hass)
+        if remediated_count > 0:
+            _LOGGER.info("Otis AI self-healed %d entity area assignments to clear HA core repairs", remediated_count)
+    except Exception as err:
+        _LOGGER.debug("Could not run entity area remediation: %s", err)
     
     hass.data[DOMAIN][entry.entry_id] = {
         "data": {**entry.data, **getattr(entry, "options", {})},
@@ -686,11 +695,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 if not area_id:
                     continue
                 try:
-                    if dev_id and hasattr(device_reg, "async_update_device"):
-                        device_reg.async_update_device(dev_id, area_id=area_id)
+                    entry = entity_reg.async_get(ent_id) if (ent_id and hasattr(entity_reg, "async_get")) else None
+                    actual_dev = dev_id or (getattr(entry, "device_id", None) if entry else None)
+                    has_own_name = bool(getattr(entry, "name", None))
+
+                    if actual_dev and hasattr(device_reg, "async_update_device"):
+                        device_reg.async_update_device(actual_dev, area_id=area_id)
+                        if ent_id and getattr(entry, "area_id", None) is not None and hasattr(entity_reg, "async_update_entity"):
+                            entity_reg.async_update_entity(ent_id, area_id=None)
                         assigned_count += 1
                     elif ent_id and hasattr(entity_reg, "async_update_entity"):
-                        entity_reg.async_update_entity(ent_id, area_id=area_id)
+                        if not has_own_name:
+                            own_name = getattr(entry, "original_name", None) or ent_id.split(".")[-1].replace("_", " ").title()
+                            entity_reg.async_update_entity(ent_id, area_id=area_id, name=own_name)
+                        else:
+                            entity_reg.async_update_entity(ent_id, area_id=area_id)
                         assigned_count += 1
                 except Exception as err:
                     _LOGGER.warning("Could not assign area %s to %s: %s", area_id, dev_id or ent_id, err)
@@ -709,8 +728,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 if not ent_id or not area_id:
                     continue
                 try:
-                    if hasattr(entity_reg, "async_update_entity"):
-                        entity_reg.async_update_entity(ent_id, area_id=area_id)
+                    entry = entity_reg.async_get(ent_id) if hasattr(entity_reg, "async_get") else None
+                    actual_dev = getattr(entry, "device_id", None) if entry else None
+                    has_own_name = bool(getattr(entry, "name", None))
+
+                    if actual_dev and hasattr(device_reg, "async_update_device"):
+                        device_reg.async_update_device(actual_dev, area_id=area_id)
+                        if getattr(entry, "area_id", None) is not None and hasattr(entity_reg, "async_update_entity"):
+                            entity_reg.async_update_entity(ent_id, area_id=None)
+                        assigned_count += 1
+                    elif hasattr(entity_reg, "async_update_entity"):
+                        if not has_own_name:
+                            own_name = getattr(entry, "original_name", None) or ent_id.split(".")[-1].replace("_", " ").title()
+                            entity_reg.async_update_entity(ent_id, area_id=area_id, name=own_name)
+                        else:
+                            entity_reg.async_update_entity(ent_id, area_id=area_id)
                         assigned_count += 1
                 except Exception as err:
                     _LOGGER.warning("Could not assign area %s to entity %s: %s", area_id, ent_id, err)
@@ -2269,20 +2301,24 @@ class OtisAIConversationAgent(AbstractAgent):
         ]
         # Prioritize active/on entities and sample inactive ones to keep prompt token size fast and lean
         active_control = [e for e in control_candidates if e["state"] not in ("off", "unavailable", "unknown", "idle")]
-        inactive_sample = [e for e in control_candidates if e["state"] in ("off", "idle")][:35]
-        detailed_entities = (active_control + inactive_sample)[:70]
+        inactive_sample = [e for e in control_candidates if e["state"] in ("off", "idle")][:20]
+        # Compact string format e.g. 'light.dining (off) in dining_room' to dramatically reduce token and payload size
+        detailed_entities = [
+            f"{e['entity_id']} ({e.get('state')}) in {e.get('area_id') or 'unassigned'}"
+            for e in (active_control + inactive_sample)[:40]
+        ]
 
         # Extract existing automations and scripts concisely (capped to prevent exceeding model context)
         existing_automations = [
-            {"entity_id": e["entity_id"], "name": e.get("name")}
+            f"{e['entity_id']}: {e.get('name') or ''}"
             for e in capability_map["entities"]
             if e["domain"] == "automation"
-        ][:35]
+        ][:20]
         existing_scripts = [
-            {"entity_id": e["entity_id"], "name": e.get("name")}
+            f"{e['entity_id']}: {e.get('name') or ''}"
             for e in capability_map["entities"]
             if e["domain"] == "script"
-        ][:20]
+        ][:15]
 
         # Summarize orphaned entities
         orphan_domains = Counter(e['domain'] for e in capability_map['orphaned_entities'])
@@ -2359,7 +2395,22 @@ class OtisAIConversationAgent(AbstractAgent):
         ) or "None currently pending."
 
         # 3. Format the prompt wrapping the user's input with the spatial/capability context
-        prompt = f"""You are the Otis AI Companion, an intelligent, proactive smart home architect, co-pilot, and butler.
+        conv_id = user_input.conversation_id or "default"
+        session_data = sessions.setdefault(conv_id, {})
+        turn_count = session_data.get("turn_count", 0) + 1
+        session_data["turn_count"] = turn_count
+
+        if turn_count > 1:
+            # On follow-up turns, HA conversation agents retain conversational context.
+            # Avoid re-sending thousands of tokens of static topology which triggers Groq/LLM HTTP 413 (Payload Too Large).
+            prompt = f"""You are the Otis AI Companion, proactive smart home architect and co-pilot.
+Continue assisting the user in this conversation. Leverage the home's hardware architecture (Control4 Matrix Audio, Alarmo, Climate, Energy) previously established.
+Keep your response concise, structured, and actionable.
+
+User: {user_input.text}
+"""
+        else:
+            prompt = f"""You are the Otis AI Companion, an intelligent, proactive smart home architect, co-pilot, and butler.
 Your goal is to guide the user from a bare Home Assistant installation to a fully optimized, cohesive, automated smart home—and offer to build and configure everything for them.
 Always prioritize native Home Assistant solutions, minimize frontend dependencies, and synthesize right-sized, modular coordinator automations and scripts (avoiding thousands of tiny per-entity automations or brittle monoliths).
 
@@ -2485,14 +2536,27 @@ User: {user_input.text}
         fire_progress("synthesizing", "Synthesizing Actions", "Validating action safety guards & formatting plan")
         return result
 ERROR_SIGNATURES = [
-    "Sorry, I had a problem getting a response from",
-    '"code": 503',
-    '"code": 429',
-    '"status": "UNAVAILABLE"',
-    '"status": "RESOURCE_EXHAUSTED"',
-    "high demand",
-    "spikes in demand are usually temporary",
+    "sorry, i had a problem getting a response from",
+    "api error",
+    "groq api error",
+    "openai api error",
+    "anthropic api error",
+    "gemini api error",
+    "http 413",
+    "http 429",
+    "http 500",
+    "http 502",
+    "http 503",
+    "http 504",
+    "payload too large",
+    "request entity too large",
+    "context_length_exceeded",
+    "context length",
+    "maximum context length",
+    "too many tokens",
+    "rate_limit_exceeded",
     "rate limit reached",
+    "rate limit",
     "quota exceeded",
     "exceeded your current quota",
     "insufficient funds",
@@ -2500,6 +2564,15 @@ ERROR_SIGNATURES = [
     "check your plan and billing details",
     "model is overloaded",
     "service temporarily unavailable",
+    '"code": 503',
+    '"code": 429',
+    '"code": 413',
+    '"status": "unavailable"',
+    '"status": "resource_exhausted"',
+    "high demand",
+    "spikes in demand are usually temporary",
+    "protect_free_tier",
+    "free tier limit",
 ]
 
 
@@ -2507,8 +2580,10 @@ def is_provider_error(speech: str) -> bool:
     """Detect if the LLM agent returned a provider error string instead of a valid conversation response."""
     if not speech:
         return True
-    speech_lower = speech.lower()
-    return any(sig.lower() in speech_lower for sig in ERROR_SIGNATURES)
+    speech_lower = speech.lower().strip()
+    if re.search(r"\b(?:api error|error code|http\s*(?:4\d\d|5\d\d)|status\s*code\s*(?:4\d\d|5\d\d))\b", speech_lower):
+        return True
+    return any(sig in speech_lower for sig in ERROR_SIGNATURES)
 
 
 async def async_get_prioritized_agents(hass: HomeAssistant, preferred_agent_id: str | None = None) -> list[str]:
@@ -2871,14 +2946,6 @@ class DiscoveryEngine:
         self._cached_cap_map = dict(cap_map)
         self._cache_ts = now
         self._cache_signature = current_sig
-
-        # Continuous Discovery Synchronization: keep companion and user command center dashboard subviews updated
-        if getattr(self, "dashboard_manager", None):
-            try:
-                await self.dashboard_manager.async_ensure_admin_companion_dashboard(cap_map)
-                await self.dashboard_manager.async_ensure_user_command_center_dashboard(cap_map)
-            except Exception as err:
-                _LOGGER.debug("Could not synchronize dashboards during discovery scan: %s", err)
 
         return cap_map
 

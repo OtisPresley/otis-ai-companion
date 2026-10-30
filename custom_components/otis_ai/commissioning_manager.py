@@ -321,21 +321,42 @@ class AutonomousCommissioningManager:
             eid = item["entity_id"]
             aid = item["suggested_area_id"]
             dev_id = item.get("device_id")
+            entry = entity_reg.async_get(eid) if hasattr(entity_reg, "async_get") else None
+            actual_dev_id = dev_id or (getattr(entry, "device_id", None) if entry else None)
 
-            if dev_id:
-                if dev_id not in device_to_areas:
-                    device_to_areas[dev_id] = []
-                device_to_areas[dev_id].append(aid)
+            if actual_dev_id:
+                if actual_dev_id not in device_to_areas:
+                    device_to_areas[actual_dev_id] = []
+                device_to_areas[actual_dev_id].append(aid)
 
             try:
                 if hasattr(entity_reg, "async_update_entity"):
-                    entity_reg.async_update_entity(eid, area_id=aid)
+                    has_own_name = bool(getattr(entry, "name", None))
+
+                    if not has_own_name and actual_dev_id and hasattr(device_reg, "async_update_device"):
+                        # In HA: An entity without a name of its own cannot have an area of its own if it belongs to a device.
+                        # Setting area on the parent device allows the child entity to inherit it cleanly without triggering
+                        # the 'entity_own_area_without_own_name' core repair issue.
+                        device_reg.async_update_device(actual_dev_id, area_id=aid)
+                        assigned_devs += 1
+                        if getattr(entry, "area_id", None) is not None:
+                            entity_reg.async_update_entity(eid, area_id=None)
+                        assigned_ents += 1
+                        applied_assignments.append(item)
+                        _LOGGER.info("Commissioned device '%s' into area '%s' for child entity '%s' (%s)", actual_dev_id, aid, eid, item["reason"])
+                        continue
+                    elif not has_own_name and not actual_dev_id:
+                        # Standalone entity without parent device: give it a name so HA allows the area assignment
+                        own_name = getattr(entry, "original_name", None) or eid.split(".")[-1].replace("_", " ").title()
+                        entity_reg.async_update_entity(eid, area_id=aid, name=own_name)
+                    else:
+                        entity_reg.async_update_entity(eid, area_id=aid)
+
                     assigned_ents += 1
                     applied_assignments.append(item)
                     _LOGGER.info("Commissioned entity '%s' into area '%s' (%s)", eid, aid, item["reason"])
             except ValueError as val_err:
-                # In HA: An entity without a name of its own cannot have an area of its own; set area on its device instead
-                _LOGGER.debug("Entity '%s' area will be inherited from parent device '%s': %s", eid, dev_id, val_err)
+                _LOGGER.debug("Entity '%s' area will be inherited from parent device '%s': %s", eid, actual_dev_id, val_err)
                 applied_assignments.append(item)
             except Exception as err:
                 _LOGGER.warning("Failed to auto-commission entity '%s': %s", eid, err)
@@ -370,11 +391,27 @@ class AutonomousCommissioningManager:
     async def async_assign_entity(self, entity_id: str, area_id: str) -> dict[str, Any]:
         """Manually commission a specific entity to an area."""
         entity_reg = er.async_get(self.hass)
+        device_reg = dr.async_get(self.hass)
         if not hasattr(entity_reg, "async_update_entity"):
             return {"success": False, "error": "Entity registry not available"}
 
         try:
-            entity_reg.async_update_entity(entity_id, area_id=area_id)
+            entry = entity_reg.async_get(entity_id) if hasattr(entity_reg, "async_get") else None
+            actual_dev_id = getattr(entry, "device_id", None) if entry else None
+            has_own_name = bool(getattr(entry, "name", None))
+
+            if not has_own_name and actual_dev_id and hasattr(device_reg, "async_update_device"):
+                device_reg.async_update_device(actual_dev_id, area_id=area_id)
+                if getattr(entry, "area_id", None) is not None:
+                    entity_reg.async_update_entity(entity_id, area_id=None)
+                return {"success": True, "entity_id": entity_id, "device_id": actual_dev_id, "area_id": area_id}
+
+            if not has_own_name and not actual_dev_id:
+                own_name = getattr(entry, "original_name", None) or entity_id.split(".")[-1].replace("_", " ").title()
+                entity_reg.async_update_entity(entity_id, area_id=area_id, name=own_name)
+            else:
+                entity_reg.async_update_entity(entity_id, area_id=area_id)
+
             return {"success": True, "entity_id": entity_id, "area_id": area_id}
         except Exception as err:
             return {"success": False, "error": str(err)}
@@ -390,3 +427,38 @@ class AutonomousCommissioningManager:
             return {"success": True, "device_id": device_id, "area_id": area_id}
         except Exception as err:
             return {"success": False, "error": str(err)}
+
+
+async def async_remediate_entity_area_repairs(hass: Any) -> int:
+    """Remediate entities that trigger HA's 'entity_own_area_without_own_name' core repair.
+
+    If an entity belongs to a device and has an area assigned but no name of its own,
+    HA generates an 'entity_own_area_without_own_name' core repair issue.
+    This method safely moves the area assignment to the parent device and clears the entity's area_id
+    so it inherits the area cleanly, instantly resolving the repair.
+    """
+    entity_reg = er.async_get(hass)
+    device_reg = dr.async_get(hass)
+    remediated = 0
+
+    entities_list = list(entity_reg.entities.values()) if hasattr(entity_reg, "entities") else []
+    for entry in entities_list:
+        eid = getattr(entry, "entity_id", None)
+        aid = getattr(entry, "area_id", None)
+        did = getattr(entry, "device_id", None)
+        name = getattr(entry, "name", None)
+
+        if aid is not None and did is not None and not name:
+            try:
+                if hasattr(device_reg, "async_update_device"):
+                    device_reg.async_update_device(did, area_id=aid)
+                if hasattr(entity_reg, "async_update_entity"):
+                    entity_reg.async_update_entity(eid, area_id=None)
+                remediated += 1
+                _LOGGER.info("Remediated entity '%s' area into parent device '%s' to resolve repair issue", eid, did)
+            except Exception as err:
+                _LOGGER.debug("Could not remediate entity '%s': %s", eid, err)
+
+    if remediated > 0:
+        _LOGGER.info("Remediated %d entity area assignments to parent devices; core repairs resolved", remediated)
+    return remediated

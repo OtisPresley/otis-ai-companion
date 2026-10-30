@@ -2,6 +2,45 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.11.10] - 2026-10-30
+
+### Fixed & Enhanced
+- **Groq HTTP 413 (Payload Too Large) & Cascade Failover**:
+  - Expanded `ERROR_SIGNATURES` and regex in `is_provider_error` to catch HTTP 413, HTTP 429, HTTP 5xx, "API error", "Groq API error", and payload limit errors. When Groq returns an error, Otis transparently cascades to the next configured fallback model (e.g. Google Generative AI / Gemini).
+  - Compacted the active control entities list in the system prompt into concise strings (`'light.dining (off) in dining_room'`), shrinking prompt token size by over 50%.
+  - Added conversational turn awareness: on follow-up turns in the same conversation session, Otis sends a streamlined continuation prompt rather than re-transmitting the entire multi-thousand-token static capability inventory on every turn.
+- **Home Assistant Core Repairs Remediation ("has an area but no name of its own")**:
+  - Identified root cause in Home Assistant Core: entities belonging to a device cannot have an `area_id` assigned directly unless they have an explicit custom name of their own. Areas must belong to the parent device so child entities inherit cleanly.
+  - Updated `commissioning_manager.py` and `__init__.py` to assign area to the parent device (`device_reg.async_update_device(dev_id, area_id=aid)`) and leave `entity_reg.async_update_entity(eid, area_id=None)` so child entities inherit without triggering core repair issues.
+  - Implemented `async_remediate_entity_area_repairs(hass)` in `async_setup_entry` to automatically scan existing entities, move area assignments to parent devices, and immediately dismiss core repair issues.
+
+## [1.11.9] - 2026-10-30
+
+### Fixed & Enhanced
+- **Floor Map Sub-Pixel Pin Alignment & Flash Suppression**:
+  - Replaced viewport offset math with `pinsOverlay.getBoundingClientRect()` reference frame, ensuring zero-drift pixel positioning regardless of container padding, borders, or scroll state.
+  - Initialized device pins with `display: none` in the DOM template, eliminating coordinate flash/misalignment prior to matrix projection.
+  - Enhanced Outdoor Only filtering to cross-reference `entity.area_id` and area metadata against outdoor zones, cleanly hiding indoor devices on Outdoor view.
+  - Added dual `ResizeObserver` on both viewport and SVG root element for immediate pin updates during view switching and responsive viewport resizes.
+
+## [1.11.8] - 2026-10-30
+
+### Fixed & Enhanced
+- **Floor Map Dynamic Pin Positioning & Floor Zone Tracking (Issue 1)**:
+  - Fixed issue where device pin overlays remained fixed at `1300x1250` percentage coordinates when switching floor plan tabs ("Ground & Outdoor", "Upper Level", "Outdoor Only").
+  - Implemented `updatePinPositions()` using browser-native SVG matrix transformation (`getScreenCTM()`) to dynamically project exact SVG room coordinates to screen pixel positions.
+  - Automatically isolates pins per floor: Ground floor pins only show on "All Floors", "Ground & Outdoor", and "Outdoor Only"; Upper level pins only show on "All Floors" and "Upper Level" (automatically hidden on Ground/Outdoor views).
+  - Added real-time tracking with `ResizeObserver` and scroll listeners so pins never drift during window resize, zoom, or scrolling.
+  - Updated admin drag-and-drop to use `getSvgPoint()` so dragging accurately maps coordinates under any active floor viewBox.
+- **Assist Co-Pilot Progress Disappearance & Page Freeze (Issue 2)**:
+  - Eliminated root-cause bug where `async_build_capability_map()` continuously invoked `dashboard_manager.async_ensure_*` during chat processing and capability scans.
+  - Removed discovery-time dashboard overwriting that fired `lovelace_updated`, which was unmounting and destroying active Lovelace cards mid-conversation.
+  - Added idempotency check in `_async_register_and_save_dashboard` so `lovelace_updated` only fires if the Lovelace configuration actually changed.
+- **Voice Microphone Input on Themes Dialog (Roadmap Item 5)**:
+  - Added dedicated speech recognition handling for the AI Theme Generator in the Themes modal dialog.
+  - Bound the prompt input to `_draftThemePrompt` state so spoken transcripts and manual edits are preserved across component re-renders.
+  - Added a live audio equalizer animation when listening and speech-to-text recognition with 1-click theme generation.
+
 ## [1.11.7] - 2026-10-30
 
 ### Fixed & Enhanced

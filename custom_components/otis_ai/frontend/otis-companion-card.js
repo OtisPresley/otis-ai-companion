@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.11.7";
+const CARD_VERSION = "1.11.10";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -59,6 +59,8 @@ class OtisCompanionCard extends HTMLElement {
     this._failoverModalOpen = false;
     this._isListeningTheme = false;
     this._themeRecognition = null;
+    this._draftThemePrompt = "";
+    this._viewportResizeObserver = null;
     this._themeApplyScope = "current";
     this._generatingTheme = false;
     this._uploadingVideo = false;
@@ -205,6 +207,12 @@ class OtisCompanionCard extends HTMLElement {
     if (this._reasoningTimer) {
       clearInterval(this._reasoningTimer);
       this._reasoningTimer = null;
+    }
+    if (this._viewportResizeObserver) {
+      try {
+        this._viewportResizeObserver.disconnect();
+      } catch (_) {}
+      this._viewportResizeObserver = null;
     }
   }
 
@@ -1111,6 +1119,7 @@ class OtisCompanionCard extends HTMLElement {
         for (let i = event.resultIndex; i < event.results.length; ++i) {
           transcript += event.results[i][0].transcript;
         }
+        this._draftThemePrompt = transcript;
         if (input) {
           input.value = transcript;
         }
@@ -5192,8 +5201,6 @@ class OtisCompanionCard extends HTMLElement {
             const activeColor = domainColors[dom] || "#38bdf8";
             const bx = parseFloat(b.x || 300);
             const by = parseFloat(b.y || 300);
-            const leftPct = ((bx / 1300.0) * 100).toFixed(2);
-            const topPct = ((by / 1250.0) * 100).toFixed(2);
 
             return `
               <div
@@ -5202,7 +5209,7 @@ class OtisCompanionCard extends HTMLElement {
                 data-x="${bx}"
                 data-y="${by}"
                 title="${name}: ${state}"
-                style="top: ${topPct}%; left: ${leftPct}%; --paper-item-icon-active-color: ${activeColor}; color: ${isActive ? activeColor : "#94a3b8"};"
+                style="display: none; top: 0px; left: 0px; --paper-item-icon-active-color: ${activeColor}; color: ${isActive ? activeColor : "#94a3b8"};"
               >
                 <ha-state-icon></ha-state-icon>
               </div>
@@ -5606,13 +5613,27 @@ class OtisCompanionCard extends HTMLElement {
               <input
                 type="text"
                 id="theme-prompt-input"
+                value="${this._escapeHtml(this._draftThemePrompt || '')}"
                 placeholder="${this._isListeningTheme ? 'Listening... describe your dream theme' : 'e.g. Glowing neon cyan and purple with dark slate cards and 16px radius...'}"
                 style="flex: 1; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--otis-surface-border); background: var(--otis-surface); color: var(--otis-text); font-size: 0.82rem;"
               />
+              ${
+                this._isListeningTheme
+                  ? `
+                <div class="voice-equalizer" title="Listening to speech..." style="margin-right: 4px;">
+                  <span class="equalizer-bar"></span>
+                  <span class="equalizer-bar"></span>
+                  <span class="equalizer-bar"></span>
+                  <span class="equalizer-bar"></span>
+                  <span class="equalizer-bar"></span>
+                </div>
+              `
+                  : ""
+              }
               <button type="button"
                 class="btn-toolbar btn-theme-mic"
                 id="btn-theme-voice-mic"
-                title="Speak your theme prompt"
+                title="${this._isListeningTheme ? 'Stop microphone' : 'Speak your theme prompt'}"
                 style="padding: 7px 11px; border-radius: 8px; font-size: 0.80rem; display: inline-flex; align-items: center; gap: 5px; ${this._isListeningTheme ? 'background: #ef4444; border-color: #f87171; color: white;' : ''}"
               >
                 <svg viewBox="0 0 24 24" style="width: 14px; height: 14px; fill: currentColor;"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
@@ -5926,6 +5947,7 @@ class OtisCompanionCard extends HTMLElement {
       const res = await this._hass.callService("otis_ai", "generate_theme", payload, undefined, true, true);
       const data = res?.response || res || {};
       if (data.success) {
+        this._draftThemePrompt = "";
         this._showToast(`✨ Generated and applying "${data.title}"...`);
         await this._fetchData();
         if (data.theme_key) {
@@ -6288,17 +6310,20 @@ class OtisCompanionCard extends HTMLElement {
     const btnGenThemeAi = root.querySelector("#btn-generate-theme-ai");
     const themePromptInput = root.querySelector("#theme-prompt-input");
     if (btnGenThemeAi && themePromptInput) {
+      themePromptInput.oninput = (e) => {
+        this._draftThemePrompt = e.target.value;
+      };
       btnGenThemeAi.onclick = () => {
-        const p = themePromptInput.value.trim();
+        const p = (this._draftThemePrompt || themePromptInput.value).trim();
         if (p) {
           this._generateThemeAi(p);
         } else {
-          this._showToast("Please enter a theme styling prompt", true);
+          this._showToast("Please enter or speak a theme styling prompt", true);
         }
       };
       themePromptInput.onkeydown = (e) => {
         if (e.key === "Enter") {
-          const p = themePromptInput.value.trim();
+          const p = (this._draftThemePrompt || themePromptInput.value).trim();
           if (p) this._generateThemeAi(p);
         }
       };
@@ -6759,6 +6784,70 @@ class OtisCompanionCard extends HTMLElement {
     }
 
     // Floorplan: Zone filter pills (All Floors vs Ground & Outdoor vs Separate Upper Level)
+    const updatePinPositions = () => {
+      const currentSvgEl = root.querySelector("#floorplan-viewport svg");
+      const currentViewport = root.querySelector("#floorplan-viewport");
+      const pinsOverlay = root.querySelector("#floorplan-pins-overlay");
+      if (!currentSvgEl || !currentViewport || !pinsOverlay) return;
+
+      const ctm = currentSvgEl.getScreenCTM();
+      if (!ctm) return;
+      const oRect = pinsOverlay.getBoundingClientRect();
+      if (!oRect.width || !oRect.height) return;
+
+      const curZone = this._selectedFloorZone || "all";
+      const planUpper = currentSvgEl.querySelector("#plan-upper");
+
+      let uVbY = 730;
+      if (planUpper) {
+        const uvb = planUpper.getAttribute("data-viewbox");
+        if (uvb) {
+          const parts = uvb.split(" ").map(Number);
+          if (parts.length >= 2 && !isNaN(parts[1])) uVbY = parts[1];
+        }
+      }
+
+      pinsOverlay.querySelectorAll(".floorplan-device-pin").forEach((pin) => {
+        const bx = parseFloat(pin.getAttribute("data-x") || 300);
+        const by = parseFloat(pin.getAttribute("data-y") || 300);
+        const isUpperPin = by >= uVbY;
+
+        if (curZone === "main" && isUpperPin) {
+          pin.style.display = "none";
+          return;
+        }
+        if (curZone === "upper" && !isUpperPin) {
+          pin.style.display = "none";
+          return;
+        }
+        if (curZone === "outdoor") {
+          const entityId = pin.getAttribute("data-entity-id") || "";
+          const ent = (this._capabilityMap?.entities || []).find((e) => e.entity_id === entityId);
+          const areaId = (ent?.area_id || "").toLowerCase();
+          const isOutdoor =
+            areaId === "frontyard" ||
+            areaId === "backyard" ||
+            areaId === "pool" ||
+            /outdoor|backyard|frontyard|patio|driveway|pool|deck|yard|porch/i.test(entityId);
+          if (!isOutdoor || isUpperPin) {
+            pin.style.display = "none";
+            return;
+          }
+        }
+
+        pin.style.display = "flex";
+        pin.style.opacity = "1";
+
+        const pt = currentSvgEl.createSVGPoint();
+        pt.x = bx;
+        pt.y = by;
+        const screenPt = pt.matrixTransform(ctm);
+
+        pin.style.left = `${Math.round(screenPt.x - oRect.left)}px`;
+        pin.style.top = `${Math.round(screenPt.y - oRect.top)}px`;
+      });
+    };
+
     const applyZoneFilterToSvg = (zone) => {
       const svgEl = root.querySelector("#floorplan-viewport svg");
       if (!svgEl) return;
@@ -6817,9 +6906,15 @@ class OtisCompanionCard extends HTMLElement {
           el.style.filter = "none";
         });
       }
+
+      updatePinPositions();
     };
 
     applyZoneFilterToSvg(this._selectedFloorZone || "all");
+    requestAnimationFrame(updatePinPositions);
+    setTimeout(updatePinPositions, 60);
+    setTimeout(updatePinPositions, 200);
+    setTimeout(updatePinPositions, 600);
 
     root.querySelectorAll(".zone-pill").forEach((pill) => {
       pill.onclick = (e) => {
@@ -6865,6 +6960,18 @@ class OtisCompanionCard extends HTMLElement {
     const isAdmin = Boolean(this._hass?.user?.is_admin || this._hass?.user?.is_owner);
 
     if (svgViewport && svgEl) {
+      svgViewport.addEventListener("scroll", updatePinPositions, { passive: true });
+      if (typeof ResizeObserver !== "undefined") {
+        if (this._viewportResizeObserver) {
+          try { this._viewportResizeObserver.disconnect(); } catch (_) {}
+        }
+        this._viewportResizeObserver = new ResizeObserver(() => {
+          updatePinPositions();
+        });
+        this._viewportResizeObserver.observe(svgViewport);
+        this._viewportResizeObserver.observe(svgEl);
+      }
+
       // 0. Set up interactive Home Assistant device pins (<ha-state-icon> overlays)
       const pinsOverlay = root.querySelector("#floorplan-pins-overlay");
       if (pinsOverlay) {
@@ -6885,7 +6992,6 @@ class OtisCompanionCard extends HTMLElement {
             pin.onpointerdown = (e) => {
               e.preventDefault();
               e.stopPropagation();
-              const viewportRect = svgViewport.getBoundingClientRect();
               const startPinX = parseFloat(pin.getAttribute("data-x") || 300);
               const startPinY = parseFloat(pin.getAttribute("data-y") || 300);
 
@@ -6896,8 +7002,6 @@ class OtisCompanionCard extends HTMLElement {
                 startY: startPinY,
                 startClientX: e.clientX,
                 startClientY: e.clientY,
-                viewportW: viewportRect.width || 1,
-                viewportH: viewportRect.height || 1,
                 moved: false,
               };
               try { pin.setPointerCapture(e.pointerId); } catch (_) {}
@@ -6907,22 +7011,20 @@ class OtisCompanionCard extends HTMLElement {
               if (!this._draggingBadge || this._draggingBadge.el !== pin) return;
               e.preventDefault();
               e.stopPropagation();
-              const dx = e.clientX - this._draggingBadge.startClientX;
-              const dy = e.clientY - this._draggingBadge.startClientY;
 
-              if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+              const pt = getSvgPoint(svgEl, e.clientX, e.clientY);
+              const newX = Math.round(pt.x);
+              const newY = Math.round(pt.y);
+
+              if (Math.abs(newX - this._draggingBadge.startX) > 3 || Math.abs(newY - this._draggingBadge.startY) > 3) {
                 this._draggingBadge.moved = true;
               }
 
-              const scaleX = 1300.0 / this._draggingBadge.viewportW;
-              const scaleY = 1250.0 / this._draggingBadge.viewportH;
-              const newX = Math.round(this._draggingBadge.startX + dx * scaleX);
-              const newY = Math.round(this._draggingBadge.startY + dy * scaleY);
-
               pin.setAttribute("data-x", newX);
               pin.setAttribute("data-y", newY);
-              pin.style.left = `${((newX / 1300.0) * 100).toFixed(2)}%`;
-              pin.style.top = `${((newY / 1250.0) * 100).toFixed(2)}%`;
+              const oRect = pinsOverlay.getBoundingClientRect();
+              pin.style.left = `${Math.round(e.clientX - oRect.left)}px`;
+              pin.style.top = `${Math.round(e.clientY - oRect.top)}px`;
 
               if (editorHud) {
                 editorHud.textContent = `📍 ${this._draggingBadge.entityId} (X: ${newX}, Y: ${newY})`;
@@ -6946,7 +7048,9 @@ class OtisCompanionCard extends HTMLElement {
                 const curY = parseFloat(pin.getAttribute("data-y") || 300);
                 this._draggingBadge = null;
 
-                if (!wasMoved) {
+                if (wasMoved) {
+                  updatePinPositions();
+                } else {
                   this._selectedEditorEntityId = entityId;
                   this._selectedEditorEntityCoords = { x: curX, y: curY };
                   this._editMarkerModalOpen = true;
