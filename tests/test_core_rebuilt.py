@@ -2713,6 +2713,98 @@ class TestSentinelManager(unittest.TestCase):
                 "/command-center/media",
             )
 
+    def test_command_center_merge_glance_and_rooms_resilience(self):
+        """Verify Glance & Schedule insertion and ensure rooms are never wiped out."""
+        import json
+        import os
+        import tempfile
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+
+        dm = DashboardManager(self.hass)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # Case 1: Existing home view only has Header and Studios (the user report state)
+            existing_cc = {
+                "data": {
+                    "config": {
+                        "title": "Command Center",
+                        "views": [
+                            {
+                                "path": "home",
+                                "title": "Home",
+                                "cards": [
+                                    {"type": "markdown", "content": "# 🏠 Home Command Center"},
+                                    {"type": "grid", "title": "Studios", "cards": [{"name": "Floor Plan"}]},
+                                ],
+                            },
+                        ],
+                    }
+                }
+            }
+            cc_path = os.path.join(tmp_dir, "lovelace.command-center")
+            with open(cc_path, "w", encoding="utf-8") as f:
+                json.dump(existing_cc, f)
+
+            new_cc = {
+                "title": "Command Center",
+                "views": [
+                    {
+                        "path": "home",
+                        "title": "Home",
+                        "cards": [
+                            {"type": "markdown", "content": "# 🏠 Home Command Center"},
+                            {"type": "grid", "title": "Studios", "cards": [{"name": "Floor Plan"}]},
+                            {"type": "grid", "title": "Glance & Schedule", "cards": [{"type": "weather-forecast"}]},
+                            {"type": "grid", "title": "Rooms", "cards": [{"name": "Great Room"}]},
+                        ],
+                    },
+                    {"path": "area_great_room", "title": "Great Room", "cards": []},
+                ],
+            }
+
+            merged = dm._merge_dashboard_config_preserving_user_views(
+                storage_dir=tmp_dir,
+                dash_id="command-center",
+                new_config=new_cc,
+            )
+
+            home_cards = merged["views"][0]["cards"]
+            titles = [c.get("title") for c in home_cards]
+            self.assertIn("Studios", titles)
+            self.assertIn("Glance & Schedule", titles)
+            self.assertIn("Rooms", titles)
+            # Verify order: Studios before Glance, Glance before Rooms
+            self.assertLess(titles.index("Studios"), titles.index("Glance & Schedule"))
+            self.assertLess(titles.index("Glance & Schedule"), titles.index("Rooms"))
+
+            # Case 2: If new_config has empty rooms/glance (e.g. during offline startup), existing rooms must NOT be wiped out
+            with open(cc_path, "w", encoding="utf-8") as f:
+                json.dump({"data": {"config": merged}}, f)
+
+            empty_new_cc = {
+                "title": "Command Center",
+                "views": [
+                    {
+                        "path": "home",
+                        "title": "Home",
+                        "cards": [
+                            {"type": "markdown", "content": "# 🏠 Home Command Center"},
+                            {"type": "grid", "title": "Studios", "cards": [{"name": "Floor Plan"}]},
+                        ],
+                    }
+                ],
+            }
+
+            merged_after_empty = dm._merge_dashboard_config_preserving_user_views(
+                storage_dir=tmp_dir,
+                dash_id="command-center",
+                new_config=empty_new_cc,
+            )
+            titles_after_empty = [c.get("title") for c in merged_after_empty["views"][0]["cards"]]
+            self.assertIn("Glance & Schedule", titles_after_empty)
+            self.assertIn("Rooms", titles_after_empty)
+            # Area subviews must also be preserved
+            self.assertTrue(any(v.get("path") == "area_great_room" for v in merged_after_empty["views"]))
+
     def tearDown(self):
         if hasattr(self, "temp_dir"):
             self.temp_dir.cleanup()

@@ -14,6 +14,11 @@ import yaml
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceResponse, SupportsResponse
+
+try:
+    from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
+except ImportError:
+    EVENT_HOMEASSISTANT_STARTED = "homeassistant_started"
 from homeassistant.helpers import (
     area_registry as ar,
     config_validation as cv,
@@ -408,6 +413,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         federation_manager=federation_manager,
     )
 
+    async def _async_sync_dashboards_on_startup() -> None:
+        try:
+            if not getattr(hass, "is_running", True):
+                start_event = asyncio.Event()
+                hass.bus.async_listen_once(
+                    EVENT_HOMEASSISTANT_STARTED,
+                    lambda _: start_event.set(),
+                )
+                try:
+                    await asyncio.wait_for(start_event.wait(), timeout=30.0)
+                except asyncio.TimeoutError:
+                    pass
+            await asyncio.sleep(0.5)
+            cap_map = await engine.async_build_capability_map(force_refresh=True)
+            await dashboard_manager.async_ensure_admin_companion_dashboard(cap_map)
+            await dashboard_manager.async_ensure_user_command_center_dashboard(cap_map)
+            _LOGGER.info("Otis AI Command Center and Companion dashboards synchronized on startup")
+        except Exception as sync_err:
+            _LOGGER.debug("Could not run initial dashboard sync: %s", sync_err)
+
+    dash_coro = _async_sync_dashboards_on_startup()
+    dash_task = hass.async_create_task(dash_coro)
+    if not isinstance(dash_task, asyncio.Task) and asyncio.iscoroutine(dash_coro):
+        dash_coro.close()
+
     # Register Walkthrough Upload View
     if hasattr(hass, "http"):
         try:
@@ -434,6 +464,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         commissioning_manager=commissioning_manager,
         federation_manager=federation_manager,
     )
+
     if hasattr(conversation, "async_register_agent"):
         conversation.async_register_agent(hass, agent)
     else:
@@ -1055,15 +1086,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         eng = _get_engine()
         dm = _get_dashboard_manager()
         cap_map = (
-            await eng.async_build_capability_map()
+            await eng.async_build_capability_map(force_refresh=True)
             if hasattr(eng, "async_build_capability_map")
             else None
         )
         admin_res = await dm.async_ensure_admin_companion_dashboard(cap_map)
         user_res = await dm.async_ensure_user_command_center_dashboard(cap_map)
+        hass.bus.async_fire("lovelace_updated", {"url_path": "otis-ai"})
+        hass.bus.async_fire("lovelace_updated", {"url_path": "command-center"})
         return {
             "success": True,
-            "message": "Synchronized Studios and Rooms across Otis AI and Command Center dashboards",
+            "message": "Synchronized Studios, Glance cards, and Rooms across Otis AI and Command Center dashboards",
             "admin_dashboard": admin_res,
             "command_center": user_res,
         }
@@ -1193,8 +1226,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Service 'create_command_center' triggered")
         eng = _get_engine()
         dm = _get_dashboard_manager()
-        cap_map = await eng.async_get_capability_map() if hasattr(eng, "async_get_capability_map") else {}
+        cap_map = (
+            await eng.async_build_capability_map(force_refresh=True)
+            if hasattr(eng, "async_build_capability_map")
+            else {}
+        )
         res = await dm.async_ensure_user_command_center_dashboard(cap_map)
+        hass.bus.async_fire("lovelace_updated", {"url_path": "command-center"})
         return {"success": True, "dashboard": res}
 
     async def handle_execute_macro(call) -> ServiceResponse:

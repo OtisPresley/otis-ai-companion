@@ -2,6 +2,16 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.11.12] - 2026-10-30
+
+### Fixed & Enhanced
+- **Command Center Dashboard Home View Resilience & Glance Integration**:
+  - Fixed regression where User Command Center (`/command-center`) lost its room cards and dynamic area subviews following reloads with an unpopulated capability map.
+  - Added safe fallback in `_build_user_command_center_dashboard_config` and `_build_otis_companion_dashboard_config` to reconstruct area mappings and entity counts directly from HA area, device, and entity registries.
+  - Updated `_merge_dashboard_config_preserving_user_views` to seamlessly merge and insert the `Glance & Schedule` grid (weather forecast and calendar agenda) between Studios and Rooms, and strictly prevent dropping existing Rooms or area subviews when temporary empty states occur.
+  - Implemented `_dashboard_file_exists` guard ensuring initial setup never overwrites an existing dashboard file with an unpopulated shell.
+  - Added background startup synchronization task in `async_setup_entry` that waits for Home Assistant startup completion, builds the full capability map with live states, and updates both Admin and User Command Center dashboards.
+
 ## [1.11.11] - 2026-10-30
 
 ### Added & Enhanced

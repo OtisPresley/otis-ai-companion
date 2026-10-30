@@ -9,6 +9,11 @@ import re
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import (
+    area_registry as ar,
+    device_registry as dr,
+    entity_registry as er,
+)
 
 from .const import (
     COMMAND_CENTER_DASHBOARD_ICON,
@@ -45,6 +50,13 @@ class DashboardManager:
                 pass
         return None
 
+    def _dashboard_file_exists(self, dash_id: str) -> bool:
+        """Check if dashboard storage file exists on disk."""
+        storage_dir = self._storage_dir()
+        if not storage_dir:
+            return False
+        return os.path.exists(os.path.join(storage_dir, f"lovelace.{dash_id}"))
+
     async def async_ensure_admin_companion_dashboard(
         self, capability_map: dict[str, Any] | None = None
     ) -> dict[str, Any]:
@@ -59,10 +71,11 @@ class DashboardManager:
             "mode": "storage",
         }
         dashboard_config = self._build_otis_companion_dashboard_config(capability_map)
+        overwrite = True if (capability_map or not self._dashboard_file_exists(OTIS_DASHBOARD_ID)) else False
         return await self._async_register_and_save_dashboard(
             item=item,
             dashboard_config=dashboard_config,
-            overwrite_config=True,
+            overwrite_config=overwrite,
         )
 
     async def async_ensure_user_command_center_dashboard(
@@ -79,10 +92,11 @@ class DashboardManager:
             "mode": "storage",
         }
         dashboard_config = self._build_user_command_center_dashboard_config(capability_map)
+        overwrite = True if (capability_map or not self._dashboard_file_exists(COMMAND_CENTER_DASHBOARD_ID)) else False
         return await self._async_register_and_save_dashboard(
             item=item,
             dashboard_config=dashboard_config,
-            overwrite_config=True,
+            overwrite_config=overwrite,
         )
 
     # Alias for backward compatibility
@@ -94,6 +108,38 @@ class DashboardManager:
         """Build the Lovelace config for the Non-Admin User Command Center dashboard."""
         areas_map = capability_map.get("areas", {}) if capability_map else {}
         entities_list = capability_map.get("entities", []) if capability_map else []
+
+        if not areas_map and not entities_list and hasattr(self, "hass") and self.hass:
+            try:
+                area_reg = ar.async_get(self.hass)
+                device_reg = dr.async_get(self.hass)
+                entity_reg = er.async_get(self.hass)
+                raw_devices = getattr(device_reg, "devices", {})
+                device_iter = raw_devices.values() if isinstance(raw_devices, dict) else raw_devices
+                dev_areas = {d.id: d.area_id for d in device_iter}
+                areas_map = {a.id: {"name": a.name, "entities": []} for a in area_reg.async_list_areas()}
+                raw_entities = getattr(entity_reg, "entities", {})
+                entity_iter = raw_entities.values() if isinstance(raw_entities, dict) else raw_entities
+                for entry in entity_iter:
+                    if entry.disabled_by or entry.hidden_by:
+                        continue
+                    aid = entry.area_id or dev_areas.get(entry.device_id)
+                    st = self.hass.states.get(entry.entity_id) if hasattr(self.hass, "states") else None
+                    e_state = st.state if st else "unknown"
+                    e_info = {
+                        "entity_id": entry.entity_id,
+                        "name": entry.name or entry.original_name,
+                        "area_id": aid,
+                        "disabled_by": entry.disabled_by,
+                        "hidden_by": entry.hidden_by,
+                        "state": e_state,
+                    }
+                    entities_list.append(e_info)
+                    if aid and aid in areas_map:
+                        areas_map[aid]["entities"].append(entry.entity_id)
+            except Exception as reg_err:
+                _LOGGER.debug("Could not read registries for user command center fallback: %s", reg_err)
+
         valid_eids = {
             e["entity_id"]
             for e in entities_list
@@ -120,7 +166,11 @@ class DashboardManager:
                 not e.get("disabled_by") and not e.get("hidden_by") and e.get("entity_id") in valid_eids
                 for e in room_entities
             )
-            if has_active:
+            has_entities = any(
+                not e.get("disabled_by") and not e.get("hidden_by")
+                for e in room_entities
+            )
+            if has_active or has_entities:
                 slug = self._slugify(aid)
                 active_areas.append({
                     "id": aid,
@@ -176,8 +226,23 @@ class DashboardManager:
         ]
 
         # Weather & Calendar Glance cards
-        weather_eid = next((e["entity_id"] for e in entities_list if e["entity_id"].startswith("weather.")), None)
-        calendar_eids = [e["entity_id"] for e in entities_list if e["entity_id"].startswith("calendar.")][:3]
+        weather_eid = next(
+            (e["entity_id"] for e in entities_list if e.get("entity_id") == "weather.home"),
+            next((e["entity_id"] for e in entities_list if str(e.get("entity_id", "")).startswith("weather.")), None),
+        )
+        if not weather_eid and hasattr(self, "hass") and self.hass and hasattr(self.hass, "states"):
+            if self.hass.states.get("weather.home"):
+                weather_eid = "weather.home"
+            else:
+                weather_eid = next(
+                    (s.entity_id for s in self.hass.states.async_all("weather")), None
+                )
+
+        calendar_eids = [
+            e["entity_id"] for e in entities_list if str(e.get("entity_id", "")).startswith("calendar.")
+        ][:3]
+        if not calendar_eids and hasattr(self, "hass") and self.hass and hasattr(self.hass, "states"):
+            calendar_eids = [s.entity_id for s in self.hass.states.async_all("calendar")][:3]
 
         glance_cards = []
         if weather_eid:
@@ -374,9 +439,40 @@ class DashboardManager:
         })
 
         # 5. Dynamic Area / Room Subviews (/otis-ai/area_<slug>)
-        if capability_map:
-            areas_map = capability_map.get("areas", {})
-            entities_list = capability_map.get("entities", [])
+        areas_map = capability_map.get("areas", {}) if capability_map else {}
+        entities_list = capability_map.get("entities", []) if capability_map else []
+        if not areas_map and not entities_list and hasattr(self, "hass") and self.hass:
+            try:
+                area_reg = ar.async_get(self.hass)
+                device_reg = dr.async_get(self.hass)
+                entity_reg = er.async_get(self.hass)
+                raw_devices = getattr(device_reg, "devices", {})
+                device_iter = raw_devices.values() if isinstance(raw_devices, dict) else raw_devices
+                dev_areas = {d.id: d.area_id for d in device_iter}
+                areas_map = {a.id: {"name": a.name, "entities": []} for a in area_reg.async_list_areas()}
+                raw_entities = getattr(entity_reg, "entities", {})
+                entity_iter = raw_entities.values() if isinstance(raw_entities, dict) else raw_entities
+                for entry in entity_iter:
+                    if entry.disabled_by or entry.hidden_by:
+                        continue
+                    aid = entry.area_id or dev_areas.get(entry.device_id)
+                    st = self.hass.states.get(entry.entity_id) if hasattr(self.hass, "states") else None
+                    e_state = st.state if st else "unknown"
+                    e_info = {
+                        "entity_id": entry.entity_id,
+                        "name": entry.name or entry.original_name,
+                        "area_id": aid,
+                        "disabled_by": entry.disabled_by,
+                        "hidden_by": entry.hidden_by,
+                        "state": e_state,
+                    }
+                    entities_list.append(e_info)
+                    if aid and aid in areas_map:
+                        areas_map[aid]["entities"].append(entry.entity_id)
+            except Exception as reg_err:
+                _LOGGER.debug("Could not read registries for companion dashboard fallback: %s", reg_err)
+
+        if areas_map or entities_list:
             valid_eids = {
                 e["entity_id"]
                 for e in entities_list
@@ -490,10 +586,13 @@ class DashboardManager:
             if existing_home_view and new_views:
                 if dash_id == COMMAND_CENTER_DASHBOARD_ID:
                     # For Command Center home view:
-                    # Keep user's custom cards while always syncing the updated Studios and Rooms grids
+                    # Keep user's custom cards while always syncing the updated Studios, Glance & Schedule, and Rooms grids
                     fresh_cards = new_views[0].get("cards", [])
                     fresh_studios_grid = next(
                         (c for c in fresh_cards if c.get("title") == "Studios"), None
+                    )
+                    fresh_glance_grid = next(
+                        (c for c in fresh_cards if c.get("title") == "Glance & Schedule"), None
                     )
                     fresh_rooms_grid = next(
                         (c for c in fresh_cards if c.get("title") == "Rooms"), None
@@ -501,6 +600,7 @@ class DashboardManager:
 
                     merged_home_cards = []
                     studios_inserted = False
+                    glance_inserted = False
                     rooms_inserted = False
 
                     for ex_card in existing_home_view.get("cards", []):
@@ -509,9 +609,23 @@ class DashboardManager:
                             ex_card.get("type") == "grid"
                             and any(b.get("name") == "Floor Plan" for b in ex_card.get("cards", []))
                         ):
-                            if fresh_studios_grid and not studios_inserted:
+                            if fresh_studios_grid:
                                 merged_home_cards.append(fresh_studios_grid)
-                                studios_inserted = True
+                            else:
+                                merged_home_cards.append(ex_card)
+                            studios_inserted = True
+                        elif c_title == "Glance & Schedule" or (
+                            ex_card.get("type") == "grid"
+                            and any(
+                                b.get("type") in ("weather-forecast", "calendar")
+                                for b in ex_card.get("cards", [])
+                            )
+                        ):
+                            if fresh_glance_grid:
+                                merged_home_cards.append(fresh_glance_grid)
+                            else:
+                                merged_home_cards.append(ex_card)
+                            glance_inserted = True
                         elif c_title == "Rooms" or (
                             ex_card.get("type") == "grid"
                             and any(
@@ -521,15 +635,23 @@ class DashboardManager:
                                 for b in ex_card.get("cards", [])
                             )
                         ):
-                            if fresh_rooms_grid and not rooms_inserted:
+                            if fresh_glance_grid and not glance_inserted:
+                                merged_home_cards.append(fresh_glance_grid)
+                                glance_inserted = True
+
+                            if fresh_rooms_grid:
                                 merged_home_cards.append(fresh_rooms_grid)
-                                rooms_inserted = True
+                            else:
+                                merged_home_cards.append(ex_card)
+                            rooms_inserted = True
                         else:
                             # User-added custom card on Home view
                             merged_home_cards.append(ex_card)
 
                     if fresh_studios_grid and not studios_inserted:
                         merged_home_cards.append(fresh_studios_grid)
+                    if fresh_glance_grid and not glance_inserted:
+                        merged_home_cards.append(fresh_glance_grid)
                     if fresh_rooms_grid and not rooms_inserted:
                         merged_home_cards.append(fresh_rooms_grid)
 
@@ -544,11 +666,18 @@ class DashboardManager:
 
             # Preserve any custom user-created subviews not generated by Otis AI
             generated_paths = {"default_view", "home", "floorplan", "media", "security", "climate"}
+            has_new_area_subviews = any(
+                str(nv.get("path", "")).startswith("area_") for nv in new_views
+            )
             for ex_v in existing_views[1:]:
                 v_path = str(ex_v.get("path", ""))
-                if v_path and v_path not in generated_paths and not v_path.startswith("area_"):
-                    if not any(nv.get("path") == v_path for nv in new_views):
+                if not v_path or v_path in generated_paths:
+                    continue
+                if v_path.startswith("area_"):
+                    if not has_new_area_subviews:
                         new_views.append(ex_v)
+                elif not any(nv.get("path") == v_path for nv in new_views):
+                    new_views.append(ex_v)
 
             merged = dict(new_config)
             merged["views"] = new_views
