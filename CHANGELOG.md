@@ -2,6 +2,20 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.11.3] - 2026-10-30
+
+### Fixed & Enhanced
+- **AI Failover Redundancy Guide Modal (Item 3)**:
+  - Transformed the inactive "Configure AI Failover" button into an informative, interactive guide modal.
+  - Explains how transparent cascade failover works (&lt;200ms latency on HTTP 429/503), why redundancy matters, and provides a breakdown of free/offline options (Google Generative AI Gemini Flash free tier, Ollama local offline LLMs, Groq, and OpenAI).
+  - Added 1-click shortcut button jumping directly to Home Assistant Integrations (`/config/integrations`).
+- **Voice Theming Dictation (Item 5)**:
+  - Added a dedicated microphone dictation button (`🎤 Speak`) to the Dynamic AI Theme Studio dialog.
+  - Users can now dictate their desired visual styling prompt naturally with live speech-to-text feedback.
+- **Card Sizing & Floor Plan Viewport Layout**:
+  - Restored Assist Co-Pilot tab height containing rules (`max-height: 560px` with internal scrolling), preventing unintended whole-page vertical scrollbars.
+  - Re-aligned the Floor Plan vector viewport to `align-items: flex-start;` and tightened upper margins, removing dead space above the blueprint in filtered views and eliminating window overflow.
+
 ## [1.11.2] - 2026-10-30
 
 ### Fixed & Enhanced

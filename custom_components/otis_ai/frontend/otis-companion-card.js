@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 1.11.2
+ * Version: 1.11.3
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.11.2";
+const CARD_VERSION = "1.11.3";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -56,6 +56,9 @@ class OtisCompanionCard extends HTMLElement {
     // Phase 6: Floorplan & Walkthrough state
     this._floorplanModalOpen = false;
     this._themeModalOpen = false;
+    this._failoverModalOpen = false;
+    this._isListeningTheme = false;
+    this._themeRecognition = null;
     this._themeApplyScope = "current";
     this._generatingTheme = false;
     this._uploadingVideo = false;
@@ -614,6 +617,12 @@ class OtisCompanionCard extends HTMLElement {
       return;
     }
 
+    if (suggestion.action_type === "configure_agent") {
+      this._failoverModalOpen = true;
+      this._render();
+      return;
+    }
+
     this._applyingIds.add(sId);
     this._render();
 
@@ -629,6 +638,8 @@ class OtisCompanionCard extends HTMLElement {
       if (data.action === "open_walkthrough_modal") {
         this._activeTab = "floorplan";
         this._floorplanModalOpen = true;
+      } else if (data.action === "open_failover_modal") {
+        this._failoverModalOpen = true;
       } else if (data.action === "open_chat_prompt") {
         this._draftChatText = data.prompt || "";
         this._activeTab = "chat";
@@ -1027,6 +1038,84 @@ class OtisCompanionCard extends HTMLElement {
     this._render();
   }
 
+  _toggleThemeVoiceRecording() {
+    if (this._isListeningTheme) {
+      this._stopThemeVoiceRecording();
+      return;
+    }
+    this._startThemeVoiceRecording();
+  }
+
+  _startThemeVoiceRecording() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      this._showToast("Speech recognition is not supported in this browser. Please type your theme.", true);
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.lang = navigator.language || "en-US";
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.maxAlternatives = 1;
+
+      this._themeRecognition = recognition;
+      this._isListeningTheme = true;
+      this._render();
+
+      const input = this.shadowRoot.querySelector("#theme-prompt-input");
+      if (input) {
+        input.placeholder = "Listening... describe your dream theme";
+      }
+
+      recognition.onresult = (event) => {
+        let transcript = "";
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          transcript += event.results[i][0].transcript;
+        }
+        if (input) {
+          input.value = transcript;
+        }
+      };
+
+      recognition.onerror = (event) => {
+        console.warn("Otis Theme Voice Error:", event.error);
+        this._isListeningTheme = false;
+        this._themeRecognition = null;
+        if (event.error !== "no-speech") {
+          this._showToast(`Voice input: ${event.error}`, true);
+        }
+        this._render();
+      };
+
+      recognition.onend = () => {
+        this._isListeningTheme = false;
+        this._themeRecognition = null;
+        this._render();
+      };
+
+      recognition.start();
+    } catch (err) {
+      console.error("Otis Theme Voice failed to start:", err);
+      this._isListeningTheme = false;
+      this._themeRecognition = null;
+      this._showToast("Could not access microphone.", true);
+      this._render();
+    }
+  }
+
+  _stopThemeVoiceRecording() {
+    if (this._themeRecognition) {
+      try {
+        this._themeRecognition.stop();
+      } catch (e) {}
+      this._themeRecognition = null;
+    }
+    this._isListeningTheme = false;
+    this._render();
+  }
+
   _showToast(msg, isError = false) {
     const toast = this.shadowRoot.querySelector("#toast");
     if (toast) {
@@ -1351,10 +1440,8 @@ class OtisCompanionCard extends HTMLElement {
     this.shadowRoot.innerHTML = `
       <style>
         :host {
-          display: flex;
-          flex-direction: column;
+          display: block;
           width: 100%;
-          height: 100%;
           box-sizing: border-box;
           font-family: var(--ha-card-font-family, 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
         }
@@ -1383,11 +1470,6 @@ class OtisCompanionCard extends HTMLElement {
 
           position: relative;
           width: 100%;
-          height: 100%;
-          display: flex;
-          flex-direction: column;
-          flex: 1 1 auto;
-          min-height: 0;
           max-width: 1600px;
           margin: 0 auto;
           background: var(--ha-card-background, var(--otis-bg));
@@ -2052,8 +2134,6 @@ class OtisCompanionCard extends HTMLElement {
           display: flex;
           flex-direction: column;
           gap: 12px;
-          flex: 1 1 auto;
-          min-height: 0;
         }
 
         .chat-chips {
@@ -2082,8 +2162,8 @@ class OtisCompanionCard extends HTMLElement {
         }
 
         .chat-history {
-          flex: 1 1 auto;
           min-height: 420px;
+          max-height: 560px;
           overflow-y: auto;
           display: flex;
           flex-direction: column;
@@ -3184,9 +3264,7 @@ class OtisCompanionCard extends HTMLElement {
         .floorplan-panel {
           display: flex;
           flex-direction: column;
-          gap: 12px;
-          flex: 1 1 auto;
-          min-height: 0;
+          gap: 10px;
         }
 
         .floorplan-toolbar {
@@ -3309,13 +3387,13 @@ class OtisCompanionCard extends HTMLElement {
           background: #090d16;
           border: 1px solid var(--otis-surface-border);
           border-radius: 12px;
-          padding: 12px;
+          padding: 8px 12px 12px 12px;
           overflow: auto;
-          flex: 1 1 auto;
-          min-height: 520px;
+          min-height: 380px;
+          max-height: 520px;
           display: flex;
           justify-content: center;
-          align-items: center;
+          align-items: flex-start;
           position: relative;
           box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.5);
           user-select: none;
@@ -3339,8 +3417,8 @@ class OtisCompanionCard extends HTMLElement {
 
         .floorplan-svg-viewport svg {
           width: 100%;
-          height: 100%;
-          max-height: 100%;
+          height: auto;
+          max-height: 500px;
           object-fit: contain;
           filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4));
         }
@@ -4098,6 +4176,7 @@ class OtisCompanionCard extends HTMLElement {
         ${this._floorplanModalOpen ? this._renderWalkthroughModal() : ""}
         ${this._themeModalOpen ? this._renderThemeModal() : ""}
         ${this._addMarkerModalOpen ? this._renderAddMarkerModal() : ""}
+        ${this._failoverModalOpen ? this._renderFailoverModal() : ""}
 
         <!-- Feedback Toast -->
         <div class="toast" id="toast"></div>
@@ -5025,13 +5104,22 @@ class OtisCompanionCard extends HTMLElement {
             <div style="font-weight: 700; font-size: 0.85rem; color: var(--otis-primary);">
               ✨ Collaborative AI Theme Generator
             </div>
-            <div style="display: flex; gap: 8px;">
+            <div style="display: flex; gap: 8px; align-items: center;">
               <input
                 type="text"
                 id="theme-prompt-input"
-                placeholder="e.g. Glowing neon cyan and purple with dark slate cards and 16px radius..."
+                placeholder="${this._isListeningTheme ? 'Listening... describe your dream theme' : 'e.g. Glowing neon cyan and purple with dark slate cards and 16px radius...'}"
                 style="flex: 1; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--otis-surface-border); background: var(--otis-surface); color: var(--otis-text); font-size: 0.82rem;"
               />
+              <button type="button"
+                class="btn-toolbar btn-theme-mic"
+                id="btn-theme-voice-mic"
+                title="Speak your theme prompt"
+                style="padding: 7px 11px; border-radius: 8px; font-size: 0.80rem; display: inline-flex; align-items: center; gap: 5px; ${this._isListeningTheme ? 'background: #ef4444; border-color: #f87171; color: white;' : ''}"
+              >
+                <svg viewBox="0 0 24 24" style="width: 14px; height: 14px; fill: currentColor;"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+                <span>${this._isListeningTheme ? 'Stop' : 'Speak'}</span>
+              </button>
               <button type="button"
                 class="btn-modal-primary"
                 id="btn-generate-theme-ai"
@@ -5114,6 +5202,120 @@ class OtisCompanionCard extends HTMLElement {
                 )
                 .join("")}
             </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  _renderFailoverModal() {
+    return `
+      <div class="modal-overlay" id="failover-modal-backdrop">
+        <div class="modal-card" style="max-width: 640px;">
+          <div class="modal-header">
+            <div>
+              <div class="modal-title">
+                <span>🛡️</span>
+                <span>AI Failover Redundancy Guide</span>
+              </div>
+              <div class="modal-subtitle">
+                Zero-downtime conversational intelligence with automatic provider cascading
+              </div>
+            </div>
+            <button type="button" class="modal-close-btn" id="failover-modal-close-btn">✕</button>
+          </div>
+
+          <!-- Explanation Box -->
+          <div class="guide-box" style="display: flex; flex-direction: column; gap: 8px;">
+            <div style="font-weight: 700; font-size: 0.86rem; color: var(--otis-primary); display: flex; align-items: center; gap: 6px;">
+              <span>⚡</span> How AI Failover Works in Otis
+            </div>
+            <div style="font-size: 0.78rem; line-height: 1.5; color: var(--otis-text);">
+              When you speak or type a command, Otis routes it to your <strong>Primary AI Agent</strong>. If that agent encounters <strong>rate limits (HTTP 429)</strong>, <strong>API outages (HTTP 503)</strong>, quota limits, or internet timeouts, Otis <strong>transparently cascades to your backup agent in &lt;200ms</strong>.
+            </div>
+            <div style="display: flex; align-items: center; justify-content: center; gap: 8px; padding: 10px; background: rgba(0,0,0,0.3); border-radius: 8px; font-size: 0.74rem; font-weight: 600; flex-wrap: wrap;">
+              <span style="padding: 4px 10px; border-radius: 6px; background: rgba(56, 189, 248, 0.2); border: 1px solid rgba(56, 189, 248, 0.4); color: #38bdf8;">Your Command</span>
+              <span>➔</span>
+              <span style="padding: 4px 10px; border-radius: 6px; background: rgba(16, 185, 129, 0.2); border: 1px solid rgba(16, 185, 129, 0.4); color: #10b981;">Primary Agent</span>
+              <span style="color: var(--otis-text-muted);">➔ [On Error: &lt;200ms] ➔</span>
+              <span style="padding: 4px 10px; border-radius: 6px; background: rgba(168, 85, 247, 0.2); border: 1px solid rgba(168, 85, 247, 0.4); color: #c084fc;">Failover Agent</span>
+            </div>
+          </div>
+
+          <!-- Recommended Conversation Providers & Free Tiers -->
+          <div>
+            <div style="font-size: 0.76rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--otis-text-muted); margin-bottom: 8px;">
+              Recommended Conversation Agents &amp; Free Tiers
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+
+              <!-- Google Generative AI (Gemini Flash) -->
+              <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #38bdf8;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                  <span style="font-weight: 700; font-size: 0.84rem; color: var(--otis-text);">🌟 Google Generative AI (Gemini 1.5 Flash)</span>
+                  <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4);">100% FREE TIER</span>
+                </div>
+                <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
+                  Completely free via Google AI Studio API key (15 requests/minute, 1,500 requests/day at $0 cost). Ultra-fast (&lt;600ms latency) with state-of-the-art tool calling.
+                </div>
+              </div>
+
+              <!-- Ollama Local LLM -->
+              <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #10b981;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                  <span style="font-weight: 700; font-size: 0.84rem; color: var(--otis-text);">🏠 Ollama (Local LLM - Llama 3 / Mistral)</span>
+                  <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4);">100% FREE &amp; OFFLINE</span>
+                </div>
+                <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
+                  Runs locally on your server or PC. Zero cloud dependencies, total privacy, and works even when your internet is completely down.
+                </div>
+              </div>
+
+              <!-- Groq Cloud -->
+              <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #f59e0b;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                  <span style="font-weight: 700; font-size: 0.84rem; color: var(--otis-text);">⚡ Groq (Llama 3.1 70B/8B)</span>
+                  <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4);">FREE TIER</span>
+                </div>
+                <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
+                  Ultra-fast hardware LPUs (~250 tokens/sec) providing near-instant responses with a generous free monthly tier.
+                </div>
+              </div>
+
+              <!-- OpenAI -->
+              <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #a855f7;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                  <span style="font-weight: 700; font-size: 0.84rem; color: var(--otis-text);">🤖 OpenAI (GPT-4o / GPT-4o-mini)</span>
+                  <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4);">MICRO-COST</span>
+                </div>
+                <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
+                  Industry-leading tool accuracy and reasoning. Low cost (~$0.15 / million tokens on gpt-4o-mini).
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- Step-by-Step Instructions -->
+          <div style="padding: 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--otis-surface-border); border-radius: 10px; font-size: 0.78rem; line-height: 1.5;">
+            <div style="font-weight: 700; color: var(--otis-primary); margin-bottom: 6px;">
+              📋 How to Configure Failover in 2 Minutes:
+            </div>
+            <ol style="margin: 0; padding-left: 20px; color: var(--otis-text-muted);">
+              <li>Click <strong>Open Home Assistant Integrations</strong> below (or go to <em>Settings → Devices &amp; Services</em>).</li>
+              <li>Click <strong>+ Add Integration</strong> and add your second provider (e.g. <em>Google Generative AI</em> with a free AI Studio key or <em>Ollama</em>).</li>
+              <li>That's it! Otis automatically discovers all installed conversation agents and adds them to your transparent failover pool. You can select your preferred Primary agent under <em>Otis AI Companion → Configure</em>.</li>
+            </ol>
+          </div>
+
+          <!-- Modal Actions -->
+          <div class="modal-actions" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px;">
+            <button type="button" class="btn-modal-secondary" id="btn-close-failover-modal">
+              Got It
+            </button>
+            <button type="button" class="btn-modal-primary" id="btn-open-ha-integrations">
+              ⚙️ Open Home Assistant Integrations
+            </button>
           </div>
         </div>
       </div>
@@ -5511,6 +5713,38 @@ class OtisCompanionCard extends HTMLElement {
           const p = themePromptInput.value.trim();
           if (p) this._generateThemeAi(p);
         }
+      };
+    }
+    const btnThemeVoiceMic = root.querySelector("#btn-theme-voice-mic");
+    if (btnThemeVoiceMic) {
+      btnThemeVoiceMic.onclick = (e) => {
+        if (e) e.preventDefault();
+        this._toggleThemeVoiceRecording();
+      };
+    }
+
+    // Failover Guide Modal Events
+    const failoverModal = root.querySelector("#failover-modal-backdrop");
+    const failoverClose = root.querySelector("#failover-modal-close-btn");
+    const failoverGotIt = root.querySelector("#btn-close-failover-modal");
+    const openHaIntegrations = root.querySelector("#btn-open-ha-integrations");
+
+    const closeFailover = () => {
+      this._failoverModalOpen = false;
+      this._render();
+    };
+
+    if (failoverClose) failoverClose.onclick = closeFailover;
+    if (failoverGotIt) failoverGotIt.onclick = closeFailover;
+    if (failoverModal) {
+      failoverModal.onclick = (e) => {
+        if (e.target === failoverModal) closeFailover();
+      };
+    }
+    if (openHaIntegrations) {
+      openHaIntegrations.onclick = () => {
+        closeFailover();
+        window.open("/config/integrations", "_blank");
       };
     }
     root.querySelectorAll(".btn-apply-theme").forEach((btn) => {

@@ -794,7 +794,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         elif action_type == "configure_agent":
             return {
                 "success": True,
-                "message": "Please navigate to Settings > Devices & Services > Otis AI Companion > Configure to set fallback AI agents.",
+                "action": "open_failover_modal",
+                "message": "Opening AI Failover Redundancy Guide...",
             }
         elif action_type == "upload_walkthrough":
             return {
