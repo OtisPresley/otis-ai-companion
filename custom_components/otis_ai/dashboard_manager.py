@@ -148,6 +148,12 @@ class DashboardManager:
                     },
                     {
                         "type": "button",
+                        "name": "Energy Studio",
+                        "icon": "mdi:lightning-bolt",
+                        "tap_action": {"action": "navigate", "navigation_path": "/command-center/energy"},
+                    },
+                    {
+                        "type": "button",
                         "name": "Media Studio",
                         "icon": "mdi:speaker-multiple",
                         "tap_action": {"action": "navigate", "navigation_path": "/command-center/media"},
@@ -202,6 +208,16 @@ class DashboardManager:
                 "panel": True,
                 "badges": [],
                 "cards": self._build_floorplan_view_cards(
+                    capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH
+                ),
+            },
+            {
+                "title": "Energy Studio",
+                "path": "energy",
+                "icon": "mdi:lightning-bolt",
+                "subview": True,
+                "badges": [],
+                "cards": self._build_energy_view_cards(
                     capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH
                 ),
             },
@@ -313,6 +329,19 @@ class DashboardManager:
             "panel": True,
             "badges": [],
             "cards": floorplan_cards,
+        })
+
+        # 5. Energy Studio Subview
+        energy_cards = self._build_energy_view_cards(
+            capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH
+        )
+        views.append({
+            "title": "Energy Studio",
+            "path": "energy",
+            "icon": "mdi:lightning-bolt",
+            "subview": True,
+            "badges": [],
+            "cards": energy_cards,
         })
 
         # 5. Dynamic Area / Room Subviews (/otis-ai/area_<slug>)
@@ -1774,6 +1803,160 @@ class DashboardManager:
                     "Once media players, streamers, or displays are added to Home Assistant, "
                     "Otis will automatically configure your soundstage here."
                 ),
+            })
+
+        return cards
+
+    def _build_energy_view_cards(
+        self, capability_map: dict[str, Any] | None, dashboard_url_path: str = COMMAND_CENTER_DASHBOARD_URL_PATH
+    ) -> list[dict[str, Any]]:
+        """Build cards for Energy Studio subview."""
+        if not capability_map:
+            return [
+                {
+                    "type": "markdown",
+                    "content": "⚡ **Energy Studio**: Live telemetry and power sensors will populate when Home Assistant finishes discovery.",
+                }
+            ]
+
+        energy_topo = capability_map.get("energy_topology", {})
+        tariff = energy_topo.get("tariff", {})
+        solar = energy_topo.get("solar", {})
+        total_w = energy_topo.get("total_power_w", 0)
+
+        entities_list = capability_map.get("entities", [])
+
+        power_eids = [
+            e["entity_id"] for e in entities_list
+            if (e.get("domain") == "sensor" and e["entity_id"].endswith("_power"))
+            or e.get("attributes", {}).get("unit_of_measurement") in ("W", "kW")
+        ]
+        energy_eids = [
+            e["entity_id"] for e in entities_list
+            if (e.get("domain") == "sensor" and e["entity_id"].endswith("_energy"))
+            or e.get("attributes", {}).get("unit_of_measurement") in ("kWh", "Wh")
+        ]
+        battery_eids = [
+            e["entity_id"] for e in entities_list
+            if "battery" in e["entity_id"] or "ups_theater" in e["entity_id"]
+        ]
+        controllable_power_eids = [
+            e["entity_id"] for e in entities_list
+            if e["entity_id"] in ("switch.pool_pump", "switch.amp_power", "switch.processor_power")
+            or "charger" in e["entity_id"] or "rivian" in e["entity_id"]
+        ]
+
+        cards: list[dict[str, Any]] = [
+            {
+                "type": "horizontal-stack",
+                "cards": [
+                    {
+                        "type": "button",
+                        "name": "Overview",
+                        "icon": "mdi:view-dashboard",
+                        "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}"},
+                    },
+                    {
+                        "type": "button",
+                        "name": "Energy Studio",
+                        "icon": "mdi:lightning-bolt",
+                        "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/energy"},
+                    },
+                    {
+                        "type": "button",
+                        "name": "Media Studio",
+                        "icon": "mdi:speaker-multiple",
+                        "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/media"},
+                    },
+                    {
+                        "type": "button",
+                        "name": "Security Center",
+                        "icon": "mdi:shield-home",
+                        "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/security"},
+                    },
+                    {
+                        "type": "button",
+                        "name": "Climate & Pool",
+                        "icon": "mdi:thermostat-box",
+                        "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/climate"},
+                    },
+                    {
+                        "type": "button",
+                        "name": "Floor Plan",
+                        "icon": "mdi:floor-plan",
+                        "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/floorplan"},
+                    },
+                ],
+            },
+            {
+                "type": "markdown",
+                "content": (
+                    f"## ⚡ Otis Energy & Predictive Load Orchestrator\n"
+                    f"• **Live Power Consumption**: `{total_w} W` monitored across active sub-circuits.\n"
+                    f"• **Grid Tariff Period**: `{tariff.get('period', 'standard').upper()}` ({tariff.get('peak_window_description', 'Time-Of-Use')}) — "
+                    f"`{tariff.get('hours_until_change', 0)}h` until next rate window change.\n"
+                    f"• **Solar & Inverter Status**: Production `{solar.get('production_w', 0)} W` | Sun Elevation `{solar.get('solar_elevation_deg', 0)}°`"
+                ),
+            },
+            {
+                "type": "grid",
+                "title": "⚡ Dynamic Load Shedding & Rate Controls",
+                "columns": 2,
+                "square": False,
+                "cards": [
+                    {
+                        "type": "button",
+                        "name": "Shed Non-Essential Loads",
+                        "icon": "mdi:transmission-tower-export",
+                        "tap_action": {
+                            "action": "call-service",
+                            "service": "otis_ai.load_shed",
+                            "data": {"tier": 1},
+                        },
+                    },
+                    {
+                        "type": "button",
+                        "name": "Restore Shedded Loads",
+                        "icon": "mdi:restore",
+                        "tap_action": {
+                            "action": "call-service",
+                            "service": "otis_ai.restore_shed_loads",
+                        },
+                    },
+                ],
+            },
+        ]
+
+        if power_eids:
+            cards.append({
+                "type": "entities",
+                "title": "🔌 Live Power Monitoring Circuits",
+                "state_color": True,
+                "entities": power_eids[:12],
+            })
+
+        if controllable_power_eids:
+            cards.append({
+                "type": "entities",
+                "title": "🎛️ High-Draw Controllable Circuits & Appliances",
+                "state_color": True,
+                "entities": controllable_power_eids[:8],
+            })
+
+        if battery_eids:
+            cards.append({
+                "type": "entities",
+                "title": "🔋 Battery Storage & UPS Status",
+                "state_color": True,
+                "entities": battery_eids[:8],
+            })
+
+        if energy_eids:
+            cards.append({
+                "type": "entities",
+                "title": "📊 Cumulative Energy Meters (kWh)",
+                "state_color": True,
+                "entities": energy_eids[:8],
             })
 
         return cards

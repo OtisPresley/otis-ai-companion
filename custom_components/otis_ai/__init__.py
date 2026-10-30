@@ -56,10 +56,14 @@ from .const import (
     SERVICE_MEDIA_FOLLOW_ME,
     SERVICE_RELEASE_IDLE_SOURCES,
     SERVICE_NOTIFY_VOICE,
+    SERVICE_GET_ENERGY_SUMMARY,
+    SERVICE_LOAD_SHED,
+    SERVICE_RESTORE_SHED_LOADS,
 )
 from .audio_manager import AudioHandoffManager
 from .automation_manager import AutomationManager
 from .dashboard_manager import DashboardManager
+from .energy_manager import EnergyManager
 from .macro_manager import MacroManager
 from .sentinel_manager import SentinelManager
 from .spatial_manager import (
@@ -359,6 +363,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     sentinel_manager = SentinelManager(hass)
     macro_manager = MacroManager(hass)
     audio_manager = AudioHandoffManager(hass, spatial_manager=spatial_manager)
+    energy_manager = EnergyManager(hass, spatial_manager=spatial_manager)
     await asyncio.gather(
         spatial_manager.async_load(),
         floorplan_parser.async_load(),
@@ -373,6 +378,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         dashboard_manager=dashboard_manager,
         theme_manager=theme_manager,
         sentinel_manager=sentinel_manager,
+        energy_manager=energy_manager,
     )
 
     # Register Walkthrough Upload View
@@ -395,6 +401,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         sentinel_manager=sentinel_manager,
         macro_manager=macro_manager,
         audio_manager=audio_manager,
+        energy_manager=energy_manager,
     )
     if hasattr(conversation, "async_register_agent"):
         conversation.async_register_agent(hass, agent)
@@ -413,6 +420,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "sentinel_manager": sentinel_manager,
         "macro_manager": macro_manager,
         "audio_manager": audio_manager,
+        "energy_manager": energy_manager,
     }
 
     async def _async_update_listener(hass_inst: HomeAssistant, updated_entry: ConfigEntry) -> None:
@@ -430,6 +438,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as err:
             _LOGGER.debug("Could not register entry update listener: %s", err)
 
+    def _get_energy_manager() -> EnergyManager:
+        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        return entry_data.get("energy_manager", energy_manager)
+
     def _get_active_managers():
         entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
         eng = entry_data.get("engine", engine)
@@ -441,7 +453,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         dm = entry_data.get("dashboard_manager", dashboard_manager)
         mm = entry_data.get("macro_manager", macro_manager)
         am = entry_data.get("audio_manager", audio_manager)
-        return eng, mgr, s_mgr, fp, tm, sm, dm, mm, am
+        em = entry_data.get("energy_manager", energy_manager)
+        return eng, mgr, s_mgr, fp, tm, sm, dm, mm, am, em
 
     async def handle_get_capability_map(call) -> ServiceResponse:
         """Handle service call to get the capability map."""
@@ -706,6 +719,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "success": True,
                 "action": "open_walkthrough_modal",
                 "message": "Ready to upload video walkthrough or generate floor plan.",
+            }
+        elif action_type == "load_shed":
+            em = _get_energy_manager()
+            tier = payload.get("tier", 1)
+            target_watts = payload.get("target_watts", 0)
+            res = await em.async_execute_load_shed(tier=tier, target_watts=target_watts)
+            _invalidate()
+            return res
+        elif action_type == "chat_prompt":
+            return {
+                "success": True,
+                "action": "open_chat_prompt",
+                "prompt": payload.get("prompt", ""),
+                "message": f"Prompt queued for Assist Co-Pilot: '{payload.get('prompt', '')}'",
             }
 
         return {"success": False, "error": f"Unsupported action_type '{action_type}'"}
@@ -1144,6 +1171,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             announce=announce,
         )
 
+    async def handle_get_energy_summary(call) -> ServiceResponse:
+        """Handle service call to retrieve live energy telemetry and tariff window."""
+        _LOGGER.debug("Service 'get_energy_summary' triggered")
+        em = _get_energy_manager()
+        return await em.async_get_energy_summary()
+
+    async def handle_load_shed(call) -> ServiceResponse:
+        """Handle service call to execute dynamic load shedding."""
+        _LOGGER.debug("Service 'load_shed' triggered: %s", call.data)
+        em = _get_energy_manager()
+        tier = call.data.get("tier", 1)
+        target_watts = call.data.get("target_watts", 0)
+        dry_run = call.data.get("dry_run", False)
+        return await em.async_execute_load_shed(tier=tier, target_watts=target_watts, dry_run=dry_run)
+
+    async def handle_restore_shed_loads(call) -> ServiceResponse:
+        """Handle service call to restore shedded loads."""
+        _LOGGER.debug("Service 'restore_shed_loads' triggered: %s", call.data)
+        em = _get_energy_manager()
+        record_id = call.data.get("record_id")
+        return await em.async_restore_shed_loads(record_id=record_id)
+
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
         DOMAIN,
@@ -1295,6 +1344,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_notify_voice,
         supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_ENERGY_SUMMARY,
+        handle_get_energy_summary,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_LOAD_SHED,
+        handle_load_shed,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RESTORE_SHED_LOADS,
+        handle_restore_shed_loads,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
 
     _LOGGER.info("Otis AI Companion entry set up successfully")
     return True
@@ -1350,6 +1417,7 @@ class OtisAIConversationAgent(AbstractAgent):
         sentinel_manager: SentinelManager | None = None,
         macro_manager: MacroManager | None = None,
         audio_manager: AudioHandoffManager | None = None,
+        energy_manager: EnergyManager | None = None,
     ) -> None:
         """Initialize the agent."""
         self.hass = hass
@@ -1361,6 +1429,7 @@ class OtisAIConversationAgent(AbstractAgent):
         self.sentinel_manager = sentinel_manager or SentinelManager(hass)
         self.macro_manager = macro_manager or MacroManager(hass)
         self.audio_manager = audio_manager or AudioHandoffManager(hass, spatial_manager=self.spatial_manager)
+        self.energy_manager = energy_manager or EnergyManager(hass, spatial_manager=self.spatial_manager)
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -1652,6 +1721,65 @@ class OtisAIConversationAgent(AbstractAgent):
             res = await self.audio_manager.async_release_idle_sources()
             return self._create_response(user_input, res["message"])
 
+        # Check for Phase 7 Energy & Predictive Load commands
+        if self.energy_manager and any(w in user_lower for w in (
+            "energy summary", "power summary", "how much power", "current power",
+            "current load", "power usage", "energy usage", "electricity load",
+            "what devices are drawing power", "top power consumers", "top power devices",
+            "active power", "live power", "energy load"
+        )):
+            fire_progress("domain", "Energy Telemetry", "Querying active power meters & tariff window")
+            summary = await self.energy_manager.async_get_energy_summary()
+            total_w = summary.get("total_power_w", 0)
+            tariff = summary.get("tariff", {})
+            solar = summary.get("solar", {})
+            ups = summary.get("ups_storage", {})
+            top = summary.get("top_consumers", [])
+
+            lines = [
+                "⚡ **Otis Energy & Load Orchestrator**\n",
+                f"• **Current Home Draw:** `{total_w} W` across {summary.get('active_power_sensors_count', 0)} active monitoring circuits.",
+                f"• **Grid Tariff Window:** `{tariff.get('period', 'standard').upper()}` ({tariff.get('peak_window_description', 'Standard')}) - {tariff.get('hours_until_change', 0)}h until rate transition.",
+            ]
+            if solar.get("production_w", 0) > 0 or solar.get("solar_elevation_deg") is not None:
+                lines.append(f"• **Solar Generation:** `{solar.get('production_w', 0)} W` (Sun elevation: {solar.get('solar_elevation_deg', 0)}°).")
+            if ups:
+                lines.append(f"• **AV/Rack UPS Storage:** {ups.get('battery_charge', '100%')} charge ({ups.get('battery_runtime', 'N/A')}s runtime).")
+            if top:
+                lines.append("\n**Top Active Consumers Right Now:**")
+                for i, c in enumerate(top[:5], 1):
+                    lines.append(f"{i}. **{c['name']}**: `{c['power_w']} W`")
+
+            lines.append("\n*(Say 'shed non-essential loads' to shed deferrable loads during peak hours, or 'restore shedded loads')*")
+            return self._create_response(user_input, "\n".join(lines))
+
+        # Check for Load Shedding commands
+        if self.energy_manager and any(w in user_lower for w in (
+            "shed non-essential loads", "shed non essentials", "shed peak loads",
+            "load shedding", "shed load", "shed loads", "cut peak power", "cut power"
+        )):
+            fire_progress("macro", "Executing Load Shed", "Snapshotting states & shedding deferrable loads")
+            res = await self.energy_manager.async_execute_load_shed(tier=1)
+            if res.get("success"):
+                speech = (
+                    f"⚡ **Dynamic Load Shedding Executed!**\n\n"
+                    f"• {res.get('message')}\n"
+                    f"• Shed Entities: `{', '.join(res.get('executed_entities', [])) or 'None'}`\n\n"
+                    f"*(Say 'restore shedded loads' anytime to return devices to their prior states)*"
+                )
+            else:
+                speech = f"⚠️ Load shedding: {res.get('error', 'Encountered an issue.')}"
+            return self._create_response(user_input, speech)
+
+        # Check for Restore Shed Loads commands
+        if self.energy_manager and any(w in user_lower for w in (
+            "restore shedded loads", "restore shed loads", "undo load shed",
+            "restore shedded", "restore power loads"
+        )):
+            fire_progress("macro", "Restoring Loads", "Restoring shedded loads to prior snapshot states")
+            res = await self.energy_manager.async_restore_shed_loads()
+            return self._create_response(user_input, res.get("message", res.get("error", "")))
+
         # 1. Resolve prioritized AI agent cascade (Primary + Fallbacks)
         options = self.entry.options
         data = self.entry.data
@@ -1757,6 +1885,20 @@ class OtisAIConversationAgent(AbstractAgent):
             f"Unassigned Devices: {maturity.get('unassigned_device_count', 0)}"
         )
 
+        # Summarize Energy & Load Topology
+        energy_topo = capability_map.get("energy_topology", {})
+        if energy_topo:
+            e_tariff = energy_topo.get("tariff", {}).get("period", "standard")
+            e_power = energy_topo.get("total_power_w", 0)
+            e_solar = energy_topo.get("solar", {}).get("production_w", 0)
+            e_shed_count = energy_topo.get("load_shedding", {}).get("active_sheddable_loads_count", 0)
+            energy_summary = (
+                f"Total Power: {e_power}W | Tariff: {e_tariff.upper()} | Solar Generation: {e_solar}W | "
+                f"Sheddable Deferrable Loads: {e_shed_count}"
+            )
+        else:
+            energy_summary = "Not configured or inactive"
+
         # Summarize top proactive suggestions
         suggestions_list = capability_map.get("proactive_suggestions", [])
         suggestions_summary = "\n".join(
@@ -1776,6 +1918,7 @@ Here is the current capability and architecture map of the home:
 - Spatial Adjacency (Connected Rooms): {spatial_summary}
 - Discovered Media & Matrix Audio Architecture: {media_summary}
 - Discovered Security, Presence & Sleep Architecture: {security_summary}
+- Discovered Energy & Load Topology: {energy_summary}
 - Active Entities Summary: {entity_summary} (Total: {len(capability_map['entities'])} entities)
 - Detailed Control Entities (Actionable): {detailed_entities}
 - Existing Automations: {existing_automations}
@@ -1795,6 +1938,7 @@ Instructions:
 6. Use the Spatial Adjacency topology for room transition queries, pathway lighting automations, and tracking movements between connected rooms.
 7. When the user requests multi-step routines (such as movie night, bedtime, party, lockdown, or arrival), you can propose or trigger Otis dynamic macros, which feature atomic snapshotting and 1-click state rollback.
 8. When the user asks to move music, transfer audio, or follow them between rooms, you can propose or trigger Otis Audio Handoff (`audio_handoff` / `media_follow_me`), which leverages Spatial Adjacency to route matrix amplifier zones (Control4) and streamers seamlessly.
+9. When the user asks about energy usage, electrical power, peak tariff hours, or load shedding, reference the Discovered Energy & Load Topology and propose or trigger Otis dynamic load shedding (`load_shed` / `restore_shed_loads`) or appliance sequencing.
 
 User: {user_input.text}
 """
@@ -2147,6 +2291,7 @@ class DiscoveryEngine:
         dashboard_manager: DashboardManager | None = None,
         theme_manager: ThemeManager | None = None,
         sentinel_manager: SentinelManager | None = None,
+        energy_manager: EnergyManager | None = None,
     ) -> None:
         """Initialize the discovery engine."""
         self.hass = hass
@@ -2155,6 +2300,7 @@ class DiscoveryEngine:
         self.dashboard_manager = dashboard_manager or DashboardManager(hass)
         self.theme_manager = theme_manager or ThemeManager(hass)
         self.sentinel_manager = sentinel_manager or SentinelManager(hass)
+        self.energy_manager = energy_manager or EnergyManager(hass, spatial_manager=self.spatial_manager)
         self._cached_cap_map: dict[str, Any] | None = None
         self._cache_ts: float = 0.0
         self._cache_signature: tuple[Any, ...] | None = None
@@ -2399,6 +2545,14 @@ class DiscoveryEngine:
             except Exception as err:
                 _LOGGER.debug("Error running Sentinel audit during discovery scan: %s", err)
         cap_map["sentinel"] = sentinel_data
+
+        energy_data = {}
+        if self.energy_manager:
+            try:
+                energy_data = await self.energy_manager.async_get_energy_summary()
+            except Exception as err:
+                _LOGGER.debug("Error running Energy summary during discovery scan: %s", err)
+        cap_map["energy_topology"] = energy_data
 
         themes = []
         if self.theme_manager:
@@ -4230,6 +4384,45 @@ class DiscoveryEngine:
                 ),
                 "action_type": "upload_walkthrough",
                 "action_payload": {},
+            })
+
+        # 13. Phase 7 Energy & Predictive Load Orchestrator Suggestions
+        energy_topo = capability_map.get("energy_topology", {})
+        tariff_info = energy_topo.get("tariff", {})
+        load_shed_info = energy_topo.get("load_shedding", {})
+        solar_info = energy_topo.get("solar", {})
+
+        if tariff_info.get("is_peak") and load_shed_info.get("active_sheddable_loads_count", 0) > 0:
+            savings = round(load_shed_info.get("potential_savings_w", 0))
+            suggestions.append({
+                "id": "peak_load_shed_recommendation",
+                "title": f"Shed High-Draw Loads for Peak Tariff (~{savings}W)",
+                "category": "energy",
+                "priority": "high",
+                "icon": "mdi:transmission-tower-export",
+                "description": (
+                    f"Your electrical grid is currently in PEAK rate window. Otis detected "
+                    f"{load_shed_info.get('active_sheddable_loads_count')} deferrable load(s) consuming up to {savings}W. "
+                    "Shed non-essential loads now to minimize peak energy costs."
+                ),
+                "action_type": "load_shed",
+                "action_payload": {"tier": 1},
+            })
+
+        if solar_info.get("has_surplus"):
+            prod = round(solar_info.get("production_w", 0))
+            suggestions.append({
+                "id": "solar_surplus_sequencing",
+                "title": f"Solar Production Surplus (+{prod}W Available)",
+                "category": "energy",
+                "priority": "medium",
+                "icon": "mdi:solar-power-variant",
+                "description": (
+                    f"Your solar generation currently exceeds home consumption with ~{prod}W surplus. "
+                    "Ideal window to charge electric vehicles, run pool filtration, or pre-heat/pre-cool rooms."
+                ),
+                "action_type": "chat_prompt",
+                "action_payload": {"prompt": "Optimize high loads for solar production surplus"},
             })
 
         # Sort suggestions by priority: Critical -> High -> Medium -> Low

@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 1.9.4
+ * Version: 1.9.5
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.9.4";
+const CARD_VERSION = "1.9.5";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -624,6 +624,19 @@ class OtisCompanionCard extends HTMLElement {
       if (data.action === "open_walkthrough_modal") {
         this._activeTab = "floorplan";
         this._floorplanModalOpen = true;
+      } else if (data.action === "open_chat_prompt") {
+        this._draftChatText = data.prompt || "";
+        this._activeTab = "chat";
+        this._render();
+        setTimeout(() => {
+          const input = this.shadowRoot.getElementById("chat-input");
+          if (input) {
+            input.focus();
+            if (input.setSelectionRange) {
+              input.setSelectionRange(input.value.length, input.value.length);
+            }
+          }
+        }, 100);
       } else if (data.success !== false) {
         this._showToast(data.message || `Applied "${suggestion.title}" successfully!`);
         this._dismissedIds.add(sId);
@@ -1195,7 +1208,8 @@ class OtisCompanionCard extends HTMLElement {
       security: ["security"],
       dashboard: ["dashboard", "visualization"],
       cleanup: ["cleanup"],
-      system: ["system", "energy"],
+      energy: ["energy"],
+      system: ["system"],
     };
     const allowed = map[filterKey] || [filterKey];
     return allowed.includes(cat);
@@ -1221,6 +1235,10 @@ class OtisCompanionCard extends HTMLElement {
         return "🧹 Clean Up Orphans";
       case "upload_walkthrough":
         return "📹 Open Walkthrough Studio";
+      case "load_shed":
+        return "⚡ Shed High-Draw Loads";
+      case "chat_prompt":
+        return "💬 Optimize in Assist";
       case "configure_agent":
         return "⚙️ Configure AI Failover";
       default:
@@ -3611,6 +3629,7 @@ class OtisCompanionCard extends HTMLElement {
               <button type="button" class="subview-chip" data-subview="${dashPrefix}/media">🎵 Media Studio</button>
               <button type="button" class="subview-chip" data-subview="${dashPrefix}/security">🛡️ Security Center</button>
               <button type="button" class="subview-chip" data-subview="${dashPrefix}/climate">🌡️ Climate & Pool</button>
+              <button type="button" class="subview-chip" data-subview="${dashPrefix}/energy">⚡ Energy Studio</button>
               <button type="button" class="subview-chip" data-subview="${dashPrefix}/floorplan">🗺️ Floor Plan</button>
               ${isAdmin ? `<button type="button" class="subview-chip" id="btn-sync-dashboards" title="Sync all Studios & Rooms to Command Center" style="margin-left: auto;">🔄 Sync Command Center</button>` : ""}
               <button type="button" class="subview-chip" id="btn-open-themes" style="${isAdmin ? "" : "margin-left: auto;"}">🎨 Themes</button>
@@ -3688,6 +3707,7 @@ class OtisCompanionCard extends HTMLElement {
       { key: "lighting", label: "Lighting & Auto" },
       { key: "media", label: "Media" },
       { key: "security", label: "Security" },
+      { key: "energy", label: "Energy" },
       { key: "dashboard", label: "Dashboards" },
       { key: "cleanup", label: "Cleanup" },
       { key: "system", label: "System" },
@@ -3823,6 +3843,8 @@ class OtisCompanionCard extends HTMLElement {
           <button type="button" class="chip-btn" data-chip="Goodnight routine">🌙 Goodnight</button>
           <button type="button" class="chip-btn" data-chip="Party mode">🥂 Party Mode</button>
           <button type="button" class="chip-btn" data-chip="Lockdown home">🛡️ Lockdown</button>
+          <button type="button" class="chip-btn" data-chip="Energy summary">⚡ Energy Summary</button>
+          <button type="button" class="chip-btn" data-chip="Shed non-essential loads">📉 Shed Loads</button>
           <button type="button" class="chip-btn" data-chip="Handoff audio to study">🎵 Audio Handoff</button>
           <button type="button" class="chip-btn" data-chip="Release idle sources">🔇 Idle Guard</button>
           <button type="button" class="chip-btn" data-chip="Undo last macro">↺ Undo</button>

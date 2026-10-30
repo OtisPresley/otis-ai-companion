@@ -37,6 +37,9 @@ SERVICE_AUDIO_HANDOFF = "audio_handoff"
 SERVICE_MEDIA_FOLLOW_ME = "media_follow_me"
 SERVICE_RELEASE_IDLE_SOURCES = "release_idle_sources"
 SERVICE_NOTIFY_VOICE = "notify_voice"
+SERVICE_GET_ENERGY_SUMMARY = "get_energy_summary"
+SERVICE_LOAD_SHED = "load_shed"
+SERVICE_RESTORE_SHED_LOADS = "restore_shed_loads"
 
 # Dashboard Constants
 COMMAND_CENTER_DASHBOARD_ID = "command-center"

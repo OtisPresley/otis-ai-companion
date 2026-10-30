@@ -406,6 +406,52 @@ notify_voice:
       selector:
         boolean:
 
+get_energy_summary:
+  name: Get Energy & Load Summary
+  description: Retrieve real-time electrical power telemetry, top device consumers, solar generation status, battery storage, and tariff window.
+
+load_shed:
+  name: Execute Load Shedding
+  description: Shed non-essential or high-draw deferrable loads (EV charging, pool pumps, climate setbacks) during peak grid tariff hours.
+  fields:
+    tier:
+      name: Load Shed Tier
+      description: Maximum load priority tier to shed (1=Deferrable appliances/EV/pumps, 2=Secondary AV/HVAC setbacks).
+      default: 1
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 2
+    target_watts:
+      name: Target Reduction (Watts)
+      description: Optional wattage reduction target. Stops shedding loads once this threshold is reached.
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 20000
+          unit_of_measurement: W
+    dry_run:
+      name: Dry Run
+      description: Preview which loads would be shed and estimated wattage savings without changing state.
+      default: false
+      required: false
+      selector:
+        boolean:
+
+restore_shed_loads:
+  name: Restore Shed Loads
+  description: Restore previously shedded devices back to their pre-shed operation states.
+  fields:
+    record_id:
+      name: Record ID
+      description: Specific load-shedding execution record to restore (defaults to latest active record).
+      required: false
+      selector:
+        text:
+
+
 
 
 

@@ -2,6 +2,28 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.9.5] - 2026-10-30
+
+### Added & Improved
+- **Phase 7: Energy & Predictive Load Orchestrator (`energy_manager.py`, `dashboard_manager.py`, `otis-companion-card.js`)**:
+  - **Dynamic Energy Topology Discovery**:
+    - Discovered power sensors (`sensor.*_power`, unit `W`/`kW`, `device_class: power`), energy meters (`kWh`), solar generation (`sensor.*solar*`, `sensor.*pv*`, elevation), battery/UPS systems (`sensor.ups_theater_*`), and high-consumption appliances.
+    - Classified sheddable loads into prioritization tiers: Tier 1 deferrable (pool pump, EV charger) and Tier 2 comfort/AV (multizone amplifiers, processors, climate setbacks).
+  - **Time-Of-Use (TOU) Tariff & Solar Surplus Tracking**:
+    - Real-time tariff window evaluation (`peak`, `shoulder`, `off_peak`) with time-remaining countdowns.
+    - Solar elevation and surplus power detection to dynamically sequence high-draw loads during green production peaks.
+  - **Load Shedding & Restoration Services**:
+    - Added `otis_ai.get_energy_summary` service returning total power draw, active sheddable loads, potential savings, and battery status.
+    - Added `otis_ai.load_shed` service executing targeted or tiered load shedding with dry-run support.
+    - Added `otis_ai.restore_shed_loads` service restoring shedded devices safely using snapshot records.
+  - **Dedicated Energy Studio Subview (`/command-center/energy`, `/otis-ai/energy`)**:
+    - Built comprehensive Energy Studio dashboard featuring live whole-home power draw gauge, tariff status badge, solar generation, 1-click load shedding control buttons, active power circuits grid, and battery/UPS health cards.
+    - Integrated Energy Studio navigation chip into the Lovelace card's studio launchpad and Command Center header.
+  - **Assist Co-Pilot Conversational Energy Intelligence**:
+    - Native conversational intent handling for natural language power and load queries ("energy summary", "how much power are we using?", "shed non-essential loads", "restore shedded loads").
+    - Proactive load shedding recommendations during peak tariff windows with 1-click execution.
+    - Added quick prompt chips for Energy Summary and Shed Loads in the Assist tab.
+
 ## [1.9.4] - 2026-10-30
 
 ### Added & Improved

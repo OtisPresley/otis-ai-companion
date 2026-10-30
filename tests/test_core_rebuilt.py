@@ -3085,6 +3085,137 @@ class TestMacroManager(unittest.TestCase):
         self.assertTrue(res["success"])
         self.assertEqual(res["routed_via"], "script.notify_router")
 
+    def test_energy_manager_discovery_and_summary(self):
+        """Test EnergyManager discovers power sensors, solar, UPS, and computes telemetry."""
+        from custom_components.otis_ai.energy_manager import EnergyManager
+
+        class MockEntityState:
+            def __init__(self, entity_id, state="0", attributes=None):
+                self.entity_id = entity_id
+                self.state = state
+                self.attributes = attributes or {}
+
+        states = [
+            MockEntityState("sensor.fridge_kitchen_power", "180.5", {"unit_of_measurement": "W", "device_class": "power", "friendly_name": "Kitchen Fridge"}),
+            MockEntityState("sensor.shelf_dimmer_power", "45.0", {"unit_of_measurement": "W", "friendly_name": "Shelf Dimmer"}),
+            MockEntityState("sensor.fridge_kitchen_energy", "12.4", {"unit_of_measurement": "kWh", "device_class": "energy"}),
+            MockEntityState("sensor.ups_theater_battery_charge", "100", {"unit_of_measurement": "%"}),
+            MockEntityState("sensor.ups_theater_battery_runtime", "3200", {"unit_of_measurement": "s"}),
+            MockEntityState("switch.amp_power", "on", {"friendly_name": "Main Amplifier"}),
+            MockEntityState("switch.pool_pump", "on", {"friendly_name": "Pool Pump"}),
+        ]
+        self.hass.states.async_all = MagicMock(return_value=states)
+        self.hass.states.get = MagicMock(side_effect=lambda eid: next((s for s in states if s.entity_id == eid), None))
+
+        mgr = EnergyManager(self.hass)
+        summary = asyncio.run(mgr.async_get_energy_summary())
+
+        self.assertAlmostEqual(summary["total_power_w"], 225.5, places=1)
+        self.assertEqual(summary["active_power_sensors_count"], 2)
+        self.assertEqual(len(summary["top_consumers"]), 2)
+        self.assertEqual(summary["top_consumers"][0]["entity_id"], "sensor.fridge_kitchen_power")
+        self.assertIn("tariff", summary)
+        self.assertIn("period", summary["tariff"])
+        self.assertIn("load_shedding", summary)
+        self.assertGreaterEqual(summary["load_shedding"]["active_sheddable_loads_count"], 1)
+
+    def test_energy_manager_load_shed_and_restore(self):
+        """Test EnergyManager executes load shedding and restores previous states."""
+        from custom_components.otis_ai.energy_manager import EnergyManager
+
+        class MockEntityState:
+            def __init__(self, entity_id, state="on", attributes=None):
+                self.entity_id = entity_id
+                self.state = state
+                self.attributes = attributes or {}
+
+        states = [
+            MockEntityState("switch.amp_power", "on", {"friendly_name": "Main Amplifier"}),
+            MockEntityState("switch.pool_pump", "on", {"friendly_name": "Pool Pump"}),
+            MockEntityState("climate.living_room", "heat", {"temperature": 70, "friendly_name": "Living Room HVAC"}),
+        ]
+        self.hass.states.async_all = MagicMock(return_value=states)
+        self.hass.states.get = MagicMock(side_effect=lambda eid: next((s for s in states if s.entity_id == eid), None))
+
+        mgr = EnergyManager(self.hass)
+
+        # 1. Execute load shed Tier 1
+        res = asyncio.run(mgr.async_execute_load_shed(tier=1))
+        self.assertTrue(res["success"])
+        self.assertGreaterEqual(res["shed_count"], 1)
+        self.assertIn("switch.pool_pump", res["executed_entities"])
+
+        calls = self.hass.services.async_call.call_args_list
+        turn_off_calls = [c for c in calls if c[0][1] == "turn_off"]
+        self.assertTrue(any(c[0][2].get("entity_id") == "switch.pool_pump" for c in turn_off_calls))
+
+        # 2. Restore shedded loads
+        res_restore = asyncio.run(mgr.async_restore_shed_loads())
+        self.assertTrue(res_restore["success"])
+        self.assertGreaterEqual(res_restore["restored_count"], 1)
+
+        calls_after = self.hass.services.async_call.call_args_list
+        turn_on_calls = [c for c in calls_after if c[0][1] == "turn_on"]
+        self.assertTrue(any(c[0][2].get("entity_id") == "switch.pool_pump" for c in turn_on_calls))
+
+    def test_conversational_energy_commands(self):
+        """Test natural language energy queries and conversational load shedding in OtisAIConversationAgent."""
+        from custom_components.otis_ai import OtisAIConversationAgent
+        from custom_components.otis_ai.energy_manager import EnergyManager
+
+        class MockEntityState:
+            def __init__(self, entity_id, state="on", attributes=None):
+                self.entity_id = entity_id
+                self.state = state
+                self.attributes = attributes or {}
+
+        states = [
+            MockEntityState("sensor.fridge_kitchen_power", "150.0", {"unit_of_measurement": "W", "device_class": "power", "friendly_name": "Kitchen Fridge"}),
+            MockEntityState("switch.pool_pump", "on", {"friendly_name": "Pool Pump"}),
+        ]
+        self.hass.states.async_all = MagicMock(return_value=states)
+        self.hass.states.get = MagicMock(side_effect=lambda eid: next((s for s in states if s.entity_id == eid), None))
+
+        entry = MagicMock()
+        entry.options = {}
+        entry.data = {}
+        engine = MagicMock()
+        manager = MagicMock()
+        energy_manager = EnergyManager(self.hass)
+
+        agent = OtisAIConversationAgent(
+            self.hass, entry, engine, manager, energy_manager=energy_manager
+        )
+
+        # 1. Query energy summary
+        u1 = MagicMock()
+        u1.text = "How much power is the house using right now?"
+        u1.conversation_id = "test_conv_energy"
+        u1.create_response = MagicMock(return_value="mock_resp")
+        asyncio.run(agent.async_process(u1))
+        speech1 = u1.create_response.call_args[1]["speech"]
+        self.assertIn("Otis Energy & Load Orchestrator", speech1)
+        self.assertIn("150.0 W", speech1)
+
+        # 2. Trigger load shed
+        u2 = MagicMock()
+        u2.text = "Shed non-essential loads for peak hours"
+        u2.conversation_id = "test_conv_energy"
+        u2.create_response = MagicMock(return_value="mock_resp")
+        asyncio.run(agent.async_process(u2))
+        speech2 = u2.create_response.call_args[1]["speech"]
+        self.assertIn("Dynamic Load Shedding Executed", speech2)
+        self.assertIn("switch.pool_pump", speech2)
+
+        # 3. Restore shedded loads
+        u3 = MagicMock()
+        u3.text = "Restore shedded loads"
+        u3.conversation_id = "test_conv_energy"
+        u3.create_response = MagicMock(return_value="mock_resp")
+        asyncio.run(agent.async_process(u3))
+        speech3 = u3.create_response.call_args[1]["speech"]
+        self.assertIn("Restored", speech3)
+
 
 if __name__ == "__main__":
     unittest.main()
