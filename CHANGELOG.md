@@ -2,6 +2,21 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.11.4] - 2026-10-30
+
+### Fixed & Enhanced
+- **Interactive AI Failover Redundancy Guide Direct Integration Links**:
+  - Each conversation provider header and button in the Failover Guide modal is now directly clickable to launch the corresponding Home Assistant integration setup (`/config/integrations/dashboard/add?domain=...`).
+  - Added explicit setup guidance for **Groq Cloud** and **xAI (Grok)**: Clarified that Home Assistant does not have standalone named integrations for Groq or xAI because both provide OpenAI-compatible APIs; they are added using HA's native **OpenAI Conversation** integration with their respective Base URLs (`https://api.groq.com/openai/v1` and `https://api.x.ai/v1`).
+  - Added 1-click clipboard copy buttons for Groq and xAI Base URLs.
+- **Capabilities Tab Maturity Tooltips & Improvement Guidance (Roadmap Item 8)**:
+  - Added rich interactive hover tooltips across all 5 Smart Home Maturity category pills (Spatial, Hygiene, Automation, Security, Media).
+  - Hovering over any category score displays its exact score, status badge (`✓ Mature` or `Improve +`), and actionable steps detailing how to gain the missing points and reach 20/20.
+  - Clicking any maturity pill automatically navigates to the Proactive Feed pre-filtered to actionable cards for that category.
+- **Proactive Feed Maturity Goal Recommendation Cards (Roadmap Item 8)**:
+  - Guaranteed that any maturity dimension scored under 20/20 generates dedicated, high-value proactive recommendation cards in the Proactive Feed.
+  - Recommendations guide the user step-by-step toward achieving a fully mature 20/20 smart home across spatial mapping, entity registry hygiene, automation depth, security perimeter defense, and multi-room media harmony.
+
 ## [1.11.3] - 2026-10-30
 
 ### Fixed & Enhanced

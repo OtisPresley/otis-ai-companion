@@ -3151,44 +3151,94 @@ class DiscoveryEngine:
         # Compute 0-100 Smart Home Maturity Score across 5 weighted dimensions (20 pts each)
         # 1. Spatial & Floor Plan Organization (20 pts)
         spatial_pts = 0
+        spatial_gaps: list[str] = []
         if len(areas_map) >= 3:
             spatial_pts += 8
+        else:
+            spatial_gaps.append(f"Add at least 3 areas (currently {len(areas_map)}).")
+
         if areas_with_entities >= max(1, len(areas_map) // 2):
             spatial_pts += 6
+        else:
+            spatial_gaps.append(f"Populate more areas with devices/entities ({areas_with_entities}/{len(areas_map)} populated).")
+
         if has_walkthrough or has_floorplan:
             spatial_pts += 6
+        else:
+            spatial_gaps.append("Upload a walkthrough video or create a vector Floor Plan.")
 
         # 2. Registry Hygiene & Area Assignment (20 pts)
         hygiene_pts = 20
+        hygiene_gaps: list[str] = []
         if orphaned_entities:
             hygiene_pts -= min(10, len(orphaned_entities) * 2)
+            hygiene_gaps.append(f"Clean up {len(orphaned_entities)} orphaned entities.")
         if inferred_device_assignments or inferred_entity_assignments:
-            hygiene_pts -= min(10, len(inferred_device_assignments) + len(inferred_entity_assignments))
+            unassigned_count = len(inferred_device_assignments) + len(inferred_entity_assignments)
+            hygiene_pts -= min(10, unassigned_count)
+            hygiene_gaps.append(f"Commission or auto-assign {unassigned_count} unassigned devices/entities to areas.")
         hygiene_pts = max(0, hygiene_pts)
 
         # 3. Lighting & Climate Automation Coverage (20 pts)
         auto_pts = min(20, (automations_count * 4) + (scripts_count * 2))
+        auto_gaps: list[str] = []
+        if auto_pts < 20:
+            needed = max(1, (20 - auto_pts + 3) // 4)
+            auto_gaps.append(f"Create ~{needed} more automations or scripts (currently {automations_count} automations, {scripts_count} scripts).")
 
         # 4. Security & Presence Intelligence (20 pts)
         sec_pts = 0
+        sec_gaps: list[str] = []
         if security_topology.get("alarm_panels") or security_topology.get("locks"):
             sec_pts += 10
+        else:
+            sec_gaps.append("Install an alarm panel (e.g. Alarmo) or smart locks.")
+
         if security_topology.get("persons") or security_topology.get("bed_occupancy_sensors"):
             sec_pts += 5
+        else:
+            sec_gaps.append("Configure person presence or bed occupancy sensors.")
+
         if automations_count >= 2:
             sec_pts += 5
+        else:
+            sec_gaps.append("Create at least 2 security or arrival/departure automations.")
 
         # 5. Media & Ecosystem Optimization (20 pts)
         media_pts = 10
+        media_gaps: list[str] = []
         if media_topology.get("matrix_amp_detected"):
             has_router = any(
                 "matrix" in str(e.get("entity_id", "")).lower() or "speaker" in str(e.get("entity_id", "")).lower()
                 for e in entities_list
                 if e.get("domain") in ("script", "automation")
             )
-            media_pts = 20 if has_router else 12
+            if has_router:
+                media_pts = 20
+            else:
+                media_pts = 12
+                media_gaps.append("Deploy an Otis Matrix Audio Router script to automate zone switching.")
         elif media_topology.get("total_media_players", 0) > 0:
             media_pts = 16
+            media_gaps.append("Configure multi-room audio grouping or pair Music Assistant for whole-home streaming.")
+        else:
+            media_gaps.append("Add media player entities (Sonos, Cast, Apple TV, Music Assistant) to your rooms.")
+
+        tips = {
+            "spatial": "20/20 (Perfect) • Spatial organization and floor plan are fully mapped." if spatial_pts >= 20 else f"{spatial_pts}/20 • To reach 20/20: {' '.join(spatial_gaps)}",
+            "hygiene": "20/20 (Perfect) • Entity registry is clean with zero unassigned or orphaned entities." if hygiene_pts >= 20 else f"{hygiene_pts}/20 • To reach 20/20: {' '.join(hygiene_gaps)}",
+            "automation": "20/20 (Perfect) • Deep automation coverage across lighting, climate, and daily routines." if auto_pts >= 20 else f"{auto_pts}/20 • To reach 20/20: {' '.join(auto_gaps)}",
+            "security": "20/20 (Perfect) • Complete security and presence intelligence active." if sec_pts >= 20 else f"{sec_pts}/20 • To reach 20/20: {' '.join(sec_gaps)}",
+            "media": "20/20 (Perfect) • Multi-room audio matrix and media players fully coordinated." if media_pts >= 20 else f"{media_pts}/20 • To reach 20/20: {' '.join(media_gaps)}",
+        }
+
+        gaps = {
+            "spatial": spatial_gaps,
+            "hygiene": hygiene_gaps,
+            "automation": auto_gaps,
+            "security": sec_gaps,
+            "media": media_gaps,
+        }
 
         score = max(5, min(100, spatial_pts + hygiene_pts + auto_pts + sec_pts + media_pts))
         if score >= 85:
@@ -3210,6 +3260,8 @@ class DiscoveryEngine:
                 "security": sec_pts,
                 "media": media_pts,
             },
+            "tips": tips,
+            "gaps": gaps,
             "unassigned_devices_count": unassigned_devices_count,
             "inferred_device_assignments": inferred_device_assignments,
             "inferred_entity_assignments": inferred_entity_assignments,
@@ -4806,6 +4858,126 @@ class DiscoveryEngine:
                     })
             except Exception as err:
                 _LOGGER.debug("Error generating federation suggestions: %s", err)
+
+        # 15. Smart Home Maturity Improvement Cards (Guarantee actionable cards for any dimension < 20/20)
+        bd = maturity.get("breakdown", {})
+        mat_gaps = maturity.get("gaps", {})
+
+        # Spatial Maturity (< 20)
+        if bd.get("spatial", 20) < 20 and not any(
+            s.get("category") == "visualization" or "floor" in s.get("id", "") or "pathway" in s.get("id", "")
+            for s in suggestions
+        ):
+            spatial_desc = (
+                " ".join(mat_gaps.get("spatial", []))
+                if mat_gaps.get("spatial")
+                else "Upload a walkthrough video or map your rooms to unlock 20/20 spatial intelligence."
+            )
+            suggestions.append({
+                "id": "maturity_reach_20_spatial",
+                "title": f"Maturity Goal: Reach 20/20 Spatial Organization ({bd.get('spatial', 0)}/20)",
+                "category": "system",
+                "priority": "medium",
+                "icon": "mdi:floor-plan",
+                "description": (
+                    f"Otis spatial maturity is at {bd.get('spatial', 0)}/20. {spatial_desc} "
+                    "Achieving 20/20 gives Otis complete spatial context for room-aware commands and auto-routing."
+                ),
+                "action_type": "upload_walkthrough",
+                "action_payload": {},
+            })
+
+        # Hygiene Maturity (< 20)
+        if bd.get("hygiene", 20) < 20 and not any(
+            s.get("category") == "cleanup" for s in suggestions
+        ):
+            hygiene_desc = (
+                " ".join(mat_gaps.get("hygiene", []))
+                if mat_gaps.get("hygiene")
+                else "Clean up orphaned entities or assign unassigned devices to areas."
+            )
+            suggestions.append({
+                "id": "maturity_reach_20_hygiene",
+                "title": f"Maturity Goal: Reach 20/20 Registry Hygiene ({bd.get('hygiene', 0)}/20)",
+                "category": "cleanup",
+                "priority": "medium",
+                "icon": "mdi:broom",
+                "description": (
+                    f"Registry hygiene is at {bd.get('hygiene', 0)}/20. {hygiene_desc} "
+                    "A clean registry prevents state engine collisions and ensures 100% entity addressability."
+                ),
+                "action_type": "auto_commission_entities",
+                "action_payload": {},
+            })
+
+        # Automation Maturity (< 20)
+        if bd.get("automation", 20) < 20 and not any(
+            s.get("category") in ("automation", "lighting", "habit_routine") for s in suggestions
+        ):
+            auto_desc = (
+                " ".join(mat_gaps.get("automation", []))
+                if mat_gaps.get("automation")
+                else "Add essential occupancy lighting, sunset, or climate automations."
+            )
+            suggestions.append({
+                "id": "maturity_reach_20_automation",
+                "title": f"Maturity Goal: Reach 20/20 Automation Depth ({bd.get('automation', 0)}/20)",
+                "category": "automation",
+                "priority": "medium",
+                "icon": "mdi:lightning-bolt-circle",
+                "description": (
+                    f"Automation coverage is at {bd.get('automation', 0)}/20. {auto_desc} "
+                    "Reaching 20/20 transforms manual switch presses into autonomous background routines."
+                ),
+                "action_type": "chat_prompt",
+                "action_payload": {"prompt": "Create essential smart home automations for my lighting and climate"},
+            })
+
+        # Security Maturity (< 20)
+        if bd.get("security", 20) < 20 and not any(
+            s.get("category") == "security" for s in suggestions
+        ):
+            sec_desc = (
+                " ".join(mat_gaps.get("security", []))
+                if mat_gaps.get("security")
+                else "Configure an alarm control panel (e.g. Alarmo), smart locks, or presence tracking."
+            )
+            suggestions.append({
+                "id": "maturity_reach_20_security",
+                "title": f"Maturity Goal: Reach 20/20 Security & Presence ({bd.get('security', 0)}/20)",
+                "category": "security",
+                "priority": "medium",
+                "icon": "mdi:shield-check",
+                "description": (
+                    f"Security intelligence is at {bd.get('security', 0)}/20. {sec_desc} "
+                    "Reaching 20/20 ensures automated perimeter defense, night arming, and intrusion deterrence."
+                ),
+                "action_type": "advisor_guide",
+                "action_payload": {"guide": "Install Alarmo via HACS and configure smart locks or presence sensors for whole-home security."},
+            })
+
+        # Media Maturity (< 20)
+        if bd.get("media", 20) < 20 and not any(
+            s.get("category") == "media" for s in suggestions
+        ):
+            media_desc = (
+                " ".join(mat_gaps.get("media", []))
+                if mat_gaps.get("media")
+                else "Deploy whole-home audio grouping or pair Music Assistant with your media players."
+            )
+            suggestions.append({
+                "id": "maturity_reach_20_media",
+                "title": f"Maturity Goal: Reach 20/20 Media Harmony ({bd.get('media', 0)}/20)",
+                "category": "media",
+                "priority": "medium",
+                "icon": "mdi:speaker-multiple",
+                "description": (
+                    f"Media architecture is at {bd.get('media', 0)}/20. {media_desc} "
+                    "Reaching 20/20 unlocks cross-room follow-me audio, synchronized party mode, and voice announcements."
+                ),
+                "action_type": "advisor_guide",
+                "action_payload": {"guide": "Configure media players or Music Assistant in your main rooms for coordinated multi-room audio."},
+            })
 
         # Sort suggestions by priority: Critical -> High -> Medium -> Low
         priority_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}

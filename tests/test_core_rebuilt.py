@@ -3232,6 +3232,79 @@ class TestMacroManager(unittest.TestCase):
         speech3 = u3.create_response.call_args[1]["speech"]
         self.assertIn("Restored", speech3)
 
+    def test_smart_home_maturity_tips_and_proactive_recommendations(self):
+        """Verify that smart home maturity calculates tips and guarantees proactive recommendations for <20/20 scores."""
+        from custom_components.otis_ai import DiscoveryEngine
+        from custom_components.otis_ai.floorplan_parser import FloorplanParser
+
+        parser = FloorplanParser(self.hass)
+        engine = DiscoveryEngine(self.hass, floorplan_parser=parser)
+
+        # 1. Test _discover_system_maturity tips and gaps calculation
+        areas_map = {
+            "kitchen": {"name": "Kitchen", "entities": ["light.kitchen"]},
+        }
+        devices_map = {
+            "dev_unassigned": {"id": "dev_unassigned", "name": "Kitchen Outlet", "area_id": None}
+        }
+        entities_list = [
+            {"entity_id": "light.kitchen", "name": "Kitchen Light", "domain": "light", "area_id": "kitchen"}
+        ]
+        orphaned = [{"entity_id": "switch.dead_plug"}]
+        active_integrations = []
+        media_topology = {"matrix_amp_detected": False, "total_media_players": 0}
+        security_topology = {"alarm_panels": [], "locks": [], "persons": []}
+
+        maturity = engine._discover_system_maturity(
+            areas_map=areas_map,
+            devices_map=devices_map,
+            entities_list=entities_list,
+            orphaned_entities=orphaned,
+            active_integrations=active_integrations,
+            has_walkthrough=False,
+            has_floorplan=False,
+            media_topology=media_topology,
+            security_topology=security_topology,
+        )
+
+        self.assertIn("tips", maturity)
+        self.assertIn("gaps", maturity)
+        tips = maturity["tips"]
+        bd = maturity["breakdown"]
+
+        for cat in ("spatial", "hygiene", "automation", "security", "media"):
+            self.assertIn(cat, tips)
+            if bd[cat] < 20:
+                self.assertIn("To reach 20/20:", tips[cat])
+            else:
+                self.assertIn("20/20 (Perfect)", tips[cat])
+
+        # 2. Test async_generate_proactive_suggestions generates maturity goal cards
+        cap_map = {
+            "areas": areas_map,
+            "devices": devices_map,
+            "entities": entities_list,
+            "orphaned_entities": orphaned,
+            "integrations": active_integrations,
+            "media_topology": media_topology,
+            "security_topology": security_topology,
+            "maturity": maturity,
+            "spatial_graph": {"adjacencies": {}},
+        }
+        suggestions = asyncio.run(engine.async_generate_proactive_suggestions(cap_map))
+        s_ids = {s["id"] for s in suggestions}
+
+        # Spatial maturity card or walkthrough recommendation should exist
+        self.assertTrue("record_walkthrough_floorplan" in s_ids or "maturity_reach_20_spatial" in s_ids)
+        # Hygiene maturity card or orphan cleanup should exist
+        self.assertTrue("cleanup_orphans_1" in s_ids or "maturity_reach_20_hygiene" in s_ids)
+        # Automation maturity card should exist
+        self.assertTrue("maturity_reach_20_automation" in s_ids or any(s.get("category") == "automation" for s in suggestions))
+        # Security maturity card should exist
+        self.assertTrue("maturity_reach_20_security" in s_ids or any(s.get("category") == "security" for s in suggestions))
+        # Media maturity card should exist
+        self.assertTrue("maturity_reach_20_media" in s_ids or any(s.get("category") == "media" for s in suggestions))
+
 
 if __name__ == "__main__":
     unittest.main()

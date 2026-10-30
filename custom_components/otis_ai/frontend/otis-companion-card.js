@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.11.3";
+const CARD_VERSION = "1.11.4";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -3195,26 +3195,134 @@ class OtisCompanionCard extends HTMLElement {
         }
 
         .maturity-pill {
+          position: relative;
           background: rgba(255, 255, 255, 0.03);
           border: 1px solid rgba(255, 255, 255, 0.07);
           border-radius: 8px;
-          padding: 5px 4px;
+          padding: 6px 4px;
           text-align: center;
           display: flex;
           flex-direction: column;
           gap: 2px;
+          cursor: pointer;
+          transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        .maturity-pill:hover {
+          background: rgba(255, 255, 255, 0.08);
+          border-color: var(--otis-primary);
+          transform: translateY(-2px);
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+          z-index: 50;
+        }
+
+        .maturity-pill-max {
+          border-color: rgba(16, 185, 129, 0.35);
+        }
+
+        .maturity-pill-improve {
+          border-color: rgba(245, 158, 11, 0.35);
         }
 
         .maturity-pill-val {
           font-size: 0.78rem;
           font-weight: 700;
           color: var(--otis-primary);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 3px;
         }
 
         .maturity-pill-lbl {
           font-size: 0.62rem;
           text-transform: uppercase;
           color: var(--otis-text-muted);
+        }
+
+        .maturity-tooltip {
+          visibility: hidden;
+          opacity: 0;
+          position: absolute;
+          bottom: calc(100% + 8px);
+          left: 50%;
+          transform: translateX(-50%);
+          width: 240px;
+          background: #0f172a;
+          color: #f1f5f9;
+          text-align: left;
+          border-radius: 8px;
+          padding: 8px 10px;
+          font-size: 0.72rem;
+          line-height: 1.4;
+          border: 1px solid rgba(56, 189, 248, 0.4);
+          box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.85);
+          z-index: 1000;
+          pointer-events: none;
+          transition: opacity 0.2s ease, visibility 0.2s ease;
+          white-space: normal;
+        }
+
+        .maturity-pill:hover .maturity-tooltip {
+          visibility: visible;
+          opacity: 1;
+        }
+
+        .maturity-pill:first-child .maturity-tooltip {
+          left: 0;
+          transform: none;
+        }
+
+        .maturity-pill:last-child .maturity-tooltip {
+          left: auto;
+          right: 0;
+          transform: none;
+        }
+
+        .maturity-tooltip-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          font-weight: 700;
+          font-size: 0.76rem;
+          color: #38bdf8;
+          margin-bottom: 4px;
+          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+          padding-bottom: 3px;
+        }
+
+        .maturity-tooltip-badge {
+          font-size: 0.62rem;
+          padding: 1px 6px;
+          border-radius: 4px;
+          font-weight: 600;
+        }
+
+        .badge-max {
+          background: rgba(16, 185, 129, 0.2);
+          color: #10b981;
+          border: 1px solid rgba(16, 185, 129, 0.4);
+        }
+
+        .badge-improve {
+          background: rgba(245, 158, 11, 0.2);
+          color: #fbbf24;
+          border: 1px solid rgba(245, 158, 11, 0.4);
+        }
+
+        .maturity-tooltip-body {
+          font-size: 0.7rem;
+          color: #cbd5e1;
+          line-height: 1.35;
+        }
+
+        .maturity-tooltip-action {
+          margin-top: 5px;
+          font-size: 0.65rem;
+          color: #38bdf8;
+          font-weight: 600;
+          border-top: 1px solid rgba(255, 255, 255, 0.08);
+          padding-top: 4px;
         }
 
         .topo-tags {
@@ -4508,6 +4616,34 @@ class OtisCompanionCard extends HTMLElement {
     const comm = this._capabilityMap?.commissioning || {};
     const fed = this._capabilityMap?.federation || {};
 
+    const categories = [
+      { key: "spatial", label: "Spatial", max: 20 },
+      { key: "hygiene", label: "Hygiene", max: 20 },
+      { key: "automation", label: "Automations", max: 20 },
+      { key: "security", label: "Security", max: 20 },
+      { key: "media", label: "Media", max: 20 },
+    ];
+    const tips = maturity.tips || {};
+
+    const getMaturityTip = (key, val) => {
+      if (tips[key]) return tips[key];
+      if (val >= 20) return "20/20 (Perfect) • Fully mature smart home standard achieved.";
+      switch (key) {
+        case "spatial":
+          return `${val}/20 • To reach 20/20: Add at least 3 areas, assign entities to rooms, and create an interactive Floor Plan or walkthrough video.`;
+        case "hygiene":
+          return `${val}/20 • To reach 20/20: Clean up orphaned entities and auto-commission unassigned devices to their rooms.`;
+        case "automation":
+          return `${val}/20 • To reach 20/20: Create essential room occupancy lighting, climate guards, and daily routines to reach 5+ automations/scripts.`;
+        case "security":
+          return `${val}/20 • To reach 20/20: Install an alarm panel (e.g. Alarmo), configure smart locks, and set up presence/occupancy detection.`;
+        case "media":
+          return `${val}/20 • To reach 20/20: Deploy a multi-zone audio router, configure speaker grouping, or pair Music Assistant for whole-home audio.`;
+        default:
+          return `${val}/20 • Complete recommendations in the Proactive Feed to reach 20/20 maturity.`;
+      }
+    };
+
     return `
       <div class="capabilities-panel">
         <div class="cap-block">
@@ -4519,26 +4655,39 @@ class OtisCompanionCard extends HTMLElement {
             <div class="maturity-bar-fill" style="width: ${Math.min(100, Math.max(0, mScore))}%;"></div>
           </div>
           <div class="maturity-grid">
-            <div class="maturity-pill">
-              <span class="maturity-pill-val">${bd.spatial ?? 0}/20</span>
-              <span class="maturity-pill-lbl">Spatial</span>
-            </div>
-            <div class="maturity-pill">
-              <span class="maturity-pill-val">${bd.hygiene ?? 0}/20</span>
-              <span class="maturity-pill-lbl">Hygiene</span>
-            </div>
-            <div class="maturity-pill">
-              <span class="maturity-pill-val">${bd.automation ?? 0}/20</span>
-              <span class="maturity-pill-lbl">Automations</span>
-            </div>
-            <div class="maturity-pill">
-              <span class="maturity-pill-val">${bd.security ?? 0}/20</span>
-              <span class="maturity-pill-lbl">Security</span>
-            </div>
-            <div class="maturity-pill">
-              <span class="maturity-pill-val">${bd.media ?? 0}/20</span>
-              <span class="maturity-pill-lbl">Media</span>
-            </div>
+            ${categories
+              .map((c) => {
+                const val = bd[c.key] ?? 0;
+                const tip = getMaturityTip(c.key, val);
+                const isMax = val >= 20;
+                return `
+                  <div class="maturity-pill ${isMax ? "maturity-pill-max" : "maturity-pill-improve"}"
+                       data-cat="${c.key}"
+                       title="${tip.replace(/"/g, "&quot;")}">
+                    <span class="maturity-pill-val">
+                      ${val}/20 ${isMax ? '<span style="color:#10b981; font-size:0.65rem;">✓</span>' : '<span style="color:#f59e0b; font-size:0.65rem;">↑</span>'}
+                    </span>
+                    <span class="maturity-pill-lbl">${c.label}</span>
+                    <div class="maturity-tooltip">
+                      <div class="maturity-tooltip-header">
+                        <span>${c.label} (${val}/20)</span>
+                        <span class="maturity-tooltip-badge ${isMax ? "badge-max" : "badge-improve"}">
+                          ${isMax ? "✓ Mature" : "Improve +"}
+                        </span>
+                      </div>
+                      <div class="maturity-tooltip-body">
+                        ${tip}
+                      </div>
+                      ${
+                        !isMax
+                          ? `<div class="maturity-tooltip-action">💡 Click to view recommendations in Feed ➔</div>`
+                          : ""
+                      }
+                    </div>
+                  </div>
+                `;
+              })
+              .join("")}
           </div>
           ${
             inferredCount > 0
@@ -5251,9 +5400,16 @@ class OtisCompanionCard extends HTMLElement {
 
               <!-- Google Generative AI (Gemini Flash) -->
               <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #38bdf8;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                  <span style="font-weight: 700; font-size: 0.84rem; color: var(--otis-text);">🌟 Google Generative AI (Gemini 1.5 Flash)</span>
-                  <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4);">100% FREE TIER</span>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
+                  <span class="failover-agent-name" data-domain="google_generative_ai" style="font-weight: 700; font-size: 0.84rem; color: #38bdf8; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add Google Generative AI integration">
+                    🌟 Google Generative AI (Gemini 1.5 Flash) ↗
+                  </span>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4);">100% FREE TIER</span>
+                    <button type="button" class="btn-setup-agent" data-domain="google_generative_ai" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); cursor: pointer;">
+                      + Add in HA ↗
+                    </button>
+                  </div>
                 </div>
                 <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
                   Completely free via Google AI Studio API key (15 requests/minute, 1,500 requests/day at $0 cost). Ultra-fast (&lt;600ms latency) with state-of-the-art tool calling.
@@ -5262,9 +5418,16 @@ class OtisCompanionCard extends HTMLElement {
 
               <!-- Ollama Local LLM -->
               <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #10b981;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                  <span style="font-weight: 700; font-size: 0.84rem; color: var(--otis-text);">🏠 Ollama (Local LLM - Llama 3 / Mistral)</span>
-                  <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4);">100% FREE &amp; OFFLINE</span>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
+                  <span class="failover-agent-name" data-domain="ollama" style="font-weight: 700; font-size: 0.84rem; color: #10b981; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add Ollama integration">
+                    🏠 Ollama (Local LLM - Llama 3 / Mistral) ↗
+                  </span>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4);">100% FREE &amp; OFFLINE</span>
+                    <button type="button" class="btn-setup-agent" data-domain="ollama" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4); cursor: pointer;">
+                      + Add in HA ↗
+                    </button>
+                  </div>
                 </div>
                 <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
                   Runs locally on your server or PC. Zero cloud dependencies, total privacy, and works even when your internet is completely down.
@@ -5273,20 +5436,72 @@ class OtisCompanionCard extends HTMLElement {
 
               <!-- Groq Cloud -->
               <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #f59e0b;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                  <span style="font-weight: 700; font-size: 0.84rem; color: var(--otis-text);">⚡ Groq (Llama 3.1 70B/8B)</span>
-                  <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4);">FREE TIER</span>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
+                  <span class="failover-agent-name" data-domain="openai_conversation" style="font-weight: 700; font-size: 0.84rem; color: #fbbf24; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add via OpenAI Conversation integration">
+                    ⚡ Groq Cloud (Llama 3.3 70B / 3.1 8B) ↗
+                  </span>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4);">FREE TIER</span>
+                    <button type="button" class="btn-setup-agent" data-domain="openai_conversation" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); cursor: pointer;">
+                      + Add via OpenAI in HA ↗
+                    </button>
+                  </div>
                 </div>
                 <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
                   Ultra-fast hardware LPUs (~250 tokens/sec) providing near-instant responses with a generous free monthly tier.
+                </div>
+                <div style="margin-top: 6px; padding: 6px 10px; background: rgba(245, 158, 11, 0.08); border: 1px dashed rgba(245, 158, 11, 0.35); border-radius: 6px; font-size: 0.72rem; line-height: 1.4; color: var(--otis-text);">
+                  <span style="font-weight: 700; color: #fbbf24;">ℹ️ How to Add Groq in Home Assistant:</span><br>
+                  Home Assistant does not have a separate standalone "Groq" integration. Because Groq is 100% OpenAI API-compatible, add HA's native <strong>OpenAI Conversation</strong> integration with your Groq API key (from console.groq.com) and set:
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 5px; padding: 4px 8px; background: rgba(0,0,0,0.35); border-radius: 5px; font-family: monospace; font-size: 0.7rem;">
+                    <span>Base URL: <strong>https://api.groq.com/openai/v1</strong></span>
+                    <button type="button" class="btn-copy-base-url" data-url="https://api.groq.com/openai/v1" style="font-size: 0.65rem; padding: 2px 7px; border-radius: 4px; background: rgba(245, 158, 11, 0.25); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.5); cursor: pointer;">
+                      📋 Copy URL
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- xAI (Grok) -->
+              <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #38bdf8;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
+                  <span class="failover-agent-name" data-domain="openai_conversation" style="font-weight: 700; font-size: 0.84rem; color: #38bdf8; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add via OpenAI Conversation integration">
+                    🚀 xAI (Grok-2 / Grok-beta) ↗
+                  </span>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4);">REASONING</span>
+                    <button type="button" class="btn-setup-agent" data-domain="openai_conversation" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); cursor: pointer;">
+                      + Add via OpenAI in HA ↗
+                    </button>
+                  </div>
+                </div>
+                <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
+                  Frontier reasoning and live world intelligence powered by Elon Musk's xAI platform.
+                </div>
+                <div style="margin-top: 6px; padding: 6px 10px; background: rgba(56, 189, 248, 0.08); border: 1px dashed rgba(56, 189, 248, 0.35); border-radius: 6px; font-size: 0.72rem; line-height: 1.4; color: var(--otis-text);">
+                  <span style="font-weight: 700; color: #38bdf8;">ℹ️ How to Add xAI in Home Assistant:</span><br>
+                  Home Assistant does not have a separate standalone "xAI" integration. Because xAI is 100% OpenAI API-compatible, add HA's native <strong>OpenAI Conversation</strong> (or HACS Extended OpenAI) integration with your xAI API key and set:
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 5px; padding: 4px 8px; background: rgba(0,0,0,0.35); border-radius: 5px; font-family: monospace; font-size: 0.7rem;">
+                    <span>Base URL: <strong>https://api.x.ai/v1</strong></span>
+                    <button type="button" class="btn-copy-base-url" data-url="https://api.x.ai/v1" style="font-size: 0.65rem; padding: 2px 7px; border-radius: 4px; background: rgba(56, 189, 248, 0.25); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.5); cursor: pointer;">
+                      📋 Copy URL
+                    </button>
+                  </div>
                 </div>
               </div>
 
               <!-- OpenAI -->
               <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #a855f7;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                  <span style="font-weight: 700; font-size: 0.84rem; color: var(--otis-text);">🤖 OpenAI (GPT-4o / GPT-4o-mini)</span>
-                  <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4);">MICRO-COST</span>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
+                  <span class="failover-agent-name" data-domain="openai_conversation" style="font-weight: 700; font-size: 0.84rem; color: #c084fc; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add OpenAI Conversation integration">
+                    🤖 OpenAI (GPT-4o / GPT-4o-mini) ↗
+                  </span>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4);">MICRO-COST</span>
+                    <button type="button" class="btn-setup-agent" data-domain="openai_conversation" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); cursor: pointer;">
+                      + Add in HA ↗
+                    </button>
+                  </div>
                 </div>
                 <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
                   Industry-leading tool accuracy and reasoning. Low cost (~$0.15 / million tokens on gpt-4o-mini).
@@ -5747,6 +5962,62 @@ class OtisCompanionCard extends HTMLElement {
         window.open("/config/integrations", "_blank");
       };
     }
+
+    // Direct Integration Links & URL Copy in Failover Modal
+    root.querySelectorAll(".btn-setup-agent, .failover-agent-name").forEach((btn) => {
+      btn.onclick = (e) => {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        const domain = btn.getAttribute("data-domain");
+        if (domain) {
+          window.open(`/config/integrations/dashboard/add?domain=${encodeURIComponent(domain)}`, "_blank");
+        }
+      };
+    });
+
+    root.querySelectorAll(".btn-copy-base-url").forEach((btn) => {
+      btn.onclick = (e) => {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        const url = btn.getAttribute("data-url");
+        if (url) {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(url).then(() => {
+              this._showToast(`📋 Copied "${url}" to clipboard!`);
+            }).catch(() => {
+              this._showToast(`Base URL: ${url}`);
+            });
+          } else {
+            this._showToast(`Base URL: ${url}`);
+          }
+        }
+      };
+    });
+
+    // Maturity Pills Click Navigation to Proactive Feed
+    root.querySelectorAll(".maturity-pill").forEach((pill) => {
+      pill.onclick = () => {
+        const cat = pill.getAttribute("data-cat");
+        this._activeTab = "proactive";
+        if (cat === "hygiene" || cat === "spatial") {
+          this._feedFilter = "cleanup";
+        } else if (cat === "automation") {
+          this._feedFilter = "lighting";
+        } else if (cat === "security") {
+          this._feedFilter = "security";
+        } else if (cat === "media") {
+          this._feedFilter = "media";
+        } else {
+          this._feedFilter = "all";
+        }
+        this._render();
+        this._showToast(`Viewing recommendations for ${cat || "smart home"} maturity...`);
+      };
+    });
     root.querySelectorAll(".btn-apply-theme").forEach((btn) => {
       btn.onclick = () => {
         const k = btn.getAttribute("data-theme-key");
