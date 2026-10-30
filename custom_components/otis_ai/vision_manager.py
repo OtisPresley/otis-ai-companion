@@ -10,11 +10,12 @@ from __future__ import annotations
 import base64
 from datetime import datetime
 import logging
+import re
 import time
 from typing import Any
 
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import area_registry as ar, entity_registry as er
+from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,6 +32,32 @@ class VisionPresenceManager:
         self._presence_cache: dict[str, Any] = {}
         self._presence_cache_ts: float = 0.0
 
+    def _build_entity_to_area_map(self) -> dict[str, str]:
+        """Build mapping of entity_id -> area_id considering both entity and device registries."""
+        entity_to_area: dict[str, str] = {}
+        dev_to_area: dict[str, str] = {}
+        try:
+            dev_reg = dr.async_get(self.hass)
+            if hasattr(dev_reg, "devices"):
+                for dev_id, dev in dev_reg.devices.items():
+                    if getattr(dev, "area_id", None):
+                        dev_to_area[dev_id] = dev.area_id
+        except Exception:
+            pass
+
+        try:
+            ent_reg = er.async_get(self.hass)
+            if hasattr(ent_reg, "entities"):
+                for entry in ent_reg.entities.values():
+                    if getattr(entry, "area_id", None):
+                        entity_to_area[entry.entity_id] = entry.area_id
+                    elif getattr(entry, "device_id", None) and entry.device_id in dev_to_area:
+                        entity_to_area[entry.entity_id] = dev_to_area[entry.device_id]
+        except Exception:
+            pass
+
+        return entity_to_area
+
     async def async_get_presence_states(self, use_cache: bool = False) -> dict[str, Any]:
         """Compute spatial occupancy probability states for every room using multi-sensor fusion."""
         now_ts = time.time()
@@ -38,16 +65,11 @@ class VisionPresenceManager:
             return self._presence_cache
 
         area_reg = ar.async_get(self.hass)
-        ent_reg = er.async_get(self.hass)
-
         areas = list(area_reg.async_list_areas()) if hasattr(area_reg, "async_list_areas") else []
         all_states = self.hass.states.async_all() if hasattr(self.hass.states, "async_all") else []
 
-        # Build mapping of entity_id -> area_id
-        entity_to_area: dict[str, str] = {}
-        for entry in ent_reg.entities.values():
-            if entry.area_id:
-                entity_to_area[entry.entity_id] = entry.area_id
+        # Build mapping of entity_id -> area_id with device-level fallback
+        entity_to_area = self._build_entity_to_area_map()
 
         # Also map area names to area ids for heuristic matching
         area_name_to_id: dict[str, str] = {a.name.lower(): a.id for a in areas}
@@ -98,7 +120,7 @@ class VisionPresenceManager:
                 # Heuristic area fallback if entity_registry doesn't have area assigned
                 if not e_area:
                     e_name = (s.attributes.get("friendly_name") or eid).lower()
-                    if a_lower in e_name or a_id in e_name:
+                    if re.search(rf"\b{re.escape(a_lower)}\b", e_name) or re.search(rf"\b{re.escape(a_id)}\b", eid.lower()):
                         e_area = a_id
 
                 if e_area != a_id:
@@ -262,13 +284,8 @@ class VisionPresenceManager:
     async def async_get_cameras(self) -> list[dict[str, Any]]:
         """Discover all security cameras and doorbells across Home Assistant."""
         area_reg = ar.async_get(self.hass)
-        ent_reg = er.async_get(self.hass)
-
         areas_by_id = {a.id: a.name for a in area_reg.async_list_areas()} if hasattr(area_reg, "async_list_areas") else {}
-        entity_to_area: dict[str, str] = {}
-        for entry in ent_reg.entities.values():
-            if entry.area_id:
-                entity_to_area[entry.entity_id] = entry.area_id
+        entity_to_area = self._build_entity_to_area_map()
 
         all_states = self.hass.states.async_all() if hasattr(self.hass.states, "async_all") else []
         cameras: list[dict[str, Any]] = []
@@ -460,30 +477,81 @@ class VisionPresenceManager:
                         })
 
         # Rule 2: Unattended High-Power Appliance in Vacant Room
-        high_draw_keywords = ("oven", "stove", "heater", "iron", "griddle", "kettle", "fryer", "hair")
-        for a_id, r_info in rooms.items():
-            if r_info["status"] == "vacant":
-                # Check for active high-consumption devices in this vacant room
-                for s in all_states:
-                    eid = s.entity_id
-                    fname = (s.attributes.get("friendly_name") or eid).lower()
-                    if eid.startswith("switch.") and s.state == "on":
-                        if any(k in fname for k in high_draw_keywords):
-                            friendly = s.attributes.get("friendly_name") or eid
-                            alerts.append({
-                                "id": f"contextual_unattended_{eid}",
-                                "title": f"Safety Alert: Unattended {friendly} in {r_info['area_name']}",
-                                "category": "energy",
-                                "priority": "high",
-                                "icon": "mdi:fire-alert",
-                                "description": f"{friendly} is turned on in {r_info['area_name']}, but the room has been vacant.",
-                                "action_type": "call_service",
-                                "action_payload": {
-                                    "service": "homeassistant.turn_off",
-                                    "target": {"entity_id": eid},
-                                    "button_label": f"Turn Off {friendly}",
-                                },
-                            })
+        appliance_pattern = re.compile(
+            r"\b(space[ _-]?heater|radiator|heater|iron|curling[ _-]?iron|hair[ _-]?dryer|blow[ _-]?dryer|curling[ _-]?wand|stove|cooktop|oven|griddle|kettle|air[ _-]?fryer|deep[ _-]?fryer|toaster)\b",
+            re.IGNORECASE,
+        )
+        non_appliance_keywords = (
+            "theater", "theatre", "yamaha", "receiver", "amplifier", "audio", "sound", "speaker",
+            "subwoofer", "zone", "enhancer", "auto-update", "status", "firmware", "sync",
+            "led", "light", "strip", "lamp", "bulb", "display", "tv", "television", "remote",
+            "fan", "mute", "volume", "input", "hdmi", "sensor"
+        )
+
+        entity_to_area = self._build_entity_to_area_map()
+        ent_reg = None
+        try:
+            ent_reg = er.async_get(self.hass)
+        except Exception:
+            pass
+
+        for s in all_states:
+            eid = s.entity_id
+            if not eid.startswith("switch.") or s.state != "on":
+                continue
+
+            fname = s.attributes.get("friendly_name") or eid
+            fname_lower = fname.lower()
+            eid_lower = eid.lower()
+
+            # Skip diagnostic or configuration entities
+            entry = None
+            if ent_reg:
+                if hasattr(ent_reg, "async_get"):
+                    entry = ent_reg.async_get(eid)
+                elif hasattr(ent_reg, "entities") and eid in ent_reg.entities:
+                    entry = ent_reg.entities[eid]
+            if entry and getattr(entry, "entity_category", None) in ("config", "diagnostic"):
+                continue
+
+            # Skip devices that match common AV/lighting/non-appliance keywords
+            if any(k in fname_lower or k in eid_lower for k in non_appliance_keywords):
+                continue
+
+            # Check if this switch matches actual high-draw appliance names with strict word boundaries
+            if not appliance_pattern.search(fname_lower) and not appliance_pattern.search(eid_lower):
+                continue
+
+            # Determine the exact area for this appliance
+            e_area = entity_to_area.get(eid)
+            if not e_area:
+                # Conservative fallback: only match if the entity explicitly references an area name with word boundary
+                for a_id_cand, a_cand in rooms.items():
+                    a_name_cand = (a_cand.get("area_name") or a_id_cand).lower()
+                    if re.search(rf"\b{re.escape(a_id_cand)}\b", eid_lower) or re.search(rf"\b{re.escape(a_name_cand)}\b", fname_lower):
+                        e_area = a_id_cand
+                        break
+
+            if not e_area or e_area not in rooms:
+                continue
+
+            r_info = rooms[e_area]
+            if r_info.get("status") == "vacant":
+                friendly = fname
+                alerts.append({
+                    "id": f"contextual_unattended_{eid}",
+                    "title": f"Safety Alert: Unattended {friendly} in {r_info['area_name']}",
+                    "category": "energy",
+                    "priority": "high",
+                    "icon": "mdi:fire-alert",
+                    "description": f"{friendly} is turned on in {r_info['area_name']}, but the room has been vacant.",
+                    "action_type": "call_service",
+                    "action_payload": {
+                        "service": "homeassistant.turn_off",
+                        "target": {"entity_id": eid},
+                        "button_label": f"Turn Off {friendly}",
+                    },
+                })
 
         # Rule 3: Exterior Locks Unlocked While Away or During Sleep Hours
         if not household_present or is_night:

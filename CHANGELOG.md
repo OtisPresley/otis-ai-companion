@@ -2,6 +2,14 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.9.7] - 2026-10-30
+
+### Fixed
+- **Unattended Appliance Alert Room & Keyword Fix (`vision_manager.py`)**:
+  - Fixed substring matching in contextual presence evaluation where `"heater"` incorrectly matched `"theater"` (e.g. `switch.theater_yamaha_enhancer`, `switch.theater_led`, `switch.theater_auto_update_enabled`).
+  - Added strict regex word boundaries for high-power appliance detection (`\b(heater|space_heater|oven|stove|iron|kettle|fryer|griddle|radiator)\b`) and explicit exclusions for AV equipment, receivers, LEDs, diagnostic/config entities, and media controls.
+  - Enforced strict room spatial binding using entity and device registries (`_build_entity_to_area_map`), eliminating bugs where switches from one area were erroneously reported across every vacant room (such as Dining Room or Downstairs Bath).
+
 ## [1.9.6] - 2026-10-30
 
 ### Fixed

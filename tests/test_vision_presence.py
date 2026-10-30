@@ -137,6 +137,9 @@ class TestVisionPresenceManager(unittest.TestCase):
         area_reg.async_list_areas.return_value = [
             MockArea("garage", "Garage"),
             MockArea("study", "Study"),
+            MockArea("dining_room", "Dining Room"),
+            MockArea("downstairs_bath", "Downstairs Bath"),
+            MockArea("theater", "Theater"),
         ]
         mock_ar.return_value = area_reg
 
@@ -145,14 +148,20 @@ class TestVisionPresenceManager(unittest.TestCase):
             "cover.garage_door": MockEntityEntry("cover.garage_door", "garage"),
             "switch.study_space_heater": MockEntityEntry("switch.study_space_heater", "study"),
             "lock.front_door": MockEntityEntry("lock.front_door", "front_porch"),
+            "switch.theater_yamaha_enhancer": MockEntityEntry("switch.theater_yamaha_enhancer", "theater"),
+            "switch.theater_led": MockEntityEntry("switch.theater_led", "theater"),
+            "switch.theater_auto_update_enabled": MockEntityEntry("switch.theater_auto_update_enabled", "theater"),
         }
         mock_er.return_value = ent_reg
 
-        # All residents away, garage door open, space heater left on in vacant study
+        # All residents away, garage door open, space heater left on in vacant study, theater switches on
         states = [
             MockEntityState("person.jamie", "not_home", {"friendly_name": "Jamie"}),
             MockEntityState("cover.garage_door", "open", {"device_class": "garage", "friendly_name": "Garage Door"}),
             MockEntityState("switch.study_space_heater", "on", {"friendly_name": "Study Space Heater"}),
+            MockEntityState("switch.theater_yamaha_enhancer", "on", {"friendly_name": "Theater Yamaha Enhancer"}),
+            MockEntityState("switch.theater_led", "on", {"friendly_name": "Theater LED"}),
+            MockEntityState("switch.theater_auto_update_enabled", "on", {"friendly_name": "Theater Auto-update enabled"}),
             MockEntityState("lock.front_door", "unlocked", {"friendly_name": "Front Door Lock"}),
         ]
         self.hass.states.async_all.return_value = states
@@ -171,6 +180,14 @@ class TestVisionPresenceManager(unittest.TestCase):
         self.assertIsNotNone(heater_alert)
         self.assertIn("Study", heater_alert["title"])
         self.assertEqual(heater_alert["action_payload"]["service"], "homeassistant.turn_off")
+
+        # Verify Theater switches do NOT produce false positive appliance alerts in other rooms
+        theater_alerts = [a for a in alerts if "theater" in a.get("id", "").lower() or "theater" in a.get("title", "").lower()]
+        self.assertEqual(len(theater_alerts), 0, f"Unexpected theater false positive alerts: {theater_alerts}")
+
+        # Verify no bogus unattended alerts in Dining Room or Downstairs Bath
+        bogus_room_alerts = [a for a in alerts if "dining room" in a.get("title", "").lower() or "downstairs bath" in a.get("title", "").lower()]
+        self.assertEqual(len(bogus_room_alerts), 0, f"Unexpected bogus alerts in vacant rooms: {bogus_room_alerts}")
 
         # Verify perimeter unlocked while away alert
         lock_alert = next((a for a in alerts if "unlocked" in a["id"]), None)
