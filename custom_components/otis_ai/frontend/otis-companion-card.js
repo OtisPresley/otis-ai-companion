@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 1.7.0
+ * Version: 1.9.1
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -12,7 +12,7 @@
  * - Smart Home Maturity Score & Media/Security Architecture Inspector
  */
 
-const CARD_VERSION = "1.9.0";
+const CARD_VERSION = "1.9.1";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -30,11 +30,11 @@ class OtisCompanionCard extends HTMLElement {
     this._dismissedIds = this._loadDismissedIds();
     this._loadingSuggestions = false;
     this._applyingIds = new Set();
-    this._chatMessages = [];
+    this._chatMessages = this._loadChatMessages();
     this._isSendingChat = false;
     this._isListening = false;
     this._recognition = null;
-    this._activeTab = "suggestions"; // 'suggestions' | 'chat' | 'capabilities' | 'floorplan'
+    this._activeTab = this._loadActiveTab(); // 'suggestions' | 'chat' | 'capabilities' | 'floorplan'
     this._selectedCategory = "all"; // 'all' | 'lighting' | 'media' | 'security' | 'cleanup' | 'system'
     this._conversationId = null;
     this._conversationAgentId = null;
@@ -74,6 +74,42 @@ class OtisCompanionCard extends HTMLElement {
     this._addMarkerModalOpen = false;
   }
 
+  _loadActiveTab() {
+    try {
+      const saved = sessionStorage.getItem("otis_active_tab");
+      if (saved && ["suggestions", "chat", "capabilities", "floorplan"].includes(saved)) {
+        return saved;
+      }
+    } catch (_) {}
+    return "suggestions";
+  }
+
+  _saveActiveTab(tab) {
+    if (["suggestions", "chat", "capabilities", "floorplan"].includes(tab)) {
+      this._activeTab = tab;
+      try {
+        sessionStorage.setItem("otis_active_tab", tab);
+      } catch (_) {}
+    }
+  }
+
+  _loadChatMessages() {
+    try {
+      const saved = sessionStorage.getItem("otis_chat_messages");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  _saveChatMessages() {
+    try {
+      sessionStorage.setItem("otis_chat_messages", JSON.stringify(this._chatMessages.slice(-50)));
+    } catch (_) {}
+  }
+
   _escapeHtml(str) {
     if (!str) return "";
     return String(str)
@@ -109,6 +145,7 @@ class OtisCompanionCard extends HTMLElement {
     } else if (this._activeTab === "chat" && this._config.show_chat === false) {
       this._activeTab = this._config.show_suggestions !== false ? "suggestions" : "floorplan";
     }
+    this._saveActiveTab(this._activeTab);
   }
 
   set hass(hass) {
@@ -136,9 +173,12 @@ class OtisCompanionCard extends HTMLElement {
     };
     if (config.default_tab) {
       this._activeTab = config.default_tab;
-    }
-    if (config.mode === "floorplan_studio") {
+      this._saveActiveTab(config.default_tab);
+    } else if (config.mode === "floorplan_studio") {
       this._activeTab = "floorplan";
+      this._saveActiveTab("floorplan");
+    } else {
+      this._activeTab = this._loadActiveTab();
     }
     this._ensureValidActiveTab();
     this._render();
@@ -505,75 +545,122 @@ class OtisCompanionCard extends HTMLElement {
     const userText = (text || "").trim();
     if (!userText || !this._hass || this._isSendingChat) return;
 
-    this._chatMessages.push({ sender: "user", text: userText, timestamp: new Date() });
+    this._saveActiveTab("chat");
+    this._chatMessages.push({ sender: "user", text: userText, timestamp: new Date().toISOString() });
+    this._saveChatMessages();
     this._isSendingChat = true;
     this._render();
+    this._scrollChatToBottom();
 
     try {
       let speech = "";
 
-      // 1. First attempt direct otis_ai.chat service
-      try {
-        const directPayload = { text: userText };
-        if (this._conversationId) {
-          directPayload.conversation_id = this._conversationId;
-        }
-        const directRes = await this._hass.callService(
-          "otis_ai",
-          "chat",
-          directPayload,
-          undefined,
-          true,
-          true
-        );
-        const data = directRes?.response || directRes;
-        if (data && data.response) {
-          speech = data.response;
-          if (data.conversation_id) {
-            this._conversationId = data.conversation_id;
-          }
-        }
-      } catch (serviceErr) {
-        console.warn("otis_ai.chat service call unhandled or unavailable, falling back to conversation.process:", serviceErr);
+      // 1. First attempt otis_ai.chat service via WebSocket (primary, supports return_response directly)
+      const directPayload = { text: userText };
+      if (this._conversationId) {
+        directPayload.conversation_id = this._conversationId;
       }
 
-      // 2. Fallback: conversation.process with resolved agent_id & conversation_id
+      if (this._hass.callWS) {
+        try {
+          const wsRes = await this._hass.callWS({
+            type: "call_service",
+            domain: "otis_ai",
+            service: "chat",
+            service_data: directPayload,
+            return_response: true,
+          });
+          const data = wsRes?.response?.response || wsRes?.response || wsRes;
+          if (typeof data === "string" && data.trim()) {
+            speech = data;
+          } else if (data && typeof data.response === "string" && data.response.trim()) {
+            speech = data.response;
+          }
+          if (data && data.conversation_id) {
+            this._conversationId = data.conversation_id;
+          }
+        } catch (wsErr) {
+          console.debug("otis_ai.chat via callWS failed, attempting callService:", wsErr);
+        }
+      }
+
+      // 2. If callWS didn't return speech, attempt callService
+      if (!speech) {
+        try {
+          const directRes = await this._hass.callService(
+            "otis_ai",
+            "chat",
+            directPayload,
+            undefined,
+            true,
+            true
+          );
+          const data = directRes?.response?.response || directRes?.response || directRes;
+          if (typeof data === "string" && data.trim()) {
+            speech = data;
+          } else if (data && typeof data.response === "string" && data.response.trim()) {
+            speech = data.response;
+          }
+          if (data && data.conversation_id) {
+            this._conversationId = data.conversation_id;
+          }
+        } catch (serviceErr) {
+          console.warn("otis_ai.chat service call failed, falling back to conversation.process:", serviceErr);
+        }
+      }
+
+      // 3. Fallback: conversation.process with resolved agent_id & conversation_id
       if (!speech) {
         const agentId = await this._getConversationAgentId();
         const payload = { text: userText };
-        if (agentId) {
-          payload.agent_id = agentId;
+        if (agentId) payload.agent_id = agentId;
+        if (this._conversationId) payload.conversation_id = this._conversationId;
+
+        if (this._hass.callWS) {
+          try {
+            const cRes = await this._hass.callWS({
+              type: "conversation/process",
+              ...payload,
+            });
+            speech =
+              cRes?.response?.speech?.plain?.speech ||
+              cRes?.speech?.plain?.speech ||
+              "";
+            if (cRes?.conversation_id) this._conversationId = cRes.conversation_id;
+          } catch (cErr) {
+            console.debug("conversation/process callWS failed:", cErr);
+          }
         }
-        if (this._conversationId) {
-          payload.conversation_id = this._conversationId;
-        }
 
-        const res = await this._hass.callService(
-          "conversation",
-          "process",
-          payload,
-          undefined,
-          true,
-          true
-        );
+        if (!speech) {
+          const res = await this._hass.callService(
+            "conversation",
+            "process",
+            payload,
+            undefined,
+            true,
+            true
+          );
 
-        speech =
-          res?.response?.response?.speech?.plain?.speech ||
-          res?.response?.speech?.plain?.speech ||
-          res?.speech?.plain?.speech ||
-          "I'm here to assist, but received an empty response.";
+          speech =
+            res?.response?.response?.speech?.plain?.speech ||
+            res?.response?.speech?.plain?.speech ||
+            res?.speech?.plain?.speech ||
+            "I'm here to assist, but received an empty response.";
 
-        const returnedConvId = res?.response?.conversation_id || res?.conversation_id;
-        if (returnedConvId) {
-          this._conversationId = returnedConvId;
+          const returnedConvId = res?.response?.conversation_id || res?.conversation_id;
+          if (returnedConvId) {
+            this._conversationId = returnedConvId;
+          }
         }
       }
 
       this._chatMessages.push({
         sender: "otis",
         text: speech,
-        timestamp: new Date(),
+        timestamp: new Date().toISOString(),
       });
+      this._saveChatMessages();
 
       if (
         speech &&
@@ -587,9 +674,10 @@ class OtisCompanionCard extends HTMLElement {
       this._chatMessages.push({
         sender: "otis",
         text: "I encountered an error connecting to the AI agent. Please check system logs or fallback configuration.",
-        timestamp: new Date(),
+        timestamp: new Date().toISOString(),
         isError: true,
       });
+      this._saveChatMessages();
     } finally {
       this._isSendingChat = false;
       this._render();
@@ -2815,7 +2903,7 @@ class OtisCompanionCard extends HTMLElement {
           <!-- Studio Header (Full Width Blueprint Workspace) -->
           <div class="studio-header">
             <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
-              <button class="btn-toolbar" id="btn-back-dashboard" title="Return to Dashboard">
+              <button type="button" class="btn-toolbar" id="btn-back-dashboard" title="Return to Dashboard">
                 ← Back
               </button>
               <div class="title-group">
@@ -2830,13 +2918,13 @@ class OtisCompanionCard extends HTMLElement {
               ${
                 isAdmin
                   ? `
-                <button class="btn-toolbar ${this._editorActive ? 'active' : ''}" id="btn-toggle-editor" style="${this._editorActive ? 'background: var(--otis-primary); color: var(--otis-btn-text, #ffffff); border-color: var(--otis-primary);' : ''}">
+                <button type="button" class="btn-toolbar ${this._editorActive ? 'active' : ''}" id="btn-toggle-editor" style="${this._editorActive ? 'background: var(--otis-primary); color: var(--otis-btn-text, #ffffff); border-color: var(--otis-primary);' : ''}">
                   ${this._editorActive ? "🛠️ Exit Editor" : "✏️ Edit Blueprint"}
                 </button>
               `
                   : ""
               }
-              <button class="icon-btn" id="refresh-btn" title="Refresh floor plan">
+              <button type="button" class="icon-btn" id="refresh-btn" title="Refresh floor plan">
                 ↻ Refresh
               </button>
             </div>
@@ -2862,7 +2950,7 @@ class OtisCompanionCard extends HTMLElement {
               </div>
             </div>
             <div class="header-actions">
-              <button class="icon-btn" id="refresh-btn" title="Refresh intelligence">
+              <button type="button" class="icon-btn" id="refresh-btn" title="Refresh intelligence">
                 ↻ Refresh
               </button>
             </div>
@@ -2898,12 +2986,12 @@ class OtisCompanionCard extends HTMLElement {
           <div class="subviews-launchpad">
             <div class="launchpad-row">
               <span class="subviews-label">Studios:</span>
-              <button class="subview-chip" data-subview="${dashPrefix}/media">🎵 Media Studio</button>
-              <button class="subview-chip" data-subview="${dashPrefix}/security">🛡️ Security Center</button>
-              <button class="subview-chip" data-subview="${dashPrefix}/climate">🌡️ Climate & Pool</button>
-              <button class="subview-chip" data-subview="${dashPrefix}/floorplan">🗺️ Floor Plan</button>
-              ${isAdmin ? `<button class="subview-chip" id="btn-sync-dashboards" title="Sync all Studios & Rooms to Command Center" style="margin-left: auto;">🔄 Sync Command Center</button>` : ""}
-              <button class="subview-chip" id="btn-open-themes" style="${isAdmin ? "" : "margin-left: auto;"}">🎨 Themes</button>
+              <button type="button" class="subview-chip" data-subview="${dashPrefix}/media">🎵 Media Studio</button>
+              <button type="button" class="subview-chip" data-subview="${dashPrefix}/security">🛡️ Security Center</button>
+              <button type="button" class="subview-chip" data-subview="${dashPrefix}/climate">🌡️ Climate & Pool</button>
+              <button type="button" class="subview-chip" data-subview="${dashPrefix}/floorplan">🗺️ Floor Plan</button>
+              ${isAdmin ? `<button type="button" class="subview-chip" id="btn-sync-dashboards" title="Sync all Studios & Rooms to Command Center" style="margin-left: auto;">🔄 Sync Command Center</button>` : ""}
+              <button type="button" class="subview-chip" id="btn-open-themes" style="${isAdmin ? "" : "margin-left: auto;"}">🎨 Themes</button>
             </div>
             ${
               activeAreas.length > 0
@@ -2913,7 +3001,7 @@ class OtisCompanionCard extends HTMLElement {
                 ${activeAreas
                   .map(
                     (room) => `
-                  <button class="subview-chip room-chip" data-subview="${room.path}">${this._getRoomEmoji(room.name)} ${this._escapeHtml(room.name)}</button>
+                  <button type="button" class="subview-chip room-chip" data-subview="${room.path}">${this._getRoomEmoji(room.name)} ${this._escapeHtml(room.name)}</button>
                 `
                   )
                   .join("")}
@@ -2928,7 +3016,7 @@ class OtisCompanionCard extends HTMLElement {
             ${
               this._config.show_suggestions !== false
                 ? `
-              <button class="tab-btn ${this._activeTab === "suggestions" ? "active" : ""}" id="tab-suggestions">
+              <button type="button" class="tab-btn ${this._activeTab === "suggestions" ? "active" : ""}" id="tab-suggestions">
                 Proactive Feed
                 ${activeSuggestions.length > 0 ? `<span class="tab-badge">${activeSuggestions.length}</span>` : ""}
               </button>
@@ -2938,17 +3026,17 @@ class OtisCompanionCard extends HTMLElement {
             ${
               this._config.show_chat !== false
                 ? `
-              <button class="tab-btn ${this._activeTab === "chat" ? "active" : ""}" id="tab-chat">
+              <button type="button" class="tab-btn ${this._activeTab === "chat" ? "active" : ""}" id="tab-chat">
                 Assist Co-Pilot
               </button>
             `
                 : ""
             }
-            <button class="tab-btn ${this._activeTab === "floorplan" ? "active" : ""}" id="tab-floorplan">
+            <button type="button" class="tab-btn ${this._activeTab === "floorplan" ? "active" : ""}" id="tab-floorplan">
               Floor Plan
               ${this._capabilityMap?.floorplan?.exists ? "" : `<span class="tab-badge" style="background: var(--otis-accent, #a855f7);">New</span>`}
             </button>
-            <button class="tab-btn ${this._activeTab === "capabilities" ? "active" : ""}" id="tab-capabilities">
+            <button type="button" class="tab-btn ${this._activeTab === "capabilities" ? "active" : ""}" id="tab-capabilities">
               Capabilities
             </button>
           </div>
@@ -2987,7 +3075,7 @@ class OtisCompanionCard extends HTMLElement {
         ${categories
           .map(
             (c) => `
-          <button class="category-pill ${this._selectedCategory === c.key ? "active" : ""}" data-category-pill="${c.key}">
+          <button type="button" class="category-pill ${this._selectedCategory === c.key ? "active" : ""}" data-category-pill="${c.key}">
             ${c.label}
           </button>
         `
@@ -3015,7 +3103,7 @@ class OtisCompanionCard extends HTMLElement {
                           <span class="badge-category">${s.category || "automation"}</span>
                           <span class="badge-priority ${s.priority || "medium"}">${s.priority || "medium"}</span>
                         </div>
-                        <button class="dismiss-btn" data-dismiss="${s.id}" title="Dismiss recommendation">✕</button>
+                        <button type="button" class="dismiss-btn" data-dismiss="${s.id}" title="Dismiss recommendation">✕</button>
                       </div>
                       <div class="suggestion-title">${s.title}</div>
                       <div class="suggestion-desc">${s.description}</div>
@@ -3024,16 +3112,16 @@ class OtisCompanionCard extends HTMLElement {
                           s.action_type === "sentinel_alert_actions"
                             ? `
                           <div style="display: flex; gap: 8px; flex-wrap: wrap; width: 100%;">
-                            <button class="btn-toolbar btn-ignore-alert" data-ignore-id="${s.id}" style="padding: 6px 12px; font-size: 0.76rem;">
+                            <button type="button" class="btn-toolbar btn-ignore-alert" data-ignore-id="${s.id}" style="padding: 6px 12px; font-size: 0.76rem;">
                               ${s.action_payload?.dismiss_single_label || "Ignore this alert"}
                             </button>
-                            <button class="btn-toolbar btn-ignore-category" data-ignore-cat="${s.action_payload?.category || s.anomaly_type || 'battery'}" style="padding: 6px 12px; font-size: 0.76rem; color: var(--otis-primary); border-color: var(--otis-primary);">
+                            <button type="button" class="btn-toolbar btn-ignore-category" data-ignore-cat="${s.action_payload?.category || s.anomaly_type || 'battery'}" style="padding: 6px 12px; font-size: 0.76rem; color: var(--otis-primary); border-color: var(--otis-primary);">
                               ${s.action_payload?.dismiss_category_label || "Ignore all alerts in this category"}
                             </button>
                           </div>
                         `
                             : `
-                          <button class="apply-btn" data-apply="${s.id}" ${isApplying ? "disabled" : ""}>
+                          <button type="button" class="apply-btn" data-apply="${s.id}" ${isApplying ? "disabled" : ""}>
                             ${isApplying ? `<div class="spinner"></div> Applying...` : btnLabel}
                           </button>
                         `
@@ -3054,15 +3142,15 @@ class OtisCompanionCard extends HTMLElement {
     if (txt.includes("Say 'yes' or 'confirm'") || txt.includes("Say 'yes' or 'apply'")) {
       return `
         <div class="chat-macro-actions">
-          <button class="macro-action-btn confirm" data-chip="confirm">✅ Confirm & Execute</button>
-          <button class="macro-action-btn cancel" data-chip="cancel">✕ Cancel</button>
+          <button type="button" class="macro-action-btn confirm" data-chip="confirm">✅ Confirm & Execute</button>
+          <button type="button" class="macro-action-btn cancel" data-chip="cancel">✕ Cancel</button>
         </div>
       `;
     }
     if (txt.includes("Say 'undo' or 'rollback'")) {
       return `
         <div class="chat-macro-actions">
-          <button class="macro-action-btn rollback" data-chip="undo macro">↺ Rollback / Undo Macro</button>
+          <button type="button" class="macro-action-btn rollback" data-chip="undo macro">↺ Rollback / Undo Macro</button>
         </div>
       `;
     }
@@ -3073,13 +3161,14 @@ class OtisCompanionCard extends HTMLElement {
     return `
       <div class="chat-container">
         <div class="chat-chips">
-          <button class="chip-btn" data-chip="Prep home for movie night">🎬 Movie Night</button>
-          <button class="chip-btn" data-chip="Goodnight routine">🌙 Goodnight</button>
-          <button class="chip-btn" data-chip="Party mode">🥂 Party Mode</button>
-          <button class="chip-btn" data-chip="Lockdown home">🛡️ Lockdown</button>
-          <button class="chip-btn" data-chip="Undo last macro">↺ Undo</button>
-          <button class="chip-btn" data-chip="Suggest automations for my active areas">💡 Automations</button>
-          <button class="chip-btn" data-chip="Clean up orphaned entities">🧹 Clean orphans</button>
+          <button type="button" class="chip-btn" data-chip="Prep home for movie night">🎬 Movie Night</button>
+          <button type="button" class="chip-btn" data-chip="Goodnight routine">🌙 Goodnight</button>
+          <button type="button" class="chip-btn" data-chip="Party mode">🥂 Party Mode</button>
+          <button type="button" class="chip-btn" data-chip="Lockdown home">🛡️ Lockdown</button>
+          <button type="button" class="chip-btn" data-chip="Undo last macro">↺ Undo</button>
+          <button type="button" class="chip-btn" data-chip="Suggest automations for my active areas">💡 Automations</button>
+          <button type="button" class="chip-btn" data-chip="Clean up orphaned entities">🧹 Clean orphans</button>
+          <button type="button" class="chip-btn" id="btn-clear-chat" title="Clear conversation history">🗑️ Clear</button>
         </div>
         <div class="chat-history" id="chat-history">
           ${
@@ -3110,7 +3199,7 @@ class OtisCompanionCard extends HTMLElement {
               </svg>
               <span>Markdown Live Preview</span>
             </div>
-            <button class="preview-close-btn" id="chat-preview-close" title="Dismiss preview">✕</button>
+            <button type="button" class="preview-close-btn" id="chat-preview-close" title="Dismiss preview">✕</button>
           </div>
           <div class="chat-live-preview-body" id="chat-live-preview-body"></div>
         </div>
@@ -3136,13 +3225,13 @@ class OtisCompanionCard extends HTMLElement {
               placeholder="${this._isListening ? "Listening... speak now" : "Ask Otis or give a voice/text command... (Shift+Enter for newline)"}"
             >${this._draftChatText || ""}</textarea>
           </div>
-          <button class="mic-btn ${this._isListening ? "listening" : ""}" id="chat-mic" title="${this._isListening ? "Listening... click to stop" : "Voice command"}" ${this._isSendingChat ? "disabled" : ""}>
+          <button type="button" class="mic-btn ${this._isListening ? "listening" : ""}" id="chat-mic" title="${this._isListening ? "Listening... click to stop" : "Voice command"}" ${this._isSendingChat ? "disabled" : ""}>
             <svg viewBox="0 0 24 24" class="mic-icon">
               <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
               <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
             </svg>
           </button>
-          <button class="send-btn" id="chat-send" ${this._isSendingChat ? "disabled" : ""}>Send</button>
+          <button type="button" class="send-btn" id="chat-send" ${this._isSendingChat ? "disabled" : ""}>Send</button>
         </div>
       </div>
     `;
@@ -3329,19 +3418,19 @@ class OtisCompanionCard extends HTMLElement {
       <div class="floorplan-panel">
         <div class="floorplan-toolbar">
           <div class="zone-pills">
-            <button class="zone-pill ${this._selectedFloorZone === "all" ? "active" : ""}" data-zone="all">All Floors</button>
-            <button class="zone-pill ${this._selectedFloorZone === "main" ? "active" : ""}" data-zone="main">Ground &amp; Outdoor</button>
-            <button class="zone-pill ${this._selectedFloorZone === "upper" ? "active" : ""}" data-zone="upper">Upper Level</button>
-            <button class="zone-pill ${this._selectedFloorZone === "outdoor" ? "active" : ""}" data-zone="outdoor">Outdoor Only</button>
+            <button type="button" class="zone-pill ${this._selectedFloorZone === "all" ? "active" : ""}" data-zone="all">All Floors</button>
+            <button type="button" class="zone-pill ${this._selectedFloorZone === "main" ? "active" : ""}" data-zone="main">Ground &amp; Outdoor</button>
+            <button type="button" class="zone-pill ${this._selectedFloorZone === "upper" ? "active" : ""}" data-zone="upper">Upper Level</button>
+            <button type="button" class="zone-pill ${this._selectedFloorZone === "outdoor" ? "active" : ""}" data-zone="outdoor">Outdoor Only</button>
           </div>
           <div class="floorplan-actions">
             ${
               !isControlOnly
                 ? `
-              <button class="btn-toolbar" id="btn-open-walkthrough" title="Record video walkthrough to generate or update floor plan">
+              <button type="button" class="btn-toolbar" id="btn-open-walkthrough" title="Record video walkthrough to generate or update floor plan">
                 📹 Walkthrough
               </button>
-              <button 
+              <button type="button" 
                 class="btn-toolbar ${!this._hasWalkthrough ? 'disabled' : ''}" 
                 id="btn-copy-lovelace" 
                 ${!this._hasWalkthrough ? "disabled" : ""}
@@ -3355,7 +3444,7 @@ class OtisCompanionCard extends HTMLElement {
             ${
               isAdmin
                 ? `
-              <button 
+              <button type="button" 
                 class="btn-toolbar ${this._editorActive ? 'active' : ''}" 
                 id="btn-toggle-editor"
                 style="${this._editorActive ? 'background: var(--otis-primary); color: var(--otis-btn-text, #ffffff); border-color: var(--otis-primary);' : ''}"
@@ -3378,13 +3467,13 @@ class OtisCompanionCard extends HTMLElement {
               <span style="color: var(--otis-text-muted);">Drag pins or select room boundaries to reposition &amp; resize</span>
             </div>
             <div style="display: flex; align-items: center; gap: 6px;">
-              <button class="btn-toolbar" id="btn-open-add-marker" style="padding: 4px 8px;">
+              <button type="button" class="btn-toolbar" id="btn-open-add-marker" style="padding: 4px 8px;">
                 ➕ Add Pin
               </button>
-              <button class="btn-modal-primary" id="btn-save-layout" style="padding: 4px 10px; font-size: 0.74rem;" ${this._savingLayout ? "disabled" : ""}>
+              <button type="button" class="btn-modal-primary" id="btn-save-layout" style="padding: 4px 10px; font-size: 0.74rem;" ${this._savingLayout ? "disabled" : ""}>
                 ${this._savingLayout ? `<div class="spinner" style="width: 12px; height: 12px;"></div> Saving...` : (this._hasUnsavedLayout ? "💾 Save Changes *" : "💾 Save Layout")}
               </button>
-              <button class="btn-toolbar" id="btn-exit-editor" style="padding: 4px 8px; color: var(--otis-text-muted);">
+              <button type="button" class="btn-toolbar" id="btn-exit-editor" style="padding: 4px 8px; color: var(--otis-text-muted);">
                 ✕ Exit
               </button>
             </div>
@@ -3401,7 +3490,7 @@ class OtisCompanionCard extends HTMLElement {
               <span style="font-size: 1rem;">📹</span>
               <span><strong>Walkthrough Pending:</strong> Current layout is an initial area estimate. Record or upload a video walkthrough calling out rooms to calibrate dimensions and unlock Lovelace YAML.</span>
             </div>
-            <button class="btn-banner-walkthrough" id="btn-banner-walkthrough">Start Walkthrough</button>
+            <button type="button" class="btn-banner-walkthrough" id="btn-banner-walkthrough">Start Walkthrough</button>
           </div>
         `
             : ""
@@ -3430,11 +3519,11 @@ class OtisCompanionCard extends HTMLElement {
                   </div>
                   <div style="display: flex; gap: 8px;">
                     ${this._selectedRoomInfo.slug ? `
-                    <button class="btn-toolbar btn-nav-room" data-room-path="/otis-ai/area_${this._selectedRoomInfo.slug}" style="padding: 4px 10px; font-size: 0.75rem;">
+                    <button type="button" class="btn-toolbar btn-nav-room" data-room-path="/otis-ai/area_${this._selectedRoomInfo.slug}" style="padding: 4px 10px; font-size: 0.75rem;">
                       Open Room Controls →
                     </button>
                     ` : ""}
-                    <button class="btn-toolbar" id="btn-close-room-info" style="padding: 4px 8px;">✕</button>
+                    <button type="button" class="btn-toolbar" id="btn-close-room-info" style="padding: 4px 8px;">✕</button>
                   </div>
                 </div>
                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
@@ -3444,7 +3533,7 @@ class OtisCompanionCard extends HTMLElement {
                     const isOn = st.state === "on";
                     const icon = st.attributes?.icon || (eid.startsWith("light.") ? "💡" : eid.startsWith("switch.") ? "🔌" : eid.startsWith("climate.") ? "🌡️" : "⚡");
                     return `
-                      <button class="subview-chip btn-quick-toggle" data-entity-id="${eid}" style="${isOn ? 'background: var(--otis-primary); color: #fff; border-color: var(--otis-primary);' : ''}">
+                      <button type="button" class="subview-chip btn-quick-toggle" data-entity-id="${eid}" style="${isOn ? 'background: var(--otis-primary); color: #fff; border-color: var(--otis-primary);' : ''}">
                         ${icon} ${st.attributes?.friendly_name || eid.split(".")[1]} (${st.state})
                       </button>
                     `;
@@ -3465,10 +3554,10 @@ class OtisCompanionCard extends HTMLElement {
                 Record a mobile video walkthrough calling out each room as you enter. Otis AI will extract the audio callouts, map wall boundaries, and build a multi-floor interactive vector dashboard.
               </div>
               <div style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
-                <button class="btn-modal-primary" id="btn-start-walkthrough">
+                <button type="button" class="btn-modal-primary" id="btn-start-walkthrough">
                   📹 Record / Upload Walkthrough
                 </button>
-                <button class="btn-modal-secondary" id="btn-quick-generate">
+                <button type="button" class="btn-modal-secondary" id="btn-quick-generate">
                   ⚡ Instant Generate from Registered Areas
                 </button>
               </div>
@@ -3497,7 +3586,7 @@ class OtisCompanionCard extends HTMLElement {
             <span>📐</span><span>Area Boundary Editor</span>
             <span style="font-size: 0.65rem; color: var(--otis-text-muted); font-weight: normal; margin-left: 4px;">(drag to move)</span>
           </strong>
-          <button class="btn-toolbar" id="btn-close-inspector" style="padding: 2px 6px; font-size: 0.72rem;">✕</button>
+          <button type="button" class="btn-toolbar" id="btn-close-inspector" style="padding: 2px 6px; font-size: 0.72rem;">✕</button>
         </div>
         <div style="display: flex; flex-direction: column; gap: 4px;">
           <label style="font-size: 0.7rem; color: var(--otis-text-muted);">Bind to HA Area Registry:</label>
@@ -3524,10 +3613,10 @@ class OtisCompanionCard extends HTMLElement {
           </div>
         </div>
         <div style="display: flex; gap: 6px; margin-top: 6px;">
-          <button class="btn-modal-primary" id="btn-apply-inspector-dim" style="flex: 1; padding: 5px 8px; font-size: 0.74rem;">
+          <button type="button" class="btn-modal-primary" id="btn-apply-inspector-dim" style="flex: 1; padding: 5px 8px; font-size: 0.74rem;">
             ✓ Update Boundary
           </button>
-          <button class="btn-toolbar" id="btn-delete-inspector-room" style="background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.35); padding: 5px 10px; font-size: 0.74rem; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 4px;">
+          <button type="button" class="btn-toolbar" id="btn-delete-inspector-room" style="background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.35); padding: 5px 10px; font-size: 0.74rem; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 4px;">
             <span>🗑️</span><span>Delete Room</span>
           </button>
         </div>
@@ -3561,7 +3650,7 @@ class OtisCompanionCard extends HTMLElement {
               <div class="modal-title"><span>➕</span><span>Add Device Pin to Floor Plan</span></div>
               <div class="modal-subtitle">Select an entity to drop onto your architectural canvas</div>
             </div>
-            <button class="modal-close-btn" id="add-marker-close-btn">✕</button>
+            <button type="button" class="modal-close-btn" id="add-marker-close-btn">✕</button>
           </div>
           <div style="max-height: 380px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 4px;">
             ${Object.entries(grouped).filter(([_, list]) => list.length > 0).map(([dom, list]) => `
@@ -3571,7 +3660,7 @@ class OtisCompanionCard extends HTMLElement {
                 </div>
                 <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                   ${list.slice(0, 24).map(eid => `
-                    <button class="subview-chip btn-place-entity-pin" data-entity-id="${eid}" style="font-size: 0.72rem; padding: 4px 8px;">
+                    <button type="button" class="subview-chip btn-place-entity-pin" data-entity-id="${eid}" style="font-size: 0.72rem; padding: 4px 8px;">
                       ${eid}
                     </button>
                   `).join("")}
@@ -3598,7 +3687,7 @@ class OtisCompanionCard extends HTMLElement {
                 Transform your mobile phone camera walkthrough into a vector SVG layout
               </div>
             </div>
-            <button class="modal-close-btn" id="modal-close-btn">✕</button>
+            <button type="button" class="modal-close-btn" id="modal-close-btn">✕</button>
           </div>
 
           <div class="guide-box">
@@ -3649,10 +3738,10 @@ class OtisCompanionCard extends HTMLElement {
           `
               : `
             <div class="modal-actions">
-              <button class="btn-modal-primary" id="btn-submit-walkthrough" disabled>
+              <button type="button" class="btn-modal-primary" id="btn-submit-walkthrough" disabled>
                 🚀 Parse Video & Generate Floor Plan
               </button>
-              <button class="btn-modal-secondary" id="btn-instant-generate-modal">
+              <button type="button" class="btn-modal-secondary" id="btn-instant-generate-modal">
                 ⚡ Generate Instantly from Registered HA Areas
               </button>
             </div>
@@ -3688,7 +3777,7 @@ class OtisCompanionCard extends HTMLElement {
                 Collaborative natural language styling & instant live theme application
               </div>
             </div>
-            <button class="modal-close-btn" id="theme-modal-close-btn">✕</button>
+            <button type="button" class="modal-close-btn" id="theme-modal-close-btn">✕</button>
           </div>
 
           <!-- User Scope Selector -->
@@ -3718,7 +3807,7 @@ class OtisCompanionCard extends HTMLElement {
                 placeholder="e.g. Glowing neon cyan and purple with dark slate cards and 16px radius..."
                 style="flex: 1; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--otis-surface-border); background: var(--otis-surface); color: var(--otis-text); font-size: 0.82rem;"
               />
-              <button
+              <button type="button"
                 class="btn-modal-primary"
                 id="btn-generate-theme-ai"
                 style="white-space: nowrap;"
@@ -3754,10 +3843,10 @@ class OtisCompanionCard extends HTMLElement {
                       Radius: ${th.border_radius} • File: ${th.file_name}
                     </div>
                     <div style="display: flex; gap: 6px; margin-top: 4px;">
-                      <button class="btn-modal-primary btn-apply-theme" data-theme-key="${th.theme_key}" style="flex: 1; padding: 4px 8px; font-size: 0.75rem;">
+                      <button type="button" class="btn-modal-primary btn-apply-theme" data-theme-key="${th.theme_key}" style="flex: 1; padding: 4px 8px; font-size: 0.75rem;">
                         ⚡ Apply Live
                       </button>
-                      <button class="btn-toolbar btn-delete-theme" data-theme-key="${th.theme_key}" style="padding: 4px 8px; color: #f43f5e;" title="Delete Theme">
+                      <button type="button" class="btn-toolbar btn-delete-theme" data-theme-key="${th.theme_key}" style="padding: 4px 8px; color: #f43f5e;" title="Delete Theme">
                         🗑️
                       </button>
                     </div>
@@ -3792,7 +3881,7 @@ class OtisCompanionCard extends HTMLElement {
                   <div style="font-size: 0.72rem; color: var(--otis-text-muted); line-height: 1.35;">
                     ${this._escapeHtml(p.description || "Master aesthetic profile")}
                   </div>
-                  <button class="btn-modal-secondary btn-generate-preset" data-preset-key="${p.key}" style="padding: 4px 8px; font-size: 0.75rem; margin-top: 4px;">
+                  <button type="button" class="btn-modal-secondary btn-generate-preset" data-preset-key="${p.key}" style="padding: 4px 8px; font-size: 0.75rem; margin-top: 4px;">
                     ✨ Generate & Set Live
                   </button>
                 </div>
@@ -4023,17 +4112,19 @@ class OtisCompanionCard extends HTMLElement {
     // Tabs
     const tabSug = root.querySelector("#tab-suggestions");
     if (tabSug) {
-      tabSug.onclick = () => {
+      tabSug.onclick = (e) => {
+        if (e) e.preventDefault();
         if (this._isListening) this._stopVoiceRecording();
-        this._activeTab = "suggestions";
+        this._saveActiveTab("suggestions");
         this._render();
       };
     }
 
     const tabChat = root.querySelector("#tab-chat");
     if (tabChat) {
-      tabChat.onclick = () => {
-        this._activeTab = "chat";
+      tabChat.onclick = (e) => {
+        if (e) e.preventDefault();
+        this._saveActiveTab("chat");
         this._render();
         this._scrollChatToBottom();
       };
@@ -4041,17 +4132,19 @@ class OtisCompanionCard extends HTMLElement {
 
     const tabCap = root.querySelector("#tab-capabilities");
     if (tabCap) {
-      tabCap.onclick = () => {
-        this._activeTab = "capabilities";
+      tabCap.onclick = (e) => {
+        if (e) e.preventDefault();
+        this._saveActiveTab("capabilities");
         this._render();
       };
     }
 
     const tabFloor = root.querySelector("#tab-floorplan");
     if (tabFloor) {
-      tabFloor.onclick = () => {
+      tabFloor.onclick = (e) => {
+        if (e) e.preventDefault();
         if (this._isListening) this._stopVoiceRecording();
-        this._activeTab = "floorplan";
+        this._saveActiveTab("floorplan");
         this._render();
         if (this._capabilityMap?.floorplan?.exists && !this._floorplanSvg && !this._loadingFloorplan) {
           this._loadFloorplanSvg(this._capabilityMap.floorplan.url);
@@ -4087,18 +4180,46 @@ class OtisCompanionCard extends HTMLElement {
       };
     });
 
+    // Clear Chat history button
+    const btnClearChat = root.querySelector("#btn-clear-chat");
+    if (btnClearChat) {
+      btnClearChat.onclick = (e) => {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        this._chatMessages = [];
+        this._conversationId = null;
+        this._saveChatMessages();
+        this._render();
+        this._showToast("Conversation history cleared.");
+      };
+    }
+
     // Chat chips
     root.querySelectorAll("[data-chip]").forEach((chip) => {
       chip.onclick = (e) => {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
         const prompt = e.currentTarget.getAttribute("data-chip");
-        this._sendChatMessage(prompt);
+        if (prompt) {
+          this._sendChatMessage(prompt);
+        }
       };
     });
 
     // Voice mic button
     const chatMic = root.querySelector("#chat-mic");
     if (chatMic) {
-      chatMic.onclick = () => this._toggleVoiceRecording();
+      chatMic.onclick = (e) => {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        this._toggleVoiceRecording();
+      };
     }
 
     // Chat input & send
@@ -4153,6 +4274,8 @@ class OtisCompanionCard extends HTMLElement {
       chatInput.onkeydown = (e) => {
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
           const text = chatInput.value;
           chatInput.value = "";
           this._draftChatText = "";
@@ -4160,12 +4283,17 @@ class OtisCompanionCard extends HTMLElement {
           adjustHeight();
           if (previewContainer) previewContainer.style.display = "none";
           this._sendChatMessage(text);
+          return false;
         }
       };
     }
 
     if (chatSend && chatInput) {
-      chatSend.onclick = () => {
+      chatSend.onclick = (e) => {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
         const text = chatInput.value;
         chatInput.value = "";
         this._draftChatText = "";
@@ -5157,7 +5285,11 @@ class OtisCompanionCard extends HTMLElement {
 
     const btnDeleteRoom = root.querySelector("#btn-delete-inspector-room");
     if (btnDeleteRoom && this._selectedEditorRoomId) {
-      btnDeleteRoom.onclick = async () => {
+      btnDeleteRoom.onclick = async (e) => {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
         const rid = this._selectedEditorRoomId;
         const areaName = this._capabilityMap?.areas?.[rid]?.name || rid;
         if (!confirm(`Are you sure you want to delete room "${areaName}" (${rid}) from the floor plan?`)) {
@@ -5165,16 +5297,18 @@ class OtisCompanionCard extends HTMLElement {
         }
         try {
           this._showToast(`Deleting room ${areaName}...`);
-          await this._hass.callService("otis_ai", "update_floorplan_layout", {
+          const res = await this._hass.callService("otis_ai", "update_floorplan_layout", {
             deleted_rooms: [rid],
           });
           this._selectedEditorRoomId = null;
           delete this._dirtyRooms[rid];
           this._showToast(`Room "${areaName}" removed from floor plan.`);
-          await this._fetchFloorplanSvg();
+          if (res?.url) {
+            await this._loadFloorplanSvg(res.url);
+          } else if (this._capabilityMap?.floorplan?.url) {
+            await this._loadFloorplanSvg(this._capabilityMap.floorplan.url);
+          }
           await this._fetchData();
-          window.dispatchEvent(new CustomEvent("ll-rebuild"));
-          window.dispatchEvent(new CustomEvent("location-changed"));
           this._render();
         } catch (err) {
           console.error("Failed to delete room:", err);
@@ -5206,7 +5340,11 @@ class OtisCompanionCard extends HTMLElement {
     // Save Layout Button
     const btnSaveLayout = root.querySelector("#btn-save-layout");
     if (btnSaveLayout) {
-      btnSaveLayout.onclick = async () => {
+      btnSaveLayout.onclick = async (e) => {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
         const badgesPayload = Object.values(this._dirtyBadges);
         const roomsPayload = Object.values(this._dirtyRooms);
         if (badgesPayload.length === 0 && roomsPayload.length === 0) {
@@ -5234,8 +5372,6 @@ class OtisCompanionCard extends HTMLElement {
               await this._loadFloorplanSvg(data.url);
             }
             await this._fetchData();
-            window.dispatchEvent(new CustomEvent("ll-rebuild"));
-            window.dispatchEvent(new CustomEvent("location-changed"));
           } else {
             this._showToast(data.error || "Failed to update layout", true);
           }
@@ -5555,6 +5691,42 @@ class OtisCompanionCardEditor extends HTMLElement {
     `;
 
     this._bindEvents();
+  }
+
+  _loadActiveTab() {
+    try {
+      const saved = sessionStorage.getItem("otis_active_tab");
+      if (saved && ["suggestions", "chat", "capabilities", "floorplan"].includes(saved)) {
+        return saved;
+      }
+    } catch (_) {}
+    return "suggestions";
+  }
+
+  _saveActiveTab(tab) {
+    if (["suggestions", "chat", "capabilities", "floorplan"].includes(tab)) {
+      this._activeTab = tab;
+      try {
+        sessionStorage.setItem("otis_active_tab", tab);
+      } catch (_) {}
+    }
+  }
+
+  _loadChatMessages() {
+    try {
+      const saved = sessionStorage.getItem("otis_chat_messages");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (_) {}
+    return [];
+  }
+
+  _saveChatMessages() {
+    try {
+      sessionStorage.setItem("otis_chat_messages", JSON.stringify(this._chatMessages.slice(-50)));
+    } catch (_) {}
   }
 
   _escapeHtml(str) {

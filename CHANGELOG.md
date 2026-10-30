@@ -2,6 +2,20 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.9.1] - 2026-10-30
+
+### Fixed & Improved
+- **Assist Co-Pilot Chat Stability & State Persistence (`otis-companion-card.js`)**:
+  - Resolved issue where entering a prompt immediately refreshed the card back to the Proactive Feed tab and wiped chat history.
+  - Added strict `e.preventDefault()`, `e.stopPropagation()`, and `e.stopImmediatePropagation()` to `chatInput` keydown and `chatSend` click listeners to prevent event bubbling and accidental form submits.
+  - Explicitly added `type="button"` to all 62 `<button>` elements in the card (including `#chat-send`, `#chat-mic`, `#btn-save-layout`, tabs, and prompt chips) to prevent default HTML `<button type="submit">` behavior from triggering parent form submissions or full-page reloads.
+  - Added `sessionStorage` persistence for `_activeTab` (`otis_active_tab`) and `_chatMessages` (`otis_chat_messages`), ensuring active tab location and multi-turn conversational history persist seamlessly across card re-mounts and dashboard view updates.
+  - Upgraded `_sendChatMessage` with dual-transport execution: first attempts native WebSocket `call_service` with `return_response: true` before falling back to `callService` and `conversation.process`, ensuring robust prompt execution and reliable response speech rendering.
+  - Added `🗑️ Clear` chip button in Assist Co-Pilot header allowing users to reset conversational history on demand.
+- **Floor Plan Canvas Editor Save In-Place (`otis-companion-card.js`)**:
+  - Removed disruptive client-side `ll-rebuild` and `location-changed` event dispatches from `btnSaveLayout` and `btnDeleteRoom`, eliminating card destruction and unwanted tab resets to Proactive Feed when saving layout changes or deleting rooms.
+  - Fixed `btnDeleteRoom` invocation to call `this._loadFloorplanSvg()` instead of the non-existent `this._fetchFloorplanSvg()`.
+
 ## [1.9.0] - 2026-10-29
 
 ### Added & Improved
