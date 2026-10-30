@@ -1333,6 +1333,43 @@ class TestFloorplanParser(unittest.TestCase):
             self.assertNotIn('data-area-id="garage"', content)
             self.assertIn('data-area-id="foyer"', content)
 
+    def test_delete_badge_layout(self):
+        """Verify FloorplanParser badge entity deletion from SVG and custom layout metadata."""
+        from custom_components.otis_ai.floorplan_parser import FloorplanParser
+
+        parser = FloorplanParser(self.hass)
+        mock_cap_map = {
+            "areas": {
+                "foyer": {"name": "Foyer", "entities": ["light.foyer_lights"]},
+            },
+            "entities": [
+                {"entity_id": "light.foyer_lights", "name": "Foyer Lights", "area_id": "foyer", "domain": "light", "state": "on"},
+            ],
+            "spatial_graph": {"adjacencies": {}},
+        }
+
+        # Generate baseline SVG
+        asyncio.run(parser.async_generate_svg_floorplan(mock_cap_map, output_relative_path="test_badge_del.svg"))
+
+        # Verify badge is in SVG
+        svg_file = self.hass.config.path("test_badge_del.svg")
+        with open(svg_file, "r") as f:
+            self.assertIn('data-entity-id="light.foyer_lights"', f.read())
+
+        # Delete badge
+        res = asyncio.run(
+            parser.async_update_floorplan_layout(
+                badges=[{"entity_id": "light.foyer_lights", "delete": True}],
+                svg_relative_path="test_badge_del.svg",
+            )
+        )
+        self.assertTrue(res["success"])
+
+        # Verify badge is removed from SVG
+        with open(svg_file, "r") as f:
+            content = f.read()
+            self.assertNotIn('data-entity-id="light.foyer_lights"', content)
+
     def test_floorplan_svg_sanitization_and_subzone_sync(self):
         """Verify FloorplanParser repairs corrupted SVG text and synchronizes subzone pills."""
         from custom_components.otis_ai.floorplan_parser import (

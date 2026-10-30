@@ -849,11 +849,28 @@ class FloorplanParser:
 
         # 1. Update device marker badges
         updated_badges = 0
+        deleted_badges_count = 0
         explicit_badge_ids = set()
         if badges:
             for b in badges:
                 eid = b.get("entity_id")
-                if not eid or "x" not in b or "y" not in b:
+                if not eid:
+                    continue
+                if b.get("delete") or b.get("deleted"):
+                    pattern = rf'<g\b[^>]*class="[^"]*entity-badge[^"]*"[^>]*data-entity-id="{re.escape(eid)}"[^>]*>[\s\S]*?</g>'
+                    new_svg, count = re.subn(pattern, "", svg_content)
+                    if count > 0:
+                        svg_content = new_svg
+                        deleted_badges_count += count
+                    else:
+                        pattern_alt = rf'<g\b[^>]*data-entity-id="{re.escape(eid)}"[^>]*class="[^"]*entity-badge[^"]*"[^>]*>[\s\S]*?</g>'
+                        new_svg, count = re.subn(pattern_alt, "", svg_content)
+                        if count > 0:
+                            svg_content = new_svg
+                            deleted_badges_count += count
+                    continue
+
+                if "x" not in b or "y" not in b:
                     continue
                 explicit_badge_ids.add(eid)
                 bx = round(float(b["x"]), 1)
@@ -1015,7 +1032,10 @@ class FloorplanParser:
             existing_badges = {b["entity_id"]: b for b in custom_layout.get("badges", []) if isinstance(b, dict) and b.get("entity_id")}
             for b in badges:
                 if isinstance(b, dict) and b.get("entity_id"):
-                    existing_badges[b["entity_id"]] = b
+                    if b.get("delete") or b.get("deleted"):
+                        existing_badges.pop(b["entity_id"], None)
+                    else:
+                        existing_badges[b["entity_id"]] = b
             custom_layout["badges"] = list(existing_badges.values())
 
         if rooms:

@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.11.4";
+const CARD_VERSION = "1.11.5";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -86,6 +86,28 @@ class OtisCompanionCard extends HTMLElement {
     this._hasUnsavedLayout = false;
     this._savingLayout = false;
     this._addMarkerModalOpen = false;
+    this._addMarkerFilter = "";
+    this._editMarkerModalOpen = false;
+    this._selectedEditorEntityId = null;
+    this._selectedEditorEntityCoords = { x: 0, y: 0 };
+    this._guideModalOpen = false;
+    this._currentGuide = null;
+    this._lovelaceEditMode = false;
+  }
+
+  set editMode(editMode) {
+    this._lovelaceEditMode = Boolean(editMode);
+    const isAdmin = Boolean(this._hass?.user?.is_admin || this._hass?.user?.is_owner);
+    if (this._lovelaceEditMode && isAdmin) {
+      this._editorActive = true;
+    } else if (!isAdmin) {
+      this._editorActive = false;
+    }
+    this._render();
+  }
+
+  get editMode() {
+    return this._lovelaceEditMode;
   }
 
   _loadActiveTab() {
@@ -619,6 +641,19 @@ class OtisCompanionCard extends HTMLElement {
 
     if (suggestion.action_type === "configure_agent") {
       this._failoverModalOpen = true;
+      this._render();
+      return;
+    }
+
+    if (suggestion.action_type === "advisor_guide") {
+      this._currentGuide = {
+        title: suggestion.title,
+        category: suggestion.category,
+        description: suggestion.description,
+        guide: suggestion.action_payload?.guide || suggestion.description,
+        action_payload: suggestion.action_payload,
+      };
+      this._guideModalOpen = true;
       this._render();
       return;
     }
@@ -4284,6 +4319,8 @@ class OtisCompanionCard extends HTMLElement {
         ${this._floorplanModalOpen ? this._renderWalkthroughModal() : ""}
         ${this._themeModalOpen ? this._renderThemeModal() : ""}
         ${this._addMarkerModalOpen ? this._renderAddMarkerModal() : ""}
+        ${this._editMarkerModalOpen ? this._renderEditMarkerModal() : ""}
+        ${this._guideModalOpen ? this._renderGuideModal() : ""}
         ${this._failoverModalOpen ? this._renderFailoverModal() : ""}
 
         <!-- Feedback Toast -->
@@ -4901,9 +4938,9 @@ class OtisCompanionCard extends HTMLElement {
                 class="btn-toolbar ${this._editorActive ? 'active' : ''}" 
                 id="btn-toggle-editor"
                 style="${this._editorActive ? 'background: var(--otis-primary); color: var(--otis-btn-text, #ffffff); border-color: var(--otis-primary);' : ''}"
-                title="Toggle Interactive Canvas Editor to drag pins and adjust room boundaries"
+                title="Toggle Interactive Floor Plan Edit Mode to drag pins, add/remove devices, and adjust boundaries"
               >
-                ${this._editorActive ? "🛠️ Exit Editor" : "✏️ Canvas Editor"}
+                ${this._editorActive ? "🛠️ Exit Edit Mode" : "✏️ Edit Floor Plan"}
               </button>
             `
                 : ""
@@ -4912,16 +4949,16 @@ class OtisCompanionCard extends HTMLElement {
         </div>
 
         ${
-          this._editorActive
+          this._editorActive && isAdmin
             ? `
           <div class="editor-toolbar-strip">
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <span style="font-weight: 700; color: var(--otis-primary);">🛠️ Layout Adjuster:</span>
-              <span style="color: var(--otis-text-muted);">Drag pins or select room boundaries to reposition &amp; resize</span>
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <span style="font-weight: 700; color: var(--otis-primary);">🛠️ Floor Plan Edit Mode:</span>
+              <span style="color: var(--otis-text-muted); font-size: 0.73rem;">Drag pins to position • Click any pin to inspect/remove • Drag walls to resize</span>
             </div>
             <div style="display: flex; align-items: center; gap: 6px;">
-              <button type="button" class="btn-toolbar" id="btn-open-add-marker" style="padding: 4px 8px;">
-                ➕ Add Pin
+              <button type="button" class="btn-toolbar" id="btn-open-add-marker" style="padding: 4px 9px;" title="Add a device entity pin to the floor plan">
+                ➕ Add Entity
               </button>
               <button type="button" class="btn-modal-primary" id="btn-save-layout" style="padding: 4px 10px; font-size: 0.74rem;" ${this._savingLayout ? "disabled" : ""}>
                 ${this._savingLayout ? `<div class="spinner" style="width: 12px; height: 12px;"></div> Saving...` : (this._hasUnsavedLayout ? "💾 Save Changes *" : "💾 Save Layout")}
@@ -4954,10 +4991,10 @@ class OtisCompanionCard extends HTMLElement {
             ? `<div class="empty-state"><div class="spinner" style="margin: 0 auto 8px auto; width: 24px; height: 24px;"></div>Rendering vector floor plan...</div>`
             : this._floorplanSvg
             ? `
-            <div class="floorplan-svg-viewport ${this._editorActive ? 'editor-mode' : ''}" id="floorplan-viewport">
-              ${this._editorActive ? `<div class="editor-hud" id="editor-hud">📐 Pointer: --, --</div>` : ''}
+            <div class="floorplan-svg-viewport ${this._editorActive && isAdmin ? 'editor-mode' : ''}" id="floorplan-viewport">
+              ${this._editorActive && isAdmin ? `<div class="editor-hud" id="editor-hud">📐 Pointer: --, --</div>` : ''}
               ${this._floorplanSvg}
-              ${this._editorActive && this._selectedEditorRoomId ? this._renderRoomInspector() : ""}
+              ${this._editorActive && isAdmin && this._selectedEditorRoomId ? this._renderRoomInspector() : ""}
             </div>
             ${
               !this._editorActive && this._selectedRoomInfo
@@ -5079,7 +5116,34 @@ class OtisCompanionCard extends HTMLElement {
 
   _renderAddMarkerModal() {
     if (!this._addMarkerModalOpen) return "";
-    const entities = this._capabilityMap?.entities || [];
+    const rawEntities = this._capabilityMap?.entities || [];
+    const query = (this._addMarkerFilter || "").toLowerCase().trim();
+
+    const normalized = rawEntities
+      .map((e) => {
+        if (typeof e === "string") {
+          const dom = e.split(".")[0];
+          return { entity_id: e, name: e, domain: dom };
+        }
+        const eid = e.entity_id || "";
+        const dom = e.domain || (eid ? eid.split(".")[0] : "other");
+        return {
+          entity_id: eid,
+          name: e.name || eid,
+          domain: dom,
+        };
+      })
+      .filter((e) => Boolean(e.entity_id));
+
+    const filtered = query
+      ? normalized.filter(
+          (e) =>
+            e.entity_id.toLowerCase().includes(query) ||
+            e.name.toLowerCase().includes(query) ||
+            e.domain.toLowerCase().includes(query)
+        )
+      : normalized;
+
     const grouped = {
       light: [],
       switch: [],
@@ -5087,39 +5151,225 @@ class OtisCompanionCard extends HTMLElement {
       media_player: [],
       camera: [],
       binary_sensor: [],
+      sensor: [],
+      cover: [],
+      lock: [],
       other: [],
     };
-    entities.forEach((e) => {
-      const d = e.split(".")[0];
-      if (grouped[d]) grouped[d].push(e);
+
+    filtered.forEach((e) => {
+      if (grouped[e.domain]) grouped[e.domain].push(e);
       else grouped.other.push(e);
     });
 
+    const getDomainIcon = (d) => {
+      switch (d) {
+        case "light": return "💡";
+        case "switch": return "🔌";
+        case "climate": return "🌡️";
+        case "media_player": return "📺";
+        case "camera": return "📹";
+        case "binary_sensor": return "🚶";
+        case "sensor": return "📊";
+        case "cover": return "🪟";
+        case "lock": return "🔒";
+        default: return "⚡";
+      }
+    };
+
     return `
       <div class="modal-overlay" id="add-marker-modal-backdrop">
-        <div class="modal-card" style="max-width: 520px;">
+        <div class="modal-card" style="max-width: 540px;">
           <div class="modal-header">
             <div>
               <div class="modal-title"><span>➕</span><span>Add Device Pin to Floor Plan</span></div>
-              <div class="modal-subtitle">Select an entity to drop onto your architectural canvas</div>
+              <div class="modal-subtitle">Search or select an entity to position on your blueprint</div>
             </div>
             <button type="button" class="modal-close-btn" id="add-marker-close-btn">✕</button>
           </div>
-          <div style="max-height: 380px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-right: 4px;">
-            ${Object.entries(grouped).filter(([_, list]) => list.length > 0).map(([dom, list]) => `
+
+          <!-- Real-Time Search Filter -->
+          <div style="margin-bottom: 10px;">
+            <input
+              type="text"
+              id="add-marker-search-input"
+              placeholder="🔍 Search devices by name, domain, or ID..."
+              value="${this._addMarkerFilter || ""}"
+              style="width: 100%; box-sizing: border-box; padding: 8px 12px; background: rgba(0,0,0,0.35); border: 1px solid var(--otis-surface-border); border-radius: 8px; color: var(--otis-text); font-size: 0.82rem;"
+            />
+          </div>
+
+          <div style="max-height: 400px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-right: 4px;">
+            ${
+              Object.entries(grouped).filter(([_, list]) => list.length > 0).length === 0
+                ? `<div style="text-align: center; padding: 24px 0; color: var(--otis-text-muted); font-size: 0.8rem;">No devices matching "${query}".</div>`
+                : ""
+            }
+            ${Object.entries(grouped)
+              .filter(([_, list]) => list.length > 0)
+              .map(
+                ([dom, list]) => `
               <div>
-                <div style="font-size: 0.74rem; font-weight: 700; text-transform: uppercase; color: var(--otis-primary); margin-bottom: 4px;">
-                  ${dom} (${list.length})
+                <div style="font-size: 0.74rem; font-weight: 700; text-transform: uppercase; color: var(--otis-primary); margin-bottom: 6px; display: flex; align-items: center; gap: 5px;">
+                  <span>${getDomainIcon(dom)}</span>
+                  <span>${dom.replace("_", " ")}</span>
+                  <span style="color: var(--otis-text-muted); font-weight: 500;">(${list.length})</span>
                 </div>
                 <div style="display: flex; flex-wrap: wrap; gap: 6px;">
-                  ${list.slice(0, 24).map(eid => `
-                    <button type="button" class="subview-chip btn-place-entity-pin" data-entity-id="${eid}" style="font-size: 0.72rem; padding: 4px 8px;">
-                      ${eid}
+                  ${list.slice(0, 30).map(
+                    (e) => `
+                    <button type="button" class="subview-chip btn-place-entity-pin" data-entity-id="${e.entity_id}" title="${e.entity_id}" style="font-size: 0.73rem; padding: 5px 9px; display: inline-flex; align-items: center; gap: 5px;">
+                      <span>${getDomainIcon(e.domain)}</span>
+                      <span style="font-weight: 600;">${e.name !== e.entity_id ? e.name : e.entity_id}</span>
                     </button>
-                  `).join("")}
+                  `
+                  ).join("")}
                 </div>
               </div>
-            `).join("")}
+            `
+              )
+              .join("")}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  _renderEditMarkerModal() {
+    if (!this._editMarkerModalOpen || !this._selectedEditorEntityId) return "";
+    const eid = this._selectedEditorEntityId;
+    const hassEntity = this._hass?.states?.[eid];
+    const friendlyName = hassEntity?.attributes?.friendly_name || eid;
+    const stateVal = hassEntity?.state || "active";
+    const dirty = this._dirtyBadges[eid];
+    const curX = dirty ? dirty.x : this._selectedEditorEntityCoords?.x || 340;
+    const curY = dirty ? dirty.y : this._selectedEditorEntityCoords?.y || 260;
+    const domain = eid.split(".")[0];
+
+    const getDomainIcon = (d) => {
+      switch (d) {
+        case "light": return "💡";
+        case "switch": return "🔌";
+        case "climate": return "🌡️";
+        case "media_player": return "📺";
+        case "camera": return "📹";
+        case "binary_sensor": return "🚶";
+        case "sensor": return "📊";
+        case "cover": return "🪟";
+        case "lock": return "🔒";
+        default: return "⚡";
+      }
+    };
+
+    return `
+      <div class="modal-overlay" id="edit-marker-modal-backdrop">
+        <div class="modal-card" style="max-width: 440px;">
+          <div class="modal-header">
+            <div>
+              <div class="modal-title">
+                <span>${getDomainIcon(domain)}</span>
+                <span>Configure Entity Pin</span>
+              </div>
+              <div class="modal-subtitle">Adjust coordinates, drag position, or remove from blueprint</div>
+            </div>
+            <button type="button" class="modal-close-btn" id="edit-marker-close-btn">✕</button>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 12px; padding: 4px 0;">
+            <!-- Entity Summary -->
+            <div style="padding: 10px 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--otis-surface-border); border-radius: 8px;">
+              <div style="font-weight: 700; font-size: 0.88rem; color: var(--otis-primary); display: flex; align-items: center; justify-content: space-between;">
+                <span>${friendlyName}</span>
+                <span style="font-size: 0.7rem; font-weight: 600; padding: 2px 8px; border-radius: 6px; background: rgba(56, 189, 248, 0.15); color: #38bdf8;">${stateVal}</span>
+              </div>
+              <div style="font-size: 0.72rem; color: var(--otis-text-muted); font-family: monospace; margin-top: 4px;">
+                ${eid}
+              </div>
+            </div>
+
+            <!-- Position Inputs -->
+            <div style="display: flex; gap: 10px; align-items: center;">
+              <div style="flex: 1;">
+                <label style="font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: var(--otis-text-muted);">X Position (px)</label>
+                <input type="number" id="input-marker-x" value="${Math.round(curX)}" style="width: 100%; box-sizing: border-box; padding: 7px 10px; background: rgba(0,0,0,0.35); border: 1px solid var(--otis-surface-border); border-radius: 6px; color: var(--otis-text); font-size: 0.82rem; margin-top: 3px;" />
+              </div>
+              <div style="flex: 1;">
+                <label style="font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: var(--otis-text-muted);">Y Position (px)</label>
+                <input type="number" id="input-marker-y" value="${Math.round(curY)}" style="width: 100%; box-sizing: border-box; padding: 7px 10px; background: rgba(0,0,0,0.35); border: 1px solid var(--otis-surface-border); border-radius: 6px; color: var(--otis-text); font-size: 0.82rem; margin-top: 3px;" />
+              </div>
+            </div>
+
+            <div style="font-size: 0.73rem; color: var(--otis-text-muted); line-height: 1.4;">
+              💡 <em>You can also click and drag this pin directly across any room on the blueprint canvas.</em>
+            </div>
+          </div>
+
+          <div class="modal-actions" style="display: flex; gap: 8px; justify-content: space-between; margin-top: 8px;">
+            <button type="button" class="btn-toolbar" id="btn-delete-marker" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.1); font-weight: 700;">
+              🗑️ Remove Pin
+            </button>
+            <div style="display: flex; gap: 6px;">
+              <button type="button" class="btn-modal-secondary" id="btn-cancel-edit-marker">
+                Cancel
+              </button>
+              <button type="button" class="btn-modal-primary" id="btn-apply-coords-marker">
+                Apply Coordinates
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  _renderGuideModal() {
+    if (!this._guideModalOpen || !this._currentGuide) return "";
+    const g = this._currentGuide;
+
+    return `
+      <div class="modal-overlay" id="guide-modal-backdrop">
+        <div class="modal-card" style="max-width: 620px;">
+          <div class="modal-header">
+            <div>
+              <div class="modal-title">
+                <span>📖</span>
+                <span>${g.title || "Smart Home Setup Guide"}</span>
+              </div>
+              <div class="modal-subtitle">
+                Smart Home Maturity Guidance • Pathway to 20/20 Standard
+              </div>
+            </div>
+            <button type="button" class="modal-close-btn" id="guide-modal-close-btn">✕</button>
+          </div>
+
+          <!-- Guide Content -->
+          <div class="guide-box" style="line-height: 1.5; font-size: 0.8rem; display: flex; flex-direction: column; gap: 10px;">
+            <div>
+              <div style="font-weight: 700; color: var(--otis-primary); margin-bottom: 4px;">
+                🎯 Objective &amp; Impact:
+              </div>
+              <div style="color: var(--otis-text); line-height: 1.45;">
+                ${g.description || ""}
+              </div>
+            </div>
+
+            <div>
+              <div style="font-weight: 700; color: var(--otis-primary); margin-bottom: 4px;">
+                📋 Step-by-Step Implementation Guide:
+              </div>
+              <div style="color: var(--otis-text-muted); background: rgba(0, 0, 0, 0.25); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--otis-surface-border); line-height: 1.5;">
+                ${g.guide || g.description || "Follow the recommendations to complete setup."}
+              </div>
+            </div>
+          </div>
+
+          <div class="modal-actions" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px;">
+            <button type="button" class="btn-modal-secondary" id="btn-close-guide-modal">
+              Got It
+            </button>
+            <button type="button" class="btn-modal-primary" id="btn-guide-ask-assist">
+              💬 Ask Otis in Assist Co-Pilot
+            </button>
           </div>
         </div>
       </div>
@@ -5450,13 +5700,28 @@ class OtisCompanionCard extends HTMLElement {
                 <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
                   Ultra-fast hardware LPUs (~250 tokens/sec) providing near-instant responses with a generous free monthly tier.
                 </div>
-                <div style="margin-top: 6px; padding: 6px 10px; background: rgba(245, 158, 11, 0.08); border: 1px dashed rgba(245, 158, 11, 0.35); border-radius: 6px; font-size: 0.72rem; line-height: 1.4; color: var(--otis-text);">
-                  <span style="font-weight: 700; color: #fbbf24;">ℹ️ How to Add Groq in Home Assistant:</span><br>
-                  Home Assistant does not have a separate standalone "Groq" integration. Because Groq is 100% OpenAI API-compatible, add HA's native <strong>OpenAI Conversation</strong> integration with your Groq API key (from console.groq.com) and set:
+                <div style="margin-top: 6px; padding: 8px 10px; background: rgba(245, 158, 11, 0.08); border: 1px dashed rgba(245, 158, 11, 0.4); border-radius: 8px; font-size: 0.73rem; line-height: 1.45; color: var(--otis-text);">
+                  <div style="font-weight: 700; color: #fbbf24; margin-bottom: 4px; display: flex; align-items: center; gap: 5px;">
+                    <span>⚠️</span> Where to Enter Base URL (Groq):
+                  </div>
+                  <div>Home Assistant's <em>native</em> OpenAI Conversation integration does <strong>not</strong> expose a Base URL field. To use Groq, install <strong>Extended OpenAI Conversation</strong> from <strong>HACS</strong> (Home Assistant Community Store):</div>
+                  <ol style="margin: 4px 0 6px 18px; padding: 0; color: var(--otis-text-muted); font-size: 0.71rem;">
+                    <li>Open <strong>HACS ➔ Integrations</strong>, search for <em>Extended OpenAI Conversation</em>, and download it.</li>
+                    <li>Go to <em>Settings ➔ Devices &amp; Services ➔ Add Integration</em> and select <strong>Extended OpenAI Conversation</strong>.</li>
+                    <li>Enter your free Groq API key (from <em>console.groq.com</em>) and set:</li>
+                  </ol>
                   <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 5px; padding: 4px 8px; background: rgba(0,0,0,0.35); border-radius: 5px; font-family: monospace; font-size: 0.7rem;">
                     <span>Base URL: <strong>https://api.groq.com/openai/v1</strong></span>
                     <button type="button" class="btn-copy-base-url" data-url="https://api.groq.com/openai/v1" style="font-size: 0.65rem; padding: 2px 7px; border-radius: 4px; background: rgba(245, 158, 11, 0.25); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.5); cursor: pointer;">
                       📋 Copy URL
+                    </button>
+                  </div>
+                  <div style="display: flex; gap: 6px; margin-top: 6px;">
+                    <button type="button" class="btn-open-hacs" style="font-size: 0.68rem; padding: 3px 8px; border-radius: 5px; background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); cursor: pointer;">
+                      🛒 Open HACS Integrations ↗
+                    </button>
+                    <button type="button" class="btn-setup-agent" data-domain="extended_openai_conversation" style="font-size: 0.68rem; padding: 3px 8px; border-radius: 5px; background: rgba(255, 255, 255, 0.05); color: var(--otis-text); border: 1px solid var(--otis-surface-border); cursor: pointer;">
+                      + Add Extended OpenAI in HA ↗
                     </button>
                   </div>
                 </div>
@@ -5465,26 +5730,41 @@ class OtisCompanionCard extends HTMLElement {
               <!-- xAI (Grok) -->
               <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #38bdf8;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
-                  <span class="failover-agent-name" data-domain="openai_conversation" style="font-weight: 700; font-size: 0.84rem; color: #38bdf8; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add via OpenAI Conversation integration">
+                  <span class="failover-agent-name" data-domain="openai_conversation" style="font-weight: 700; font-size: 0.84rem; color: #38bdf8; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add via Extended OpenAI Conversation integration">
                     🚀 xAI (Grok-2 / Grok-beta) ↗
                   </span>
                   <div style="display: flex; align-items: center; gap: 6px;">
                     <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4);">REASONING</span>
-                    <button type="button" class="btn-setup-agent" data-domain="openai_conversation" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); cursor: pointer;">
-                      + Add via OpenAI in HA ↗
+                    <button type="button" class="btn-setup-agent" data-domain="extended_openai_conversation" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); cursor: pointer;">
+                      + Add via Extended OpenAI in HA ↗
                     </button>
                   </div>
                 </div>
                 <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
                   Frontier reasoning and live world intelligence powered by Elon Musk's xAI platform.
                 </div>
-                <div style="margin-top: 6px; padding: 6px 10px; background: rgba(56, 189, 248, 0.08); border: 1px dashed rgba(56, 189, 248, 0.35); border-radius: 6px; font-size: 0.72rem; line-height: 1.4; color: var(--otis-text);">
-                  <span style="font-weight: 700; color: #38bdf8;">ℹ️ How to Add xAI in Home Assistant:</span><br>
-                  Home Assistant does not have a separate standalone "xAI" integration. Because xAI is 100% OpenAI API-compatible, add HA's native <strong>OpenAI Conversation</strong> (or HACS Extended OpenAI) integration with your xAI API key and set:
+                <div style="margin-top: 6px; padding: 8px 10px; background: rgba(56, 189, 248, 0.08); border: 1px dashed rgba(56, 189, 248, 0.4); border-radius: 8px; font-size: 0.73rem; line-height: 1.45; color: var(--otis-text);">
+                  <div style="font-weight: 700; color: #38bdf8; margin-bottom: 4px; display: flex; align-items: center; gap: 5px;">
+                    <span>⚠️</span> Where to Enter Base URL (xAI):
+                  </div>
+                  <div>In Home Assistant, install <strong>Extended OpenAI Conversation</strong> from <strong>HACS</strong> to unlock custom Base URL support:</div>
+                  <ol style="margin: 4px 0 6px 18px; padding: 0; color: var(--otis-text-muted); font-size: 0.71rem;">
+                    <li>Download <em>Extended OpenAI Conversation</em> from <strong>HACS ➔ Integrations</strong>.</li>
+                    <li>Add <strong>Extended OpenAI Conversation</strong> in Home Assistant Integrations.</li>
+                    <li>Enter your xAI API key (from <em>console.x.ai</em>) and set:</li>
+                  </ol>
                   <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 5px; padding: 4px 8px; background: rgba(0,0,0,0.35); border-radius: 5px; font-family: monospace; font-size: 0.7rem;">
                     <span>Base URL: <strong>https://api.x.ai/v1</strong></span>
                     <button type="button" class="btn-copy-base-url" data-url="https://api.x.ai/v1" style="font-size: 0.65rem; padding: 2px 7px; border-radius: 4px; background: rgba(56, 189, 248, 0.25); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.5); cursor: pointer;">
                       📋 Copy URL
+                    </button>
+                  </div>
+                  <div style="display: flex; gap: 6px; margin-top: 6px;">
+                    <button type="button" class="btn-open-hacs" style="font-size: 0.68rem; padding: 3px 8px; border-radius: 5px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); cursor: pointer;">
+                      🛒 Open HACS Integrations ↗
+                    </button>
+                    <button type="button" class="btn-setup-agent" data-domain="extended_openai_conversation" style="font-size: 0.68rem; padding: 3px 8px; border-radius: 5px; background: rgba(255, 255, 255, 0.05); color: var(--otis-text); border: 1px solid var(--otis-surface-border); cursor: pointer;">
+                      + Add Extended OpenAI in HA ↗
                     </button>
                   </div>
                 </div>
@@ -6489,9 +6769,10 @@ class OtisCompanionCard extends HTMLElement {
     const svgViewport = root.querySelector("#floorplan-viewport");
     const svgEl = root.querySelector("#floorplan-viewport svg");
     const editorHud = root.querySelector("#editor-hud");
+    const isAdmin = Boolean(this._hass?.user?.is_admin || this._hass?.user?.is_owner);
 
     if (svgViewport && svgEl) {
-      if (this._editorActive) {
+      if (this._editorActive && isAdmin) {
         // --- Canvas Editor Active Mode ---
 
         // 1. Live pointer HUD
@@ -6504,7 +6785,7 @@ class OtisCompanionCard extends HTMLElement {
           }
         };
 
-        // 2. Drag & Drop repositioning of entity badges
+        // 2. Drag & Drop repositioning & click-to-edit of entity badges
         svgEl.querySelectorAll(".entity-badge").forEach((badge) => {
           badge.style.cursor = "grab";
           badge.onpointerdown = (e) => {
@@ -6520,8 +6801,11 @@ class OtisCompanionCard extends HTMLElement {
             this._draggingBadge = {
               el: badge,
               entityId,
+              startX: curX,
+              startY: curY,
               offsetX: p.x - curX,
               offsetY: p.y - curY,
+              moved: false,
             };
             try { badge.setPointerCapture(e.pointerId); } catch (_) {}
           };
@@ -6533,6 +6817,13 @@ class OtisCompanionCard extends HTMLElement {
             const p = getSvgPoint(svgEl, e.clientX, e.clientY);
             const newX = Math.round(p.x - this._draggingBadge.offsetX);
             const newY = Math.round(p.y - this._draggingBadge.offsetY);
+
+            if (
+              Math.abs(newX - this._draggingBadge.startX) > 4 ||
+              Math.abs(newY - this._draggingBadge.startY) > 4
+            ) {
+              this._draggingBadge.moved = true;
+            }
 
             badge.setAttribute("transform", `translate(${newX}, ${newY})`);
             if (editorHud) {
@@ -6551,9 +6842,24 @@ class OtisCompanionCard extends HTMLElement {
           badge.onpointerup = (e) => {
             if (this._draggingBadge && this._draggingBadge.el === badge) {
               try { badge.releasePointerCapture(e.pointerId); } catch (_) {}
+              const wasMoved = this._draggingBadge.moved;
+              const eid = this._draggingBadge.entityId;
+              const tr = badge.getAttribute("transform") || "";
+              const m = tr.match(/translate\(\s*([-\d.]+)[,\s]+([-\d.]+)\s*\)/);
+              const curX = m ? parseFloat(m[1]) : 0;
+              const curY = m ? parseFloat(m[2]) : 0;
               this._draggingBadge = null;
+
+              if (!wasMoved && eid) {
+                // Clicked in edit mode -> Open Inspector Modal to edit or remove pin
+                this._selectedEditorEntityId = eid;
+                this._selectedEditorEntityCoords = { x: curX, y: curY };
+                this._editMarkerModalOpen = true;
+                this._render();
+              }
             }
           };
+
           badge.onpointercancel = (e) => {
             if (this._draggingBadge && this._draggingBadge.el === badge) {
               try { badge.releasePointerCapture(e.pointerId); } catch (_) {}
@@ -7466,11 +7772,12 @@ class OtisCompanionCard extends HTMLElement {
       };
     }
 
-    // Add Pin Modal & Selection
+    // Add Device Pin Modal & Search
     const btnOpenAddMarker = root.querySelector("#btn-open-add-marker");
     if (btnOpenAddMarker) {
       btnOpenAddMarker.onclick = () => {
         this._addMarkerModalOpen = true;
+        this._addMarkerFilter = "";
         this._render();
       };
     }
@@ -7478,7 +7785,32 @@ class OtisCompanionCard extends HTMLElement {
     if (addMarkerCloseBtn) {
       addMarkerCloseBtn.onclick = () => {
         this._addMarkerModalOpen = false;
+        this._addMarkerFilter = "";
         this._render();
+      };
+    }
+    const addMarkerBackdrop = root.querySelector("#add-marker-modal-backdrop");
+    if (addMarkerBackdrop) {
+      addMarkerBackdrop.onclick = (e) => {
+        if (e.target === addMarkerBackdrop) {
+          this._addMarkerModalOpen = false;
+          this._addMarkerFilter = "";
+          this._render();
+        }
+      };
+    }
+    const addMarkerSearch = root.querySelector("#add-marker-search-input");
+    if (addMarkerSearch) {
+      addMarkerSearch.oninput = (e) => {
+        this._addMarkerFilter = e.target.value;
+        this._render();
+        setTimeout(() => {
+          const inp = this.shadowRoot.getElementById("add-marker-search-input");
+          if (inp) {
+            inp.focus();
+            inp.setSelectionRange(inp.value.length, inp.value.length);
+          }
+        }, 50);
       };
     }
     root.querySelectorAll(".btn-place-entity-pin").forEach((btn) => {
@@ -7487,15 +7819,112 @@ class OtisCompanionCard extends HTMLElement {
         if (eid) {
           this._dirtyBadges[eid] = {
             entity_id: eid,
-            x: 320,
-            y: 280,
+            x: 340,
+            y: 260,
           };
           this._hasUnsavedLayout = true;
           this._addMarkerModalOpen = false;
-          this._showToast(`Dropped pin for ${eid}! Drag to position and click Save.`);
+          this._addMarkerFilter = "";
+          this._showToast(`📍 Dropped pin for ${eid}! Drag to position and click "Save Changes".`);
           this._render();
         }
       };
+    });
+
+    // Edit / Remove Marker Inspector Modal
+    const editMarkerCloseBtn = root.querySelector("#edit-marker-close-btn");
+    const editMarkerCancelBtn = root.querySelector("#btn-cancel-edit-marker");
+    const editMarkerBackdrop = root.querySelector("#edit-marker-modal-backdrop");
+    const closeEditMarker = () => {
+      this._editMarkerModalOpen = false;
+      this._selectedEditorEntityId = null;
+      this._render();
+    };
+    if (editMarkerCloseBtn) editMarkerCloseBtn.onclick = closeEditMarker;
+    if (editMarkerCancelBtn) editMarkerCancelBtn.onclick = closeEditMarker;
+    if (editMarkerBackdrop) {
+      editMarkerBackdrop.onclick = (e) => {
+        if (e.target === editMarkerBackdrop) closeEditMarker();
+      };
+    }
+
+    const btnDeleteMarker = root.querySelector("#btn-delete-marker");
+    if (btnDeleteMarker) {
+      btnDeleteMarker.onclick = () => {
+        const eid = this._selectedEditorEntityId;
+        if (eid) {
+          this._dirtyBadges[eid] = {
+            entity_id: eid,
+            delete: true,
+          };
+          const bEl = svgEl ? svgEl.querySelector(`[data-entity-id="${eid}"]`) : null;
+          if (bEl) bEl.remove();
+          this._hasUnsavedLayout = true;
+          this._editMarkerModalOpen = false;
+          this._selectedEditorEntityId = null;
+          this._showToast(`🗑️ Removed pin for ${eid}. Click "Save Changes" to persist.`);
+          this._render();
+        }
+      };
+    }
+
+    const btnApplyCoordsMarker = root.querySelector("#btn-apply-coords-marker");
+    if (btnApplyCoordsMarker) {
+      btnApplyCoordsMarker.onclick = () => {
+        const inpX = root.querySelector("#input-marker-x");
+        const inpY = root.querySelector("#input-marker-y");
+        const nx = inpX ? parseFloat(inpX.value) : 340;
+        const ny = inpY ? parseFloat(inpY.value) : 260;
+        const eid = this._selectedEditorEntityId;
+        if (eid) {
+          this._dirtyBadges[eid] = { entity_id: eid, x: nx, y: ny };
+          const bEl = svgEl ? svgEl.querySelector(`[data-entity-id="${eid}"]`) : null;
+          if (bEl) bEl.setAttribute("transform", `translate(${nx}, ${ny})`);
+          this._hasUnsavedLayout = true;
+          this._editMarkerModalOpen = false;
+          this._selectedEditorEntityId = null;
+          this._showToast(`Updated coordinates for ${eid}!`);
+          this._render();
+        }
+      };
+    }
+
+    // Setup Guide Modal Events
+    const guideCloseBtn = root.querySelector("#guide-modal-close-btn");
+    const guideGotItBtn = root.querySelector("#btn-close-guide-modal");
+    const guideBackdrop = root.querySelector("#guide-modal-backdrop");
+    const closeGuide = () => {
+      this._guideModalOpen = false;
+      this._render();
+    };
+    if (guideCloseBtn) guideCloseBtn.onclick = closeGuide;
+    if (guideGotItBtn) guideGotItBtn.onclick = closeGuide;
+    if (guideBackdrop) {
+      guideBackdrop.onclick = (e) => {
+        if (e.target === guideBackdrop) closeGuide();
+      };
+    }
+    const btnGuideAskAssist = root.querySelector("#btn-guide-ask-assist");
+    if (btnGuideAskAssist && this._currentGuide) {
+      btnGuideAskAssist.onclick = () => {
+        const g = this._currentGuide;
+        this._guideModalOpen = false;
+        this._draftChatText = `How do I ${g.title.replace(/^Maturity Goal:\s*/i, "")}? Give me step-by-step guidance.`;
+        this._activeTab = "chat";
+        this._render();
+        setTimeout(() => {
+          const input = this.shadowRoot.getElementById("chat-input");
+          if (input) {
+            input.focus();
+            if (input.setSelectionRange) input.setSelectionRange(input.value.length, input.value.length);
+          }
+        }, 100);
+      };
+    }
+
+    // HACS Direct Links
+    root.querySelectorAll(".btn-open-hacs").forEach((btn) => {
+      btn.onclick = () => window.open("/hacs/integrations", "_blank");
     });
 
     // Floorplan Toolbar Buttons

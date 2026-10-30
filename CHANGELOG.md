@@ -2,6 +2,23 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.11.5] - 2026-10-30
+
+### Fixed & Enhanced
+- **Interactive Floor Plan GUI Drag & Drop and Add/Edit/Remove Controls (Roadmap Item 1)**:
+  - Enabled intuitive GUI drag & drop for all device entity badges on the Interactive Floor Plan canvas under Edit Mode.
+  - Restricted edit mode, toolbar controls, pin dragging, and layout alterations exclusively to Home Assistant Admins/Owners (`isAdmin`), ensuring normal users have a clean, read-only viewing and control experience.
+  - Added dedicated **Entity Pin Inspector Modal**: Clicking any device pin while in edit mode reveals friendly name, current state, exact X/Y coordinates, manual coordinate inputs, and a 1-click **`🗑️ Remove Pin`** button.
+  - Upgraded **Add Device Pin Modal**: Added live search filtering across all entities by name, domain, and entity ID, with domain icon categorizations and robust object mapping.
+  - Implemented badge deletion synchronization in `FloorplanParser` (`async_update_floorplan_layout`) to remove deleted badge elements cleanly from both the SVG markup and saved metadata.
+- **Smart Home Maturity Setup Guide Modal Fix**:
+  - Resolved issue where clicking "📖 View Setup Guide" on proactive recommendation cards simply refreshed the card and dismissed it without displaying the guide.
+  - Added an interactive **Setup Guide Modal** (`_renderGuideModal`) displaying the goal's objective, impact on 20/20 maturity, step-by-step implementation instructions, and a 1-click **`💬 Ask Otis in Assist Co-Pilot`** button that pre-populates Assist Co-Pilot with the setup instructions prompt.
+- **AI Failover Redundancy Extended OpenAI & Base URL Guidance**:
+  - Addressed confusion regarding missing Base URL settings in Home Assistant's native `openai_conversation` component.
+  - Documented that HA Core's built-in OpenAI integration intentionally omits a Base URL field; to use **Groq** (`https://api.groq.com/openai/v1`) or **xAI** (`https://api.x.ai/v1`), users should install **Extended OpenAI Conversation** from **HACS**.
+  - Added 1-click direct link buttons to open HACS Integrations (`/hacs/integrations`) and launch the Extended OpenAI setup flow directly.
+
 ## [1.11.4] - 2026-10-30
 
 ### Fixed & Enhanced
