@@ -2,6 +2,13 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.12.1] - 2026-10-31
+
+### Fixed & Refined
+- **Proactive Feed Action Button Sizing**:
+  - Restored recommendation card action buttons to their original compact, natural content width (`auto` width) instead of stretching across the full card width (`flex: 1`).
+  - Placed the `"Ignore this"` button cleanly adjacent to the primary action button.
+
 ## [1.12.0] - 2026-10-31
 
 ### Added & Enhanced

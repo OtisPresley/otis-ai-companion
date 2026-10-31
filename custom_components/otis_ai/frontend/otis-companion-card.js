@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.12.0";
+const CARD_VERSION = "1.12.1";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -4876,16 +4876,14 @@ class OtisCompanionCard extends HTMLElement {
                           </div>
                         `
                             : `
-                          <div style="display: flex; gap: 8px; align-items: center; width: 100%;">
-                            <button type="button" class="apply-btn" data-apply="${s.id}" ${isApplying ? "disabled" : ""} style="flex: 1;">
-                              ${isApplying ? `<div class="spinner"></div> Applying...` : btnLabel}
-                            </button>
-                            ${
-                              isDismissed
-                                ? `<button type="button" class="btn-restore" data-restore="${s.id}" title="Restore to active recommendations">↺ Restore</button>`
-                                : `<button type="button" class="btn-dismiss-card" data-dismiss="${s.id}" title="Ignore this recommendation">Ignore this</button>`
-                            }
-                          </div>
+                          <button type="button" class="apply-btn" data-apply="${s.id}" ${isApplying ? "disabled" : ""}>
+                            ${isApplying ? `<div class="spinner"></div> Applying...` : btnLabel}
+                          </button>
+                          ${
+                            isDismissed
+                              ? `<button type="button" class="btn-restore" data-restore="${s.id}" title="Restore to active recommendations">↺ Restore</button>`
+                              : `<button type="button" class="btn-dismiss-card" data-dismiss="${s.id}" title="Ignore this recommendation">Ignore this</button>`
+                          }
                         `
                         }
                       </div>
