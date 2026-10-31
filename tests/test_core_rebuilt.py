@@ -665,6 +665,75 @@ class TestOtisAICore(unittest.TestCase):
         user_input.create_response.assert_called_once()
         self.assertIn("successfully created and enabled the automation", user_input.create_response.call_args[1]["speech"])
 
+    def test_conversation_agent_script_naming_inference(self):
+        """Test that the agent infers meaningful script names and keys instead of generic custom_script."""
+        from custom_components.otis_ai import OtisAIConversationAgent
+
+        entry = MagicMock()
+        entry.options = {CONF_CONVERSATION_AGENT: "conversation.mock_llm"}
+        entry.data = {}
+
+        engine = MagicMock()
+        engine.async_build_capability_map = AsyncMock(return_value={"integrations": [], "areas": {}, "entities": [], "orphaned_entities": []})
+        manager = MagicMock()
+        agent = OtisAIConversationAgent(self.hass, entry, engine, manager)
+
+        user_input = MagicMock()
+        user_input.text = "Can you help route audio to my media player?"
+        user_input.conversation_id = "test_script_conv_id"
+
+        mock_llm_response = MagicMock()
+        mock_llm_response.response.speech = {
+            "plain": {
+                "speech": "Here is the script to route audio:\n```yaml\nsequence:\n  - service: media_player.select_source\n    target:\n      entity_id: '{{ matrix_zone }}'\n```"
+            }
+        }
+        mock_conversation.async_converse = AsyncMock(return_value=mock_llm_response)
+
+        import asyncio
+        result = asyncio.run(agent.async_process(user_input))
+
+        sessions = self.hass.data[DOMAIN]["sessions"]
+        self.assertIn("test_script_conv_id", sessions)
+        pending = sessions["test_script_conv_id"]["pending_yaml"]
+        self.assertEqual(pending["type"], "script")
+        self.assertEqual(pending["yaml_data"]["alias"], "Media Matrix Zone Coordinator")
+        self.assertEqual(pending["id"], "media_matrix_zone_coordinator")
+        self.assertIn("Would you like me to create this script", result.response.speech["plain"]["speech"])
+
+    def test_media_maturity_coordinator_scoring(self):
+        """Test that media maturity awards 20 points when a media router / coordinator script is present."""
+        from custom_components.otis_ai import DiscoveryEngine
+
+        engine = DiscoveryEngine(self.hass)
+        areas_map = {"living_room": {"name": "Living Room", "entities": ["media_player.living_room"]}}
+        devices_map = {}
+        entities_list = [
+            {"entity_id": "media_player.living_room", "domain": "media_player", "area_id": "living_room"},
+            {"entity_id": "media_player.bedroom", "domain": "media_player", "area_id": "bedroom"},
+            {"entity_id": "script.media_router", "domain": "script", "name": "Media Router"},
+        ]
+        media_topology = {
+            "matrix_amp_detected": True,
+            "total_media_players": 2,
+        }
+        security_topology = {}
+
+        maturity = engine._discover_system_maturity(
+            areas_map=areas_map,
+            devices_map=devices_map,
+            entities_list=entities_list,
+            orphaned_entities=[],
+            active_integrations=["control4"],
+            has_walkthrough=True,
+            has_floorplan=True,
+            media_topology=media_topology,
+            security_topology=security_topology,
+        )
+
+        self.assertEqual(maturity["breakdown"]["media"], 20)
+        self.assertIn("20/20 (Perfect)", maturity["tips"]["media"])
+
     def test_conversation_agent_wizard_reject(self):
         """Test that the agent discards the pending YAML when the user says no."""
         from custom_components.otis_ai import OtisAIConversationAgent

@@ -2631,6 +2631,9 @@ Instructions:
 7. When the user requests multi-step routines (such as movie night, bedtime, party, lockdown, or arrival), you can propose or trigger Otis dynamic macros, which feature atomic snapshotting and 1-click state rollback.
 8. When the user asks to move music, transfer audio, or follow them between rooms, you can propose or trigger Otis Audio Handoff (`audio_handoff` / `media_follow_me`), which leverages Spatial Adjacency to route matrix amplifier zones (Control4) and streamers seamlessly.
 9. When the user asks about energy usage, electrical power, peak tariff hours, or load shedding, reference the Discovered Energy & Load Topology and propose or trigger Otis dynamic load shedding (`load_shed` / `restore_shed_loads`) or appliance sequencing.
+10. When proposing automations or scripts in YAML code blocks:
+    - ALWAYS provide an explicit, descriptive `alias: 'Descriptive Name'` inside the YAML (e.g. `alias: 'Media Matrix Zone Coordinator'`).
+    - For scripts, always include `alias:` and `sequence:`. Never output nameless script blocks.
 
 User: {user_input.text}
 """
@@ -2692,7 +2695,19 @@ User: {user_input.text}
                     try:
                         parsed = yaml.safe_load(block)
                         if isinstance(parsed, dict):
+                            inferred_key = None
+                            if len(parsed) == 1 and not ("sequence" in parsed or "trigger" in parsed or "action" in parsed):
+                                single_key = next(iter(parsed.keys()))
+                                single_val = parsed[single_key]
+                                if isinstance(single_val, dict) and ("sequence" in single_val or "action" in single_val or "trigger" in single_val):
+                                    inferred_key = single_key
+                                    if "alias" not in single_val:
+                                        single_val["alias"] = single_key.replace("_", " ").title()
+                                    parsed = single_val
+
                             if "trigger" in parsed or "action" in parsed:
+                                auto_name = parsed.get("alias", (inferred_key.replace("_", " ").title() if inferred_key else "Proposed Automation"))
+                                parsed["alias"] = auto_name
                                 sessions[conv_id] = {
                                     "pending_yaml": {
                                         "type": "automation",
@@ -2700,12 +2715,27 @@ User: {user_input.text}
                                     }
                                 }
                                 _LOGGER.debug("Stored pending automation: %s", parsed)
-                                confirm_text = "\n\nWould you like me to create and enable this automation in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
+                                confirm_text = f"\n\nWould you like me to create and enable this automation '{auto_name}' in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
                                 result.response.speech["plain"]["speech"] += confirm_text
                                 break
                             elif "sequence" in parsed:
-                                alias = parsed.get("alias", "custom_script")
-                                script_key = re.sub(r"\W+", "_", alias.lower()).strip("_")
+                                alias = parsed.get("alias")
+                                if not alias and inferred_key:
+                                    alias = inferred_key.replace("_", " ").title()
+                                elif not alias:
+                                    user_low = user_input.text.lower()
+                                    if any(w in user_low for w in ("media", "audio", "matrix", "speaker", "music", "volume", "sound")):
+                                        alias = "Media Matrix Zone Coordinator"
+                                    elif any(w in user_low for w in ("light", "lamp", "dimmer")):
+                                        alias = "Smart Lighting Coordinator"
+                                    elif any(w in user_low for w in ("climate", "temp", "thermostat", "hvac")):
+                                        alias = "Climate Zone Coordinator"
+                                    elif any(w in user_low for w in ("security", "lock", "alarm", "perimeter")):
+                                        alias = "Perimeter Security Coordinator"
+                                    else:
+                                        alias = "Otis System Routine"
+                                parsed["alias"] = alias
+                                script_key = inferred_key or re.sub(r"\W+", "_", alias.lower()).strip("_")
                                 sessions[conv_id] = {
                                     "pending_yaml": {
                                         "type": "script",
@@ -2714,7 +2744,7 @@ User: {user_input.text}
                                     }
                                 }
                                 _LOGGER.debug("Stored pending script: %s with key %s", parsed, script_key)
-                                confirm_text = f"\n\nWould you like me to create this script '{script_key}' in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
+                                confirm_text = f"\n\nWould you like me to create this script '{alias}' (`script.{script_key}`) in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
                                 result.response.speech["plain"]["speech"] += confirm_text
                                 break
                     except Exception as yaml_err:
@@ -3141,6 +3171,33 @@ class DiscoveryEngine:
             user_rules = self.rules_manager.get_rules()
         cap_map["user_rules"] = user_rules
 
+        # Discovered registered Home Assistant users & person entities
+        discovered_users = []
+        try:
+            if hasattr(self.hass, "auth") and hasattr(self.hass.auth, "async_get_users"):
+                auth_users = await self.hass.auth.async_get_users()
+                for u in auth_users:
+                    if getattr(u, "is_active", True) and not getattr(u, "system_generated", False):
+                        discovered_users.append({
+                            "id": u.id,
+                            "name": u.name or u.id,
+                        })
+        except Exception as u_err:
+            _LOGGER.debug("Could not query auth users: %s", u_err)
+
+        existing_uids = {u["id"] for u in discovered_users}
+        for ent in entities_list:
+            if ent.get("domain") == "person":
+                attrs = ent.get("attributes") or {}
+                uid = attrs.get("user_id")
+                p_name = attrs.get("friendly_name") or ent.get("name") or ent.get("entity_id")
+                if uid and uid not in existing_uids:
+                    discovered_users.append({"id": uid, "name": p_name})
+                    existing_uids.add(uid)
+                elif not uid and ent.get("entity_id") not in existing_uids:
+                    discovered_users.append({"id": ent.get("entity_id"), "name": p_name})
+        cap_map["users"] = discovered_users
+
         cap_map["proactive_suggestions"] = await self.async_generate_proactive_suggestions(cap_map)
         self._cached_cap_map = dict(cap_map)
         self._cache_ts = now
@@ -3474,20 +3531,24 @@ class DiscoveryEngine:
         # 5. Media & Ecosystem Optimization (20 pts)
         media_pts = 10
         media_gaps: list[str] = []
+        media_keywords = ("matrix", "router", "media", "audio", "speaker", "sound", "streamer", "music", "cinema")
+        has_media_coordinator = any(
+            any(kw in str(e.get("entity_id", "")).lower() or kw in str(e.get("name", "")).lower() for kw in media_keywords)
+            for e in entities_list
+            if e.get("domain") in ("script", "automation")
+        )
         if media_topology.get("matrix_amp_detected"):
-            has_router = any(
-                "matrix" in str(e.get("entity_id", "")).lower() or "speaker" in str(e.get("entity_id", "")).lower()
-                for e in entities_list
-                if e.get("domain") in ("script", "automation")
-            )
-            if has_router:
+            if has_media_coordinator:
                 media_pts = 20
             else:
                 media_pts = 12
                 media_gaps.append("Deploy an Otis Matrix Audio Router script to automate zone switching.")
         elif media_topology.get("total_media_players", 0) > 0:
-            media_pts = 16
-            media_gaps.append("Configure multi-room audio grouping or pair Music Assistant for whole-home streaming.")
+            if has_media_coordinator or "music_assistant" in active_integrations or "mass" in active_integrations:
+                media_pts = 20
+            else:
+                media_pts = 16
+                media_gaps.append("Configure multi-room audio grouping or deploy a media coordinator script.")
         else:
             media_gaps.append("Add media player entities (Sonos, Cast, Apple TV, Music Assistant) to your rooms.")
 
@@ -5126,8 +5187,9 @@ class DiscoveryEngine:
                     is_outdoor = any(k in c_lower for k in ("front", "driveway", "porch", "patio", "backyard", "doorbell", "yard"))
                     has_cam_alert = any(c_name.lower() in name for name in all_existing_names)
                     if is_outdoor and not has_cam_alert:
+                        c_slug = re.sub(r"\W+", "_", c_eid.lower()).strip("_")
                         suggestions.append({
-                            "id": f"vision_outdoor_watchdog_{self._slugify(c_eid)}",
+                            "id": f"vision_outdoor_watchdog_{c_slug}",
                             "title": f"Vision Watchdog: Outdoor Arrival & Delivery Detection ({c_name})",
                             "category": "security",
                             "priority": "high",

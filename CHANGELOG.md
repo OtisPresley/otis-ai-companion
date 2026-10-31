@@ -2,6 +2,22 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.11.18] - 2026-10-31
+
+### Added & Enhanced
+- **Dynamic AI Theme Studio Individual User Scope**:
+  - Added "Specific User..." selection in Theme Studio modal alongside "Current User" and "All Users".
+  - Populates real-time dropdown of registered Home Assistant users and persons (`cap_map.users` + `person.*` entities).
+  - Targets individual user profile storage (`frontend.user_data_<uid>`) via backend `otis_ai.apply_theme`, allowing users to apply custom or preset themes to family members or individual dashboard tablets without affecting other users.
+- **Assist Co-Pilot Script & Automation Naming Resiliency**:
+  - Enhanced YAML extraction to detect top-level mapped script dictionaries (`{ script_name: { sequence: [...] } }`) and extract clean script IDs.
+  - Automatically infers domain-appropriate names (e.g. `Media Matrix Zone Coordinator`, `Smart Lighting Coordinator`, `Climate Zone Coordinator`) if an LLM outputs a raw sequence without an explicit `alias`, eliminating generic `custom_script` defaults.
+  - Instructed Assist LLM prompt to always include explicit `alias: 'Descriptive Name'` for all generated YAML scripts and automations.
+- **Media Maturity Rubric & Dynamic Re-Evaluation**:
+  - Expanded media coordinator detection in `_discover_system_maturity` to recognize coordinator scripts/automations matching `matrix`, `media`, `audio`, `speaker`, `sound`, `streamer`, `music`, and `cinema` across both entity IDs and friendly names.
+  - Added 20/20 scoring pathway for multi-room streaming configurations (e.g. Sonos, Music Assistant, AirPlay/Cast) paired with media coordination scripts.
+  - Added automatic capability map & maturity re-evaluation when switching to the Capabilities tab in the Lovelace card.
+
 ## [1.11.17] - 2026-10-31
 
 ### Added & Enhanced

@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.11.17";
+const CARD_VERSION = "1.11.18";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -68,6 +68,7 @@ class OtisCompanionCard extends HTMLElement {
     this._draftThemePrompt = "";
     this._viewportResizeObserver = null;
     this._themeApplyScope = "current";
+    this._selectedThemeUserId = null;
     this._generatingTheme = false;
     this._uploadingVideo = false;
     this._uploadProgressText = "";
@@ -5908,6 +5909,33 @@ class OtisCompanionCard extends HTMLElement {
     `;
   }
 
+  _getAvailableUsers() {
+    const userMap = new Map();
+    // 1. Registered users discovered by Otis backend
+    if (Array.isArray(this._capabilityMap?.users)) {
+      for (const u of this._capabilityMap.users) {
+        if (u && u.id) userMap.set(u.id, { id: u.id, name: u.name || u.id });
+      }
+    }
+    // 2. Person entities from Home Assistant states
+    const states = this._hass?.states || {};
+    for (const eid in states) {
+      if (eid.startsWith("person.")) {
+        const p = states[eid];
+        const uid = p.attributes?.user_id || eid;
+        const name = p.attributes?.friendly_name || p.entity_id.replace("person.", "").replace(/_/g, " ");
+        if (!userMap.has(uid)) {
+          userMap.set(uid, { id: uid, name: name });
+        }
+      }
+    }
+    // 3. Current active user fallback
+    if (this._hass?.user?.id && !userMap.has(this._hass.user.id)) {
+      userMap.set(this._hass.user.id, { id: this._hass.user.id, name: this._hass.user.name || "Current User" });
+    }
+    return Array.from(userMap.values());
+  }
+
   _renderThemeModal() {
     const presets = this._capabilityMap?.theme_presets || [
       { key: "cyberpunk", name: "Cyberpunk Neon", preview: { primary: "#00f0ff", accent: "#f43f5e", background: "#070b14", card_bg: "#0f172a" } },
@@ -5937,18 +5965,44 @@ class OtisCompanionCard extends HTMLElement {
           </div>
 
           <!-- User Scope Selector -->
-          <div style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 8px; font-size: 0.78rem;">
-            <span style="color: var(--otis-text-muted); font-weight: 600;">Apply Scope:</span>
-            <div style="display: flex; gap: 14px;">
-              <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--otis-text);">
-                <input type="radio" name="theme-scope" id="scope-current" value="current" ${this._themeApplyScope !== "all" ? "checked" : ""} />
-                Current User (${this._escapeHtml(this._hass?.user?.name || "Me")})
-              </label>
-              <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--otis-text);">
-                <input type="radio" name="theme-scope" id="scope-all" value="all" ${this._themeApplyScope === "all" ? "checked" : ""} />
-                All Users (Global Profile Sync)
-              </label>
+          <div style="display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 8px; font-size: 0.78rem;">
+            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+              <span style="color: var(--otis-text-muted); font-weight: 600;">Apply Scope:</span>
+              <div style="display: flex; gap: 14px; align-items: center; flex-wrap: wrap;">
+                <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--otis-text);">
+                  <input type="radio" name="theme-scope" id="scope-current" value="current" ${this._themeApplyScope === "current" || !this._themeApplyScope ? "checked" : ""} />
+                  Current User (${this._escapeHtml(this._hass?.user?.name || "Me")})
+                </label>
+                <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--otis-text);">
+                  <input type="radio" name="theme-scope" id="scope-specific" value="specific" ${this._themeApplyScope === "specific" ? "checked" : ""} />
+                  Specific User...
+                </label>
+                <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--otis-text);">
+                  <input type="radio" name="theme-scope" id="scope-all" value="all" ${this._themeApplyScope === "all" ? "checked" : ""} />
+                  All Users (Global Profile Sync)
+                </label>
+              </div>
             </div>
+            ${
+              this._themeApplyScope === "specific"
+                ? `
+              <div style="display: flex; align-items: center; gap: 10px; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--otis-surface-border);">
+                <span style="color: var(--otis-text-muted); font-size: 0.75rem; font-weight: 600;">Select User:</span>
+                <select id="theme-user-select" style="flex: 1; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--otis-surface-border); background: var(--otis-card-bg); color: var(--otis-text); font-size: 0.80rem;">
+                  ${this._getAvailableUsers()
+                    .map(
+                      (u) => `
+                    <option value="${this._escapeHtml(u.id)}" ${u.id === this._selectedThemeUserId ? "selected" : ""}>
+                      👤 ${this._escapeHtml(u.name)}${u.id === this._hass?.user?.id ? " (You)" : ""}
+                    </option>
+                  `
+                    )
+                    .join("")}
+                </select>
+              </div>
+            `
+                : ""
+            }
           </div>
 
           <!-- AI Natural Language Generator Prompt -->
@@ -6725,23 +6779,27 @@ class OtisCompanionCard extends HTMLElement {
     if (!this._hass || !themeKey) return;
     try {
       const isAll = applyAllUsers || this._themeApplyScope === "all";
+      const targetId = targetUserId || (this._themeApplyScope === "specific" ? this._selectedThemeUserId : null);
+      const isMeOrAll = isAll || !targetId || targetId === this._hass?.user?.id;
 
       // 1. Call backend services
-      try {
-        await this._hass.callService("frontend", "set_theme", { name: themeKey });
-      } catch (_) {}
+      if (isMeOrAll) {
+        try {
+          await this._hass.callService("frontend", "set_theme", { name: themeKey });
+        } catch (_) {}
+      }
 
       try {
         const payload = { name: themeKey };
-        if (targetUserId) payload.user_id = targetUserId;
+        if (targetId) payload.user_id = targetId;
         if (isAll) payload.all_users = true;
         await this._hass.callService("otis_ai", "apply_theme", payload);
       } catch (svcErr) {
         console.warn("Could not call otis_ai.apply_theme:", svcErr);
       }
 
-      // 2. Set user theme directly in Home Assistant per-user profile storage via WebSocket
-      if (this._hass.callWS) {
+      // 2. Set user theme directly in Home Assistant per-user profile storage via WebSocket if targeting current user or all
+      if (isMeOrAll && this._hass.callWS) {
         try {
           await this._hass.callWS({
             type: "frontend/set_user_data",
@@ -6754,26 +6812,30 @@ class OtisCompanionCard extends HTMLElement {
       }
 
       // 3. Dispatch standard Home Assistant settheme events to update active browser session immediately
-      const setthemeEvent = new CustomEvent("settheme", {
-        detail: { theme: themeKey },
-        bubbles: true,
-        composed: true,
-      });
-      this.dispatchEvent(setthemeEvent);
-      window.dispatchEvent(setthemeEvent);
-      const ha = document.querySelector("home-assistant");
-      if (ha) {
-        ha.dispatchEvent(setthemeEvent);
-        ha.dispatchEvent(new CustomEvent("settheme", { detail: themeKey, bubbles: true, composed: true }));
+      if (isMeOrAll) {
+        const setthemeEvent = new CustomEvent("settheme", {
+          detail: { theme: themeKey },
+          bubbles: true,
+          composed: true,
+        });
+        this.dispatchEvent(setthemeEvent);
+        window.dispatchEvent(setthemeEvent);
+        const ha = document.querySelector("home-assistant");
+        if (ha) {
+          ha.dispatchEvent(setthemeEvent);
+          ha.dispatchEvent(new CustomEvent("settheme", { detail: themeKey, bubbles: true, composed: true }));
+        }
+
+        // 4. Update localStorage if HA tracks selected theme
+        try {
+          const existing = JSON.parse(localStorage.getItem("selectedTheme") || "{}");
+          localStorage.setItem("selectedTheme", JSON.stringify({ ...existing, theme: themeKey }));
+        } catch (_) {}
       }
 
-      // 4. Update localStorage if HA tracks selected theme
-      try {
-        const existing = JSON.parse(localStorage.getItem("selectedTheme") || "{}");
-        localStorage.setItem("selectedTheme", JSON.stringify({ ...existing, theme: themeKey }));
-      } catch (_) {}
-
-      const scopeDesc = isAll ? "for all users" : "for your profile";
+      const users = this._getAvailableUsers();
+      const targetUser = targetId ? users.find((u) => u.id === targetId) : null;
+      const scopeDesc = isAll ? "for all users" : targetUser ? `for ${targetUser.name}` : "for your profile";
       this._showToast(`🎨 Theme applied ${scopeDesc}: ${themeKey}`);
     } catch (err) {
       console.error("Error applying theme:", err);
@@ -7470,8 +7532,21 @@ class OtisCompanionCard extends HTMLElement {
     root.querySelectorAll("input[name='theme-scope']").forEach((radio) => {
       radio.onchange = () => {
         this._themeApplyScope = radio.value;
+        if (this._themeApplyScope === "specific" && !this._selectedThemeUserId) {
+          const avail = this._getAvailableUsers();
+          const otherUser = avail.find((u) => u.id !== this._hass?.user?.id) || avail[0];
+          if (otherUser) this._selectedThemeUserId = otherUser.id;
+        }
+        this._render();
       };
     });
+
+    const userSelect = root.querySelector("#theme-user-select");
+    if (userSelect) {
+      userSelect.onchange = (e) => {
+        this._selectedThemeUserId = e.target.value;
+      };
+    }
 
     // Tabs
     const tabSug = root.querySelector("#tab-suggestions");
@@ -7500,6 +7575,7 @@ class OtisCompanionCard extends HTMLElement {
         if (e) e.preventDefault();
         this._saveActiveTab("capabilities");
         this._render();
+        this._fetchData(); // Trigger fresh recalculation on tab switch
       };
     }
 
