@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 1.11.16
+ * Version: 1.11.17
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.11.16";
+const CARD_VERSION = "1.11.17";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -5484,51 +5484,108 @@ class OtisCompanionCard extends HTMLElement {
 
   _renderAddMarkerModal() {
     if (!this._addMarkerModalOpen) return "";
-    const rawEntities = this._capabilityMap?.entities || [];
     const query = (this._addMarkerFilter || "").toLowerCase().trim();
 
-    const normalized = rawEntities
-      .map((e) => {
-        if (typeof e === "string") {
-          const dom = e.split(".")[0];
-          return { entity_id: e, name: e, domain: dom };
-        }
-        const eid = e.entity_id || "";
-        const dom = e.domain || (eid ? eid.split(".")[0] : "other");
-        return {
-          entity_id: eid,
-          name: e.name || eid,
-          domain: dom,
-        };
-      })
-      .filter((e) => Boolean(e.entity_id));
-
-    const filtered = query
-      ? normalized.filter(
-          (e) =>
-            e.entity_id.toLowerCase().includes(query) ||
-            e.name.toLowerCase().includes(query) ||
-            e.domain.toLowerCase().includes(query)
-        )
-      : normalized;
-
-    const grouped = {
-      light: [],
-      switch: [],
-      climate: [],
-      media_player: [],
-      camera: [],
-      binary_sensor: [],
-      sensor: [],
-      cover: [],
-      lock: [],
-      other: [],
-    };
-
-    filtered.forEach((e) => {
-      if (grouped[e.domain]) grouped[e.domain].push(e);
-      else grouped.other.push(e);
+    // 1. Build a comprehensive map of all entities from capabilityMap and this._hass.states
+    const entityMap = new Map();
+    const rawEntities = this._capabilityMap?.entities || [];
+    rawEntities.forEach((e) => {
+      const eid = typeof e === "string" ? e : e?.entity_id;
+      if (!eid) return;
+      const dom = eid.split(".")[0];
+      const aid = typeof e === "object" ? (e.area_id || "") : "";
+      const aname = typeof e === "object" ? (e.area_name || "") : "";
+      entityMap.set(eid, {
+        entity_id: eid,
+        name: (typeof e === "object" && e.name) ? e.name : eid,
+        domain: dom,
+        area_id: aid,
+        area_name: aname,
+      });
     });
+
+    if (this._hass?.states) {
+      Object.entries(this._hass.states).forEach(([eid, sObj]) => {
+        if (!eid || eid.startsWith("automation.") || eid.startsWith("scene.") || eid.startsWith("script.")) {
+          return;
+        }
+        if (!entityMap.has(eid)) {
+          entityMap.set(eid, {
+            entity_id: eid,
+            name: sObj?.attributes?.friendly_name || eid,
+            domain: eid.split(".")[0],
+            area_id: "",
+            area_name: "",
+          });
+        }
+      });
+    }
+
+    // 2. Resolve room associations via capabilityMap areas and area registries
+    const areasMap = this._capabilityMap?.areas || {};
+    const entityToAreaId = {};
+    const areaIdToName = {};
+
+    Object.entries(areasMap).forEach(([aid, ainfo]) => {
+      const aName = ainfo.name || aid.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+      areaIdToName[aid] = aName;
+      (ainfo.entities || []).forEach((eid) => {
+        entityToAreaId[eid] = aid;
+      });
+    });
+
+    entityMap.forEach((ent) => {
+      if (!ent.area_id && entityToAreaId[ent.entity_id]) {
+        ent.area_id = entityToAreaId[ent.entity_id];
+      }
+      if (ent.area_id && areaIdToName[ent.area_id]) {
+        ent.area_name = areaIdToName[ent.area_id];
+      }
+    });
+
+    // 3. Group by Room
+    const roomGroups = {};
+    Object.entries(areasMap).forEach(([aid, ainfo]) => {
+      roomGroups[aid] = {
+        id: aid,
+        name: ainfo.name || aid.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+        entities: [],
+      };
+    });
+    const unassignedEntities = [];
+
+    Array.from(entityMap.values()).forEach((ent) => {
+      if (query) {
+        const matches =
+          ent.entity_id.toLowerCase().includes(query) ||
+          ent.name.toLowerCase().includes(query) ||
+          ent.domain.toLowerCase().includes(query) ||
+          (ent.area_name && ent.area_name.toLowerCase().includes(query));
+        if (!matches) return;
+      }
+
+      if (ent.area_id && roomGroups[ent.area_id]) {
+        roomGroups[ent.area_id].entities.push(ent);
+      } else if (ent.area_name) {
+        const foundAid = Object.keys(roomGroups).find(
+          (k) => roomGroups[k].name.toLowerCase() === ent.area_name.toLowerCase()
+        );
+        if (foundAid) {
+          roomGroups[foundAid].entities.push(ent);
+        } else {
+          unassignedEntities.push(ent);
+        }
+      } else {
+        unassignedEntities.push(ent);
+      }
+    });
+
+    const activeRooms = Object.values(roomGroups)
+      .filter((r) => r.entities.length > 0)
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    const totalMatching =
+      activeRooms.reduce((acc, r) => acc + r.entities.length, 0) + unassignedEntities.length;
 
     const getDomainIcon = (d) => {
       switch (d) {
@@ -5541,50 +5598,52 @@ class OtisCompanionCard extends HTMLElement {
         case "sensor": return "📊";
         case "cover": return "🪟";
         case "lock": return "🔒";
+        case "fan": return "💨";
         default: return "⚡";
       }
     };
 
     return `
       <div class="modal-overlay" id="add-marker-modal-backdrop">
-        <div class="modal-card" style="max-width: 540px;">
+        <div class="modal-card" style="max-width: 620px; max-height: 85vh; display: flex; flex-direction: column;">
           <div class="modal-header">
             <div>
               <div class="modal-title"><span>➕</span><span>Add Device Pin to Floor Plan</span></div>
-              <div class="modal-subtitle">Search or select an entity to position on your blueprint</div>
+              <div class="modal-subtitle">Browse devices grouped by room or search to place on your floor plan (${totalMatching} devices)</div>
             </div>
             <button type="button" class="modal-close-btn" id="add-marker-close-btn">✕</button>
           </div>
 
           <!-- Real-Time Search Filter -->
-          <div style="margin-bottom: 10px;">
+          <div style="margin-bottom: 12px;">
             <input
               type="text"
               id="add-marker-search-input"
-              placeholder="🔍 Search devices by name, domain, or ID..."
+              placeholder="🔍 Search by room name, device, domain, or entity ID..."
               value="${this._addMarkerFilter || ""}"
-              style="width: 100%; box-sizing: border-box; padding: 8px 12px; background: rgba(0,0,0,0.35); border: 1px solid var(--otis-surface-border); border-radius: 8px; color: var(--otis-text); font-size: 0.82rem;"
+              style="width: 100%; box-sizing: border-box; padding: 9px 14px; background: rgba(0,0,0,0.35); border: 1px solid var(--otis-surface-border); border-radius: 8px; color: var(--otis-text); font-size: 0.82rem;"
             />
           </div>
 
-          <div style="max-height: 400px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-right: 4px;">
+          <div style="overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 12px; padding-right: 4px;">
             ${
-              Object.entries(grouped).filter(([_, list]) => list.length > 0).length === 0
-                ? `<div style="text-align: center; padding: 24px 0; color: var(--otis-text-muted); font-size: 0.8rem;">No devices matching "${query}".</div>`
+              totalMatching === 0
+                ? `<div style="text-align: center; padding: 32px 0; color: var(--otis-text-muted); font-size: 0.82rem;">No devices matching "${query}".</div>`
                 : ""
             }
-            ${Object.entries(grouped)
-              .filter(([_, list]) => list.length > 0)
+            ${activeRooms
               .map(
-                ([dom, list]) => `
-              <div>
-                <div style="font-size: 0.74rem; font-weight: 700; text-transform: uppercase; color: var(--otis-primary); margin-bottom: 6px; display: flex; align-items: center; gap: 5px;">
-                  <span>${getDomainIcon(dom)}</span>
-                  <span>${dom.replace("_", " ")}</span>
-                  <span style="color: var(--otis-text-muted); font-weight: 500;">(${list.length})</span>
+                (r) => `
+              <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--otis-surface-border); border-radius: 10px; padding: 10px 12px;">
+                <div style="font-size: 0.78rem; font-weight: 700; color: var(--otis-primary); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <span>${this._getRoomEmoji(r.name)}</span>
+                    <span>${r.name}</span>
+                  </div>
+                  <span style="color: var(--otis-text-muted); font-size: 0.72rem; font-weight: 500;">${r.entities.length} devices</span>
                 </div>
                 <div style="display: flex; flex-wrap: wrap; gap: 6px;">
-                  ${list.slice(0, 30).map(
+                  ${r.entities.map(
                     (e) => `
                     <button type="button" class="subview-chip btn-place-entity-pin" data-entity-id="${e.entity_id}" title="${e.entity_id}" style="font-size: 0.73rem; padding: 5px 9px; display: inline-flex; align-items: center; gap: 5px;">
                       <span>${getDomainIcon(e.domain)}</span>
@@ -5597,6 +5656,32 @@ class OtisCompanionCard extends HTMLElement {
             `
               )
               .join("")}
+
+            ${
+              unassignedEntities.length > 0
+                ? `
+              <div style="background: rgba(255,255,255,0.02); border: 1px dashed var(--otis-surface-border); border-radius: 10px; padding: 10px 12px;">
+                <div style="font-size: 0.78rem; font-weight: 700; color: var(--otis-text-muted); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <span>📦</span>
+                    <span>Unassigned Devices</span>
+                  </div>
+                  <span style="color: var(--otis-text-muted); font-size: 0.72rem; font-weight: 500;">${unassignedEntities.length} devices</span>
+                </div>
+                <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                  ${unassignedEntities.slice(0, 100).map(
+                    (e) => `
+                    <button type="button" class="subview-chip btn-place-entity-pin" data-entity-id="${e.entity_id}" title="${e.entity_id}" style="font-size: 0.73rem; padding: 5px 9px; display: inline-flex; align-items: center; gap: 5px;">
+                      <span>${getDomainIcon(e.domain)}</span>
+                      <span style="font-weight: 600;">${e.name !== e.entity_id ? e.name : e.entity_id}</span>
+                    </button>
+                  `
+                  ).join("")}
+                </div>
+              </div>
+            `
+                : ""
+            }
           </div>
         </div>
       </div>
@@ -7184,8 +7269,30 @@ class OtisCompanionCard extends HTMLElement {
           this._savingRules = true;
           this._render();
           try {
+            // Harvest latest input values directly from DOM before constructing payload
+            const focusSelect = root.querySelector("#rules-input-content-focus");
+            const toneSelect = root.querySelector("#rules-input-tone");
+            const lengthSelect = root.querySelector("#rules-input-length");
+            const instArea = root.querySelector("#rules-input-instructions");
+            const quietToggle = root.querySelector("#rules-input-quiet-enabled");
+            const quietStart = root.querySelector("#rules-input-quiet-start");
+            const quietEnd = root.querySelector("#rules-input-quiet-end");
+            const quietVol = root.querySelector("#rules-input-quiet-vol");
+            const speakerInput = root.querySelector("#rules-input-speaker");
+
+            const draft = { ...(this._rulesDraft || {}) };
+            if (focusSelect) draft.primary_content_focus = focusSelect.value;
+            if (toneSelect) draft.tone = toneSelect.value;
+            if (lengthSelect) draft.response_length = lengthSelect.value;
+            if (instArea) draft.custom_instructions = instArea.value;
+            if (quietToggle) draft.quiet_hours_enabled = quietToggle.checked;
+            if (quietStart) draft.quiet_hours_start = quietStart.value;
+            if (quietEnd) draft.quiet_hours_end = quietEnd.value;
+            if (quietVol) draft.quiet_hours_volume = parseInt(quietVol.value, 10);
+            if (speakerInput) draft.preferred_speaker = speakerInput.value.trim();
+
             const payload = {
-              ...(this._rulesDraft || {}),
+              ...draft,
               onboarding_completed: true,
             };
             this._showToast("⚙️ Saving preferences & generating dashboards...");

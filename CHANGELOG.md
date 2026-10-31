@@ -2,6 +2,21 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.11.17] - 2026-10-31
+
+### Added & Enhanced
+- **Dynamic Content Focus & Backend Preference Sync**:
+  - Connected `primary_content_focus` in `_build_user_command_center_dashboard_config` to dynamically order sections and cards according to user preference (`glance_first` places Schedule & Glance at the very top, `studios_first` places Studios and Rooms first, `balanced` maintains default flow).
+  - Enhanced `handle_set_user_rules` service handler to automatically trigger `async_ensure_user_command_center_dashboard` and `async_ensure_admin_companion_dashboard`, immediately regenerating and synchronizing storage files and live Lovelace runtime when preferences are saved.
+  - Harvested all form inputs directly before constructing payload in `otis-companion-card.js` rules modal save event handler.
+- **Floor Plan Add Entity Dialog Room Grouping & Complete Entity Coverage**:
+  - Re-architected `_renderAddMarkerModal()` in `otis-companion-card.js` to group entities by **Room** rather than by generic type.
+  - Sourced entities from both `capabilityMap.entities` and live `this._hass.states` so 100% of all Home Assistant devices are accessible.
+  - Displays contextual room emojis, device counts, friendly names, domain icons, and instant search across rooms and devices.
+- **Vision & Presence Proactive Automation Intelligence**:
+  - Enhanced proactive suggestions engine to inspect room occupancy telemetry and outdoor AI vision cameras.
+  - Added proactive 1-click coordinator recommendations for Vacancy Auto-Off Lighting (preventing power waste when residents leave rooms) and Outdoor Vision Watchdog alerts (real-time arrival and delivery alerts).
+
 ## [1.11.16] - 2026-10-31
 
 ### Fixed

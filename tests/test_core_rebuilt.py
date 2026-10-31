@@ -3825,6 +3825,46 @@ class TestModernSectionsDashboardGeneration(unittest.TestCase):
         self.assertIn("cards", home_view)
         self.assertGreaterEqual(len(home_view["cards"]), 3)
 
+    def test_content_focus_glance_first_and_studios_first(self):
+        """Verify dynamic section and card reordering when user switches primary content focus."""
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+        from custom_components.otis_ai.rules_manager import BehavioralRulesManager
+
+        rm = BehavioralRulesManager(self.hass)
+        dm = DashboardManager(self.hass, rules_manager=rm)
+
+        cap_map = {
+            "areas": {
+                "living_room": {"name": "Living Room", "entities": ["light.living_room_light"]},
+            },
+            "entities": [
+                {"entity_id": "light.living_room_light", "name": "Living Room Light", "area_id": "living_room", "state": "on"},
+                {"entity_id": "weather.home", "name": "Home Weather", "state": "sunny"},
+                {"entity_id": "calendar.family", "name": "Family Calendar", "state": "on"},
+            ],
+        }
+
+        # Case 1: Glance First (Schedule & Weather front and center)
+        asyncio.run(rm.async_save({"primary_content_focus": "glance_first"}))
+        cfg_glance = dm._build_user_command_center_dashboard_config(cap_map)
+        view_glance = cfg_glance["views"][0]
+        self.assertEqual(view_glance["sections"][0]["cards"][0]["heading"], "Schedule & Glance")
+        self.assertEqual(view_glance["sections"][1]["cards"][0]["heading"], "Studios")
+        self.assertEqual(view_glance["sections"][2]["cards"][0]["heading"], "Rooms")
+        glance_card_titles = [c.get("title") for c in view_glance["cards"]]
+        self.assertLess(glance_card_titles.index("Glance & Schedule"), glance_card_titles.index("Studios"))
+
+        # Case 2: Studios First (Studios, Rooms, then Glance & Schedule)
+        asyncio.run(rm.async_save({"primary_content_focus": "studios_first"}))
+        cfg_studios = dm._build_user_command_center_dashboard_config(cap_map)
+        view_studios = cfg_studios["views"][0]
+        self.assertEqual(view_studios["sections"][0]["cards"][0]["heading"], "Studios")
+        self.assertEqual(view_studios["sections"][1]["cards"][0]["heading"], "Rooms")
+        self.assertEqual(view_studios["sections"][2]["cards"][0]["heading"], "Schedule & Glance")
+        studios_card_titles = [c.get("title") for c in view_studios["cards"]]
+        self.assertLess(studios_card_titles.index("Studios"), studios_card_titles.index("Rooms"))
+        self.assertLess(studios_card_titles.index("Rooms"), studios_card_titles.index("Glance & Schedule"))
+
 
 if __name__ == "__main__":
     unittest.main()

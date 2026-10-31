@@ -207,6 +207,9 @@ class DashboardManager:
         user_rules = self._get_user_rules()
         layout_style = user_rules.get("dashboard_layout", "modern_sections")
         cal_view = user_rules.get("calendar_view", "listDay")
+        content_focus = user_rules.get("primary_content_focus", "balanced")
+        nav_style = user_rules.get("navigation_style", "sleek_buttons")
+        button_cols = 3 if nav_style == "standard_grid" else 2
 
         studio_buttons = [
             {
@@ -286,86 +289,110 @@ class DashboardManager:
             for area in active_areas
         ]
 
-        # Traditional cards list (clean fallback and for tools expecting view.cards)
-        home_cards: list[dict[str, Any]] = [
-            {
-                "type": "markdown",
-                "content": "# 🏠 Home Command Center\nSelect a studio or room below for full interactive control.",
-            },
-            {
-                "type": "grid",
-                "title": "Studios",
-                "columns": 3,
-                "square": False,
-                "cards": studio_buttons,
-            },
-        ]
-        if glance_cards:
-            home_cards.append({
-                "type": "grid",
-                "title": "Glance & Schedule",
-                "columns": len(glance_cards),
-                "square": False,
-                "cards": glance_cards,
-            })
-        if room_buttons:
-            home_cards.append({
-                "type": "grid",
-                "title": "Rooms",
-                "columns": 3,
-                "square": False,
-                "cards": room_buttons,
-            })
+        # Individual Sections
+        studios_sec = {
+            "type": "grid",
+            "cards": [
+                {
+                    "type": "heading",
+                    "heading": "Studios",
+                    "icon": "mdi:view-dashboard-outline",
+                    "heading_style": "title",
+                },
+                {
+                    "type": "grid",
+                    "columns": button_cols,
+                    "square": False,
+                    "cards": studio_buttons,
+                },
+            ],
+        }
 
-        # Modern Sections Layout (Responsive Mobile-to-Desktop HA Standard)
-        sections = [
-            {
-                "type": "grid",
-                "cards": [
-                    {
-                        "type": "heading",
-                        "heading": "Studios",
-                        "icon": "mdi:view-dashboard-outline",
-                        "heading_style": "title",
-                    },
-                    {
-                        "type": "grid",
-                        "columns": 2,
-                        "square": False,
-                        "cards": studio_buttons,
-                    },
-                ],
-            },
-            {
-                "type": "grid",
-                "cards": [
-                    {
-                        "type": "heading",
-                        "heading": "Schedule & Glance",
-                        "icon": "mdi:calendar-clock",
-                        "heading_style": "title",
-                    },
-                    *glance_cards,
-                ],
-            },
-            {
-                "type": "grid",
-                "cards": [
-                    {
-                        "type": "heading",
-                        "heading": "Rooms",
-                        "icon": "mdi:home-outline",
-                        "heading_style": "title",
-                    },
-                    {
-                        "type": "grid",
-                        "columns": 2,
-                        "square": False,
-                        "cards": room_buttons,
-                    },
-                ],
-            },
-        ]
+        glance_sec = {
+            "type": "grid",
+            "cards": [
+                {
+                    "type": "heading",
+                    "heading": "Schedule & Glance",
+                    "icon": "mdi:calendar-clock",
+                    "heading_style": "title",
+                },
+                *glance_cards,
+            ],
+        }
+
+        rooms_sec = {
+            "type": "grid",
+            "cards": [
+                {
+                    "type": "heading",
+                    "heading": "Rooms",
+                    "icon": "mdi:home-outline",
+                    "heading_style": "title",
+                },
+                {
+                    "type": "grid",
+                    "columns": button_cols,
+                    "square": False,
+                    "cards": room_buttons,
+                },
+            ],
+        }
+
+        # Order sections according to primary_content_focus
+        if content_focus == "glance_first":
+            sections = [glance_sec, studios_sec, rooms_sec]
+        elif content_focus == "studios_first":
+            sections = [studios_sec, rooms_sec, glance_sec]
+        else:  # "balanced"
+            sections = [studios_sec, glance_sec, rooms_sec]
+
+        # Traditional cards list (clean fallback and for tools expecting view.cards)
+        markdown_card = {
+            "type": "markdown",
+            "content": "# 🏠 Home Command Center\nSelect a studio or room below for full interactive control.",
+        }
+        studios_card = {
+            "type": "grid",
+            "title": "Studios",
+            "columns": button_cols,
+            "square": False,
+            "cards": studio_buttons,
+        }
+        glance_card = {
+            "type": "grid",
+            "title": "Glance & Schedule",
+            "columns": len(glance_cards),
+            "square": False,
+            "cards": glance_cards,
+        } if glance_cards else None
+        rooms_card = {
+            "type": "grid",
+            "title": "Rooms",
+            "columns": button_cols,
+            "square": False,
+            "cards": room_buttons,
+        } if room_buttons else None
+
+        home_cards = [markdown_card]
+        if content_focus == "glance_first":
+            if glance_card:
+                home_cards.append(glance_card)
+            home_cards.append(studios_card)
+            if rooms_card:
+                home_cards.append(rooms_card)
+        elif content_focus == "studios_first":
+            home_cards.append(studios_card)
+            if rooms_card:
+                home_cards.append(rooms_card)
+            if glance_card:
+                home_cards.append(glance_card)
+        else:  # "balanced"
+            home_cards.append(studios_card)
+            if glance_card:
+                home_cards.append(glance_card)
+            if rooms_card:
+                home_cards.append(rooms_card)
 
         home_view: dict[str, Any] = {
             "title": "Home",
@@ -678,72 +705,18 @@ class DashboardManager:
                     # For Command Center home view:
                     # Keep user's custom cards while always syncing the updated Studios, Glance & Schedule, and Rooms grids
                     fresh_cards = new_views[0].get("cards", [])
-                    fresh_studios_grid = next(
-                        (c for c in fresh_cards if c.get("title") == "Studios"), None
-                    )
-                    fresh_glance_grid = next(
-                        (c for c in fresh_cards if c.get("title") == "Glance & Schedule"), None
-                    )
-                    fresh_rooms_grid = next(
-                        (c for c in fresh_cards if c.get("title") == "Rooms"), None
-                    )
+                    fresh_titles = {c.get("title") for c in fresh_cards}
+                    merged_home_cards = list(fresh_cards)
 
-                    merged_home_cards = []
-                    studios_inserted = False
-                    glance_inserted = False
-                    rooms_inserted = False
-
+                    # Preserve existing core sections if new_config is missing them (e.g. during offline startup)
                     for ex_card in existing_home_view.get("cards", []):
                         c_title = ex_card.get("title")
-                        if c_title == "Studios" or (
-                            ex_card.get("type") == "grid"
-                            and any(b.get("name") == "Floor Plan" for b in ex_card.get("cards", []))
-                        ):
-                            if fresh_studios_grid:
-                                merged_home_cards.append(fresh_studios_grid)
-                            else:
-                                merged_home_cards.append(ex_card)
-                            studios_inserted = True
-                        elif c_title == "Glance & Schedule" or (
-                            ex_card.get("type") == "grid"
-                            and any(
-                                b.get("type") in ("weather-forecast", "calendar")
-                                for b in ex_card.get("cards", [])
-                            )
-                        ):
-                            if fresh_glance_grid:
-                                merged_home_cards.append(fresh_glance_grid)
-                            else:
-                                merged_home_cards.append(ex_card)
-                            glance_inserted = True
-                        elif c_title == "Rooms" or (
-                            ex_card.get("type") == "grid"
-                            and any(
-                                str(b.get("tap_action", {}).get("navigation_path", "")).startswith(
-                                    f"/{COMMAND_CENTER_DASHBOARD_URL_PATH}/area_"
-                                )
-                                for b in ex_card.get("cards", [])
-                            )
-                        ):
-                            if fresh_glance_grid and not glance_inserted:
-                                merged_home_cards.append(fresh_glance_grid)
-                                glance_inserted = True
-
-                            if fresh_rooms_grid:
-                                merged_home_cards.append(fresh_rooms_grid)
-                            else:
-                                merged_home_cards.append(ex_card)
-                            rooms_inserted = True
-                        else:
-                            # User-added custom card on Home view
+                        if c_title in ("Glance & Schedule", "Rooms") and c_title not in fresh_titles:
                             merged_home_cards.append(ex_card)
-
-                    if fresh_studios_grid and not studios_inserted:
-                        merged_home_cards.append(fresh_studios_grid)
-                    if fresh_glance_grid and not glance_inserted:
-                        merged_home_cards.append(fresh_glance_grid)
-                    if fresh_rooms_grid and not rooms_inserted:
-                        merged_home_cards.append(fresh_rooms_grid)
+                        elif c_title not in ("Studios", "Glance & Schedule", "Rooms"):
+                            if not (ex_card.get("type") == "markdown" and "Home Command Center" in str(ex_card.get("content", ""))):
+                                if not (ex_card.get("type") == "grid" and any(b.get("name") == "Floor Plan" for b in ex_card.get("cards", []))):
+                                    merged_home_cards.append(ex_card)
 
                     merged_home = dict(existing_home_view)
                     if new_views[0].get("type") == "sections" and "sections" in new_views[0]:

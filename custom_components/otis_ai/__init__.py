@@ -1557,10 +1557,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Service 'set_user_rules' triggered with: %s", call.data)
         rm = _get_rules_manager()
         eng = _get_engine()
+        dm = _get_dashboard_manager()
         rules_payload = call.data.get("rules") if isinstance(call.data.get("rules"), dict) else call.data
         updated = await rm.async_save(rules_payload)
         if hasattr(eng, "invalidate_cache"):
             eng.invalidate_cache()
+        if dm and hasattr(dm, "async_ensure_user_command_center_dashboard"):
+            try:
+                cap_map = await eng.async_build_capability_map() if hasattr(eng, "async_build_capability_map") else None
+                await dm.async_ensure_user_command_center_dashboard(cap_map)
+                await dm.async_ensure_admin_companion_dashboard(cap_map)
+                _LOGGER.info("Otis AI: Automatically synced dashboards following behavioral rules update")
+            except Exception as sync_err:
+                _LOGGER.debug("Dashboard auto-sync on set_user_rules notice: %s", sync_err)
         return {"success": True, "rules": updated}
 
     _LOGGER.debug("Registering Otis AI services")
@@ -5049,12 +5058,111 @@ class DiscoveryEngine:
                 "action_payload": {"prompt": "Optimize high loads for solar production surplus"},
             })
 
-        # 11. Multi-Modal Vision & Presence Contextual Alerts (Phase 8)
+        # 11. Multi-Modal Vision & Presence Contextual Alerts & Automation Optimizations (Phase 8)
         if getattr(self, "vision_manager", None):
             try:
                 ctx_alerts = await self.vision_manager.async_evaluate_contextual_alerts()
                 for alert in ctx_alerts:
                     suggestions.append(alert)
+
+                # Generate proactive Vision & Presence automation recommendations
+                presence_states = await self.vision_manager.async_get_presence_states(use_cache=True)
+                p_rooms = presence_states.get("rooms", {})
+                for aid, ainfo in areas.items():
+                    a_name = ainfo.get("name") or aid.replace("_", " ").title()
+                    a_ents = ainfo.get("entities", [])
+                    has_presence = any(
+                        eid.startswith("binary_sensor.") and any(k in eid.lower() for k in ("motion", "occupancy", "presence"))
+                        for eid in a_ents
+                    ) or aid in p_rooms
+                    a_lights = [eid for eid in a_ents if eid.startswith("light.")]
+                    has_vacancy_auto = any(
+                        "vacancy" in name and aid in name
+                        for name in all_existing_names
+                    )
+                    if has_presence and a_lights and not has_vacancy_auto:
+                        m_sensor = next(
+                            (eid for eid in a_ents if eid.startswith("binary_sensor.") and any(k in eid.lower() for k in ("motion", "occupancy", "presence"))),
+                            None
+                        )
+                        if m_sensor:
+                            suggestions.append({
+                                "id": f"vision_presence_vacancy_auto_{aid}",
+                                "title": f"Vision & Presence: Auto-Power Down Vacant {a_name}",
+                                "category": "energy",
+                                "priority": "medium",
+                                "icon": "mdi:motion-sensor-off",
+                                "description": (
+                                    f"Presence telemetry indicates {a_name} is actively occupied during the day. "
+                                    f"Deploy an intelligent 10-minute vacancy auto-off coordinator for {len(a_lights)} "
+                                    "room lights to save power when residents leave."
+                                ),
+                                "action_type": "create_automation",
+                                "action_payload": {
+                                    "alias": f"Vacancy Coordinator: Auto-Off {a_name} Lights",
+                                    "description": f"Automated by Otis AI Companion Vision & Presence for {a_name}",
+                                    "trigger": [
+                                        {
+                                            "platform": "state",
+                                            "entity_id": m_sensor,
+                                            "to": "off",
+                                            "for": {"minutes": 10},
+                                        }
+                                    ],
+                                    "action": [
+                                        {"service": "light.turn_off", "target": {"entity_id": a_lights[:5]}}
+                                    ],
+                                    "mode": "single",
+                                },
+                            })
+                            break  # Surface top vacancy coordinator
+
+                # Outdoor Camera Smart Detection Alerts
+                cams = await self.vision_manager.async_get_cameras()
+                for c in cams:
+                    c_eid = c.get("entity_id", "")
+                    c_name = c.get("name") or c_eid
+                    c_lower = (c_eid + " " + c_name).lower()
+                    is_outdoor = any(k in c_lower for k in ("front", "driveway", "porch", "patio", "backyard", "doorbell", "yard"))
+                    has_cam_alert = any(c_name.lower() in name for name in all_existing_names)
+                    if is_outdoor and not has_cam_alert:
+                        suggestions.append({
+                            "id": f"vision_outdoor_watchdog_{self._slugify(c_eid)}",
+                            "title": f"Vision Watchdog: Outdoor Arrival & Delivery Detection ({c_name})",
+                            "category": "security",
+                            "priority": "high",
+                            "icon": "mdi:cctv",
+                            "description": (
+                                f"Connect Otis AI vision heuristics with {c_name} to broadcast actionable mobile alerts "
+                                "with live snapshots when delivery vehicles, packages, or visitors approach after sunset."
+                            ),
+                            "action_type": "create_automation",
+                            "action_payload": {
+                                "alias": f"Vision Watchdog: {c_name} Person & Delivery Alert",
+                                "description": "Automated by Otis AI Companion Vision Watchdog",
+                                "trigger": [
+                                    {
+                                        "platform": "state",
+                                        "entity_id": c_eid,
+                                        "to": "recording",
+                                    }
+                                ],
+                                "condition": [
+                                    {"condition": "state", "entity_id": "sun.sun", "state": "below_horizon"}
+                                ],
+                                "action": [
+                                    {
+                                        "service": "notify.notify",
+                                        "data": {
+                                            "title": f"Security Notice: Activity at {c_name}",
+                                            "message": f"Otis detected evening activity on {c_name}.",
+                                        },
+                                    }
+                                ],
+                                "mode": "single",
+                            },
+                        })
+                        break  # Surface 1 primary outdoor camera suggestion
             except Exception as err:
                 _LOGGER.debug("Error evaluating contextual alerts: %s", err)
 
