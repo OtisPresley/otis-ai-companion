@@ -737,3 +737,32 @@ get_voice_assist_status:
   name: Get Voice Assist Status
   description: Inspect Home Assistant Assist pipelines, voice satellites, wake-word engines, and quiet hours state.
 
+dismiss_recommendation:
+  name: Dismiss Recommendation
+  description: Mute / dismiss a proactive smart home recommendation so it stays hidden from the Proactive Feed.
+  fields:
+    recommendation_id:
+      name: Recommendation ID
+      description: The unique identifier of the recommendation or suggestion to dismiss.
+      required: true
+      example: "reach_level_2_media"
+      selector:
+        text:
+
+restore_recommendation:
+  name: Restore Recommendation
+  description: Unhide / restore a previously dismissed recommendation back to the active Proactive Feed.
+  fields:
+    recommendation_id:
+      name: Recommendation ID
+      description: The unique identifier of the recommendation to restore.
+      required: true
+      example: "reach_level_2_media"
+      selector:
+        text:
+
+reset_dismissed_recommendations:
+  name: Reset Dismissed Recommendations
+  description: Clear all ignored and dismissed recommendations, restoring them to the Proactive Feed.
+
+

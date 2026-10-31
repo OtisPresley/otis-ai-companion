@@ -38,6 +38,8 @@ DEFAULT_RULES: dict[str, Any] = {
     "navigation_style": "sleek_buttons",
     "calendar_view": "listDay",
     "primary_content_focus": "balanced",
+    "dismissed_recommendation_ids": [],
+    "show_ignored_recommendations": False,
 }
 
 
@@ -108,6 +110,13 @@ class BehavioralRulesManager:
             merged["calendar_view"] = "listDay" if str(merged["calendar_view"]).lower() == "listday" else str(merged["calendar_view"]).lower()
         if "primary_content_focus" in merged and str(merged["primary_content_focus"]).lower() in ("balanced", "studios_first", "glance_first"):
             merged["primary_content_focus"] = str(merged["primary_content_focus"]).lower()
+        if "show_ignored_recommendations" in merged:
+            merged["show_ignored_recommendations"] = bool(merged["show_ignored_recommendations"])
+        if "dismissed_recommendation_ids" in merged:
+            if isinstance(merged["dismissed_recommendation_ids"], (list, set, tuple)):
+                merged["dismissed_recommendation_ids"] = list(dict.fromkeys(str(x) for x in merged["dismissed_recommendation_ids"] if x))
+            else:
+                merged["dismissed_recommendation_ids"] = []
 
         self._rules = merged
         await self._store.async_save(self._rules)
@@ -117,6 +126,44 @@ class BehavioralRulesManager:
             self._rules.get("onboarding_completed"),
         )
         return dict(self._rules)
+
+    async def async_dismiss_recommendation(self, rec_id: str) -> list[str]:
+        """Add a recommendation ID to the persistent dismissed list."""
+        if not self._loaded:
+            await self.async_load()
+        current = list(self._rules.get("dismissed_recommendation_ids") or [])
+        rec_id_str = str(rec_id).strip()
+        if rec_id_str and rec_id_str not in current:
+            current.append(rec_id_str)
+            self._rules["dismissed_recommendation_ids"] = current
+            await self._store.async_save(self._rules)
+            _LOGGER.info("Otis AI: Dismissed recommendation '%s'", rec_id_str)
+        return list(self._rules.get("dismissed_recommendation_ids") or [])
+
+    async def async_restore_recommendation(self, rec_id: str) -> list[str]:
+        """Restore a single previously dismissed recommendation ID."""
+        if not self._loaded:
+            await self.async_load()
+        current = list(self._rules.get("dismissed_recommendation_ids") or [])
+        rec_id_str = str(rec_id).strip()
+        if rec_id_str in current:
+            current = [x for x in current if x != rec_id_str]
+            self._rules["dismissed_recommendation_ids"] = current
+            await self._store.async_save(self._rules)
+            _LOGGER.info("Otis AI: Restored recommendation '%s'", rec_id_str)
+        return list(self._rules.get("dismissed_recommendation_ids") or [])
+
+    async def async_reset_dismissed_recommendations(self) -> None:
+        """Clear all dismissed recommendations, restoring them to the feed."""
+        if not self._loaded:
+            await self.async_load()
+        self._rules["dismissed_recommendation_ids"] = []
+        await self._store.async_save(self._rules)
+        _LOGGER.info("Otis AI: Reset all dismissed recommendations")
+
+    def get_dismissed_recommendations(self) -> list[str]:
+        """Return list of dismissed recommendation IDs."""
+        return list(self._rules.get("dismissed_recommendation_ids") or [])
 
     def get_rules(self) -> dict[str, Any]:
         """Return the current behavioral rules."""

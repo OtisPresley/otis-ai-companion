@@ -248,6 +248,9 @@ Otis AI Companion provides **46 registered services** structured by architectura
 | :--- | :--- | :--- |
 | `otis_ai.get_user_rules` | Retrieve persisted user behavioral rules, persona guidelines, and onboarding preferences. | `response_variable: user_rules` |
 | `otis_ai.set_user_rules` | Save or update persona profile, autonomy policies, quiet hours, and household instructions. | `data: { rules: { persona: "concierge", tone: "friendly" } }` |
+| `otis_ai.dismiss_recommendation` | Mute a proactive recommendation so it stays hidden across sessions and reboots. | `data: { recommendation_id: "rec_reach_level_2_media" }` |
+| `otis_ai.restore_recommendation` | Unhide and restore a previously dismissed recommendation to the active feed. | `data: { recommendation_id: "rec_reach_level_2_media" }` |
+| `otis_ai.reset_dismissed_recommendations` | Reset all dismissed recommendations, restoring them to the Proactive Feed. | `action: otis_ai.reset_dismissed_recommendations` |
 
 ---
 
@@ -266,6 +269,7 @@ show_chat: true
 
 ### Features:
 * **Interactive Rules Launchpad & Onboarding Wizard**: `⚙️ Rules` chip launches a 4-tab modal for persona selection (Concierge, Butler, Minimalist, Custom), response verbosity, autonomy safeguards (deadbolt & alarm confirmation), quiet hours volume limiting, and custom household rules with first-run onboarding banner.
+* **Proactive Feed Dismissal & Storage Persistence**: Sleek "Ignore this" and quick-dismiss buttons on all recommendation cards, backed by persistent HA storage (`.storage/otis_ai_rules`), with interactive "Show Ignored / Reset Ignored" toggles in card header, card editor, and rules modal.
 * **Resilient Command Center Home View**: Glance strip seamlessly displaying live weather forecast (`weather.home`) and calendar agenda events, with automatic registry fallback and persistence protection across all 16 room subviews.
 * **6 Theme Presets & Voice STT**: `ha_native` (Default, follows HA theme), `cyberpunk`, `midnight`, `emerald`, `sunset`, and `light_frost`, with integrated microphone streaming and 5-bar animated audio equalizer in both Chat and Theme Studio.
 * **Vector Floor Plan Studio & Dynamic Pins**: High-performance SVG canvas editor with dynamic matrix transforms (`getScreenCTM()`), dual `ResizeObserver` for zero-drift responsive pin tracking across all aspect ratios, native `ha-state-icon` rendering, and drag-and-drop pin editing.
@@ -282,10 +286,11 @@ Otis AI Companion includes a comprehensive test suite running against an asynchr
 python3 -m unittest discover tests
 ```
 
-### Coverage (96/96 Passing):
+### Coverage (107/107 Passing):
 - **Core Engine & Registries (`test_core_rebuilt.py`)**: Registry discovery, maturity scoring, BFS spatial pathfinding, floor plan rendering, themes, Sentinel watchdog, and atomic macros.
 - **Voice Assist & Spatial Audio Ducking (`test_core_rebuilt.py`)**: Acoustic ducking of targeted/adjacent media players, volume restoration, whisper/quiet hours mode, and Assist pipeline status.
-- **User Behavioral Rules (`test_rules_manager.py`)**: Persona profiles, tone guidelines, autonomy policies, quiet hours volume limiting, dynamic prompt injection, and services.
+- **User Behavioral Rules & Recommendation Persistence (`test_core_rebuilt.py`)**: Persona profiles, tone guidelines, autonomy policies, quiet hours volume limiting, recommendation dismissal persistence (`.storage/otis_ai_rules`), and services.
+- **Production Hardening & Stress Resilience (`test_core_rebuilt.py`)**: Concurrent service calls, offline edge recovery, and multi-satellite spatial audio handoffs.
 - **Vision & Presence Fusion (`test_vision_presence.py`)**: mmWave + PIR + media fusion, camera stream deduplication, and Gemini Vision anomaly detection.
 - **Habit Learning & Behavioral Modeling (`test_habit_manager.py`)**: SQLite recorder mining, habit routine clustering, bedtime deviation guards, and circadian curves.
 - **Autonomous Commissioning & Federation (`test_node_federation_commissioning.py`)**: Zero-config heuristic room mapping, satellite node sync, and remote service proxying.

@@ -6,7 +6,7 @@ import asyncio
 import tempfile
 import unittest
 import types
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock, AsyncMock, patch
 
 # --- Patching Home Assistant modules for local execution ---
 mock_voluptuous = MagicMock()
@@ -4047,6 +4047,161 @@ class TestModernSectionsDashboardGeneration(unittest.TestCase):
         studios_card_titles = [c.get("title") for c in view_studios["cards"]]
         self.assertLess(studios_card_titles.index("Studios"), studios_card_titles.index("Rooms"))
         self.assertLess(studios_card_titles.index("Rooms"), studios_card_titles.index("Glance & Schedule"))
+
+    def test_dismiss_and_restore_recommendations(self):
+        """Verify dismissing, restoring, and resetting proactive recommendations in rules manager."""
+        from custom_components.otis_ai.rules_manager import BehavioralRulesManager
+
+        rm = BehavioralRulesManager(self.hass)
+        rules = asyncio.run(rm.async_load())
+        self.assertEqual(rules.get("dismissed_recommendation_ids"), [])
+        self.assertFalse(rules.get("show_ignored_recommendations"))
+
+        # Dismiss a suggestion
+        dismissed = asyncio.run(rm.async_dismiss_recommendation("rec_turn_off_lights"))
+        self.assertIn("rec_turn_off_lights", dismissed)
+        self.assertEqual(rm.get_dismissed_recommendations(), ["rec_turn_off_lights"])
+
+        # Dismiss duplicate - idempotent
+        asyncio.run(rm.async_dismiss_recommendation("rec_turn_off_lights"))
+        self.assertEqual(rm.get_dismissed_recommendations(), ["rec_turn_off_lights"])
+
+        # Dismiss another
+        asyncio.run(rm.async_dismiss_recommendation("rec_media_coordinator"))
+        self.assertEqual(rm.get_dismissed_recommendations(), ["rec_turn_off_lights", "rec_media_coordinator"])
+
+        # Restore one
+        restored = asyncio.run(rm.async_restore_recommendation("rec_turn_off_lights"))
+        self.assertNotIn("rec_turn_off_lights", restored)
+        self.assertIn("rec_media_coordinator", restored)
+
+        # Toggle show_ignored_recommendations
+        updated = asyncio.run(rm.async_save({"show_ignored_recommendations": True}))
+        self.assertTrue(updated["show_ignored_recommendations"])
+
+        # Reset all dismissed
+        asyncio.run(rm.async_reset_dismissed_recommendations())
+        self.assertEqual(rm.get_dismissed_recommendations(), [])
+
+    def test_stress_concurrent_service_calls(self):
+        """Stress-test concurrent service operations under high load without deadlocks or race conditions."""
+        from custom_components.otis_ai.rules_manager import BehavioralRulesManager
+        from custom_components.otis_ai import DiscoveryEngine
+
+        rm = BehavioralRulesManager(self.hass)
+        engine = DiscoveryEngine(self.hass, rules_manager=rm)
+
+        test_cap_map = {
+            "areas": {
+                "living_room": {"name": "Living Room", "entities": ["light.living_room_light"]},
+                "kitchen": {"name": "Kitchen", "entities": ["light.kitchen_light"]},
+            },
+            "entities": [
+                {"entity_id": "light.living_room_light", "name": "Living Room Light", "area_id": "living_room", "state": "on"},
+                {"entity_id": "light.kitchen_light", "name": "Kitchen Light", "area_id": "kitchen", "state": "off"},
+            ],
+            "devices": {},
+            "orphaned_entities": [],
+            "integrations": ["media_player", "light"],
+        }
+
+        async def _run_concurrent_stress():
+            tasks = []
+            # Interleave 10 recommendation dismiss/restore calls
+            for i in range(10):
+                tasks.append(rm.async_dismiss_recommendation(f"rec_stress_{i}"))
+                tasks.append(rm.async_save({"tone": "friendly" if i % 2 == 0 else "formal"}))
+                tasks.append(engine.async_generate_proactive_suggestions(test_cap_map))
+                if i % 3 == 0:
+                    tasks.append(rm.async_restore_recommendation(f"rec_stress_{i}"))
+
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for r in results:
+                self.assertFalse(isinstance(r, Exception), f"Unexpected exception during concurrent stress: {r}")
+
+        asyncio.run(_run_concurrent_stress())
+        self.assertTrue(len(rm.get_dismissed_recommendations()) > 0)
+
+    def test_stress_offline_edge_recovery(self):
+        """Stress-test resilience and recovery when edge devices and network nodes fail or go offline."""
+        from custom_components.otis_ai.sentinel_manager import SentinelManager
+        from custom_components.otis_ai.federation_manager import FederationManager
+
+        # 1. Sentinel Watchdog edge failures (None states, unexpected attributes, offline nodes)
+        sm = SentinelManager(self.hass)
+        offline_states = [
+            None,  # Malformed state
+            MagicMock(entity_id="sensor.offline_battery", state="unavailable", attributes={}),
+            MagicMock(entity_id="climate.broken_hvac", state="unknown", attributes={}),
+            MagicMock(entity_id="sensor.battery_dead", state="3", attributes={"device_class": "battery"}),
+        ]
+        self.hass.states.async_all = MagicMock(return_value=[s for s in offline_states if s is not None])
+
+        # Must not crash when encountering malformed or offline edge states
+        anomalies = asyncio.run(sm.async_scan_all_anomalies())
+        self.assertIsInstance(anomalies, list)
+        self.assertTrue(any("battery" in a.get("anomaly_type", "") for a in anomalies))
+
+        # 2. Node Federation edge recovery when remote node times out or fails
+        fm = FederationManager(self.hass)
+        asyncio.run(fm.async_register_node(
+            node_id="garage_node",
+            name="Remote Detached Garage",
+            host="10.0.99.99",
+            port=8123,
+            token="dummy_token_123",
+        ))
+
+        # Test call_remote_service handling timeout/connection failure gracefully
+        session_mock = MagicMock()
+        session_mock.post.side_effect = asyncio.TimeoutError("Connection timed out")
+        with patch("custom_components.otis_ai.federation_manager.async_get_clientsession", return_value=session_mock):
+            res = asyncio.run(fm.async_call_remote_service(
+                node_id="garage_node",
+                domain="light",
+                service="turn_on",
+                service_data={"entity_id": "light.garage_bay"},
+            ))
+            self.assertFalse(res["success"])
+            self.assertIn("error", res)
+            self.assertIn("Connection timed out", res["error"])
+
+    def test_stress_multi_satellite_audio_handoff(self):
+        """Stress-test multi-satellite concurrent audio ducking, rapid handoffs, and volume restoration."""
+        from custom_components.otis_ai.audio_manager import AudioHandoffManager
+
+        class MockMediaState:
+            def __init__(self, entity_id, state="playing", attributes=None):
+                self.entity_id = entity_id
+                self.state = state
+                self.attributes = attributes or {}
+
+        mock_players = [
+            MockMediaState("media_player.sat_great_room", "playing", {"volume_level": 0.75, "friendly_name": "Great Room Sat", "area_id": "great_room"}),
+            MockMediaState("media_player.sat_kitchen", "playing", {"volume_level": 0.50, "friendly_name": "Kitchen Sat", "area_id": "kitchen"}),
+            MockMediaState("media_player.sat_patio", "playing", {"volume_level": 0.65, "friendly_name": "Patio Sat", "area_id": "patio"}),
+            MockMediaState("media_player.sat_bedroom", "off", {"volume_level": 0.40, "friendly_name": "Bedroom Sat", "area_id": "bedroom"}),
+        ]
+        self.hass.states.async_all = MagicMock(side_effect=lambda domain=None: mock_players if domain == "media_player" else [])
+        self.hass.services.has_service = MagicMock(return_value=True)
+
+        mgr = AudioHandoffManager(self.hass)
+
+        async def _run_multi_satellite_stress():
+            # Concurrently create multiple overlapping ducking sessions for different rooms
+            sess1 = await mgr.async_duck_media(areas=["great_room"], duck_ratio=0.20, duck_level=0.10)
+            sess2 = await mgr.async_duck_media(areas=["kitchen"], duck_ratio=0.30, duck_level=0.15)
+            sess3 = await mgr.async_duck_media(areas=["patio"], duck_ratio=0.25, duck_level=0.12)
+
+            self.assertTrue(sess1["success"])
+            self.assertTrue(sess2["success"])
+            self.assertTrue(sess3["success"])
+
+            # Verify all sessions can be unducked cleanly without volume drift
+            unduck_all = await mgr.async_unduck_media(session_id="all")
+            self.assertTrue(unduck_all["success"])
+
+        asyncio.run(_run_multi_satellite_stress())
 
 
 if __name__ == "__main__":

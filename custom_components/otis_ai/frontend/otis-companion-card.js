@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.11.19";
+const CARD_VERSION = "1.12.0";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -29,6 +29,7 @@ class OtisCompanionCard extends HTMLElement {
     this._capabilityMap = null;
     this._suggestions = [];
     this._dismissedIds = this._loadDismissedIds();
+    this._localShowIgnored = false;
     this._loadingSuggestions = false;
     this._applyingIds = new Set();
     this._chatMessages = this._loadChatMessages();
@@ -425,6 +426,12 @@ class OtisCompanionCard extends HTMLElement {
       if (!this._rulesDraft) {
         this._rulesDraft = { ...this._userRules };
       }
+      if (Array.isArray(this._userRules.dismissed_recommendation_ids)) {
+        for (const id of this._userRules.dismissed_recommendation_ids) {
+          this._dismissedIds.add(id);
+        }
+        this._saveDismissedIds();
+      }
       this._suggestions = capMap.proactive_suggestions || [];
       this._hasWalkthrough = Boolean(capMap.floorplan?.walkthrough_completed);
       this._hasFloorplan = Boolean(capMap.floorplan?.exists);
@@ -740,14 +747,54 @@ class OtisCompanionCard extends HTMLElement {
     try {
       if (this._dismissedIds && this._dismissedIds.size > 0) {
         localStorage.setItem("otis_dismissed_suggestions", JSON.stringify([...this._dismissedIds]));
+      } else {
+        localStorage.removeItem("otis_dismissed_suggestions");
       }
     } catch (_) {}
   }
 
-  _dismissSuggestion(sId) {
+  async _dismissSuggestion(sId) {
+    if (!sId) return;
     this._dismissedIds.add(sId);
     this._saveDismissedIds();
     this._render();
+    this._showToast("Recommendation ignored.");
+    try {
+      if (this._hass) {
+        await this._hass.callService("otis_ai", "dismiss_recommendation", { recommendation_id: sId });
+      }
+    } catch (err) {
+      console.warn("Could not persist dismissed recommendation to backend:", err);
+    }
+  }
+
+  async _restoreSuggestion(sId) {
+    if (!sId) return;
+    this._dismissedIds.delete(sId);
+    this._saveDismissedIds();
+    this._render();
+    this._showToast("Recommendation restored.");
+    try {
+      if (this._hass) {
+        await this._hass.callService("otis_ai", "restore_recommendation", { recommendation_id: sId });
+      }
+    } catch (err) {
+      console.warn("Could not restore recommendation on backend:", err);
+    }
+  }
+
+  async _resetDismissedSuggestions() {
+    this._dismissedIds.clear();
+    this._saveDismissedIds();
+    this._render();
+    this._showToast("All ignored recommendations restored.");
+    try {
+      if (this._hass) {
+        await this._hass.callService("otis_ai", "reset_dismissed_recommendations", {});
+      }
+    } catch (err) {
+      console.warn("Could not reset dismissed recommendations on backend:", err);
+    }
   }
 
   async _getConversationAgentId() {
@@ -1440,9 +1487,14 @@ class OtisCompanionCard extends HTMLElement {
   }
 
   _render() {
+    const showIgnored = Boolean(
+      this._localShowIgnored ||
+      this._config.show_ignored ||
+      this._userRules?.show_ignored_recommendations
+    );
     const priorityRank = { critical: 0, high: 1, medium: 2, low: 3 };
     const activeSuggestions = (this._suggestions || [])
-      .filter((s) => !this._dismissedIds.has(s.id))
+      .filter((s) => showIgnored || !this._dismissedIds.has(s.id))
       .slice()
       .sort((a, b) => {
         const rankA = priorityRank[String(a.priority || "medium").toLowerCase()] ?? 2;
@@ -2226,6 +2278,90 @@ class OtisCompanionCard extends HTMLElement {
           background: rgba(148, 163, 184, 0.15);
           color: #cbd5e1;
           border: 1px solid rgba(148, 163, 184, 0.3);
+        }
+
+        .badge-priority.ignored {
+          background: rgba(148, 163, 184, 0.12);
+          color: #94a3b8;
+          border: 1px dashed rgba(148, 163, 184, 0.45);
+        }
+
+        .suggestion-card.is-ignored {
+          opacity: 0.68;
+          border-style: dashed;
+        }
+
+        .suggestion-card.is-ignored:hover {
+          opacity: 0.95;
+        }
+
+        .btn-subtle-toggle {
+          background: rgba(255, 255, 255, 0.05);
+          border: 1px solid var(--otis-surface-border, rgba(255, 255, 255, 0.1));
+          border-radius: 8px;
+          color: var(--otis-text-muted);
+          font-size: 0.74rem;
+          font-weight: 500;
+          padding: 5px 11px;
+          cursor: pointer;
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          transition: all 0.2s ease;
+        }
+
+        .btn-subtle-toggle:hover {
+          background: rgba(255, 255, 255, 0.1);
+          color: var(--otis-text);
+          border-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .btn-subtle-toggle.active {
+          background: rgba(56, 189, 248, 0.16);
+          border-color: rgba(56, 189, 248, 0.4);
+          color: var(--otis-primary, #38bdf8);
+          font-weight: 600;
+        }
+
+        .btn-dismiss-card {
+          background: transparent;
+          border: 1px solid var(--otis-surface-border, rgba(255, 255, 255, 0.15));
+          border-radius: 8px;
+          color: var(--otis-text-muted);
+          font-size: 0.76rem;
+          font-weight: 500;
+          padding: 6px 12px;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+        }
+
+        .btn-dismiss-card:hover {
+          background: rgba(244, 63, 94, 0.12);
+          border-color: rgba(244, 63, 94, 0.35);
+          color: #f43f5e;
+        }
+
+        .btn-restore {
+          background: rgba(56, 189, 248, 0.1);
+          border: 1px solid rgba(56, 189, 248, 0.3);
+          border-radius: 8px;
+          color: var(--otis-primary, #38bdf8);
+          font-size: 0.76rem;
+          font-weight: 500;
+          padding: 6px 12px;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+        }
+
+        .btn-restore:hover {
+          background: rgba(56, 189, 248, 0.2);
+          border-color: var(--otis-primary, #38bdf8);
         }
 
         .dismiss-btn {
@@ -4645,6 +4781,11 @@ class OtisCompanionCard extends HTMLElement {
   }
 
   _renderSuggestionsTab(visibleSuggestions) {
+    const showIgnored = Boolean(
+      this._localShowIgnored ||
+      this._config.show_ignored ||
+      this._userRules?.show_ignored_recommendations
+    );
     const categories = [
       { key: "all", label: "All" },
       { key: "habits", label: "Habits & Routines" },
@@ -4657,16 +4798,32 @@ class OtisCompanionCard extends HTMLElement {
       { key: "system", label: "System" },
     ];
     return `
-      <div class="category-pills">
-        ${categories
-          .map(
-            (c) => `
-          <button type="button" class="category-pill ${this._selectedCategory === c.key ? "active" : ""}" data-category-pill="${c.key}">
-            ${c.label}
-          </button>
+      <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;">
+        <div class="category-pills" style="margin-bottom: 0;">
+          ${categories
+            .map(
+              (c) => `
+            <button type="button" class="category-pill ${this._selectedCategory === c.key ? "active" : ""}" data-category-pill="${c.key}">
+              ${c.label}
+            </button>
+          `
+            )
+            .join("")}
+        </div>
+        ${
+          this._dismissedIds && this._dismissedIds.size > 0
+            ? `
+          <div style="display: flex; align-items: center; gap: 6px; margin-left: auto;">
+            <button type="button" class="btn-subtle-toggle ${showIgnored ? "active" : ""}" id="btn-toggle-show-ignored" title="${showIgnored ? "Hide dismissed suggestions" : "Show dismissed suggestions"}">
+              ${showIgnored ? "👁️ Hide Ignored" : `👁️ Show Ignored (${this._dismissedIds.size})`}
+            </button>
+            <button type="button" class="btn-subtle-toggle" id="btn-reset-ignored" title="Restore all ignored suggestions">
+              ↺ Reset
+            </button>
+          </div>
         `
-          )
-          .join("")}
+            : ""
+        }
       </div>
       <div class="suggestions-list">
         ${
@@ -4682,14 +4839,20 @@ class OtisCompanionCard extends HTMLElement {
                 .map((s) => {
                   const isApplying = this._applyingIds.has(s.id);
                   const btnLabel = this._getActionLabel(s.action_type);
+                  const isDismissed = this._dismissedIds.has(s.id);
                   return `
-                    <div class="suggestion-card" data-id="${s.id}">
+                    <div class="suggestion-card ${isDismissed ? "is-ignored" : ""}" data-id="${s.id}">
                       <div class="suggestion-top">
                         <div class="suggestion-badge-group">
                           <span class="badge-category">${s.category || "automation"}</span>
                           <span class="badge-priority ${s.priority || "medium"}">${s.priority || "medium"}</span>
+                          ${isDismissed ? `<span class="badge-priority ignored">Ignored</span>` : ""}
                         </div>
-                        <button type="button" class="dismiss-btn" data-dismiss="${s.id}" title="Dismiss recommendation">✕</button>
+                        ${
+                          isDismissed
+                            ? `<button type="button" class="dismiss-btn" data-restore="${s.id}" title="Restore recommendation">↺</button>`
+                            : `<button type="button" class="dismiss-btn" data-dismiss="${s.id}" title="Dismiss recommendation">✕</button>`
+                        }
                       </div>
                       <div class="suggestion-title">${s.title}</div>
                       <div class="suggestion-desc">${s.description}</div>
@@ -4698,18 +4861,31 @@ class OtisCompanionCard extends HTMLElement {
                           s.action_type === "sentinel_alert_actions"
                             ? `
                           <div style="display: flex; gap: 8px; flex-wrap: wrap; width: 100%;">
-                            <button type="button" class="btn-toolbar btn-ignore-alert" data-ignore-id="${s.id}" style="padding: 6px 12px; font-size: 0.76rem;">
-                              ${s.action_payload?.dismiss_single_label || "Ignore this alert"}
-                            </button>
-                            <button type="button" class="btn-toolbar btn-ignore-category" data-ignore-cat="${s.action_payload?.category || s.anomaly_type || 'battery'}" style="padding: 6px 12px; font-size: 0.76rem; color: var(--otis-primary); border-color: var(--otis-primary);">
-                              ${s.action_payload?.dismiss_category_label || "Ignore all alerts in this category"}
-                            </button>
+                            ${
+                              isDismissed
+                                ? `<button type="button" class="btn-toolbar btn-restore" data-restore="${s.id}">↺ Restore Alert</button>`
+                                : `
+                                <button type="button" class="btn-toolbar btn-ignore-alert" data-ignore-id="${s.id}" style="padding: 6px 12px; font-size: 0.76rem;">
+                                  ${s.action_payload?.dismiss_single_label || "Ignore this alert"}
+                                </button>
+                                <button type="button" class="btn-toolbar btn-ignore-category" data-ignore-cat="${s.action_payload?.category || s.anomaly_type || 'battery'}" style="padding: 6px 12px; font-size: 0.76rem; color: var(--otis-primary); border-color: var(--otis-primary);">
+                                  ${s.action_payload?.dismiss_category_label || "Ignore all alerts in this category"}
+                                </button>
+                              `
+                            }
                           </div>
                         `
                             : `
-                          <button type="button" class="apply-btn" data-apply="${s.id}" ${isApplying ? "disabled" : ""}>
-                            ${isApplying ? `<div class="spinner"></div> Applying...` : btnLabel}
-                          </button>
+                          <div style="display: flex; gap: 8px; align-items: center; width: 100%;">
+                            <button type="button" class="apply-btn" data-apply="${s.id}" ${isApplying ? "disabled" : ""} style="flex: 1;">
+                              ${isApplying ? `<div class="spinner"></div> Applying...` : btnLabel}
+                            </button>
+                            ${
+                              isDismissed
+                                ? `<button type="button" class="btn-restore" data-restore="${s.id}" title="Restore to active recommendations">↺ Restore</button>`
+                                : `<button type="button" class="btn-dismiss-card" data-dismiss="${s.id}" title="Ignore this recommendation">Ignore this</button>`
+                            }
+                          </div>
                         `
                         }
                       </div>
@@ -6319,6 +6495,24 @@ class OtisCompanionCard extends HTMLElement {
             <option value="glance_first" ${currentFocus === "glance_first" ? "selected" : ""}>Schedule & Weather First</option>
           </select>
         </div>
+
+        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 6px;">Proactive Recommendations & Feed:</div>
+        <div class="rules-setting-row" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--otis-surface-border); border-radius: 8px;">
+          <div>
+            <div class="rules-setting-label">Show Ignored Recommendations</div>
+            <div class="rules-setting-desc">Display previously dismissed recommendations in the feed with a restore action.</div>
+          </div>
+          <input type="checkbox" id="rules-input-show-ignored" ${rules.show_ignored_recommendations ? "checked" : ""} style="cursor: pointer; width: 18px; height: 18px; accent-color: var(--otis-primary);">
+        </div>
+        <div class="rules-setting-row" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--otis-surface-border); border-radius: 8px;">
+          <div>
+            <div class="rules-setting-label">Dismissed Recommendations</div>
+            <div class="rules-setting-desc">Currently hiding <strong>${(rules.dismissed_recommendation_ids || []).length}</strong> recommendation(s) across your home.</div>
+          </div>
+          <button type="button" class="btn-subtle-toggle" id="rules-btn-reset-dismissed" ${(rules.dismissed_recommendation_ids || []).length === 0 ? "disabled" : ""}>
+            ↺ Reset All Ignored
+          </button>
+        </div>
       </div>
     `;
   }
@@ -7324,6 +7518,22 @@ class OtisCompanionCard extends HTMLElement {
         };
       }
 
+      const showIgnoredToggle = root.querySelector("#rules-input-show-ignored");
+      if (showIgnoredToggle) {
+        showIgnoredToggle.onchange = () => {
+          this._rulesDraft = { ...(this._rulesDraft || {}), show_ignored_recommendations: showIgnoredToggle.checked };
+        };
+      }
+
+      const resetDismissedBtn = root.querySelector("#rules-btn-reset-dismissed");
+      if (resetDismissedBtn) {
+        resetDismissedBtn.onclick = async () => {
+          await this._resetDismissedSuggestions();
+          this._rulesDraft = { ...(this._rulesDraft || {}), dismissed_recommendation_ids: [] };
+          this._render();
+        };
+      }
+
       // Save Rules Button
       const saveBtn = root.querySelector("#rules-btn-save");
       if (saveBtn) {
@@ -7342,6 +7552,7 @@ class OtisCompanionCard extends HTMLElement {
             const quietEnd = root.querySelector("#rules-input-quiet-end");
             const quietVol = root.querySelector("#rules-input-quiet-vol");
             const speakerInput = root.querySelector("#rules-input-speaker");
+            const showIgnoredCheck = root.querySelector("#rules-input-show-ignored");
 
             const draft = { ...(this._rulesDraft || {}) };
             if (focusSelect) draft.primary_content_focus = focusSelect.value;
@@ -7353,6 +7564,7 @@ class OtisCompanionCard extends HTMLElement {
             if (quietEnd) draft.quiet_hours_end = quietEnd.value;
             if (quietVol) draft.quiet_hours_volume = parseInt(quietVol.value, 10);
             if (speakerInput) draft.preferred_speaker = speakerInput.value.trim();
+            if (showIgnoredCheck) draft.show_ignored_recommendations = showIgnoredCheck.checked;
 
             const payload = {
               ...draft,
@@ -7668,6 +7880,31 @@ class OtisCompanionCard extends HTMLElement {
         this._dismissSuggestion(id);
       };
     });
+
+    // Restore buttons
+    root.querySelectorAll("[data-restore]").forEach((btn) => {
+      btn.onclick = (e) => {
+        const id = e.currentTarget.getAttribute("data-restore");
+        this._restoreSuggestion(id);
+      };
+    });
+
+    // Toggle Show Ignored button
+    const btnToggleShowIgnored = root.querySelector("#btn-toggle-show-ignored");
+    if (btnToggleShowIgnored) {
+      btnToggleShowIgnored.onclick = () => {
+        this._localShowIgnored = !this._localShowIgnored;
+        this._render();
+      };
+    }
+
+    // Reset Ignored button
+    const btnResetIgnored = root.querySelector("#btn-reset-ignored");
+    if (btnResetIgnored) {
+      btnResetIgnored.onclick = () => {
+        this._resetDismissedSuggestions();
+      };
+    }
 
     // Apply buttons
     root.querySelectorAll("[data-apply]").forEach((btn) => {
@@ -9506,6 +9743,14 @@ class OtisCompanionCardEditor extends HTMLElement {
             <div class="sub-label">Show automated suggestions with 1-click execution</div>
           </div>
           <input type="checkbox" id="cfg-suggestions" data-config="show_suggestions" ${this._config.show_suggestions !== false ? "checked" : ""}>
+        </div>
+
+        <div class="form-row checkbox-row">
+          <div>
+            <label for="cfg-show-ignored">Show Ignored Recommendations</label>
+            <div class="sub-label">Include previously dismissed suggestions with restore actions</div>
+          </div>
+          <input type="checkbox" id="cfg-show-ignored" data-config="show_ignored" ${this._config.show_ignored ? "checked" : ""}>
         </div>
 
         <div class="form-row checkbox-row">

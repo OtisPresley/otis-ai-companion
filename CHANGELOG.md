@@ -2,6 +2,19 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.12.0] - 2026-10-31
+
+### Added & Enhanced
+- **Proactive Recommendations "Ignore This" / Dismiss Action & Storage Persistence**:
+  - Added sleek "Ignore this" action buttons to all recommendation cards in the Proactive Feed, alongside top-right dismiss/restore buttons.
+  - Persisted dismissed recommendation IDs in Home Assistant backend storage (`.storage/otis_ai_rules`) via `BehavioralRulesManager`, ensuring hidden suggestions stay hidden across sessions, browser tabs, and HA core reboots.
+  - Added new services: `otis_ai.dismiss_recommendation`, `otis_ai.restore_recommendation`, and `otis_ai.reset_dismissed_recommendations`.
+  - Added interactive "Show Ignored / Reset Ignored" controls right by the category pills in the feed, as well as dedicated toggles and reset buttons in the Rules Modal and Lovelace Card Editor.
+  - Dismissed items display subtle dimmed styling and an "Ignored" badge with a one-click "↺ Restore" action when "Show Ignored" is toggled.
+- **Production Hardening, Edge Case Stress Testing & Release Packaging**:
+  - Hardened concurrent service calls, offline edge recovery, and multi-satellite spatial audio handoffs.
+  - Finalized HACS repository distribution specifications and documentation assets.
+
 ## [1.11.19] - 2026-10-31
 
 ### Added & Enhanced

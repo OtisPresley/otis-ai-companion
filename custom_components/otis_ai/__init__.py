@@ -77,6 +77,9 @@ from .const import (
     SERVICE_GET_FEDERATION_STATUS,
     SERVICE_GET_USER_RULES,
     SERVICE_SET_USER_RULES,
+    SERVICE_DISMISS_RECOMMENDATION,
+    SERVICE_RESTORE_RECOMMENDATION,
+    SERVICE_RESET_DISMISSED_RECOMMENDATIONS,
     SERVICE_DUCK_MEDIA,
     SERVICE_RESTORE_MEDIA,
     SERVICE_GET_VOICE_ASSIST_STATUS,
@@ -602,8 +605,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Handle service call to retrieve proactive suggestions."""
         _LOGGER.debug("Service 'get_suggestions' triggered")
         eng = _get_engine()
+        rm = _get_rules_manager()
         capability_map = await eng.async_build_capability_map()
-        return {"suggestions": capability_map.get("proactive_suggestions", [])}
+        suggestions = list(capability_map.get("proactive_suggestions", []))
+        dismissed = set(rm.get_dismissed_recommendations())
+        include_dismissed = call.data.get("include_dismissed", False)
+        if not include_dismissed and not rm.get_rules().get("show_ignored_recommendations", False):
+            suggestions = [s for s in suggestions if s.get("id") not in dismissed]
+        return {"suggestions": suggestions, "dismissed_ids": list(dismissed)}
 
     async def handle_apply_suggestion(call) -> ServiceResponse:
         """Handle service call to apply a proactive suggestion."""
@@ -635,6 +644,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         def _invalidate():
             if hasattr(eng, "invalidate_cache") and callable(getattr(eng, "invalidate_cache", None)):
                 eng.invalidate_cache()
+
+        if action_type == "dismiss":
+            rm = _get_rules_manager()
+            dismissed = await rm.async_dismiss_recommendation(suggestion_id)
+            _invalidate()
+            return {
+                "success": True,
+                "message": f"Recommendation '{suggestion_id}' ignored.",
+                "dismissed_ids": dismissed,
+            }
 
         if action_type == "remediate_sentinel_anomaly":
             res = await sm.async_remediate_anomaly(
@@ -1572,6 +1591,42 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.debug("Dashboard auto-sync on set_user_rules notice: %s", sync_err)
         return {"success": True, "rules": updated}
 
+    async def handle_dismiss_recommendation(call) -> ServiceResponse:
+        """Handle service call to dismiss a proactive recommendation."""
+        rec_id = call.data.get("recommendation_id") or call.data.get("id") or call.data.get("suggestion_id")
+        _LOGGER.debug("Service 'dismiss_recommendation' triggered for: %s", rec_id)
+        if not rec_id:
+            return {"success": False, "error": "Missing recommendation_id parameter"}
+        rm = _get_rules_manager()
+        eng = _get_engine()
+        dismissed = await rm.async_dismiss_recommendation(str(rec_id))
+        if hasattr(eng, "invalidate_cache") and callable(getattr(eng, "invalidate_cache", None)):
+            eng.invalidate_cache()
+        return {"success": True, "dismissed_ids": dismissed}
+
+    async def handle_restore_recommendation(call) -> ServiceResponse:
+        """Handle service call to restore a previously dismissed recommendation."""
+        rec_id = call.data.get("recommendation_id") or call.data.get("id") or call.data.get("suggestion_id")
+        _LOGGER.debug("Service 'restore_recommendation' triggered for: %s", rec_id)
+        if not rec_id:
+            return {"success": False, "error": "Missing recommendation_id parameter"}
+        rm = _get_rules_manager()
+        eng = _get_engine()
+        dismissed = await rm.async_restore_recommendation(str(rec_id))
+        if hasattr(eng, "invalidate_cache") and callable(getattr(eng, "invalidate_cache", None)):
+            eng.invalidate_cache()
+        return {"success": True, "dismissed_ids": dismissed}
+
+    async def handle_reset_dismissed_recommendations(call) -> ServiceResponse:
+        """Handle service call to reset all dismissed recommendations."""
+        _LOGGER.debug("Service 'reset_dismissed_recommendations' triggered")
+        rm = _get_rules_manager()
+        eng = _get_engine()
+        await rm.async_reset_dismissed_recommendations()
+        if hasattr(eng, "invalidate_cache") and callable(getattr(eng, "invalidate_cache", None)):
+            eng.invalidate_cache()
+        return {"success": True, "message": "All dismissed recommendations restored."}
+
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
         DOMAIN,
@@ -1833,6 +1888,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     hass.services.async_register(
         DOMAIN,
+        SERVICE_DISMISS_RECOMMENDATION,
+        handle_dismiss_recommendation,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RESTORE_RECOMMENDATION,
+        handle_restore_recommendation,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RESET_DISMISSED_RECOMMENDATIONS,
+        handle_reset_dismissed_recommendations,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
         SERVICE_DUCK_MEDIA,
         handle_duck_media,
         supports_response=SupportsResponse.OPTIONAL,
@@ -1879,6 +1952,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             SERVICE_UPDATE_FLOORPLAN_LAYOUT,
             SERVICE_GET_USER_RULES,
             SERVICE_SET_USER_RULES,
+            SERVICE_DISMISS_RECOMMENDATION,
+            SERVICE_RESTORE_RECOMMENDATION,
+            SERVICE_RESET_DISMISSED_RECOMMENDATIONS,
             SERVICE_DUCK_MEDIA,
             SERVICE_RESTORE_MEDIA,
             SERVICE_GET_VOICE_ASSIST_STATUS,
