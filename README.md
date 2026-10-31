@@ -39,7 +39,7 @@ It replaces fragile Jinja2 templates, hardcoded entity mappings, and rigid autom
 - 🎨 **Dynamic AI Themes Studio (Phase 2)**: Natural language theme generator synthesizing modern CSS variables with instant zero-profile-switching live activation, live STT voice microphone input with animated waveform equalizer, and robust dark/light contrast.
 - 🛡️ **Otis Sentinel Watchdog & Self-Healing (Phase 3)**: Continuous background telemetry watchdog monitoring battery depletion, short-cycling climate compressors, unattended garage doors, and failed integrations with 1-click atomic remediation.
 - ⚡ **Dynamic Macro Orchestrator & Assist Pipelines (Phase 5)**: Multi-step atomic lifestyle macros (Movie Night, Goodnight, Party Mode, Lockdown) with prior state snapshotting, pre-flight safety gates, and 1-click state rollback.
-- 🔊 **Voice Assist & Spatial Audio Ducking (Phase 6 & Roadmap Item 9)**: Continuous wake-word readiness and Assist pipeline coordination, spatial audio ducking across active media players during announcements, whisper / quiet voice mode adhering to user quiet hours volume constraints, and seamless multi-room audio follow-me routing across matrix amplifiers (e.g. Control4).
+- 🔊 **Voice Assist & Spatial Audio Ducking (Phase 6 & Roadmap Item 9)**: Continuous wake-word readiness and Assist pipeline coordination, spatial audio ducking across active media players during announcements, whisper / quiet voice mode adhering to user quiet hours volume constraints, and seamless multi-room audio follow-me routing across modular multi-zone matrix amplifiers (Russound, Monoprice 6-Zone / Dayton, Snap One / Episode / Triad, Control4, HTD, AudioControl / Anthem, and Universal).
 - ⚡ **Energy & Predictive Load Orchestrator (Phase 7)**: TOU tariff awareness, solar surplus utilization, battery/UPS storage monitoring, and tiered dynamic load shedding during grid peak hours.
 - 👁️ **Multi-Modal Vision & Presence Intelligence (Phase 8)**: Multi-sensor room occupancy fusion combining mmWave radar, PIR, media playback, and micro-BLE beacons; RTSP camera stream deduplication and Gemini Vision anomaly detection.
 - 🔄 **Self-Supervised Habit Learning & Behavioral Modeling (Phase 9)**: Non-blocking SQLite recorder habit sequence mining, habit deviation guards (e.g. missed bedtime routine), and dynamic circadian lighting & seasonal temperature curves.
@@ -136,9 +136,9 @@ The background discovery engine continuously evaluates system state and delivers
 
 ---
 
-## 🔊 Media Architecture & Dynamic Speaker Routing
+## 🔊 Media Architecture & Multi-Zone Matrix Audio
 
-Otis AI routes audio intelligently based on live room occupancy:
+Otis AI routes audio intelligently based on live room occupancy and multi-room matrix amplifier profiles (`matrix_presets.py`):
 
 ```yaml
 # Example: Presence-Aware Text-to-Speech via notify_router
@@ -150,8 +150,9 @@ data:
   wait_for_idle: true
 ```
 
-* **Targeted Audio**: Broadcasts only to rooms where motion or radar presence is currently active.
-* **Idle Power Guard**: Monitors multi-zone matrix amplifiers (e.g. Control4) and powers down idle amplifier output zones when playback ceases.
+* **Targeted Audio & Follow-Me Routing**: Broadcasts announcements only to rooms where motion or radar presence is currently active. Supports seamless audio transfer (`otis_ai.audio_handoff`) as residents walk between rooms.
+* **Modular Multi-Zone Matrix Profiles**: Native hardware profiles for **Russound** (MCA/RIO/RNET), **Monoprice 6-Zone / Dayton Audio**, **Snap One / Episode / Triad**, **Control4**, **HTD** (Lync/MC-66), **AudioControl / Anthem**, and **Universal Multi-Zone Amplifiers**.
+* **Idle Power Guard**: Monitors multi-zone matrix amplifier output zones and automatically powers down idle amplifier channels when playback ceases to eliminate standby heat and power draw.
 
 ---
 
