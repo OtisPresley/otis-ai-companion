@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.12.3";
+const CARD_VERSION = "0.1.0";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",

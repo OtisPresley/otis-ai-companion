@@ -181,3 +181,4 @@ def identify_matrix_preset(
 def get_matrix_presets_list() -> list[dict[str, Any]]:
     """Return all matrix presets formatted for API / Lovelace inspection."""
     return list(MATRIX_PRESETS.values())
+
