@@ -3732,6 +3732,99 @@ class TestBehavioralRulesManager(unittest.TestCase):
         self.assertIn("HIGH. Act immediately", snippet)
         self.assertNotIn("Quiet Hours:", snippet)
 
+    def test_dashboard_preference_rules_and_snippet(self):
+        """Verify dashboard layout preferences in rules manager and prompt snippet."""
+        from custom_components.otis_ai.rules_manager import BehavioralRulesManager
+
+        rm = BehavioralRulesManager(self.hass)
+        rules = asyncio.run(rm.async_load())
+
+        self.assertEqual(rules["dashboard_layout"], "modern_sections")
+        self.assertEqual(rules["navigation_style"], "sleek_buttons")
+        self.assertEqual(rules["calendar_view"], "listDay")
+        self.assertEqual(rules["primary_content_focus"], "balanced")
+
+        updated = asyncio.run(rm.async_save({
+            "dashboard_layout": "classic_grid",
+            "navigation_style": "tiles",
+            "calendar_view": "month",
+            "primary_content_focus": "studios_first",
+        }))
+        self.assertEqual(updated["dashboard_layout"], "classic_grid")
+        self.assertEqual(updated["navigation_style"], "tiles")
+        self.assertEqual(updated["calendar_view"], "month")
+        self.assertEqual(updated["primary_content_focus"], "studios_first")
+
+        snippet = rm.get_system_prompt_snippet()
+        self.assertIn("Dashboard & Layout Preference:", snippet)
+        self.assertIn("Classic Grid", snippet)
+
+
+class TestModernSectionsDashboardGeneration(unittest.TestCase):
+    """Test suite for Modern Sections Dashboard Generation and Scaling."""
+
+    def setUp(self):
+        self.hass = MagicMock()
+        self.hass.data = {DOMAIN: {}}
+
+    def test_user_command_center_modern_sections_generation(self):
+        """Verify modern sections layout generation for mobile/tablet responsive scaling."""
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+        from custom_components.otis_ai.rules_manager import BehavioralRulesManager
+
+        rm = BehavioralRulesManager(self.hass)
+        dm = DashboardManager(self.hass, rules_manager=rm)
+
+        cap_map = {
+            "areas": {
+                "living_room": {"name": "Living Room", "entities": ["light.living_room_light"]},
+                "kitchen": {"name": "Kitchen", "entities": ["light.kitchen_lights"]},
+            },
+            "entities": [
+                {"entity_id": "light.living_room_light", "name": "Living Room Light", "area_id": "living_room", "state": "on"},
+                {"entity_id": "light.kitchen_lights", "name": "Kitchen Lights", "area_id": "kitchen", "state": "off"},
+                {"entity_id": "weather.home", "name": "Home Weather", "state": "sunny"},
+                {"entity_id": "calendar.family", "name": "Family Calendar", "state": "on"},
+            ],
+        }
+
+        user_cfg = dm._build_user_command_center_dashboard_config(cap_map)
+        home_view = user_cfg["views"][0]
+
+        self.assertEqual(home_view["type"], "sections")
+        self.assertEqual(home_view["max_columns"], 3)
+        self.assertIn("sections", home_view)
+        sections = home_view["sections"]
+        self.assertEqual(len(sections), 3)
+
+        # Section 1: Studios
+        studios_sec = sections[0]
+        self.assertEqual(studios_sec["cards"][0]["type"], "heading")
+        self.assertEqual(studios_sec["cards"][0]["heading"], "Studios")
+        self.assertEqual(studios_sec["cards"][1]["type"], "grid")
+        self.assertEqual(studios_sec["cards"][1]["columns"], 2)
+
+        # Section 2: Schedule & Glance
+        glance_sec = sections[1]
+        self.assertEqual(glance_sec["cards"][0]["type"], "heading")
+        self.assertEqual(glance_sec["cards"][0]["heading"], "Schedule & Glance")
+        weather_card = glance_sec["cards"][1]
+        self.assertEqual(weather_card["type"], "weather-forecast")
+        calendar_card = glance_sec["cards"][2]
+        self.assertEqual(calendar_card["type"], "calendar")
+        self.assertEqual(calendar_card["initial_view"], "listDay")
+
+        # Section 3: Rooms
+        rooms_sec = sections[2]
+        self.assertEqual(rooms_sec["cards"][0]["type"], "heading")
+        self.assertEqual(rooms_sec["cards"][0]["heading"], "Rooms")
+        self.assertEqual(rooms_sec["cards"][1]["type"], "grid")
+        self.assertEqual(rooms_sec["cards"][1]["columns"], 2)
+
+        # Backwards compatible cards
+        self.assertIn("cards", home_view)
+        self.assertGreaterEqual(len(home_view["cards"]), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

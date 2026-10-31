@@ -34,10 +34,34 @@ OTIS_DASHBOARD_ICON = "mdi:robot-outline"
 class DashboardManager:
     """Manages automatic creation of the Admin-only Otis AI dashboard and pro-grade custom dashboards."""
 
-    def __init__(self, hass: HomeAssistant, floorplan_parser: Any = None) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        floorplan_parser: Any = None,
+        rules_manager: Any = None,
+    ) -> None:
         """Initialize the Dashboard Manager."""
         self.hass = hass
         self.floorplan_parser = floorplan_parser
+        self.rules_manager = rules_manager
+
+    def _get_user_rules(self) -> dict[str, Any]:
+        """Fetch current user behavioral and dashboard rules safely."""
+        if self.rules_manager and hasattr(self.rules_manager, "get_rules"):
+            try:
+                return self.rules_manager.get_rules()
+            except Exception:
+                pass
+        if hasattr(self.hass, "data") and isinstance(self.hass.data, dict):
+            for entry_val in self.hass.data.values():
+                if isinstance(entry_val, dict) and "rules_manager" in entry_val:
+                    rm = entry_val["rules_manager"]
+                    if hasattr(rm, "get_rules"):
+                        try:
+                            return rm.get_rules()
+                        except Exception:
+                            pass
+        return {}
 
     def _storage_dir(self) -> str | None:
         """Return the path to Home Assistant's .storage directory if available."""
@@ -180,48 +204,40 @@ class DashboardManager:
                 })
 
         # Main Home View for Users
-        home_cards: list[dict[str, Any]] = [
+        user_rules = self._get_user_rules()
+        layout_style = user_rules.get("dashboard_layout", "modern_sections")
+        cal_view = user_rules.get("calendar_view", "listDay")
+
+        studio_buttons = [
             {
-                "type": "markdown",
-                "content": "# 🏠 Home Command Center\nSelect a studio or room below for full interactive control.",
+                "type": "button",
+                "name": "Floor Plan",
+                "icon": "mdi:floor-plan",
+                "tap_action": {"action": "navigate", "navigation_path": "/command-center/floorplan"},
             },
             {
-                "type": "grid",
-                "title": "Studios",
-                "columns": 4,
-                "square": False,
-                "cards": [
-                    {
-                        "type": "button",
-                        "name": "Floor Plan",
-                        "icon": "mdi:floor-plan",
-                        "tap_action": {"action": "navigate", "navigation_path": "/command-center/floorplan"},
-                    },
-                    {
-                        "type": "button",
-                        "name": "Energy Studio",
-                        "icon": "mdi:lightning-bolt",
-                        "tap_action": {"action": "navigate", "navigation_path": "/command-center/energy"},
-                    },
-                    {
-                        "type": "button",
-                        "name": "Media Studio",
-                        "icon": "mdi:speaker-multiple",
-                        "tap_action": {"action": "navigate", "navigation_path": "/command-center/media"},
-                    },
-                    {
-                        "type": "button",
-                        "name": "Security Center",
-                        "icon": "mdi:shield-home",
-                        "tap_action": {"action": "navigate", "navigation_path": "/command-center/security"},
-                    },
-                    {
-                        "type": "button",
-                        "name": "Climate & Pool",
-                        "icon": "mdi:thermostat-box",
-                        "tap_action": {"action": "navigate", "navigation_path": "/command-center/climate"},
-                    },
-                ],
+                "type": "button",
+                "name": "Energy Studio",
+                "icon": "mdi:lightning-bolt",
+                "tap_action": {"action": "navigate", "navigation_path": "/command-center/energy"},
+            },
+            {
+                "type": "button",
+                "name": "Media Studio",
+                "icon": "mdi:speaker-multiple",
+                "tap_action": {"action": "navigate", "navigation_path": "/command-center/media"},
+            },
+            {
+                "type": "button",
+                "name": "Security Center",
+                "icon": "mdi:shield-home",
+                "tap_action": {"action": "navigate", "navigation_path": "/command-center/security"},
+            },
+            {
+                "type": "button",
+                "name": "Climate & Pool",
+                "icon": "mdi:thermostat-box",
+                "tap_action": {"action": "navigate", "navigation_path": "/command-center/climate"},
             },
         ]
 
@@ -257,8 +273,33 @@ class DashboardManager:
             glance_cards.append({
                 "type": "calendar",
                 "entities": calendar_eids,
-                "initial_view": "listDay",
+                "initial_view": cal_view,
             })
+
+        room_buttons = [
+            {
+                "type": "button",
+                "name": area["name"],
+                "icon": self._get_room_icon(area["name"], area["id"]),
+                "tap_action": {"action": "navigate", "navigation_path": f"/command-center/area_{area['slug']}"},
+            }
+            for area in active_areas
+        ]
+
+        # Traditional cards list (clean fallback and for tools expecting view.cards)
+        home_cards: list[dict[str, Any]] = [
+            {
+                "type": "markdown",
+                "content": "# 🏠 Home Command Center\nSelect a studio or room below for full interactive control.",
+            },
+            {
+                "type": "grid",
+                "title": "Studios",
+                "columns": 3,
+                "square": False,
+                "cards": studio_buttons,
+            },
+        ]
         if glance_cards:
             home_cards.append({
                 "type": "grid",
@@ -267,32 +308,81 @@ class DashboardManager:
                 "square": False,
                 "cards": glance_cards,
             })
-
-        if active_areas:
+        if room_buttons:
             home_cards.append({
                 "type": "grid",
                 "title": "Rooms",
                 "columns": 3,
                 "square": False,
-                "cards": [
-                    {
-                        "type": "button",
-                        "name": area["name"],
-                        "icon": self._get_room_icon(area["name"], area["id"]),
-                        "tap_action": {"action": "navigate", "navigation_path": f"/command-center/area_{area['slug']}"},
-                    }
-                    for area in active_areas
-                ],
+                "cards": room_buttons,
             })
 
-        views: list[dict[str, Any]] = [
+        # Modern Sections Layout (Responsive Mobile-to-Desktop HA Standard)
+        sections = [
             {
-                "title": "Home",
-                "path": "home",
-                "icon": "mdi:home-variant-outline",
-                "badges": [],
-                "cards": home_cards,
+                "type": "grid",
+                "cards": [
+                    {
+                        "type": "heading",
+                        "heading": "Studios",
+                        "icon": "mdi:view-dashboard-outline",
+                        "heading_style": "title",
+                    },
+                    {
+                        "type": "grid",
+                        "columns": 2,
+                        "square": False,
+                        "cards": studio_buttons,
+                    },
+                ],
             },
+            {
+                "type": "grid",
+                "cards": [
+                    {
+                        "type": "heading",
+                        "heading": "Schedule & Glance",
+                        "icon": "mdi:calendar-clock",
+                        "heading_style": "title",
+                    },
+                    *glance_cards,
+                ],
+            },
+            {
+                "type": "grid",
+                "cards": [
+                    {
+                        "type": "heading",
+                        "heading": "Rooms",
+                        "icon": "mdi:home-outline",
+                        "heading_style": "title",
+                    },
+                    {
+                        "type": "grid",
+                        "columns": 2,
+                        "square": False,
+                        "cards": room_buttons,
+                    },
+                ],
+            },
+        ]
+
+        home_view: dict[str, Any] = {
+            "title": "Home",
+            "path": "home",
+            "icon": "mdi:home-variant-outline",
+            "badges": [],
+        }
+        if layout_style == "modern_sections":
+            home_view["type"] = "sections"
+            home_view["max_columns"] = 3
+            home_view["sections"] = sections
+            home_view["cards"] = home_cards
+        else:
+            home_view["cards"] = home_cards
+
+        views: list[dict[str, Any]] = [
+            home_view,
             {
                 "title": "Floor Plan",
                 "path": "floorplan",
@@ -656,6 +746,10 @@ class DashboardManager:
                         merged_home_cards.append(fresh_rooms_grid)
 
                     merged_home = dict(existing_home_view)
+                    if new_views[0].get("type") == "sections" and "sections" in new_views[0]:
+                        merged_home["type"] = "sections"
+                        merged_home["max_columns"] = new_views[0].get("max_columns", 3)
+                        merged_home["sections"] = new_views[0]["sections"]
                     merged_home["cards"] = merged_home_cards
                     new_views[0] = merged_home
                 else:

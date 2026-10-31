@@ -2,6 +2,23 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.11.15] - 2026-10-31
+
+### Added & Enhanced
+- **Modern Responsive Sections Dashboard & Interactive Onboarding Preference Wizard**:
+  - **Modern Sections View Architecture**:
+    - Redesigned the Home Command Center (`/command-center`) to use Home Assistant's native Sections Layout (`type: "sections"`), providing fluid responsive scaling from mobile phones (single thumb-friendly column) to tablets (2 columns) and desktop displays (3 columns).
+    - Resolved squeezed and illegible calendar/weather columns by giving the Weather Forecast card and Calendar card (`initial_view: "listDay"`) full section width.
+    - Balanced Studios launchpad with 2-column touch buttons, eliminating awkward wrapping and lonely orphan cards.
+    - Maintained full backward compatibility with traditional cards and preserved custom user subviews during dashboard sync.
+  - **Interactive Onboarding Discovery Wizard & Dashboard Preferences**:
+    - Expanded Onboarding modal and ⚙️ Rules modal with a dedicated "📱 Dashboard & Layout" questionnaire tab.
+    - Allows users to select their preferred Dashboard Layout (`modern_sections` vs `classic_grid`), Navigation Button Style (`sleek_buttons` vs `standard_grid`), Schedule/Calendar format (`listDay` agenda vs `month` grid), and Content Focus (`balanced`, `studios_first`, `glance_first`).
+    - Integrated with `rules_manager.py` to persist preferences and inject layout context into Otis AI Assist conversation prompts.
+    - Automatic dashboard synchronization: saving onboarding preferences automatically regenerates the Command Center to match the user's styling.
+  - **Testing & Quality**:
+    - 98/98 unit tests passing with 100% ruff compliance.
+
 ## [1.11.14] - 2026-10-30
 
 ### Added & Enhanced

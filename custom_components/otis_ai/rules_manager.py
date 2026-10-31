@@ -34,6 +34,10 @@ DEFAULT_RULES: dict[str, Any] = {
     "quiet_hours_volume": 25,
     "preferred_speaker": "",
     "custom_instructions": "",
+    "dashboard_layout": "modern_sections",
+    "navigation_style": "sleek_buttons",
+    "calendar_view": "listDay",
+    "primary_content_focus": "balanced",
 }
 
 
@@ -96,6 +100,14 @@ class BehavioralRulesManager:
                 merged["quiet_hours_volume"] = max(0, min(100, int(merged["quiet_hours_volume"])))
             except (ValueError, TypeError):
                 merged["quiet_hours_volume"] = 25
+        if "dashboard_layout" in merged and str(merged["dashboard_layout"]).lower() in ("modern_sections", "classic_grid"):
+            merged["dashboard_layout"] = str(merged["dashboard_layout"]).lower()
+        if "navigation_style" in merged and str(merged["navigation_style"]).lower() in ("sleek_buttons", "standard_grid", "tiles"):
+            merged["navigation_style"] = str(merged["navigation_style"]).lower()
+        if "calendar_view" in merged and str(merged["calendar_view"]).lower() in ("listday", "month", "listweek"):
+            merged["calendar_view"] = "listDay" if str(merged["calendar_view"]).lower() == "listday" else str(merged["calendar_view"]).lower()
+        if "primary_content_focus" in merged and str(merged["primary_content_focus"]).lower() in ("balanced", "studios_first", "glance_first"):
+            merged["primary_content_focus"] = str(merged["primary_content_focus"]).lower()
 
         self._rules = merged
         await self._store.async_save(self._rules)
@@ -146,6 +158,10 @@ class BehavioralRulesManager:
             q_end = self._rules.get("quiet_hours_end", "07:00")
             q_vol = self._rules.get("quiet_hours_volume", 25)
             lines.append(f"- Quiet Hours: {q_start} to {q_end} (Cap spoken notification volume at {q_vol}%).")
+
+        d_layout = self._rules.get("dashboard_layout", "modern_sections").replace("_", " ").title()
+        n_style = self._rules.get("navigation_style", "sleek_buttons").replace("_", " ").title()
+        lines.append(f"- Dashboard & Layout Preference: {d_layout} with {n_style}.")
 
         if custom_inst:
             lines.append(f"- Custom Household Rules & Notes:\n{custom_inst}")

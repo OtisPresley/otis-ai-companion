@@ -387,11 +387,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     spatial_manager = SpatialGraphManager(hass)
     floorplan_parser = FloorplanParser(hass)
     automation_manager = AutomationManager(hass)
-    dashboard_manager = DashboardManager(hass, floorplan_parser=floorplan_parser)
+    rules_manager = BehavioralRulesManager(hass)
+    dashboard_manager = DashboardManager(hass, floorplan_parser=floorplan_parser, rules_manager=rules_manager)
     theme_manager = ThemeManager(hass)
     sentinel_manager = SentinelManager(hass)
     macro_manager = MacroManager(hass)
-    rules_manager = BehavioralRulesManager(hass)
     audio_manager = AudioHandoffManager(hass, spatial_manager=spatial_manager, rules_manager=rules_manager)
     energy_manager = EnergyManager(hass, spatial_manager=spatial_manager)
     vision_manager = VisionPresenceManager(hass, spatial_manager=spatial_manager, energy_manager=energy_manager)
@@ -2823,7 +2823,6 @@ class DiscoveryEngine:
         self.hass = hass
         self.spatial_manager = spatial_manager or SpatialGraphManager(hass)
         self.floorplan_parser = floorplan_parser or FloorplanParser(hass)
-        self.dashboard_manager = dashboard_manager or DashboardManager(hass)
         self.theme_manager = theme_manager or ThemeManager(hass)
         self.sentinel_manager = sentinel_manager or SentinelManager(hass)
         self.energy_manager = energy_manager or EnergyManager(hass, spatial_manager=self.spatial_manager)
@@ -2832,6 +2831,9 @@ class DiscoveryEngine:
         self.commissioning_manager = commissioning_manager or AutonomousCommissioningManager(hass, spatial_manager=self.spatial_manager)
         self.federation_manager = federation_manager or FederationManager(hass)
         self.rules_manager = rules_manager or BehavioralRulesManager(hass)
+        self.dashboard_manager = dashboard_manager or DashboardManager(
+            hass, floorplan_parser=self.floorplan_parser, rules_manager=self.rules_manager
+        )
         self._cached_cap_map: dict[str, Any] | None = None
         self._cache_ts: float = 0.0
         self._cache_signature: tuple[Any, ...] | None = None

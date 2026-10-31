@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 1.11.3
+ * Version: 1.11.15
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.11.13";
+const CARD_VERSION = "1.11.15";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -6003,9 +6003,13 @@ class OtisCompanionCard extends HTMLElement {
       quiet_hours_volume: 25,
       preferred_speaker: "",
       custom_instructions: "",
+      dashboard_layout: "modern_sections",
+      navigation_style: "sleek_buttons",
+      calendar_view: "listDay",
+      primary_content_focus: "balanced",
     };
 
-    const activeTab = this._rulesActiveTab || "persona";
+    const activeTab = this._rulesActiveTab || "dashboard";
 
     return `
       <div class="modal-overlay" id="rules-modal-backdrop">
@@ -6024,15 +6028,17 @@ class OtisCompanionCard extends HTMLElement {
           </div>
 
           <!-- Tabs Navigation -->
-          <div style="display: flex; gap: 8px; border-bottom: 1px solid var(--otis-surface-border); padding: 0 0 10px 0; margin-bottom: 16px;">
-            <button type="button" class="tab-btn ${activeTab === "persona" ? "active" : ""}" id="rules-tab-persona" style="font-size: 0.78rem; padding: 6px 12px;">🎭 Persona & Tone</button>
-            <button type="button" class="tab-btn ${activeTab === "safety" ? "active" : ""}" id="rules-tab-safety" style="font-size: 0.78rem; padding: 6px 12px;">🛡️ Autonomy & Safety</button>
-            <button type="button" class="tab-btn ${activeTab === "voice" ? "active" : ""}" id="rules-tab-voice" style="font-size: 0.78rem; padding: 6px 12px;">🔊 Voice & Quiet Hours</button>
-            <button type="button" class="tab-btn ${activeTab === "instructions" ? "active" : ""}" id="rules-tab-instructions" style="font-size: 0.78rem; padding: 6px 12px;">📝 Custom Instructions</button>
+          <div style="display: flex; gap: 8px; border-bottom: 1px solid var(--otis-surface-border); padding: 0 0 10px 0; margin-bottom: 16px; overflow-x: auto;">
+            <button type="button" class="tab-btn ${activeTab === "dashboard" ? "active" : ""}" id="rules-tab-dashboard" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">📱 Dashboard & Layout</button>
+            <button type="button" class="tab-btn ${activeTab === "persona" ? "active" : ""}" id="rules-tab-persona" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">🎭 Persona & Tone</button>
+            <button type="button" class="tab-btn ${activeTab === "safety" ? "active" : ""}" id="rules-tab-safety" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">🛡️ Autonomy & Safety</button>
+            <button type="button" class="tab-btn ${activeTab === "voice" ? "active" : ""}" id="rules-tab-voice" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">🔊 Voice & Quiet Hours</button>
+            <button type="button" class="tab-btn ${activeTab === "instructions" ? "active" : ""}" id="rules-tab-instructions" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">📝 Custom Instructions</button>
           </div>
 
           <!-- Tab Content (Scrollable) -->
           <div style="overflow-y: auto; flex: 1; padding-right: 4px; display: flex; flex-direction: column; gap: 14px;">
+            ${activeTab === "dashboard" ? this._renderRulesDashboardTab(rules) : ""}
             ${activeTab === "persona" ? this._renderRulesPersonaTab(rules) : ""}
             ${activeTab === "safety" ? this._renderRulesSafetyTab(rules) : ""}
             ${activeTab === "voice" ? this._renderRulesVoiceTab(rules) : ""}
@@ -6046,6 +6052,132 @@ class OtisCompanionCard extends HTMLElement {
               ${this._savingRules ? "Saving..." : "Save Preferences"}
             </button>
           </div>
+        </div>
+      </div>
+    `;
+  }
+
+  _renderRulesDashboardTab(rules) {
+    const currentLayout = rules.dashboard_layout || "modern_sections";
+    const currentNav = rules.navigation_style || "sleek_buttons";
+    const currentCal = rules.calendar_view || "listDay";
+    const currentFocus = rules.primary_content_focus || "balanced";
+
+    const layouts = [
+      {
+        id: "modern_sections",
+        emoji: "📱",
+        name: "Modern Responsive Sections",
+        desc: "Adaptive mobile-first layout. Single touch-friendly column on phones, 2 columns on tablets, multi-column on desktop. No crushed cards or wasted voids.",
+      },
+      {
+        id: "classic_grid",
+        emoji: "📊",
+        name: "Classic Card Grid",
+        desc: "Traditional multi-column card grid for users who prefer standard Home Assistant masonry columns.",
+      },
+    ];
+
+    const navStyles = [
+      {
+        id: "sleek_buttons",
+        emoji: "🔘",
+        name: "Sleek Touch Buttons",
+        desc: "Balanced 2-column touch-friendly navigation buttons with contextual room icons.",
+      },
+      {
+        id: "standard_grid",
+        emoji: "🗂️",
+        name: "Standard Grid Cards",
+        desc: "Compact 3-column square buttons across rooms and studios.",
+      },
+    ];
+
+    const calViews = [
+      {
+        id: "listDay",
+        emoji: "📋",
+        name: "Agenda Daily List",
+        desc: "Readable list of upcoming events and times. Scales cleanly on mobile phones without overlapping numbers.",
+      },
+      {
+        id: "month",
+        emoji: "📅",
+        name: "Full Month Grid",
+        desc: "Traditional calendar month matrix with day indicators.",
+      },
+    ];
+
+    return `
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <div>
+          <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">Select Dashboard Layout:</div>
+          <div style="font-size: 0.74rem; color: var(--otis-text-muted); margin-top: 2px;">
+            Choose how your Home Command Center and Studio dashboards adapt across phone, tablet, and desktop screens.
+          </div>
+        </div>
+
+        <div class="persona-grid">
+          ${layouts
+            .map(
+              (l) => `
+            <div class="persona-card ${currentLayout === l.id ? "selected" : ""}" data-dashboard-layout="${l.id}">
+              <div class="persona-title">
+                <span>${l.emoji}</span>
+                <span>${l.name}</span>
+              </div>
+              <div class="persona-desc">${l.desc}</div>
+            </div>
+          `
+            )
+            .join("")}
+        </div>
+
+        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 4px;">Navigation Button Style:</div>
+        <div class="persona-grid">
+          ${navStyles
+            .map(
+              (n) => `
+            <div class="persona-card ${currentNav === n.id ? "selected" : ""}" data-navigation-style="${n.id}">
+              <div class="persona-title">
+                <span>${n.emoji}</span>
+                <span>${n.name}</span>
+              </div>
+              <div class="persona-desc">${n.desc}</div>
+            </div>
+          `
+            )
+            .join("")}
+        </div>
+
+        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 4px;">Schedule & Calendar Display:</div>
+        <div class="persona-grid">
+          ${calViews
+            .map(
+              (c) => `
+            <div class="persona-card ${currentCal === c.id ? "selected" : ""}" data-calendar-view="${c.id}">
+              <div class="persona-title">
+                <span>${c.emoji}</span>
+                <span>${c.name}</span>
+              </div>
+              <div class="persona-desc">${c.desc}</div>
+            </div>
+          `
+            )
+            .join("")}
+        </div>
+
+        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 4px;">Content Priority:</div>
+        <div class="rules-setting-row">
+          <div>
+            <div class="rules-setting-label">Primary Dashboard Focus</div>
+            <div class="rules-setting-desc">Sets the arrangement order of studios, schedule, and room controls.</div>
+          </div>
+          <select id="rules-input-content-focus" style="padding: 6px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.8rem;">
+            <option value="balanced" ${currentFocus === "balanced" ? "selected" : ""}>Balanced (Launchpad, Schedule, Rooms)</option>
+            <option value="studios_first" ${currentFocus === "studios_first" ? "selected" : ""}>Quick Navigation First</option>
+            <option value="glance_first" ${currentFocus === "glance_first" ? "selected" : ""}>Schedule & Weather First</option>
+          </select>
         </div>
       </div>
     `;
@@ -6874,7 +7006,7 @@ class OtisCompanionCard extends HTMLElement {
       btnStartOnboard.onclick = () => {
         this._rulesDraft = { ...(this._userRules || {}) };
         this._rulesModalOpen = true;
-        this._rulesActiveTab = "persona";
+        this._rulesActiveTab = "dashboard";
         this._render();
       };
     }
@@ -6904,7 +7036,7 @@ class OtisCompanionCard extends HTMLElement {
       }
 
       // Rules Tab Switching
-      ["persona", "safety", "voice", "instructions"].forEach((tab) => {
+      ["dashboard", "persona", "safety", "voice", "instructions"].forEach((tab) => {
         const tabBtn = root.querySelector(`#rules-tab-${tab}`);
         if (tabBtn) {
           tabBtn.onclick = () => {
@@ -6913,6 +7045,44 @@ class OtisCompanionCard extends HTMLElement {
           };
         }
       });
+
+      // Dashboard Layout & Style Selection Cards
+      root.querySelectorAll(".persona-card[data-dashboard-layout]").forEach((card) => {
+        card.onclick = () => {
+          const l = card.getAttribute("data-dashboard-layout");
+          if (l) {
+            this._rulesDraft = { ...(this._rulesDraft || {}), dashboard_layout: l };
+            this._render();
+          }
+        };
+      });
+
+      root.querySelectorAll(".persona-card[data-navigation-style]").forEach((card) => {
+        card.onclick = () => {
+          const n = card.getAttribute("data-navigation-style");
+          if (n) {
+            this._rulesDraft = { ...(this._rulesDraft || {}), navigation_style: n };
+            this._render();
+          }
+        };
+      });
+
+      root.querySelectorAll(".persona-card[data-calendar-view]").forEach((card) => {
+        card.onclick = () => {
+          const c = card.getAttribute("data-calendar-view");
+          if (c) {
+            this._rulesDraft = { ...(this._rulesDraft || {}), calendar_view: c };
+            this._render();
+          }
+        };
+      });
+
+      const focusSelect = root.querySelector("#rules-input-content-focus");
+      if (focusSelect) {
+        focusSelect.onchange = () => {
+          this._rulesDraft = { ...(this._rulesDraft || {}), primary_content_focus: focusSelect.value };
+        };
+      }
 
       // Persona Selection Cards
       root.querySelectorAll(".persona-card[data-persona-id]").forEach((card) => {
@@ -7018,14 +7188,32 @@ class OtisCompanionCard extends HTMLElement {
               ...(this._rulesDraft || {}),
               onboarding_completed: true,
             };
-            this._showToast("⚙️ Saving household rules & persona...");
+            this._showToast("⚙️ Saving preferences & generating dashboards...");
             const res = await this._hass.callService("otis_ai", "set_user_rules", { rules: payload });
             const saved = res?.rules || payload;
             this._userRules = saved;
             this._rulesDraft = { ...saved };
             this._rulesModalOpen = false;
-            this._showToast("✨ Household persona & rules saved successfully!");
+
+            // Automatically sync and regenerate Command Center dashboard matching preferences
+            try {
+              await this._hass.callService("otis_ai", "sync_dashboards", {});
+            } catch (syncErr) {
+              console.debug("Dashboard auto-sync notice:", syncErr);
+            }
+
+            this._showToast("✨ Preferences saved & Command Center generated!");
             await this._fetchData();
+          } catch (err) {
+            console.error("Failed to save user rules:", err);
+            this._showToast(`Failed to save rules: ${err.message || err}`, true);
+          } finally {
+            this._savingRules = false;
+            this._render();
+          }
+        };
+      }
+    }
           } catch (err) {
             console.error("Failed to save user rules:", err);
             this._showToast(`Failed to save rules: ${err.message || err}`, true);
