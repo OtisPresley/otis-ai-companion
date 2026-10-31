@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 1.11.15
+ * Version: 1.11.16
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.11.15";
+const CARD_VERSION = "1.11.16";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -7204,16 +7204,6 @@ class OtisCompanionCard extends HTMLElement {
 
             this._showToast("✨ Preferences saved & Command Center generated!");
             await this._fetchData();
-          } catch (err) {
-            console.error("Failed to save user rules:", err);
-            this._showToast(`Failed to save rules: ${err.message || err}`, true);
-          } finally {
-            this._savingRules = false;
-            this._render();
-          }
-        };
-      }
-    }
           } catch (err) {
             console.error("Failed to save user rules:", err);
             this._showToast(`Failed to save rules: ${err.message || err}`, true);

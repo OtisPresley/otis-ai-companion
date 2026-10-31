@@ -2,6 +2,14 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.11.16] - 2026-10-31
+
+### Fixed
+- **Frontend Syntax Resolution**:
+  - Removed duplicate trailing catch/finally block in `otis-companion-card.js` rules modal save event handler.
+  - Validated clean AST syntax compilation via Node.js runtime.
+  - Bumped Lovelace cache-busting resource version to `1.11.16`.
+
 ## [1.11.15] - 2026-10-31
 
 ### Added & Enhanced

@@ -1,7 +1,7 @@
 """Constants for the Otis AI Companion integration."""
 
 DOMAIN = "otis_ai"
-INTEGRATION_VERSION = "1.11.15"
+INTEGRATION_VERSION = "1.11.16"
 
 # Configuration Keys
 CONF_CONVERSATION_AGENT = "conversation_agent"
