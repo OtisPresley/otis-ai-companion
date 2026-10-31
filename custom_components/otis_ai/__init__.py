@@ -77,6 +77,9 @@ from .const import (
     SERVICE_GET_FEDERATION_STATUS,
     SERVICE_GET_USER_RULES,
     SERVICE_SET_USER_RULES,
+    SERVICE_DUCK_MEDIA,
+    SERVICE_RESTORE_MEDIA,
+    SERVICE_GET_VOICE_ASSIST_STATUS,
 )
 from .audio_manager import AudioHandoffManager
 from .automation_manager import AutomationManager
@@ -388,13 +391,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     theme_manager = ThemeManager(hass)
     sentinel_manager = SentinelManager(hass)
     macro_manager = MacroManager(hass)
-    audio_manager = AudioHandoffManager(hass, spatial_manager=spatial_manager)
+    rules_manager = BehavioralRulesManager(hass)
+    audio_manager = AudioHandoffManager(hass, spatial_manager=spatial_manager, rules_manager=rules_manager)
     energy_manager = EnergyManager(hass, spatial_manager=spatial_manager)
     vision_manager = VisionPresenceManager(hass, spatial_manager=spatial_manager, energy_manager=energy_manager)
     habit_manager = BehavioralHabitManager(hass, spatial_manager=spatial_manager, energy_manager=energy_manager, vision_manager=vision_manager)
     commissioning_manager = AutonomousCommissioningManager(hass, spatial_manager=spatial_manager)
     federation_manager = FederationManager(hass)
-    rules_manager = BehavioralRulesManager(hass)
     await asyncio.gather(
         spatial_manager.async_load(),
         floorplan_parser.async_load(),
@@ -1362,12 +1365,46 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         area_id = call.data.get("area_id")
         person = call.data.get("person_entity_id")
         announce = call.data.get("announce", True)
+        duck_media = call.data.get("duck_media", True)
+        duck_duration = call.data.get("duck_duration")
+        whisper_mode = call.data.get("whisper_mode", False)
         return await am.async_notify_voice(
             message=msg,
             area_id=area_id,
             person_entity_id=person,
             announce=announce,
+            duck_media=duck_media,
+            duck_duration=duck_duration,
+            whisper_mode=whisper_mode,
         )
+
+    async def handle_duck_media(call) -> ServiceResponse:
+        """Handle service call to temporarily duck or pause active media playback."""
+        _LOGGER.debug("Service 'duck_media' triggered: %s", call.data)
+        am = _get_audio_manager()
+        areas = call.data.get("areas")
+        duck_ratio = float(call.data.get("duck_ratio", 0.25))
+        duck_level = float(call.data.get("duck_level", 0.15))
+        session_id = call.data.get("session_id")
+        return await am.async_duck_media(
+            areas=areas,
+            duck_ratio=duck_ratio,
+            duck_level=duck_level,
+            session_id=session_id,
+        )
+
+    async def handle_restore_media(call) -> ServiceResponse:
+        """Handle service call to restore previously ducked media playback."""
+        _LOGGER.debug("Service 'restore_media' triggered: %s", call.data)
+        am = _get_audio_manager()
+        session_id = call.data.get("session_id")
+        return await am.async_unduck_media(session_id=session_id)
+
+    async def handle_get_voice_assist_status(call) -> ServiceResponse:
+        """Handle service call to retrieve Assist pipelines, satellites, and wake-word status."""
+        _LOGGER.debug("Service 'get_voice_assist_status' triggered")
+        am = _get_audio_manager()
+        return await am.async_get_assist_pipeline_status()
 
     async def handle_get_energy_summary(call) -> ServiceResponse:
         """Handle service call to retrieve live energy telemetry and tariff window."""
@@ -1785,6 +1822,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_set_user_rules,
         supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_DUCK_MEDIA,
+        handle_duck_media,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_RESTORE_MEDIA,
+        handle_restore_media,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_VOICE_ASSIST_STATUS,
+        handle_get_voice_assist_status,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
 
     _LOGGER.info("Otis AI Companion entry set up successfully")
     return True
@@ -1815,6 +1870,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             SERVICE_UPDATE_FLOORPLAN_LAYOUT,
             SERVICE_GET_USER_RULES,
             SERVICE_SET_USER_RULES,
+            SERVICE_DUCK_MEDIA,
+            SERVICE_RESTORE_MEDIA,
+            SERVICE_GET_VOICE_ASSIST_STATUS,
         ):
             if hass.services.has_service(DOMAIN, srv):
                 _LOGGER.debug("Removing service: %s", srv)
@@ -2154,6 +2212,38 @@ class OtisAIConversationAgent(AbstractAgent):
             "pause idle streamers", "stop idle music", "idle power guard"
         )):
             res = await self.audio_manager.async_release_idle_sources()
+            return self._create_response(user_input, res["message"])
+
+        # Check for Roadmap Item 9 Voice Assist & Ducking commands
+        if self.audio_manager and any(w in user_lower for w in (
+            "voice assist status", "assist pipeline status", "assist status", "wake word status", "satellite status", "voice status"
+        )):
+            st = await self.audio_manager.async_get_assist_pipeline_status()
+            pref = st.get("preferred_pipeline") or "Default"
+            pipes = st.get("total_pipelines", 0)
+            sats = st.get("total_satellites", 0)
+            engines = len(st.get("wake_word_engines", []))
+            quiet_state = f"Active (capped at {st.get('quiet_hours_volume_cap')}%)" if st.get("quiet_hours_active") else "Inactive"
+            speech = (
+                f"🎙️ **Voice Assist & Pipeline Status**\n\n"
+                f"• **Preferred Pipeline**: {pref} (Total pipelines: {pipes})\n"
+                f"• **Voice Satellites**: {sats} registered\n"
+                f"• **Wake Word Engines**: {engines} active\n"
+                f"• **Quiet Hours**: {quiet_state}\n"
+                f"• **Active Audio Ducking Sessions**: {st.get('active_ducking_sessions', 0)}"
+            )
+            return self._create_response(user_input, speech)
+
+        if self.audio_manager and any(w in user_lower for w in (
+            "duck media", "duck audio", "duck music", "lower music", "attenuate audio", "lower background music"
+        )):
+            res = await self.audio_manager.async_duck_media()
+            return self._create_response(user_input, res["message"])
+
+        if self.audio_manager and any(w in user_lower for w in (
+            "restore media", "unduck media", "restore music", "unmute music volume", "raise music back up"
+        )):
+            res = await self.audio_manager.async_unduck_media()
             return self._create_response(user_input, res["message"])
 
         # Check for Phase 7 Energy & Predictive Load commands

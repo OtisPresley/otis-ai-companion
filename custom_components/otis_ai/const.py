@@ -1,7 +1,7 @@
 """Constants for the Otis AI Companion integration."""
 
 DOMAIN = "otis_ai"
-INTEGRATION_VERSION = "1.11.13"
+INTEGRATION_VERSION = "1.11.14"
 
 # Configuration Keys
 CONF_CONVERSATION_AGENT = "conversation_agent"
@@ -60,6 +60,11 @@ SERVICE_GET_FEDERATION_STATUS = "get_federation_status"
 # User Behavioral Rules & Onboarding Services (Roadmap Item 7)
 SERVICE_GET_USER_RULES = "get_user_rules"
 SERVICE_SET_USER_RULES = "set_user_rules"
+
+# Voice Assist & Spatial Audio Ducking Services (Roadmap Item 9)
+SERVICE_DUCK_MEDIA = "duck_media"
+SERVICE_RESTORE_MEDIA = "restore_media"
+SERVICE_GET_VOICE_ASSIST_STATUS = "get_voice_assist_status"
 
 # Dashboard Constants
 COMMAND_CENTER_DASHBOARD_ID = "command-center"

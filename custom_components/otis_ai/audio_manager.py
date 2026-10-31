@@ -1,14 +1,17 @@
-"""Otis AI Companion: Audio Handoff & Voice Feedback Manager (Phase 6).
+"""Otis AI Companion: Audio Handoff & Voice Feedback Manager (Phase 6 & Roadmap Item 9).
 
 Coordinates presence-based multi-room audio follow-me routing across multi-zone matrix
 amplifiers (e.g., Control4), dynamic handoffs via the Spatial Adjacency topology, idle
-power guards, and voice feedback integration with notify_router.
+power guards, spatial audio ducking, whisper/quiet voice mode, and Assist pipeline integration.
 """
 
 from __future__ import annotations
 
+import asyncio
+from datetime import time as datetime_time
 import logging
 from typing import Any
+import uuid
 
 from homeassistant.core import HomeAssistant
 
@@ -16,12 +19,65 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class AudioHandoffManager:
-    """Manages multi-room audio follow-me handoffs and voice feedback routing."""
+    """Manages multi-room audio follow-me handoffs, spatial ducking, and voice feedback routing."""
 
-    def __init__(self, hass: HomeAssistant, spatial_manager=None) -> None:
+    def __init__(self, hass: HomeAssistant, spatial_manager=None, rules_manager=None) -> None:
         """Initialize the Audio Handoff Manager."""
         self.hass = hass
         self.spatial_manager = spatial_manager
+        self.rules_manager = rules_manager
+        self._ducked_sessions: dict[str, dict[str, Any]] = {}
+
+    def set_rules_manager(self, rules_manager: Any) -> None:
+        """Set the user behavioral rules manager."""
+        self.rules_manager = rules_manager
+
+    def is_quiet_hours_active(self) -> tuple[bool, int, str]:
+        """Check if quiet hours are currently active based on BehavioralRulesManager."""
+        if not self.rules_manager:
+            return (False, 100, "")
+
+        try:
+            rules = self.rules_manager.get_rules()
+            if not rules.get("quiet_hours_enabled", True):
+                return (False, 100, "")
+
+            q_start = rules.get("quiet_hours_start", "22:00")
+            q_end = rules.get("quiet_hours_end", "07:00")
+            q_vol = int(rules.get("quiet_hours_volume", 25))
+            pref_speaker = str(rules.get("preferred_speaker", "")).strip()
+
+            start_parts = [int(p) for p in q_start.split(":")]
+            end_parts = [int(p) for p in q_end.split(":")]
+            start_time = datetime_time(start_parts[0], start_parts[1])
+            end_time = datetime_time(end_parts[0], end_parts[1])
+
+            now = None
+            try:
+                from homeassistant.util import dt as dt_util
+
+                dt_now = dt_util.now()
+                if hasattr(dt_now, "time") and "mock" not in str(type(dt_now)).lower():
+                    t_val = dt_now.time()
+                    if isinstance(t_val, datetime_time):
+                        now = t_val
+            except Exception:
+                now = None
+
+            if now is None or not isinstance(now, datetime_time):
+                from datetime import datetime
+
+                now = datetime.now().time()
+
+            if start_time <= end_time:
+                is_active = start_time <= now < end_time
+            else:  # Overnight interval (e.g. 22:00 -> 07:00)
+                is_active = now >= start_time or now < end_time
+
+            return (is_active, q_vol, pref_speaker)
+        except Exception as q_err:
+            _LOGGER.debug("Could not evaluate quiet hours: %s", q_err)
+            return (False, 100, "")
 
     async def async_get_active_media_zones(self) -> dict[str, Any]:
         """Discover active media players, matrix amplifier zones, and input streamers."""
@@ -42,13 +98,17 @@ class AudioHandoffManager:
             entity_id = state.entity_id
             attrs = state.attributes or {}
             platform = ""
-            area_id = None
+            area_id = attrs.get("area_id")
 
             if ent_reg:
                 entry = ent_reg.async_get(entity_id)
                 if entry:
-                    platform = getattr(entry, "platform", "")
-                    area_id = getattr(entry, "area_id", None)
+                    platform_val = getattr(entry, "platform", "")
+                    if isinstance(platform_val, str):
+                        platform = platform_val
+                    entry_area = getattr(entry, "area_id", None)
+                    if isinstance(entry_area, str) and entry_area:
+                        area_id = entry_area
 
             entry_info = {
                 "entity_id": entity_id,
@@ -346,6 +406,274 @@ class AudioHandoffManager:
             ),
         }
 
+    async def async_duck_media(
+        self,
+        areas: list[str] | str | None = None,
+        duck_ratio: float = 0.25,
+        duck_level: float = 0.15,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Temporarily attenuate (duck) or pause active media playback in targeted and adjacent rooms."""
+        if isinstance(areas, str):
+            areas = [areas]
+
+        clean_areas: set[str] = set()
+        if areas:
+            for a in areas:
+                if a:
+                    c = a.strip().lower().replace(" ", "_").replace("-", "_")
+                    clean_areas.add(c)
+
+            # If spatial_manager is available, also include adjacent rooms for acoustic isolation
+            if self.spatial_manager:
+                try:
+                    graph = await self.spatial_manager.async_get_graph()
+                    adj_map = graph.get("named_adjacencies", {})
+                    for a in list(clean_areas):
+                        for nbr in adj_map.get(a, []):
+                            clean_areas.add(str(nbr).lower())
+                except Exception as s_err:
+                    _LOGGER.debug("Could not expand adjacent areas for ducking: %s", s_err)
+
+        zones_data = await self.async_get_active_media_zones()
+        all_players = (
+            zones_data["matrix_zones"]
+            + zones_data["other_players"]
+            + zones_data["tv_cinema_players"]
+            + zones_data["input_streamers"]
+        )
+
+        sid = session_id or f"duck_{uuid.uuid4().hex[:8]}"
+        ducked_players: list[dict[str, Any]] = []
+        actions_taken: list[str] = []
+
+        for p in all_players:
+            entity_id = p["entity_id"]
+            state = p.get("state")
+            if state not in ("playing", "on"):
+                continue
+
+            area_id = str(p.get("area_id") or "").lower()
+            name = str(p.get("name") or "").lower()
+
+            # If clean_areas specified, check match
+            if clean_areas:
+                matches_area = (
+                    area_id in clean_areas
+                    or any(ca in entity_id.lower() or ca in name for ca in clean_areas)
+                )
+                if not matches_area:
+                    continue
+
+            # Capture prior state
+            current_vol = p.get("volume_level")
+            is_volume_supported = current_vol is not None
+
+            player_record = {
+                "entity_id": entity_id,
+                "prev_state": state,
+                "prev_volume": current_vol,
+                "duck_type": "volume" if is_volume_supported else "pause",
+            }
+
+            if is_volume_supported:
+                target_vol = max(0.05, min(duck_level, float(current_vol) * duck_ratio))
+                player_record["ducked_volume"] = target_vol
+                try:
+                    await self.hass.services.async_call(
+                        "media_player",
+                        "volume_set",
+                        {"entity_id": entity_id, "volume_level": target_vol},
+                        blocking=True,
+                    )
+                    actions_taken.append(f"Ducked {entity_id} volume {int(float(current_vol) * 100)}% -> {int(target_vol * 100)}%")
+                except Exception as v_err:
+                    _LOGGER.debug("Could not duck volume for %s: %s", entity_id, v_err)
+            else:
+                try:
+                    await self.hass.services.async_call(
+                        "media_player",
+                        "media_pause",
+                        {"entity_id": entity_id},
+                        blocking=True,
+                    )
+                    actions_taken.append(f"Paused playback on {entity_id}")
+                except Exception as p_err:
+                    _LOGGER.debug("Could not pause %s for ducking: %s", entity_id, p_err)
+
+            ducked_players.append(player_record)
+
+        self._ducked_sessions[sid] = {
+            "session_id": sid,
+            "areas": list(clean_areas),
+            "players": ducked_players,
+        }
+
+        return {
+            "success": True,
+            "session_id": sid,
+            "ducked_count": len(ducked_players),
+            "ducked_players": ducked_players,
+            "actions": actions_taken,
+            "message": f"Ducked {len(ducked_players)} active media player(s) for voice clarity.",
+        }
+
+    async def async_unduck_media(self, session_id: str | None = None) -> dict[str, Any]:
+        """Restore ducked or paused media players back to their original volumes."""
+        target_sessions: list[dict[str, Any]] = []
+
+        if session_id and session_id != "all":
+            sess = self._ducked_sessions.pop(session_id, None)
+            if sess:
+                target_sessions.append(sess)
+        else:
+            target_sessions = list(self._ducked_sessions.values())
+            self._ducked_sessions.clear()
+
+        restored_players: list[str] = []
+        actions_taken: list[str] = []
+
+        for sess in target_sessions:
+            for p in sess.get("players", []):
+                entity_id = p["entity_id"]
+                prev_vol = p.get("prev_volume")
+                duck_type = p.get("duck_type")
+                prev_state = p.get("prev_state")
+
+                try:
+                    if duck_type == "volume" and prev_vol is not None:
+                        await self.hass.services.async_call(
+                            "media_player",
+                            "volume_set",
+                            {"entity_id": entity_id, "volume_level": float(prev_vol)},
+                            blocking=True,
+                        )
+                        actions_taken.append(f"Restored {entity_id} volume to {int(float(prev_vol) * 100)}%")
+                        restored_players.append(entity_id)
+                    elif duck_type == "pause" and prev_state == "playing":
+                        await self.hass.services.async_call(
+                            "media_player",
+                            "media_play",
+                            {"entity_id": entity_id},
+                            blocking=True,
+                        )
+                        actions_taken.append(f"Resumed playback on {entity_id}")
+                        restored_players.append(entity_id)
+                except Exception as r_err:
+                    _LOGGER.debug("Could not restore media player %s: %s", entity_id, r_err)
+
+        return {
+            "success": True,
+            "restored_count": len(restored_players),
+            "restored_players": restored_players,
+            "actions": actions_taken,
+            "message": f"Restored {len(restored_players)} media player(s) to original volume/playback state.",
+        }
+
+    async def async_get_assist_pipeline_status(self) -> dict[str, Any]:
+        """Inspect Home Assistant's assist pipeline registry, wake-word engines, and satellite states."""
+        pipelines_list: list[dict[str, Any]] = []
+        preferred_id = None
+
+        # 1. Try homeassistant.components.assist_pipeline
+        try:
+            from homeassistant.components import assist_pipeline
+
+            pipelines = assist_pipeline.async_get_pipelines(self.hass)
+            store = getattr(self.hass.data.get("assist_pipeline"), "pipeline_store", None)
+            if store and hasattr(store, "async_get_preferred_item"):
+                preferred_id = store.async_get_preferred_item()
+
+            for p in (pipelines or []):
+                p_id = getattr(p, "id", "")
+                pipelines_list.append({
+                    "id": p_id,
+                    "name": getattr(p, "name", "Assist Pipeline"),
+                    "is_preferred": (p_id == preferred_id),
+                    "conversation_engine": getattr(p, "conversation_engine", None),
+                    "stt_engine": getattr(p, "stt_engine", None),
+                    "tts_engine": getattr(p, "tts_engine", None),
+                    "wake_word_entity": getattr(p, "wake_word_entity", None),
+                    "wake_word_id": getattr(p, "wake_word_id", None),
+                    "prefer_local_intents": getattr(p, "prefer_local_intents", False),
+                })
+        except Exception as ap_err:
+            _LOGGER.debug("Could not inspect assist_pipeline components directly: %s", ap_err)
+
+        # Fallback to storage load if empty
+        if not pipelines_list:
+            try:
+                from homeassistant.helpers.storage import Store
+
+                ap_store = Store(self.hass, 1, "assist_pipeline.pipelines")
+                data = await ap_store.async_load()
+                if data and isinstance(data, dict):
+                    preferred_id = data.get("preferred_item")
+                    for item in data.get("items", []):
+                        item_id = item.get("id")
+                        pipelines_list.append({
+                            "id": item_id,
+                            "name": item.get("name", "Assist Pipeline"),
+                            "is_preferred": (item_id == preferred_id),
+                            "conversation_engine": item.get("conversation_engine"),
+                            "stt_engine": item.get("stt_engine"),
+                            "tts_engine": item.get("tts_engine"),
+                            "wake_word_entity": item.get("wake_word_entity"),
+                            "wake_word_id": item.get("wake_word_id"),
+                            "prefer_local_intents": item.get("prefer_local_intents", False),
+                        })
+            except Exception as st_err:
+                _LOGGER.debug("Could not inspect assist_pipeline from storage: %s", st_err)
+
+        # 2. Discover assist satellites
+        satellites: list[dict[str, Any]] = []
+        try:
+            for state in self.hass.states.async_all("assist_satellite"):
+                satellites.append({
+                    "entity_id": state.entity_id,
+                    "name": state.attributes.get("friendly_name", state.entity_id),
+                    "state": state.state,
+                    "pipeline": state.attributes.get("active_pipeline"),
+                })
+        except Exception as sat_err:
+            _LOGGER.debug("Error discovering assist_satellite entities: %s", sat_err)
+
+        # 3. Discover wake-word engines
+        wake_engines: list[dict[str, Any]] = []
+        try:
+            for state in self.hass.states.async_all("wake_word"):
+                wake_engines.append({
+                    "entity_id": state.entity_id,
+                    "name": state.attributes.get("friendly_name", state.entity_id),
+                    "state": state.state,
+                })
+            for s in self.hass.states.async_all():
+                if any(k in s.entity_id for k in ("openwakeword", "wyoming", "porcupine", "micro_wake_word")):
+                    if not any(w["entity_id"] == s.entity_id for w in wake_engines):
+                        wake_engines.append({
+                            "entity_id": s.entity_id,
+                            "name": s.attributes.get("friendly_name", s.entity_id),
+                            "state": s.state,
+                        })
+        except Exception as ww_err:
+            _LOGGER.debug("Error discovering wake_word entities: %s", ww_err)
+
+        is_quiet, vol_cap, pref_speaker = self.is_quiet_hours_active()
+
+        return {
+            "success": True,
+            "total_pipelines": len(pipelines_list),
+            "preferred_pipeline": next((p["name"] for p in pipelines_list if p.get("is_preferred")), None),
+            "pipelines": pipelines_list,
+            "satellites": satellites,
+            "total_satellites": len(satellites),
+            "wake_word_engines": wake_engines,
+            "active_ducking_sessions": len(self._ducked_sessions),
+            "quiet_hours_active": is_quiet,
+            "quiet_hours_volume_cap": vol_cap,
+            "preferred_speaker": pref_speaker,
+        }
+
     async def async_notify_voice(
         self,
         message: str,
@@ -353,8 +681,11 @@ class AudioHandoffManager:
         person_entity_id: str | None = None,
         announce: bool = True,
         tts_service: str | None = None,
+        duck_media: bool = True,
+        duck_duration: float | None = None,
+        whisper_mode: bool = False,
     ) -> dict[str, Any]:
-        """Deliver voice feedback to a specific area or follow a person's location."""
+        """Deliver voice feedback to a specific area or follow a person's location, with spatial audio ducking and quiet hours awareness."""
         clean_msg = (message or "").strip()
         if not clean_msg:
             return {"success": False, "error": "Message cannot be empty."}
@@ -365,8 +696,39 @@ class AudioHandoffManager:
         if person_entity_id and not target_area:
             p_state = self.hass.states.get(person_entity_id)
             if p_state and p_state.state not in ("not_home", "away", "unknown"):
-                # Person may be in an area matching their state
                 target_area = p_state.state
+
+        # Check quiet hours & whisper mode
+        is_quiet, vol_cap, pref_speaker = self.is_quiet_hours_active()
+        apply_quiet = whisper_mode or is_quiet
+        effective_volume = (vol_cap / 100.0) if apply_quiet else None
+
+        if apply_quiet and not target_area and pref_speaker:
+            target_area = pref_speaker
+
+        # Perform spatial audio ducking if enabled
+        duck_session_id = None
+        if duck_media:
+            try:
+                duck_res = await self.async_duck_media(areas=[target_area] if target_area else None)
+                duck_session_id = duck_res.get("session_id")
+                if duck_session_id and duck_res.get("ducked_players"):
+                    if duck_duration is None:
+                        words = len(clean_msg.split())
+                        calc_delay = max(4.0, (words * 0.45) + 1.5)
+                    else:
+                        calc_delay = float(duck_duration)
+
+                    async def _delayed_unduck(sid: str, delay: float):
+                        try:
+                            await asyncio.sleep(delay)
+                            await self.async_unduck_media(sid)
+                        except Exception as ud_err:
+                            _LOGGER.debug("Delayed unduck error: %s", ud_err)
+
+                    asyncio.create_task(_delayed_unduck(duck_session_id, calc_delay))
+            except Exception as duck_err:
+                _LOGGER.debug("Audio ducking error prior to voice notification: %s", duck_err)
 
         # Check for notify_router script
         if self.hass.services.has_service("script", "notify_router"):
@@ -378,6 +740,9 @@ class AudioHandoffManager:
                 }
                 if target_area:
                     payload["context"] = target_area
+                if apply_quiet and effective_volume is not None:
+                    payload["volume"] = effective_volume
+                    payload["whisper_mode"] = True
 
                 await self.hass.services.async_call(
                     "script",
@@ -390,6 +755,10 @@ class AudioHandoffManager:
                     "routed_via": "script.notify_router",
                     "target_area": target_area,
                     "message": clean_msg,
+                    "whisper_mode": apply_quiet,
+                    "quiet_hours_active": is_quiet,
+                    "volume_cap": vol_cap if apply_quiet else None,
+                    "ducked_session": duck_session_id,
                     "status": "Dispatched voice notification through central notify_router.",
                 }
             except Exception as n_err:
@@ -414,7 +783,17 @@ class AudioHandoffManager:
 
         if target_player:
             try:
-                # Try tts.speak
+                if apply_quiet and effective_volume is not None:
+                    try:
+                        await self.hass.services.async_call(
+                            "media_player",
+                            "volume_set",
+                            {"entity_id": target_player, "volume_level": effective_volume},
+                            blocking=True,
+                        )
+                    except Exception as vol_err:
+                        _LOGGER.debug("Could not pre-set volume for quiet hours TTS: %s", vol_err)
+
                 service_domain = "tts"
                 service_name = "speak"
                 tts_data: dict[str, Any] = {
@@ -431,6 +810,10 @@ class AudioHandoffManager:
                     "target_player": target_player,
                     "target_area": target_area,
                     "message": clean_msg,
+                    "whisper_mode": apply_quiet,
+                    "quiet_hours_active": is_quiet,
+                    "volume_cap": vol_cap if apply_quiet else None,
+                    "ducked_session": duck_session_id,
                 }
             except Exception as d_err:
                 _LOGGER.error("Direct TTS delivery failed: %s", d_err)

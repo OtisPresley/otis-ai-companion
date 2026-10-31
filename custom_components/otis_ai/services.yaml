@@ -405,6 +405,27 @@ notify_voice:
       default: true
       selector:
         boolean:
+    duck_media:
+      name: Duck Active Media
+      description: Whether to temporarily duck/attenuate active media playback in the target area during speech.
+      default: true
+      selector:
+        boolean:
+    duck_duration:
+      name: Duck Duration
+      description: Optional override duration in seconds to keep playback ducked before automatic restoration.
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: s
+    whisper_mode:
+      name: Whisper / Quiet Mode
+      description: Enforce quiet hours volume ceiling and whisper speech mode.
+      default: false
+      selector:
+        boolean:
 
 get_energy_summary:
   name: Get Energy & Load Summary
@@ -665,4 +686,54 @@ set_user_rules:
       required: true
       selector:
         object:
+
+duck_media:
+  name: Duck Media Playback
+  description: Temporarily attenuate (duck) or pause active media playback in targeted and adjacent rooms for voice clarity.
+  fields:
+    areas:
+      name: Target Areas
+      description: Room or list of rooms to duck (omit to duck all active media playback).
+      required: false
+      selector:
+        object:
+    duck_ratio:
+      name: Duck Volume Ratio
+      description: Fraction of current volume to retain during speech (e.g. 0.25 = 25% of current volume).
+      default: 0.25
+      selector:
+        number:
+          min: 0.05
+          max: 0.80
+          step: 0.05
+    duck_level:
+      name: Maximum Ducked Volume Ceiling
+      description: Hard maximum volume ceiling (0.0 to 1.0) while ducked.
+      default: 0.15
+      selector:
+        number:
+          min: 0.05
+          max: 0.50
+          step: 0.05
+    session_id:
+      name: Session Identifier
+      description: Optional tracking ID for the ducking session.
+      required: false
+      selector:
+        text:
+
+restore_media:
+  name: Restore Ducked Media
+  description: Restore previously ducked or paused media players back to their original volumes and states.
+  fields:
+    session_id:
+      name: Session Identifier
+      description: Specific ducking session ID to restore, or omit/pass 'all' to restore all active sessions.
+      required: false
+      selector:
+        text:
+
+get_voice_assist_status:
+  name: Get Voice Assist Status
+  description: Inspect Home Assistant Assist pipelines, voice satellites, wake-word engines, and quiet hours state.
 

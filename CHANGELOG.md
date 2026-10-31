@@ -2,6 +2,26 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.11.14] - 2026-10-30
+
+### Added & Enhanced
+- **Advanced Voice Assist Enhancements (Roadmap Item 9)**:
+  - **Spatial Audio Ducking & Volume Restoration**:
+    - Implemented `async_duck_media` in `audio_manager.py` to temporarily attenuate or pause active media players across targeted and spatially adjacent rooms during announcements or assist voice conversations.
+    - Added `async_unduck_media` to restore media players back to their exact pre-duck volume level or resume paused streams upon voice completion.
+    - Integrated automatic timed delayed unducking into `async_notify_voice` based on calculated speaking duration or optional custom `duck_duration`.
+    - Registered dedicated services `otis_ai.duck_media` and `otis_ai.restore_media`.
+  - **Whisper & Quiet Hours Mode**:
+    - Linked `audio_manager` directly with `rules_manager.py` to evaluate quiet hours windows and volume ceilings.
+    - When quiet hours are active or `whisper_mode: true` is requested, automatically caps vocal announcement volume to `quiet_hours_volume` (e.g. 20-25%), routes speech to `preferred_speaker` if no target area is specified, and flags payloads with `whisper_mode: true`.
+    - Enhanced service `otis_ai.notify_voice` with `duck_media`, `duck_duration`, and `whisper_mode` parameters.
+  - **Continuous Wake-Word Readiness & Assist Pipeline Coordination**:
+    - Added `async_get_assist_pipeline_status` in `audio_manager.py` to inspect Home Assistant's `assist_pipeline` registry, preferred pipelines, voice satellites (`assist_satellite`), and wake-word engines (`openwakeword`, `wyoming`, `porcupine`, `micro_wake_word`).
+    - Registered service `otis_ai.get_voice_assist_status` providing pipeline configuration, satellite readiness, and active ducking telemetry.
+    - Added Assist natural conversational intent parsing for "voice assist status", "duck media", and "restore media".
+  - **Test Suite & Reliability**:
+    - Expanded unit test coverage from 91 to 96 passing tests, covering spatial audio ducking, pause fallbacks, quiet hours evaluation, assist pipeline discovery, and natural conversational intents.
+
 ## [1.11.13] - 2026-10-30
 
 ### Added & Enhanced

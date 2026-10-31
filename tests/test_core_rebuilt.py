@@ -3225,10 +3225,234 @@ class TestMacroManager(unittest.TestCase):
             message="Motion detected on Front Porch",
             area_id="great_room",
             announce=True,
+            duck_media=False,
         ))
 
         self.assertTrue(res["success"])
         self.assertEqual(res["routed_via"], "script.notify_router")
+
+    def test_audio_duck_and_restore(self):
+        """Test spatial audio ducking and volume restoration across adjacent rooms."""
+        from custom_components.otis_ai.audio_manager import AudioHandoffManager
+
+        class MockMediaState:
+            def __init__(self, entity_id, state="playing", attributes=None):
+                self.entity_id = entity_id
+                self.state = state
+                self.attributes = attributes or {}
+
+        mock_players = [
+            MockMediaState("media_player.living_room_amp", "playing", {"volume_level": 0.80, "friendly_name": "Living Room Amp", "area_id": "living_room"}),
+            MockMediaState("media_player.kitchen_amp", "playing", {"volume_level": 0.60, "friendly_name": "Kitchen Amp", "area_id": "kitchen"}),
+            MockMediaState("media_player.bedroom_amp", "off", {"volume_level": 0.50, "friendly_name": "Bedroom Amp", "area_id": "bedroom"}),
+        ]
+        self.hass.states.async_all = MagicMock(side_effect=lambda domain=None: mock_players if domain == "media_player" else [])
+
+        spatial_mock = MagicMock()
+        spatial_mock.async_get_graph = AsyncMock(return_value={
+            "named_adjacencies": {"living_room": ["kitchen"], "kitchen": ["living_room"]}
+        })
+
+        mgr = AudioHandoffManager(self.hass, spatial_manager=spatial_mock)
+
+        # 1. Duck media targeting living_room (should also duck adjacent kitchen)
+        duck_res = asyncio.run(mgr.async_duck_media(areas=["living_room"], duck_ratio=0.25, duck_level=0.15))
+        self.assertTrue(duck_res["success"])
+        self.assertEqual(duck_res["ducked_count"], 2)
+        sid = duck_res["session_id"]
+
+        # Check volume_set service calls
+        vol_calls = [c for c in self.hass.services.async_call.call_args_list if c[0][1] == "volume_set"]
+        ducked_entities = {c[0][2]["entity_id"] for c in vol_calls}
+        self.assertIn("media_player.living_room_amp", ducked_entities)
+        self.assertIn("media_player.kitchen_amp", ducked_entities)
+
+        # 2. Unduck media and restore prior volume levels
+        self.hass.services.async_call.reset_mock()
+        unduck_res = asyncio.run(mgr.async_unduck_media(session_id=sid))
+        self.assertTrue(unduck_res["success"])
+        self.assertEqual(unduck_res["restored_count"], 2)
+
+        restore_calls = [c for c in self.hass.services.async_call.call_args_list if c[0][1] == "volume_set"]
+        call_map = {c[0][2]["entity_id"]: c[0][2]["volume_level"] for c in restore_calls}
+        self.assertAlmostEqual(call_map["media_player.living_room_amp"], 0.80)
+        self.assertAlmostEqual(call_map["media_player.kitchen_amp"], 0.60)
+
+    def test_audio_duck_pause_fallback(self):
+        """Test ducking falls back to pausing players without volume control."""
+        from custom_components.otis_ai.audio_manager import AudioHandoffManager
+
+        class MockMediaState:
+            def __init__(self, entity_id, state="playing", attributes=None):
+                self.entity_id = entity_id
+                self.state = state
+                self.attributes = attributes or {}
+
+        mock_players = [
+            MockMediaState("media_player.legacy_streamer", "playing", {"friendly_name": "Legacy Streamer", "area_id": "den"}),
+        ]
+        self.hass.states.async_all = MagicMock(side_effect=lambda domain=None: mock_players if domain == "media_player" else [])
+
+        mgr = AudioHandoffManager(self.hass)
+        duck_res = asyncio.run(mgr.async_duck_media(areas=["den"]))
+        self.assertTrue(duck_res["success"])
+        self.assertEqual(duck_res["ducked_count"], 1)
+
+        pause_calls = [c for c in self.hass.services.async_call.call_args_list if c[0][1] == "media_pause"]
+        self.assertEqual(len(pause_calls), 1)
+
+        # Restore: should call media_play
+        self.hass.services.async_call.reset_mock()
+        unduck_res = asyncio.run(mgr.async_unduck_media())
+        self.assertTrue(unduck_res["success"])
+        play_calls = [c for c in self.hass.services.async_call.call_args_list if c[0][1] == "media_play"]
+        self.assertEqual(len(play_calls), 1)
+
+    def test_whisper_and_quiet_hours_voice_notify(self):
+        """Test quiet hours detection and whisper volume capping."""
+        from custom_components.otis_ai.audio_manager import AudioHandoffManager
+
+        mock_rules = MagicMock()
+        mock_rules.get_rules.return_value = {
+            "quiet_hours_enabled": True,
+            "quiet_hours_start": "00:00",
+            "quiet_hours_end": "23:59",  # Spans entire day for test
+            "quiet_hours_volume": 20,
+            "preferred_speaker": "media_player.master_speaker",
+        }
+
+        self.hass.services.has_service = MagicMock(return_value=True)
+        mgr = AudioHandoffManager(self.hass, rules_manager=mock_rules)
+
+        is_active, vol_cap, pref_spk = mgr.is_quiet_hours_active()
+        self.assertTrue(is_active)
+        self.assertEqual(vol_cap, 20)
+        self.assertEqual(pref_spk, "media_player.master_speaker")
+
+        res = asyncio.run(mgr.async_notify_voice(
+            message="Night security check complete",
+            duck_media=False,
+        ))
+        self.assertTrue(res["success"])
+        self.assertTrue(res["whisper_mode"])
+        self.assertTrue(res["quiet_hours_active"])
+        self.assertEqual(res["target_area"], "media_player.master_speaker")
+
+        # Verify payload sent to notify_router contains capped volume
+        call_data = self.hass.services.async_call.call_args[0][2]
+        self.assertEqual(call_data.get("volume"), 0.20)
+        self.assertTrue(call_data.get("whisper_mode"))
+
+    def test_assist_pipeline_status_discovery(self):
+        """Test discovering assist pipelines, satellites, and wake-word engines."""
+        from custom_components.otis_ai.audio_manager import AudioHandoffManager
+
+        class MockEntityState:
+            def __init__(self, entity_id, state="idle", attributes=None):
+                self.entity_id = entity_id
+                self.state = state
+                self.attributes = attributes or {}
+
+        mock_satellites = [
+            MockEntityState("assist_satellite.living_room_voice", "idle", {"friendly_name": "Living Room Satellite", "active_pipeline": "default"}),
+        ]
+        mock_wake = [
+            MockEntityState("wake_word.openwakeword", "ready", {"friendly_name": "OpenWakeWord Engine"}),
+        ]
+
+        def mock_states_all(domain=None):
+            if domain == "assist_satellite":
+                return mock_satellites
+            if domain == "wake_word":
+                return mock_wake
+            if domain == "media_player":
+                return []
+            return mock_satellites + mock_wake
+
+        self.hass.states.async_all = MagicMock(side_effect=mock_states_all)
+
+        mock_store = AsyncMock()
+        mock_store.async_load.return_value = {
+            "items": [
+                {
+                    "id": "pipe_1",
+                    "name": "Otis Local Pipeline",
+                    "conversation_engine": "conversation.otis_ai",
+                    "stt_engine": "stt.whisper",
+                    "tts_engine": "tts.piper",
+                    "prefer_local_intents": True,
+                }
+            ],
+            "preferred_item": "pipe_1",
+        }
+
+        from unittest.mock import patch
+        with patch("homeassistant.helpers.storage.Store", return_value=mock_store):
+            mgr = AudioHandoffManager(self.hass)
+            st = asyncio.run(mgr.async_get_assist_pipeline_status())
+            self.assertTrue(st["success"])
+            self.assertEqual(st["total_pipelines"], 1)
+            self.assertEqual(st["preferred_pipeline"], "Otis Local Pipeline")
+            self.assertEqual(st["total_satellites"], 1)
+            self.assertEqual(len(st["wake_word_engines"]), 1)
+
+    def test_voice_assist_conversation_intents(self):
+        """Test conversation agent handles voice assist status, duck media, and restore media intents."""
+        from custom_components.otis_ai import OtisAIConversationAgent
+        from custom_components.otis_ai.audio_manager import AudioHandoffManager
+
+        agent = OtisAIConversationAgent(
+            self.hass,
+            MagicMock(),
+            MagicMock(),
+            MagicMock(),
+            audio_manager=AudioHandoffManager(self.hass),
+        )
+
+        agent.audio_manager.async_get_assist_pipeline_status = AsyncMock(return_value={
+            "success": True,
+            "total_pipelines": 2,
+            "preferred_pipeline": "Otis AI Companion",
+            "total_satellites": 3,
+            "wake_word_engines": [{"entity_id": "wake_word.openwakeword"}],
+            "active_ducking_sessions": 0,
+            "quiet_hours_active": False,
+            "quiet_hours_volume_cap": 25,
+        })
+        agent.audio_manager.async_duck_media = AsyncMock(return_value={
+            "success": True,
+            "message": "Ducked 2 active media player(s) for voice clarity.",
+        })
+        agent.audio_manager.async_unduck_media = AsyncMock(return_value={
+            "success": True,
+            "message": "Restored 2 media player(s) to original volume/playback state.",
+        })
+
+        class MockUserInput:
+            def __init__(self, text):
+                self.text = text
+                self.conversation_id = "test_conv"
+                self.context = MagicMock()
+                self.create_response = MagicMock(return_value=MagicMock())
+
+        # Test status intent
+        u1 = MockUserInput("What is the voice assist status?")
+        asyncio.run(agent.async_process(u1))
+        speech_1 = u1.create_response.call_args[1]["speech"]
+        self.assertIn("Voice Assist & Pipeline Status", speech_1)
+        self.assertIn("Otis AI Companion", speech_1)
+
+        # Test duck intent
+        u2 = MockUserInput("Please duck media playback")
+        asyncio.run(agent.async_process(u2))
+        speech_2 = u2.create_response.call_args[1]["speech"]
+        self.assertIn("Ducked 2 active media player(s)", speech_2)
+
+        # Test restore intent
+        u3 = MockUserInput("Restore media volume")
+        asyncio.run(agent.async_process(u3))
+        speech_3 = u3.create_response.call_args[1]["speech"]
+        self.assertIn("Restored 2 media player(s)", speech_3)
 
     def test_energy_manager_discovery_and_summary(self):
         """Test EnergyManager discovers power sensors, solar, UPS, and computes telemetry."""

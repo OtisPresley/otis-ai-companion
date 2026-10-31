@@ -39,7 +39,7 @@ It replaces fragile Jinja2 templates, hardcoded entity mappings, and rigid autom
 - 🎨 **Dynamic AI Themes Studio (Phase 2)**: Natural language theme generator synthesizing modern CSS variables with instant zero-profile-switching live activation, live STT voice microphone input with animated waveform equalizer, and robust dark/light contrast.
 - 🛡️ **Otis Sentinel Watchdog & Self-Healing (Phase 3)**: Continuous background telemetry watchdog monitoring battery depletion, short-cycling climate compressors, unattended garage doors, and failed integrations with 1-click atomic remediation.
 - ⚡ **Dynamic Macro Orchestrator & Assist Pipelines (Phase 5)**: Multi-step atomic lifestyle macros (Movie Night, Goodnight, Party Mode, Lockdown) with prior state snapshotting, pre-flight safety gates, and 1-click state rollback.
-- 🔊 **Voice Feedback & Dynamic Audio Follow-Me (Phase 6)**: Presence-based TTS notifications (`notify_router`) and seamless multi-room audio handoff across matrix amplifiers (e.g. Control4) with idle amplifier power guards.
+- 🔊 **Voice Assist & Spatial Audio Ducking (Phase 6 & Roadmap Item 9)**: Continuous wake-word readiness and Assist pipeline coordination, spatial audio ducking across active media players during announcements, whisper / quiet voice mode adhering to user quiet hours volume constraints, and seamless multi-room audio follow-me routing across matrix amplifiers (e.g. Control4).
 - ⚡ **Energy & Predictive Load Orchestrator (Phase 7)**: TOU tariff awareness, solar surplus utilization, battery/UPS storage monitoring, and tiered dynamic load shedding during grid peak hours.
 - 👁️ **Multi-Modal Vision & Presence Intelligence (Phase 8)**: Multi-sensor room occupancy fusion combining mmWave radar, PIR, media playback, and micro-BLE beacons; RTSP camera stream deduplication and Gemini Vision anomaly detection.
 - 🔄 **Self-Supervised Habit Learning & Behavioral Modeling (Phase 9)**: Non-blocking SQLite recorder habit sequence mining, habit deviation guards (e.g. missed bedtime routine), and dynamic circadian lighting & seasonal temperature curves.
@@ -157,7 +157,7 @@ data:
 
 ## 🏷️ Services Reference
 
-Otis AI Companion provides **43 registered services** structured by architectural subsystem:
+Otis AI Companion provides **46 registered services** structured by architectural subsystem:
 
 ### 1. AI Co-Pilot & Suggestion Engine
 | Service Name | Description | Example Target |
@@ -200,13 +200,16 @@ Otis AI Companion provides **43 registered services** structured by architectura
 | `otis_ai.rollback_macro` | Roll back most recent macro and restore entities to prior states. | `data: { macro_id: "..." }` |
 | `otis_ai.list_macros` | List built-in macro templates and recent execution history. | `response_variable: macros` |
 
-### 6. Voice Feedback & Multi-Room Audio Routing
+### 6. Voice Feedback, Audio Routing & Assist Pipeline
 | Service Name | Description | Example Target |
 | :--- | :--- | :--- |
 | `otis_ai.audio_handoff` | Transfer or follow media stream between source and target rooms. | `data: { source_area: "living_room", target_area: "patio" }` |
 | `otis_ai.media_follow_me` | Follow user media playback as they move across rooms. | `data: { target_area: "kitchen" }` |
 | `otis_ai.release_idle_sources` | Power down idle multi-zone amplifier channels and matrix streamers. | `data: { idle_threshold_minutes: 15 }` |
-| `otis_ai.notify_voice` | Broadcast targeted presence-aware TTS announcement via `notify_router`. | `data: { message: "Front gate open", area_id: "office" }` |
+| `otis_ai.notify_voice` | Broadcast targeted presence-aware TTS announcement via `notify_router` with audio ducking and whisper mode. | `data: { message: "Front gate open", area_id: "office", duck_media: true }` |
+| `otis_ai.duck_media` | Temporarily attenuate or pause active media players in targeted/adjacent rooms. | `data: { areas: ["living_room"], duck_ratio: 0.25 }` |
+| `otis_ai.restore_media` | Restore previously ducked or paused media players back to original volume. | `data: { session_id: "all" }` |
+| `otis_ai.get_voice_assist_status` | Inspect Home Assistant Assist pipelines, voice satellites, wake words, and quiet hours. | `response_variable: voice_status` |
 
 ### 7. Energy & Predictive Load Orchestrator
 | Service Name | Description | Example Target |
@@ -279,8 +282,9 @@ Otis AI Companion includes a comprehensive test suite running against an asynchr
 python3 -m unittest discover tests
 ```
 
-### Coverage (91/91 Passing):
+### Coverage (96/96 Passing):
 - **Core Engine & Registries (`test_core_rebuilt.py`)**: Registry discovery, maturity scoring, BFS spatial pathfinding, floor plan rendering, themes, Sentinel watchdog, and atomic macros.
+- **Voice Assist & Spatial Audio Ducking (`test_core_rebuilt.py`)**: Acoustic ducking of targeted/adjacent media players, volume restoration, whisper/quiet hours mode, and Assist pipeline status.
 - **User Behavioral Rules (`test_rules_manager.py`)**: Persona profiles, tone guidelines, autonomy policies, quiet hours volume limiting, dynamic prompt injection, and services.
 - **Vision & Presence Fusion (`test_vision_presence.py`)**: mmWave + PIR + media fusion, camera stream deduplication, and Gemini Vision anomaly detection.
 - **Habit Learning & Behavioral Modeling (`test_habit_manager.py`)**: SQLite recorder mining, habit routine clustering, bedtime deviation guards, and circadian curves.
