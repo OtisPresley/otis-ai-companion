@@ -601,7 +601,7 @@ class VisionPresenceManager:
             re.IGNORECASE,
         )
         non_appliance_keywords = (
-            "theater", "theatre", "yamaha", "receiver", "amplifier", "audio", "sound", "speaker",
+            "theater", "theatre", "avr", "receiver", "amplifier", "audio", "sound", "speaker",
             "subwoofer", "zone", "enhancer", "auto-update", "status", "firmware", "sync",
             "led", "light", "strip", "lamp", "bulb", "display", "tv", "television", "remote",
             "fan", "mute", "volume", "input", "hdmi", "sensor"

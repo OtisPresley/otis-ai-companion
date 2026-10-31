@@ -2,6 +2,22 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.12.3] - 2026-10-31
+
+### Added & Enhanced
+- **Multi-Zone Audio Matrix Presets Architecture & Modular Discovery**:
+  - Implemented vendor-agnostic multi-zone matrix amplifier presets (`matrix_presets.py`) with first-class support for:
+    - Universal / Standards-Based Multi-Zone Matrix Amplifiers
+    - Russound Multi-Zone Controllers (MCA-C3, MCA-C5, MCA-66, MCA-88, RIO, RNET, MBX)
+    - Monoprice 6-Zone Whole-Home Audio / Dayton Audio (DAX66)
+    - Snap One / Episode Response DSP / Triad AMS Multi-Zone Matrix Amplifiers
+    - Control4 4/8/16-Zone Matrix Amplifiers
+    - HTD Whole-Home Audio (Lync 6/12, MC-66, MCA-66)
+    - AudioControl Director / Anthem / Savant Multi-Zone DSP Systems
+  - Replaced vendor-hardcoded platform checks (`control4_mediaplayer`, `theater_yamaha`, network switch names) across `audio_manager.py`, `dashboard_manager.py`, and `__init__.py` with generalized capability-based discovery and token matching.
+  - Enhanced Smart Home Maturity & Capabilities tab to display the active matrix amplifier hardware profile and output zone breakdown.
+  - Added full test suite (`test_matrix_presets.py`) verifying preset registration, dynamic hardware detection, and multi-room audio follow-me handoffs across all supported vendor architectures.
+
 ## [1.12.2] - 2026-10-31
 
 ### Fixed & Refined

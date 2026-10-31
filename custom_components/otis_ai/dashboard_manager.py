@@ -1690,9 +1690,9 @@ class DashboardManager:
             "snapshots", "recordings",
         )
         NETWORK_INFRA_KEYWORDS = (
-            "snmp", "hades", "switch-", "switch_", "port_", "poe_", "nat_", "filter_rule",
-            "service_", "firewall", "router", "gateway", "vlan", "unifi_poe", "ethernet",
-            "cisco", "interface_", "nat_outbound", "filter_rules",
+            "snmp", "switch-", "switch_", "port_", "poe_", "nat_", "filter_rule",
+            "service_", "firewall", "router", "gateway", "vlan", "poe", "ethernet",
+            "managed_switch", "interface_", "nat_outbound", "filter_rules",
         )
         POOL_HVAC_KEYWORDS = (
             "pool", "spa", "pump", "heater", "thermostat", "chlorinator", "bubbler",
@@ -1755,7 +1755,7 @@ class DashboardManager:
                     break
             if not primary_player:
                 for eid in media_players:
-                    if any(k in eid.lower() for k in ("shield", "apple_tv", "tv", "yamaha", "denon", "marantz", "receiver", "theater_room")):
+                    if any(k in eid.lower() for k in ("tv", "display", "projector", "receiver", "avr", "amplifier", "soundbar", "theater", "cinema")):
                         primary_player = eid
                         break
             if not primary_player and media_players:

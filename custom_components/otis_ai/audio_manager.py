@@ -15,6 +15,8 @@ import uuid
 
 from homeassistant.core import HomeAssistant
 
+from .matrix_presets import is_matrix_entity, is_tv_cinema_player
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -123,11 +125,11 @@ class AudioHandoffManager:
             }
 
             # Classify zone
-            if "matrix_amp" in entity_id or platform == "control4_mediaplayer":
+            if is_matrix_entity(entity_id, platform):
                 matrix_zones.append(entry_info)
             elif "bridge" in entity_id or "streamer" in entity_id or platform in ("alexa_media", "music_assistant", "mass"):
                 streamers.append(entry_info)
-            elif any(k in entity_id for k in ("tv", "bravia", "shield", "theater_yamaha", "googletv")):
+            elif is_tv_cinema_player(entity_id, attrs):
                 tv_players.append(entry_info)
             else:
                 other_players.append(entry_info)
@@ -195,11 +197,14 @@ class AudioHandoffManager:
             za = str(zone.get("area_id") or "").lower()
             ze = str(zone.get("entity_id") or "").lower()
             zn = str(zone.get("name") or "").lower()
+            t_norm = target_a.replace("_", "")
             return (
                 za == target_a
                 or target_a in ze
-                or target_a.replace("_", "") in ze.replace("_", "")
+                or t_norm in ze.replace("_", "")
                 or target_a in zn
+                or target_a in zn.replace(" ", "_")
+                or t_norm in zn.replace(" ", "")
             )
 
         # Locate source player
@@ -235,10 +240,13 @@ class AudioHandoffManager:
             }
 
         # Prefer matrix amplifier zone if source is matrix zone, else first candidate
-        is_matrix_source = "matrix_amp" in source_player["entity_id"] or source_player.get("platform") == "control4_mediaplayer"
+        is_matrix_source = is_matrix_entity(source_player["entity_id"], source_player.get("platform", ""))
         target_player = None
         if is_matrix_source:
-            matrix_targets = [z for z in target_candidates if "matrix_amp" in z["entity_id"] or z.get("platform") == "control4_mediaplayer"]
+            matrix_targets = [
+                z for z in target_candidates
+                if is_matrix_entity(z["entity_id"], z.get("platform", ""))
+            ]
             target_player = matrix_targets[0] if matrix_targets else target_candidates[0]
         else:
             target_player = target_candidates[0]

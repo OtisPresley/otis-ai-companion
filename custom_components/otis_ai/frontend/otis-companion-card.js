@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.12.2";
+const CARD_VERSION = "1.12.3";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -5246,7 +5246,7 @@ class OtisCompanionCard extends HTMLElement {
             <span>Media &amp; Matrix Audio Architecture</span>
             <span>${
               mediaTopo.matrix_amp_detected
-                ? `Matrix Amp (${matrixZones.length} Zones)`
+                ? `${this._escapeHtml(mediaTopo.matrix_preset_name || "Matrix Amp")} (${matrixZones.length} Zones)`
                 : `${mediaTopo.total_media_players || 0} Media Players`
             }</span>
           </div>
@@ -5254,15 +5254,16 @@ class OtisCompanionCard extends HTMLElement {
             ${
               mediaTopo.matrix_amp_detected
                 ? `
-                  <div><strong>Output Zones:</strong> ${matrixZones.map((z) => z.name).join(", ")}</div>
+                  <div><strong>Hardware Profile:</strong> ${this._escapeHtml(mediaTopo.matrix_preset_name || "Universal Multi-Zone Matrix")}</div>
+                  <div style="margin-top: 3px;"><strong>Output Zones:</strong> ${matrixZones.map((z) => this._escapeHtml(z.name)).join(", ")}</div>
                   ${
                     sharedSources.length > 0
-                      ? `<div style="margin-top: 3px;"><strong>Shared Inputs:</strong> ${sharedSources.join(", ")}</div>`
+                      ? `<div style="margin-top: 3px;"><strong>Shared Inputs:</strong> ${sharedSources.map((s) => this._escapeHtml(s)).join(", ")}</div>`
                       : ""
                   }
                   ${
                     inputStreamers.length > 0
-                      ? `<div style="margin-top: 3px;"><strong>Upstream Streamers:</strong> ${inputStreamers.map((s) => s.name).join(", ")}</div>`
+                      ? `<div style="margin-top: 3px;"><strong>Upstream Streamers:</strong> ${inputStreamers.map((s) => this._escapeHtml(s.name)).join(", ")}</div>`
                       : ""
                   }
                 `
@@ -5270,7 +5271,7 @@ class OtisCompanionCard extends HTMLElement {
             }
             ${
               tvZones.length > 0
-                ? `<div style="margin-top: 3px;"><strong>Cinema / TV Displays:</strong> ${tvZones.map((t) => t.name).join(", ")}</div>`
+                ? `<div style="margin-top: 3px;"><strong>Cinema / TV Displays:</strong> ${tvZones.map((t) => this._escapeHtml(t.name)).join(", ")}</div>`
                 : ""
             }
           </div>

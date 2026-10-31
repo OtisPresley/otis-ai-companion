@@ -89,6 +89,12 @@ from .automation_manager import AutomationManager
 from .dashboard_manager import DashboardManager
 from .energy_manager import EnergyManager
 from .macro_manager import MacroManager
+from .matrix_presets import (
+    get_matrix_presets_list,
+    identify_matrix_preset,
+    is_matrix_entity,
+    is_tv_cinema_player,
+)
 from .rules_manager import BehavioralRulesManager
 from .sentinel_manager import SentinelManager
 from .spatial_manager import (
@@ -2638,7 +2644,7 @@ class OtisAIConversationAgent(AbstractAgent):
                 for p in media_topo.get("matrix_input_players", [])
             ]
             media_summary = (
-                f"Multi-Zone Matrix Amplifier ({media_topo.get('matrix_platform', 'matrix')}) with "
+                f"Multi-Zone Matrix Amplifier ({media_topo.get('matrix_preset_name', media_topo.get('matrix_platform', 'Universal Matrix'))}) with "
                 f"{len(m_zones)} output room zones ({m_zones}), shared inputs {m_sources}, "
                 f"upstream input streamers {m_inputs}; TVs/Cinema: "
                 f"{[t['entity_id'] for t in media_topo.get('tv_cinema_players', [])]}"
@@ -3350,17 +3356,25 @@ class DiscoveryEngine:
         entities_list: list[dict[str, Any]],
         active_integrations: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Discover Control4 / Multi-Zone Matrix Amp audio topology, input bridges, and Cinema/TV zones."""
+        """Discover Multi-Zone Matrix Amp audio topology, input bridges, and Cinema/TV zones."""
         media_players = [e for e in entities_list if e.get("domain") == "media_player"]
         integration_domains = {
             str(i.get("domain", "") if isinstance(i, dict) else i).lower()
             for i in active_integrations
         }
-        has_control4 = "control4" in integration_domains or any(
+
+        # Agnostic preset matching across active integrations and player platforms
+        matched_preset = identify_matrix_preset(active_integrations, media_players)
+        preset_id = matched_preset.get("id", "universal")
+        preset_name = matched_preset.get("name", "Universal Multi-Zone Matrix")
+        has_known_matrix_brand = preset_id != "universal"
+
+        # Legacy backward compatibility flag
+        has_control4 = preset_id == "control4" or "control4" in integration_domains or any(
             "control4" in str(e.get("platform", "")).lower() for e in media_players
         )
 
-        # Group media players by shared source_list or Control4 platform / known room speaker naming
+        # Group media players by shared source_list or matrix platform / known room speaker naming
         source_groups: dict[tuple[str, ...], list[dict[str, Any]]] = {}
         for mp in media_players:
             attrs = mp.get("attributes") or {}
@@ -3373,14 +3387,14 @@ class DiscoveryEngine:
         matrix_zones: list[dict[str, Any]] = []
         shared_sources: list[str] = []
 
-        # Pick largest source group with >= 3 rooms sharing the same matrix input sources
+        # Pick largest source group with >= 3 rooms (or >= 2 if recognized matrix preset is active)
         if source_groups:
             best_sources, best_players = max(source_groups.items(), key=lambda kv: len(kv[1]))
-            if len(best_players) >= 3 or (has_control4 and len(best_players) >= 2):
+            if len(best_players) >= 3 or (has_known_matrix_brand and len(best_players) >= 2):
                 shared_sources = list(best_sources)
                 matrix_zones = best_players
 
-        # Fallback heuristic: if Control4 integration is active or >= 4 room media players match area names
+        # Fallback heuristic: if recognized matrix integration is active or room media players match area names
         if not matrix_zones:
             area_lookup = build_area_lookup_map(areas_map)
             candidate_zones = []
@@ -3392,9 +3406,9 @@ class DiscoveryEngine:
                 matched_area = mp.get("area_id") or resolve_area_identifier(
                     eid.replace("media_player.", ""), area_lookup
                 )
-                if "control4" in platform or matched_area or eid.endswith("_deck") or eid.endswith("_room"):
+                if is_matrix_entity(eid, platform) or matched_area or eid.endswith("_deck") or eid.endswith("_room"):
                     candidate_zones.append(mp)
-            if (has_control4 and len(candidate_zones) >= 2) or len(candidate_zones) >= 5:
+            if (has_known_matrix_brand and len(candidate_zones) >= 2) or len(candidate_zones) >= 4:
                 matrix_zones = candidate_zones
                 if not shared_sources:
                     discovered_bridges = [
@@ -3402,11 +3416,13 @@ class DiscoveryEngine:
                         for mp in media_players
                         if any(tok in mp.get("entity_id", "").lower() for tok in ("bridge", "stream", "input"))
                     ]
-                    shared_sources = discovered_bridges or ["Stream 1", "Stream 2", "Media Server", "Home Assistant"]
+                    shared_sources = discovered_bridges or matched_preset.get(
+                        "default_sources", ["Stream 1", "Stream 2", "Media Server", "Home Assistant"]
+                    )
 
         matrix_zone_ids = {z["entity_id"] for z in matrix_zones}
 
-        # Identify upstream input streamer/bridge entities (e.g. media_player.bridge, media_player.gym_bridge)
+        # Identify upstream input streamer/bridge entities
         input_streamers: list[dict[str, Any]] = []
         shared_norm = {s.lower().replace(" ", "_") for s in shared_sources}
         for mp in media_players:
@@ -3423,23 +3439,22 @@ class DiscoveryEngine:
             ):
                 input_streamers.append(mp)
 
-        # Identify Cinema / TV media players
+        # Identify Cinema / TV media players (using agnostic helper)
         tv_cinema_zones: list[dict[str, Any]] = []
         for mp in media_players:
             eid = mp.get("entity_id", "")
             if eid in matrix_zone_ids:
                 continue
-            obj = eid.split(".", 1)[-1].lower()
-            dev_class = str((mp.get("attributes") or {}).get("device_class", "")).lower()
-            if (
-                dev_class in ("tv", "receiver")
-                or any(tok in obj for tok in ("tv", "theater", "cinema", "projector", "avr", "roku", "apple_tv"))
-            ):
+            if is_tv_cinema_player(eid, mp.get("attributes")):
                 tv_cinema_zones.append(mp)
 
         return {
             "matrix_amp_detected": len(matrix_zones) >= 2,
             "has_control4": has_control4,
+            "matrix_preset": matched_preset,
+            "matrix_platform": preset_id,
+            "matrix_preset_name": preset_name,
+            "matrix_presets_available": get_matrix_presets_list(),
             "matrix_zones": [
                 {
                     "entity_id": z["entity_id"],
@@ -3450,6 +3465,7 @@ class DiscoveryEngine:
                 for z in matrix_zones
             ],
             "shared_sources": shared_sources,
+            "matrix_shared_sources": shared_sources,
             "input_streamers": [
                 {
                     "entity_id": s["entity_id"],
@@ -3467,6 +3483,9 @@ class DiscoveryEngine:
                 for t in tv_cinema_zones
             ],
             "total_media_players": len(media_players),
+            "ready_for_unified_coordinator": bool(
+                len(matrix_zones) >= 2 or (len(input_streamers) >= 1 and len(media_players) >= 2)
+            ),
         }
 
     def _discover_security_topology(
