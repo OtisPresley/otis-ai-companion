@@ -665,6 +665,120 @@ class TestOtisAICore(unittest.TestCase):
         user_input.create_response.assert_called_once()
         self.assertIn("successfully created and enabled the automation", user_input.create_response.call_args[1]["speech"])
 
+    def test_conversation_agent_multi_item_orchestration(self):
+        """Test that the agent parses multiple YAML blocks (script + automation) and writes both on confirm."""
+        from custom_components.otis_ai import OtisAIConversationAgent
+
+        entry = MagicMock()
+        entry.options = {CONF_CONVERSATION_AGENT: "conversation.mock_llm"}
+        entry.data = {}
+
+        engine = MagicMock()
+        engine.async_build_capability_map = AsyncMock(return_value={"integrations": [], "areas": {}, "entities": [], "orphaned_entities": []})
+        manager = MagicMock()
+        manager.async_write_automation = AsyncMock(return_value="auto_101")
+        manager.async_write_script = AsyncMock()
+        manager.async_reload_automations = AsyncMock()
+        manager.async_reload_scripts = AsyncMock()
+
+        agent = OtisAIConversationAgent(self.hass, entry, engine, manager)
+
+        user_input = MagicMock()
+        user_input.text = "Create media script and button automation"
+        user_input.conversation_id = "test_multi_conv"
+
+        multi_yaml_speech = (
+            "Here is the coordinator script:\n"
+            "```yaml\n"
+            "alias: Media Matrix Zone Coordinator\n"
+            "sequence:\n"
+            "  - service: media_player.select_source\n"
+            "```\n"
+            "And here is the automation that triggers it:\n"
+            "```yaml\n"
+            "alias: Media Keypad Trigger\n"
+            "trigger:\n"
+            "  - platform: state\n"
+            "    entity_id: sensor.keypad\n"
+            "action:\n"
+            "  - service: script.media_matrix_zone_coordinator\n"
+            "```"
+        )
+        mock_llm_response = MagicMock()
+        mock_llm_response.response.speech = {"plain": {"speech": multi_yaml_speech}}
+        mock_conversation.async_converse = AsyncMock(return_value=mock_llm_response)
+
+        import asyncio
+        result = asyncio.run(agent.async_process(user_input))
+
+        sessions = self.hass.data[DOMAIN]["sessions"]
+        self.assertIn("test_multi_conv", sessions)
+        self.assertIn("pending_items", sessions["test_multi_conv"])
+        items = sessions["test_multi_conv"]["pending_items"]
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0]["type"], "script")
+        self.assertEqual(items[1]["type"], "automation")
+        self.assertIn("Would you like me to create and configure these 2 items", result.response.speech["plain"]["speech"])
+
+        # Confirm proposal
+        confirm_input = MagicMock()
+        confirm_input.text = "yes"
+        confirm_input.conversation_id = "test_multi_conv"
+        confirm_input.create_response = MagicMock(return_value="confirmed")
+
+        asyncio.run(agent.async_process(confirm_input))
+        manager.async_write_script.assert_called_once()
+        manager.async_write_automation.assert_called_once()
+        manager.async_reload_scripts.assert_called_once()
+        manager.async_reload_automations.assert_called_once()
+        self.assertIn("Applied successfully!", confirm_input.create_response.call_args[1]["speech"])
+
+    def test_conversation_agent_history_continuity(self):
+        """Test that conversation history is preserved across turns and injected into prompt."""
+        from custom_components.otis_ai import OtisAIConversationAgent
+
+        entry = MagicMock()
+        entry.options = {CONF_CONVERSATION_AGENT: "conversation.mock_llm"}
+        entry.data = {}
+
+        engine = MagicMock()
+        engine.async_build_capability_map = AsyncMock(return_value={"integrations": [], "areas": {}, "entities": [], "orphaned_entities": []})
+        manager = MagicMock()
+        agent = OtisAIConversationAgent(self.hass, entry, engine, manager)
+
+        user_input_1 = MagicMock()
+        user_input_1.text = "I am planning my media room setup"
+        user_input_1.conversation_id = "test_history_conv"
+
+        mock_llm_resp_1 = MagicMock()
+        mock_llm_resp_1.response.speech = {"plain": {"speech": "Great, let's configure your matrix zones and streamers."}}
+        mock_conversation.async_converse = AsyncMock(return_value=mock_llm_resp_1)
+
+        import asyncio
+        asyncio.run(agent.async_process(user_input_1))
+
+        # Check history recorded
+        sessions = self.hass.data[DOMAIN]["sessions"]
+        self.assertIn("test_history_conv", sessions)
+        history = sessions["test_history_conv"]["history"]
+        self.assertEqual(len(history), 2)
+        self.assertEqual(history[0]["text"], "I am planning my media room setup")
+        self.assertEqual(history[1]["text"], "Great, let's configure your matrix zones and streamers.")
+
+        # Second turn should include history in prompt
+        user_input_2 = MagicMock()
+        user_input_2.text = "Which streamer should be primary?"
+        user_input_2.conversation_id = "test_history_conv"
+
+        mock_llm_resp_2 = MagicMock()
+        mock_llm_resp_2.response.speech = {"plain": {"speech": "Your primary streamer should be media_player.bridge."}}
+        mock_conversation.async_converse = AsyncMock(return_value=mock_llm_resp_2)
+
+        asyncio.run(agent.async_process(user_input_2))
+        second_prompt = mock_conversation.async_converse.call_args[1]["text"]
+        self.assertIn("Recent Conversation History", second_prompt)
+        self.assertIn("I am planning my media room setup", second_prompt)
+
     def test_conversation_agent_script_naming_inference(self):
         """Test that the agent infers meaningful script names and keys instead of generic custom_script."""
         from custom_components.otis_ai import OtisAIConversationAgent

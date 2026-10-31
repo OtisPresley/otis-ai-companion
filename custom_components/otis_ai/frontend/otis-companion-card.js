@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.11.18";
+const CARD_VERSION = "1.11.19";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -975,7 +975,8 @@ class OtisCompanionCard extends HTMLElement {
       if (
         speech &&
         (speech.includes("successfully created and enabled the automation") ||
-          speech.includes("successfully created the script"))
+          speech.includes("successfully created the script") ||
+          speech.includes("Applied successfully!"))
       ) {
         this._fetchData();
       }

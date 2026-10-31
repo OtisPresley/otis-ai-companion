@@ -1992,22 +1992,59 @@ class OtisAIConversationAgent(AbstractAgent):
         confirmations = {"yes", "y", "apply", "confirm", "go ahead", "do it"}
         rejections = {"no", "n", "cancel", "don't", "stop", "reject"}
 
-        # Check for pending wizard confirmation
-        if conv_id in sessions and sessions[conv_id].get("pending_yaml"):
+        # Check for pending wizard confirmation (single or multi-item configuration)
+        if conv_id in sessions and (sessions[conv_id].get("pending_items") or sessions[conv_id].get("pending_yaml")):
             if user_text in confirmations:
-                pending = sessions[conv_id].pop("pending_yaml")
-                try:
-                    if pending["type"] == "automation":
-                        auto_id = await self.automation_manager.async_write_automation(pending["yaml_data"])
-                        await self.automation_manager.async_reload_automations()
-                        speech = f"I have successfully created and enabled the automation '{pending['yaml_data'].get('alias', auto_id)}'!"
+                items = sessions[conv_id].pop("pending_items", None)
+                if not items:
+                    p = sessions[conv_id].pop("pending_yaml", None)
+                    if p:
+                        if isinstance(p, dict) and p.get("type"):
+                            items = [p]
+                        elif isinstance(p, dict):
+                            items = [{"type": "automation", "name": p.get("alias", "automation"), "yaml_data": p}]
+                        else:
+                            items = []
                     else:
-                        await self.automation_manager.async_write_script(pending["id"], pending["yaml_data"])
+                        items = []
+                else:
+                    sessions[conv_id].pop("pending_yaml", None)
+
+                try:
+                    created_autos = []
+                    created_scripts = []
+                    for item in items:
+                        if item.get("type") == "automation":
+                            auto_id = await self.automation_manager.async_write_automation(item["yaml_data"])
+                            created_autos.append(item["yaml_data"].get("alias", auto_id))
+                        elif item.get("type") == "script":
+                            s_key = item.get("id") or re.sub(r"\W+", "_", item["yaml_data"].get("alias", "custom_script").lower()).strip("_")
+                            await self.automation_manager.async_write_script(s_key, item["yaml_data"])
+                            created_scripts.append(item["yaml_data"].get("alias", s_key))
+
+                    if created_autos:
+                        await self.automation_manager.async_reload_automations()
+                    if created_scripts:
                         await self.automation_manager.async_reload_scripts()
-                        speech = f"I have successfully created the script '{pending['yaml_data'].get('alias', pending['id'])}'!"
+
                     if hasattr(self.engine, "invalidate_cache") and callable(getattr(self.engine, "invalidate_cache", None)):
                         self.engine.invalidate_cache()
-                    
+
+                    if len(items) == 1 and created_autos:
+                        speech = f"I have successfully created and enabled the automation '{created_autos[0]}'!"
+                    elif len(items) == 1 and created_scripts:
+                        speech = f"I have successfully created the script '{created_scripts[0]}'!"
+                    else:
+                        parts = []
+                        if created_scripts:
+                            parts.append(f"Script(s): {', '.join(created_scripts)}")
+                        if created_autos:
+                            parts.append(f"Automation(s): {', '.join(created_autos)}")
+                        speech = "I have successfully created and enabled the configuration! Applied successfully!\n• " + "\n• ".join(parts)
+
+                    s_data = sessions.setdefault(conv_id, {})
+                    s_data.setdefault("history", []).append({"role": "user", "text": user_input.text})
+                    s_data["history"].append({"role": "assistant", "text": speech})
                     return self._create_response(user_input, speech)
                 except Exception as err:
                     _LOGGER.error("Failed to apply pending configuration: %s", err, exc_info=True)
@@ -2016,7 +2053,8 @@ class OtisAIConversationAgent(AbstractAgent):
                         f"I encountered an error while writing the configuration: {err}. Please check the logs."
                     )
             elif user_text in rejections:
-                sessions[conv_id].pop("pending_yaml")
+                sessions[conv_id].pop("pending_items", None)
+                sessions[conv_id].pop("pending_yaml", None)
                 return self._create_response(
                     user_input,
                     "Okay, I have discarded the proposed configuration."
@@ -2575,6 +2613,19 @@ class OtisAIConversationAgent(AbstractAgent):
             for s in suggestions_list[:8]
         ) or "None currently pending."
 
+        # Filter active integrations for the prompt to hardware, ecosystem, and notable platforms
+        INTERNAL_INTEGRATION_PREFIXES = (
+            "http", "websocket", "system_", "recorder", "history", "logbook", "auth",
+            "api", "blueprint", "trace", "diagnostics", "frontend", "lovelace",
+            "config", "hassio", "homeassistant", "my", "onboarding", "repairs",
+            "search", "update", "backup", "usb", "hardware", "ssdp", "zeroconf", "dhcp",
+            "input_", "timer", "counter", "schedule", "tag", "zone", "sun", "tts",
+        )
+        notable_integrations = [
+            i for i in capability_map.get("integrations", [])
+            if not any(i.startswith(p) for p in INTERNAL_INTEGRATION_PREFIXES)
+        ][:35]
+
         # 3. Format the prompt wrapping the user's input with the spatial/capability context
         conv_id = user_input.conversation_id or "default"
         session_data = sessions.setdefault(conv_id, {})
@@ -2585,55 +2636,53 @@ class OtisAIConversationAgent(AbstractAgent):
         if getattr(self, "rules_manager", None):
             rules_snippet = self.rules_manager.get_system_prompt_snippet()
 
-        if turn_count > 1:
-            # On follow-up turns, HA conversation agents retain conversational context.
-            # Avoid re-sending thousands of tokens of static topology which triggers Groq/LLM HTTP 413 (Payload Too Large).
-            prompt = f"""You are the Otis AI Companion, proactive smart home architect and co-pilot.
-Continue assisting the user in this conversation. Leverage the home's hardware architecture (Control4 Matrix Audio, Alarmo, Climate, Energy) previously established.
-Keep your response concise, structured, and actionable.
+        # Retrieve recent conversation turns (up to 6 turns) to guarantee topic focus and continuity
+        recent_history = session_data.get("history", [])[-6:]
+        history_snippet = ""
+        if recent_history:
+            history_lines = []
+            for h in recent_history:
+                role = "User" if h["role"] == "user" else "Otis"
+                history_lines.append(f"{role}: {h['text']}")
+            history_snippet = "Recent Conversation History:\n" + "\n".join(history_lines) + "\n\n"
 
-{rules_snippet}
-
-User: {user_input.text}
-"""
-        else:
-            prompt = f"""You are the Otis AI Companion, an intelligent, proactive smart home architect, co-pilot, and butler.
+        prompt = f"""You are the Otis AI Companion, an intelligent, proactive smart home architect, co-pilot, and butler.
 Your goal is to guide the user from a bare Home Assistant installation to a fully optimized, cohesive, automated smart home—and offer to build and configure everything for them.
-Always prioritize native Home Assistant solutions, minimize frontend dependencies, and synthesize right-sized, modular coordinator automations and scripts (avoiding thousands of tiny per-entity automations or brittle monoliths).
+Always prioritize native Home Assistant solutions, minimize frontend dependencies, and synthesize right-sized, modular coordinator automations and scripts.
+
+CONVERSATION DISCIPLINE & FOCUS:
+- Stay strictly focused on the user's active goal, topic, and immediate thread.
+- If the user is discussing a specific domain (such as Media, Climate, Lighting, or Security), DO NOT switch to unrelated topics.
+- Follow up directly on what was discussed in the Recent Conversation History.
 
 {rules_snippet}
 
-Here is the current capability and architecture map of the home:
+{history_snippet}Here is the current capability and architecture map of the home:
 - System Maturity: {maturity_summary}
-- Active Integrations: {capability_map['integrations']}
+- Key Integrations: {notable_integrations}
 - Areas: {list(capability_map['areas'].keys())}
 - Spatial Adjacency (Connected Rooms): {spatial_summary}
 - Discovered Media & Matrix Audio Architecture: {media_summary}
 - Discovered Security, Presence & Sleep Architecture: {security_summary}
 - Discovered Energy & Load Topology: {energy_summary}
-- Active Entities Summary: {entity_summary} (Total: {len(capability_map['entities'])} entities)
-- Detailed Control Entities (Actionable): {detailed_entities}
-- Existing Automations: {existing_automations}
-- Existing Scripts: {existing_scripts}
-- Orphaned Entities Summary: {orphan_summary} (Total: {len(capability_map['orphaned_entities'])} orphaned entities)
+- Active Entities: {entity_summary}
+- Detailed Control Entities (Actionable): {detailed_entities[:30]}
+- Existing Automations: {existing_automations[:15]}
+- Existing Scripts: {existing_scripts[:15]}
+- Orphaned Entities: {orphan_summary}
 - Proactive Recommendations:
 {suggestions_summary}
 
-Instructions:
-1. Reason deeply over the home's hardware topology:
-   - When a Multi-Zone Matrix Amplifier (such as Control4) is present, remember that audio is played on an upstream input streamer (e.g. `media_player.bridge`, `media_player.gym_bridge`, or Music Assistant) AND routed to 1 or more output room zones (`media_player.great_room`, `media_player.master`, etc.) via `media_player.select_source` + `media_player.volume_set`.
-   - When designing security automations, coordinate `alarm_control_panel` (e.g., Alarmo), `lock.*` deadbolts, `cover.*` garage doors, `siren.*`, `camera.*` snapshots, `person.*` presence, and `sleepnumber`/`in_bed` occupancy sensors into cohesive multi-mode flows (Away, Night/Bedtime, Arrival).
-2. Suggest cohesive multi-room coordinator automations, scripts, packages, or dashboard updates rather than fragmented single-device rules.
-3. Review "Existing Automations" and "Existing Scripts" so you never duplicate existing rules—enhance them or fill architectural gaps.
-4. Offer to clean up orphaned entities, assign unassigned devices to areas, and recommend high-value integrations/addons when relevant.
-5. Keep your responses concise, structured, and actionable.
-6. Use the Spatial Adjacency topology for room transition queries, pathway lighting automations, and tracking movements between connected rooms.
-7. When the user requests multi-step routines (such as movie night, bedtime, party, lockdown, or arrival), you can propose or trigger Otis dynamic macros, which feature atomic snapshotting and 1-click state rollback.
-8. When the user asks to move music, transfer audio, or follow them between rooms, you can propose or trigger Otis Audio Handoff (`audio_handoff` / `media_follow_me`), which leverages Spatial Adjacency to route matrix amplifier zones (Control4) and streamers seamlessly.
-9. When the user asks about energy usage, electrical power, peak tariff hours, or load shedding, reference the Discovered Energy & Load Topology and propose or trigger Otis dynamic load shedding (`load_shed` / `restore_shed_loads`) or appliance sequencing.
-10. When proposing automations or scripts in YAML code blocks:
-    - ALWAYS provide an explicit, descriptive `alias: 'Descriptive Name'` inside the YAML (e.g. `alias: 'Media Matrix Zone Coordinator'`).
-    - For scripts, always include `alias:` and `sequence:`. Never output nameless script blocks.
+Instructions for Automations & Scripts:
+1. Cohesive End-to-End Orchestration:
+   - When creating or recommending a new script to elevate a maturity dimension or solve an architectural need (such as a matrix audio router, lighting coordinator, or bedtime flow):
+     * ALWAYS provide the script with descriptive `alias: 'Descriptive Name'` and `sequence:`.
+     * ALWAYS inspect "Existing Automations" and "Existing Scripts": if an existing automation or script needs to be updated to utilize, trigger, or call this new script (or if a new caller automation is needed, such as wall switch press, schedule, or presence arrival trigger), provide that automation YAML block as well!
+     * Provide each automation and script in its own clean ```yaml code block so Otis can create the script AND update the calling automations together!
+2. Reason deeply over the home's hardware topology:
+   - When a Multi-Zone Matrix Amplifier (such as Control4) is present, audio is played on an upstream input streamer (`media_player.bridge`, Music Assistant) AND routed to output room zones via `media_player.select_source` + `media_player.volume_set`.
+   - When designing security automations, coordinate `alarm_control_panel`, `lock.*`, `cover.*` garage doors, `siren.*`, and presence/occupancy sensors.
+3. Keep your responses concise, structured, and actionable.
 
 User: {user_input.text}
 """
@@ -2691,6 +2740,7 @@ User: {user_input.text}
             speech_text = result.response.speech.get("plain", {}).get("speech", "")
             if speech_text:
                 yaml_blocks = re.findall(r"```(?:yaml)?\n(.*?)```", speech_text, re.DOTALL)
+                pending_items = []
                 for block in yaml_blocks:
                     try:
                         parsed = yaml.safe_load(block)
@@ -2708,16 +2758,11 @@ User: {user_input.text}
                             if "trigger" in parsed or "action" in parsed:
                                 auto_name = parsed.get("alias", (inferred_key.replace("_", " ").title() if inferred_key else "Proposed Automation"))
                                 parsed["alias"] = auto_name
-                                sessions[conv_id] = {
-                                    "pending_yaml": {
-                                        "type": "automation",
-                                        "yaml_data": parsed
-                                    }
-                                }
-                                _LOGGER.debug("Stored pending automation: %s", parsed)
-                                confirm_text = f"\n\nWould you like me to create and enable this automation '{auto_name}' in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
-                                result.response.speech["plain"]["speech"] += confirm_text
-                                break
+                                pending_items.append({
+                                    "type": "automation",
+                                    "name": auto_name,
+                                    "yaml_data": parsed,
+                                })
                             elif "sequence" in parsed:
                                 alias = parsed.get("alias")
                                 if not alias and inferred_key:
@@ -2736,21 +2781,40 @@ User: {user_input.text}
                                         alias = "Otis System Routine"
                                 parsed["alias"] = alias
                                 script_key = inferred_key or re.sub(r"\W+", "_", alias.lower()).strip("_")
-                                sessions[conv_id] = {
-                                    "pending_yaml": {
-                                        "type": "script",
-                                        "id": script_key,
-                                        "yaml_data": parsed
-                                    }
-                                }
-                                _LOGGER.debug("Stored pending script: %s with key %s", parsed, script_key)
-                                confirm_text = f"\n\nWould you like me to create this script '{alias}' (`script.{script_key}`) in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
-                                result.response.speech["plain"]["speech"] += confirm_text
-                                break
+                                pending_items.append({
+                                    "type": "script",
+                                    "id": script_key,
+                                    "name": alias,
+                                    "yaml_data": parsed,
+                                })
                     except Exception as yaml_err:
                         _LOGGER.debug("Failed to parse YAML block: %s", yaml_err)
+
+                if pending_items:
+                    sessions[conv_id] = {
+                        "pending_items": pending_items,
+                        "pending_yaml": pending_items[0],
+                    }
+                    _LOGGER.debug("Stored %d pending configuration item(s): %s", len(pending_items), pending_items)
+                    names_summary = ", ".join(f"'{item['name']}'" for item in pending_items)
+                    if len(pending_items) == 1 and pending_items[0]["type"] == "automation":
+                        confirm_text = f"\n\nWould you like me to create and enable this automation '{pending_items[0]['name']}' in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
+                    elif len(pending_items) == 1 and pending_items[0]["type"] == "script":
+                        confirm_text = f"\n\nWould you like me to create this script '{pending_items[0]['name']}' (`script.{pending_items[0]['id']}`) in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
+                    else:
+                        confirm_text = f"\n\nWould you like me to create and configure these {len(pending_items)} items ({names_summary}) in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
+                    result.response.speech["plain"]["speech"] += confirm_text
         except Exception as parse_err:
             _LOGGER.error("Error parsing LLM response for YAML: %s", parse_err)
+
+        # Track conversation turns in session history
+        session_data.setdefault("history", []).append({"role": "user", "text": user_input.text})
+        if result and getattr(result, "response", None):
+            resp_speech = getattr(result.response, "speech", {}).get("plain", {}).get("speech", "")
+            if resp_speech:
+                session_data["history"].append({"role": "assistant", "text": resp_speech})
+        if len(session_data["history"]) > 16:
+            session_data["history"] = session_data["history"][-16:]
 
         fire_progress("synthesizing", "Synthesizing Actions", "Validating action safety guards & formatting plan")
         return result
@@ -2770,13 +2834,12 @@ ERROR_SIGNATURES = [
     "payload too large",
     "request entity too large",
     "context_length_exceeded",
-    "context length",
-    "maximum context length",
+    "maximum context length exceeded",
     "too many tokens",
     "rate_limit_exceeded",
     "rate limit reached",
-    "rate limit",
-    "quota exceeded",
+    "rate limit exceeded",
+    "quota_exceeded",
     "exceeded your current quota",
     "insufficient funds",
     "no credits remaining",
@@ -2788,10 +2851,8 @@ ERROR_SIGNATURES = [
     '"code": 413',
     '"status": "unavailable"',
     '"status": "resource_exhausted"',
-    "high demand",
     "spikes in demand are usually temporary",
     "protect_free_tier",
-    "free tier limit",
 ]
 
 
@@ -2799,6 +2860,8 @@ def is_provider_error(speech: str) -> bool:
     """Detect if the LLM agent returned a provider error string instead of a valid conversation response."""
     if not speech:
         return True
+    if "```" in speech or len(speech) > 350:
+        return False
     speech_lower = speech.lower().strip()
     if re.search(r"\b(?:api error|error code|http\s*(?:4\d\d|5\d\d)|status\s*code\s*(?:4\d\d|5\d\d))\b", speech_lower):
         return True

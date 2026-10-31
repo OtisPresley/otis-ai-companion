@@ -58,29 +58,36 @@ class AutomationManager:
         """Add or update an automation in automations.yaml."""
         automations = await self.async_read_automations()
         
-        # Ensure the automation has an ID
-        auto_id = automation_data.get("id")
-        if not auto_id:
-            auto_id = str(int(time.time()))
-            automation_data["id"] = auto_id
-            _LOGGER.debug("Generated new ID for automation: %s", auto_id)
+        target_id = automation_data.get("id")
+        target_alias = automation_data.get("alias")
 
-        # Find and replace if it exists, otherwise append
+        # Find existing automation by ID or by exact alias
         index = -1
         for i, auto in enumerate(automations):
-            if auto.get("id") == auto_id:
+            if target_id and auto.get("id") == target_id:
                 index = i
                 break
+            if target_alias and auto.get("alias") == target_alias:
+                index = i
+                if not target_id and auto.get("id"):
+                    target_id = auto.get("id")
+                    automation_data["id"] = target_id
+                break
+
+        if not target_id:
+            target_id = str(int(time.time()))
+            automation_data["id"] = target_id
+            _LOGGER.debug("Generated new ID for automation: %s", target_id)
 
         if index >= 0:
             automations[index] = automation_data
-            _LOGGER.debug("Updated existing automation %s", auto_id)
+            _LOGGER.debug("Updated existing automation %s ('%s')", target_id, target_alias)
         else:
             automations.append(automation_data)
-            _LOGGER.debug("Appended new automation %s", auto_id)
+            _LOGGER.debug("Appended new automation %s ('%s')", target_id, target_alias)
 
         await self.hass.async_add_executor_job(self._write_yaml_file, self.automations_path, automations)
-        return auto_id
+        return target_id
 
     async def async_write_script(self, script_key: str, script_data: dict[str, Any]) -> None:
         """Add or update a script in scripts.yaml."""

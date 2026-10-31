@@ -2,6 +2,19 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.11.19] - 2026-10-31
+
+### Added & Enhanced
+- **Assist Co-Pilot Topic Focus & History Retention**:
+  - Implemented multi-turn conversation session history (`session_data["history"]`) retaining the recent conversation turns, ensuring the LLM maintains strict conversational context without jumping to unrelated topics.
+  - Added explicit conversation discipline instructions commanding the LLM to stay focused on the user's active goal, topic, and thread.
+- **Provider Downtime False-Positive Elimination & Payload Optimization**:
+  - Filtered prompt active integrations from all 484 internal system components down to ~35 key hardware and platform integrations, reducing prompt payload by ~80% and eliminating HTTP 413 / 429 rate limit triggers on Groq and Google Generative AI free tier.
+  - Refined `is_provider_error` and `ERROR_SIGNATURES` to never falsely flag valid markdown or code responses containing words like "rate limit" or "high demand" as backend provider downtime.
+- **Cohesive Script & Automation Orchestration**:
+  - Enhanced Assist YAML parser to extract and bundle multiple YAML blocks (`pending_items`) when a response provides both a new script and the calling automations needed to trigger it.
+  - Updated `async_write_automation` in `automation_manager.py` to match existing automations by alias as well as ID, cleanly updating existing automations in place to wire up newly created scripts.
+
 ## [1.11.18] - 2026-10-31
 
 ### Added & Enhanced
