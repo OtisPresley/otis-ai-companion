@@ -2,6 +2,14 @@
 
 All notable changes to the Otis AI Companion integration are documented in this file.
 
+## [1.12.2] - 2026-10-31
+
+### Fixed & Refined
+- **Modal Dialog Viewport Clipping**:
+  - Relocated all modal popup dialogs (Dynamic AI Theme Studio, Persona & Household Rules, Walkthrough SVG Parser, Add/Edit Entity Pins, Setup Guides, and Failover Architecture) outside the `<ha-card>` container directly under the shadow root.
+  - Eliminated container-level clipping and `backdrop-filter` containment boundaries where dialogs were cut off at the bottom when cards had few or empty proactive feed recommendations.
+  - Elevated modal overlay to full viewport coverage (`position: fixed; width: 100vw; height: 100vh; z-index: 99999; overflow-y: auto`) with responsive card max-height (`calc(100vh - 48px)`) and auto-centering, ensuring all controls and presets remain 100% visible and accessible across all screen dimensions.
+
 ## [1.12.1] - 2026-10-31
 
 ### Fixed & Refined

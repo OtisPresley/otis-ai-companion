@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "1.12.1";
+const CARD_VERSION = "1.12.2";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -1557,6 +1557,7 @@ class OtisCompanionCard extends HTMLElement {
         }
 
         /* Base Card Styling with Token Architecture for Card-Mod & Custom Themes */
+        :host,
         ha-card.card-container {
           /* Fallback Theme Variables (Follows Active HA / System Theme) */
           --otis-primary: var(--primary-color, #03a9f4);
@@ -1577,7 +1578,9 @@ class OtisCompanionCard extends HTMLElement {
           --otis-user-bubble-bg: var(--primary-color, #03a9f4);
           --otis-user-bubble-text: #ffffff;
           --otis-btn-text: #ffffff;
+        }
 
+        ha-card.card-container {
           position: relative;
           width: 100%;
           max-width: 1600px;
@@ -4000,30 +4003,35 @@ class OtisCompanionCard extends HTMLElement {
           animation: fadeIn 0.3s ease;
         }
 
-        /* Walkthrough Modal */
+        /* Modals & Dialogs (Full-Viewport Floating Overlays) */
         .modal-overlay {
           position: fixed;
           top: 0;
           left: 0;
           right: 0;
           bottom: 0;
+          width: 100vw;
+          height: 100vh;
           background: rgba(0, 0, 0, 0.75);
-          backdrop-filter: blur(6px);
+          backdrop-filter: blur(8px);
+          -webkit-backdrop-filter: blur(8px);
           display: flex;
           justify-content: center;
           align-items: center;
-          z-index: 1000;
-          padding: 16px;
+          z-index: 99999;
+          padding: 24px;
+          box-sizing: border-box;
+          overflow-y: auto;
         }
 
         .modal-card {
           background: var(--otis-bg, #0f172a);
           border: 1px solid var(--otis-primary);
-          box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6), 0 0 24px rgba(14, 165, 233, 0.2);
+          box-shadow: 0 16px 48px rgba(0, 0, 0, 0.75), 0 0 28px rgba(14, 165, 233, 0.25);
           border-radius: 16px;
           width: 100%;
           max-width: 520px;
-          max-height: 90vh;
+          max-height: calc(100vh - 48px);
           overflow-y: auto;
           display: flex;
           flex-direction: column;
@@ -4031,6 +4039,18 @@ class OtisCompanionCard extends HTMLElement {
           padding: 20px;
           position: relative;
           color: var(--otis-text, #f8fafc);
+          box-sizing: border-box;
+          margin: auto;
+        }
+
+        @media (max-width: 600px) {
+          .modal-overlay {
+            padding: 12px;
+          }
+          .modal-card {
+            max-height: calc(100vh - 24px);
+            padding: 16px;
+          }
         }
 
         .modal-header {
@@ -4669,17 +4689,18 @@ class OtisCompanionCard extends HTMLElement {
         `
         }
 
-        ${this._floorplanModalOpen ? this._renderWalkthroughModal() : ""}
-        ${this._themeModalOpen ? this._renderThemeModal() : ""}
-        ${this._addMarkerModalOpen ? this._renderAddMarkerModal() : ""}
-        ${this._editMarkerModalOpen ? this._renderEditMarkerModal() : ""}
-        ${this._guideModalOpen ? this._renderGuideModal() : ""}
-        ${this._failoverModalOpen ? this._renderFailoverModal() : ""}
-        ${this._rulesModalOpen ? this._renderRulesModal() : ""}
-
         <!-- Feedback Toast -->
         <div class="toast" id="toast"></div>
       </ha-card>
+
+      <!-- Viewport Floating Modals (Rendered outside ha-card to prevent backdrop-filter / overflow containment clipping) -->
+      ${this._floorplanModalOpen ? this._renderWalkthroughModal() : ""}
+      ${this._themeModalOpen ? this._renderThemeModal() : ""}
+      ${this._addMarkerModalOpen ? this._renderAddMarkerModal() : ""}
+      ${this._editMarkerModalOpen ? this._renderEditMarkerModal() : ""}
+      ${this._guideModalOpen ? this._renderGuideModal() : ""}
+      ${this._failoverModalOpen ? this._renderFailoverModal() : ""}
+      ${this._rulesModalOpen ? this._renderRulesModal() : ""}
     `;
 
     this._bindEvents();
@@ -5781,7 +5802,7 @@ class OtisCompanionCard extends HTMLElement {
 
     return `
       <div class="modal-overlay" id="add-marker-modal-backdrop">
-        <div class="modal-card" style="max-width: 620px; max-height: 85vh; display: flex; flex-direction: column;">
+        <div class="modal-card" style="max-width: 620px; max-height: calc(100vh - 48px); display: flex; flex-direction: column;">
           <div class="modal-header">
             <div>
               <div class="modal-title"><span>➕</span><span>Add Device Pin to Floor Plan</span></div>
@@ -5892,7 +5913,7 @@ class OtisCompanionCard extends HTMLElement {
 
     return `
       <div class="modal-overlay" id="edit-marker-modal-backdrop">
-        <div class="modal-card" style="max-width: 440px;">
+        <div class="modal-card" style="max-width: 440px; max-height: calc(100vh - 48px); display: flex; flex-direction: column;">
           <div class="modal-header">
             <div>
               <div class="modal-title">
@@ -5957,7 +5978,7 @@ class OtisCompanionCard extends HTMLElement {
 
     return `
       <div class="modal-overlay" id="guide-modal-backdrop">
-        <div class="modal-card" style="max-width: 620px;">
+        <div class="modal-card" style="max-width: 620px; max-height: calc(100vh - 48px); display: flex; flex-direction: column;">
           <div class="modal-header">
             <div>
               <div class="modal-title">
@@ -6008,7 +6029,7 @@ class OtisCompanionCard extends HTMLElement {
   _renderWalkthroughModal() {
     return `
       <div class="modal-overlay" id="walkthrough-modal-backdrop">
-        <div class="modal-card">
+        <div class="modal-card" style="max-width: 580px; max-height: calc(100vh - 48px); display: flex; flex-direction: column;">
           <div class="modal-header">
             <div>
               <div class="modal-title">
@@ -6125,7 +6146,7 @@ class OtisCompanionCard extends HTMLElement {
 
     return `
       <div class="modal-overlay" id="theme-modal-backdrop">
-        <div class="modal-card" style="max-width: 620px;">
+        <div class="modal-card" style="max-width: 620px; max-height: calc(100vh - 48px); display: flex; flex-direction: column;">
           <div class="modal-header">
             <div>
               <div class="modal-title">
@@ -6327,7 +6348,7 @@ class OtisCompanionCard extends HTMLElement {
 
     return `
       <div class="modal-overlay" id="rules-modal-backdrop">
-        <div class="modal-card" style="max-width: 660px; max-height: 85vh; display: flex; flex-direction: column;">
+        <div class="modal-card" style="max-width: 660px; max-height: calc(100vh - 48px); display: flex; flex-direction: column;">
           <div class="modal-header">
             <div>
               <div class="modal-title">
@@ -6733,7 +6754,7 @@ class OtisCompanionCard extends HTMLElement {
   _renderFailoverModal() {
     return `
       <div class="modal-overlay" id="failover-modal-backdrop">
-        <div class="modal-card" style="max-width: 640px;">
+        <div class="modal-card" style="max-width: 640px; max-height: calc(100vh - 48px); display: flex; flex-direction: column;">
           <div class="modal-header">
             <div>
               <div class="modal-title">
