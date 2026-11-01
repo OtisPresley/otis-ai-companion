@@ -2890,7 +2890,7 @@ User: {user_input.text}
             _LOGGER.error("All %d configured AI agents failed. Last error: %s", len(prioritized_agents), last_error_msg)
             is_quota = (
                 last_error_msg
-                and any(q in last_error_msg.lower() for q in ("quota", "429", "resource_exhausted", "capacity", "rate limit"))
+                and any(q in last_error_msg.lower() for q in ("quota", "429", "413", "resource_exhausted", "capacity", "rate limit", "too large", "tpm", "payload"))
             )
             if is_quota:
                 quota_msg = (

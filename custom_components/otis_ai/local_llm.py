@@ -68,14 +68,30 @@ class LocalLLMManager:
                     data = await resp.json()
                     latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
                     models = [m.get("name") for m in data.get("models", []) if isinstance(m, dict)]
+                    matching = [m for m in models if self.model == m or (self.model and self.model in m)]
+                    if matching:
+                        active_model = matching[0]
+                        model_ready = True
+                    elif models:
+                        active_model = models[0]
+                        _LOGGER.info(
+                            "Configured local LLM model '%s' not present on %s; auto-detected and selected installed model: '%s'",
+                            self.model, base_url, active_model
+                        )
+                        self.model = active_model
+                        model_ready = True
+                    else:
+                        active_model = self.model
+                        model_ready = False
+
                     result = {
                         "status": "online",
                         "provider": "ollama",
                         "latency_ms": latency_ms,
                         "url": base_url,
                         "models": models,
-                        "active_model": self.model,
-                        "model_ready": (self.model in models or any(self.model in m for m in models)),
+                        "active_model": active_model,
+                        "model_ready": model_ready,
                     }
                     self._last_health = result
                     return result
@@ -91,14 +107,30 @@ class LocalLLMManager:
                     data = await resp.json()
                     latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
                     models = [m.get("id") for m in data.get("data", []) if isinstance(m, dict)]
+                    matching = [m for m in models if self.model == m or (self.model and self.model in m)]
+                    if matching:
+                        active_model = matching[0]
+                        model_ready = True
+                    elif models:
+                        active_model = models[0]
+                        _LOGGER.info(
+                            "Configured local LLM model '%s' not present on %s; auto-detected and selected installed model: '%s'",
+                            self.model, base_url, active_model
+                        )
+                        self.model = active_model
+                        model_ready = True
+                    else:
+                        active_model = self.model
+                        model_ready = False
+
                     result = {
                         "status": "online",
                         "provider": "openai_compatible",
                         "latency_ms": latency_ms,
                         "url": base_url,
                         "models": models,
-                        "active_model": self.model,
-                        "model_ready": (self.model in models or any(self.model in m for m in models)),
+                        "active_model": active_model,
+                        "model_ready": model_ready,
                     }
                     self._last_health = result
                     return result

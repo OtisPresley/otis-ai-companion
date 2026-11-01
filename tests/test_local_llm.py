@@ -45,6 +45,31 @@ def test_health_check_ollama_online():
         assert res["latency_ms"] >= 0.0
 
 
+def test_health_check_ollama_autodetect_installed_model():
+    """Test health check auto-detects and adopts installed model when configured model is absent."""
+    hass = MagicMock()
+    # Configure with default qwen2.5:3b, but server only has qwen2.5:1.5b
+    mgr = LocalLLMManager(hass, url="http://10.0.12.228:11434", model="qwen2.5:3b")
+
+    mock_resp = AsyncMock()
+    mock_resp.status = 200
+    mock_resp.json = AsyncMock(return_value={
+        "models": [{"name": "qwen2.5:1.5b"}]
+    })
+
+    mock_session = MagicMock()
+    mock_session.get.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("custom_components.otis_ai.local_llm.async_get_clientsession", return_value=mock_session):
+        res = asyncio.run(mgr.async_health_check())
+        assert res["status"] == "online"
+        assert res["provider"] == "ollama"
+        assert res["model_ready"] is True
+        assert res["active_model"] == "qwen2.5:1.5b"
+        assert mgr.model == "qwen2.5:1.5b"
+
+
 def test_health_check_openai_compatible_online():
     """Test health check when Ollama fails but /v1/models succeeds (e.g. vLLM / LocalAI)."""
     hass = MagicMock()
