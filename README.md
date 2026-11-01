@@ -52,8 +52,6 @@ It replaces fragile Jinja2 templates, hardcoded entity mappings, and rigid autom
 - ⛅ **Command Center Home View Resilience**: Weather forecast (`weather.home`) and calendar agenda glance strip seamlessly integrated between Studios and Rooms. Automatic direct registry fallback and storage overwrite guards for all 16 room and area subviews.
 - 💬 **Assist AI Co-Pilot with Real-Time Audio Streaming & Failover**: Interactive multi-turn chat co-pilot (`otis_ai.chat`) with direct Web Speech microphone input, 5-bar animated audio waveform visualizer, instant Markdown live preview, compacted entity representations resolving Groq HTTP 413, and automated failover cascade across Google Generative AI / Gemini.
 
-<!-- IMAGE PLACEHOLDER: [AI Command Center Overview: Full dashboard view featuring Otis AI Companion card, quick action chips, weather glance strip, and multi-room Studio navigation launchpad] -->
-
 <div align="center">
   <img width="900" alt="image" src="https://github.com/user-attachments/assets/317266e6-1470-4d90-afa9-5f7f0432de53" />
 </div>
@@ -269,7 +267,9 @@ Otis AI Companion provides **46 registered services** structured by architectura
 
 ## 🎛️ Otis Companion Lovelace Card
 
-<!-- IMAGE PLACEHOLDER: [Otis Companion Lovelace Card in Proactive Feed Mode: displaying active suggestions, 1-click execution chips, and quick macro triggers] -->
+<p align="center">
+  <img width="900" alt="image" src="https://github.com/user-attachments/assets/130799df-68c6-473e-9ce0-23ace664d392" />
+</p>
 
 The custom Lovelace card (`custom:otis-companion-card`) provides an interactive interface for dashboards:
 
@@ -282,17 +282,25 @@ show_suggestions: true
 show_chat: true
 ```
 
-<!-- IMAGE PLACEHOLDER: [Assist Co-Pilot Multi-Turn Chat: interactive conversational interface with audio waveform equalizer, reasoning trace badges, and Markdown preview] -->
+<p align="center">
+  <img width="1141" height="1189" alt="image" src="https://github.com/user-attachments/assets/6ac90d43-a2d4-48f6-b9a2-4797e49086d1" />
+</p>
 
-<!-- IMAGE PLACEHOLDER: [Vector Floor Plan Studio: interactive SVG floor plan canvas with door swing arcs, exterior windows, glowing light badges, and drag-and-drop pin editor] -->
+<p align="center">
+  <img width="900" alt="image" src="https://github.com/user-attachments/assets/284cd924-0840-4f2a-bd2d-fd737070816b" />
+</p>
 
 ### Features:
 * **Interactive Rules Launchpad & Onboarding Wizard**: `⚙️ Rules` chip launches a 4-tab modal for persona selection (Concierge, Butler, Minimalist, Custom), response verbosity, autonomy safeguards (deadbolt & alarm confirmation), quiet hours volume limiting, and custom household rules with first-run onboarding banner.
-<!-- IMAGE PLACEHOLDER: [User Behavioral Rules & Onboarding Modal: 4-tab modal displaying persona profiles, autonomy safety toggles, quiet hours sliders, and custom household rules] -->
+<p align="center">
+  <img width="900" alt="image" src="https://github.com/user-attachments/assets/f80d88bd-a68f-4681-8c7f-2538568eb0af" />
+</p>
 * **Proactive Feed Dismissal & Storage Persistence**: Sleek "Ignore this" and quick-dismiss buttons on all recommendation cards, backed by persistent HA storage (`.storage/otis_ai_rules`), with interactive "Show Ignored / Reset Ignored" toggles in card header, card editor, and rules modal.
 * **Resilient Command Center Home View**: Glance strip seamlessly displaying live weather forecast (`weather.home`) and calendar agenda events, with automatic registry fallback and persistence protection across all 16 room subviews.
 * **6 Theme Presets & Voice STT**: `ha_native` (Default, follows HA theme), `cyberpunk`, `midnight`, `emerald`, `sunset`, and `light_frost`, with integrated microphone streaming and 5-bar animated audio equalizer in both Chat and Theme Studio.
-<!-- IMAGE PLACEHOLDER: [Dynamic AI Themes Studio: real-time theme generator showing live palette preview, color hex pickers, voice STT input, and instant CSS activation] -->
+<p align="center">
+  <img width="1141" height="1189" alt="image" src="https://github.com/user-attachments/assets/e91a9a72-d6d3-46c3-817f-d3483270190d" />
+</p>
 * **Vector Floor Plan Studio & Dynamic Pins**: High-performance SVG canvas editor with dynamic matrix transforms (`getScreenCTM()`), dual `ResizeObserver` for zero-drift responsive pin tracking across all aspect ratios, native `ha-state-icon` rendering, and drag-and-drop pin editing.
 * **Live Markdown Preview**: Auto-expanding live markdown preview above the chat input box.
 * **Visual Card Editor**: Complete visual configuration via Home Assistant's dashboard editor.
