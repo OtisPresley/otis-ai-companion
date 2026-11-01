@@ -7,6 +7,17 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.13] - 2026-11-01
+
+### Fixed & Improved
+- 📎 **Prevent Duplicate Clipboard Screenshot Attachments (`otis-companion-card.js`)**:
+  - Eliminated redundant paste event listener on `#chat-input` that caused paste events inside the textarea to bubble up to `.chat-input-wrapper` and invoke `_handleClipboardPaste` twice.
+  - Added `e.stopPropagation()` in `_handleClipboardPaste` when clipboard image attachments are processed.
+  - Added deduplication safety in `_handleFilesSelected` to ensure identical file objects (same name, size, type, and payload) cannot be staged multiple times concurrently.
+  - Bumped Companion Card version to v0.1.13.
+
+---
+
 ## [0.1.12] - 2026-11-01
 
 ### Fixed & Improved

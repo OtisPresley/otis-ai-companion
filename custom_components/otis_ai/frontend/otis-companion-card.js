@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.12";
+const CARD_VERSION = "0.1.13";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -899,26 +899,36 @@ class OtisCompanionCard extends HTMLElement {
       const reader = new FileReader();
       if (isImg) {
         reader.onload = (e) => {
-          this._pendingAttachments.push({
-            name: file.name,
-            type: file.type,
-            size: file.size,
-            isImage: true,
-            data: e.target.result,
-          });
-          this._render();
+          const isDuplicate = this._pendingAttachments.some(
+            (att) => att.isImage && att.name === file.name && att.size === file.size && att.data === e.target.result
+          );
+          if (!isDuplicate) {
+            this._pendingAttachments.push({
+              name: file.name,
+              type: file.type,
+              size: file.size,
+              isImage: true,
+              data: e.target.result,
+            });
+            this._render();
+          }
         };
         reader.readAsDataURL(file);
       } else {
         reader.onload = (e) => {
-          this._pendingAttachments.push({
-            name: file.name,
-            type: file.type,
-            size: file.size,
-            isImage: false,
-            content: e.target.result,
-          });
-          this._render();
+          const isDuplicate = this._pendingAttachments.some(
+            (att) => !att.isImage && att.name === file.name && att.size === file.size && att.content === e.target.result
+          );
+          if (!isDuplicate) {
+            this._pendingAttachments.push({
+              name: file.name,
+              type: file.type,
+              size: file.size,
+              isImage: false,
+              content: e.target.result,
+            });
+            this._render();
+          }
         };
         reader.readAsText(file);
       }
@@ -942,6 +952,7 @@ class OtisCompanionCard extends HTMLElement {
 
     if (imageFiles.length > 0) {
       e.preventDefault();
+      if (e.stopPropagation) e.stopPropagation();
       this._handleFilesSelected(imageFiles);
     }
   }
@@ -9003,7 +9014,7 @@ class OtisCompanionCard extends HTMLElement {
     const previewClose = root.querySelector("#chat-preview-close");
 
     if (chatInput) {
-      chatInput.addEventListener("paste", (e) => this._handleClipboardPaste(e));
+      // NOTE: Clipboard paste is handled at chatWrapper to prevent duplicate event bubbling
       const updateLivePreview = () => {
         const val = chatInput.value || "";
         this._draftChatText = val;
