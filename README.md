@@ -299,28 +299,6 @@ show_chat: true
 
 ---
 
-## 🧪 Testing & Validation
-
-Otis AI Companion includes a comprehensive test suite running against an asynchronous mock Home Assistant core:
-
-```bash
-pytest tests/
-```
-
-### Coverage (137/137 Passing, 100% Ruff Clean):
-- **Core Engine & Registries (`test_core_rebuilt.py`)**: Registry discovery, maturity scoring, BFS spatial pathfinding, floor plan rendering, themes, Sentinel watchdog, and atomic macros.
-- **Local Edge LLM & Telemetry (`test_local_llm.py`)**: Ollama `/api/tags` and OpenAI-compatible `/v1/models` health checks, dynamic model discovery, automatic adoption of installed models (e.g. `qwen2.5:1.5b`), and benchmark diagnostics.
-- **Voice Assist & Spatial Audio Ducking (`test_core_rebuilt.py`)**: Acoustic ducking of targeted/adjacent media players, volume restoration, whisper/quiet hours mode, and Assist pipeline status.
-- **User Behavioral Rules & Recommendation Persistence (`test_core_rebuilt.py`)**: Persona profiles, tone guidelines, autonomy policies, quiet hours volume limiting, recommendation dismissal persistence (`.storage/otis_ai_rules`), and services.
-- **Production Hardening & Stress Resilience (`test_core_rebuilt.py`)**: Concurrent service calls, offline edge recovery, and multi-satellite spatial audio handoffs.
-- **Vision & Presence Fusion (`test_vision_presence.py`)**: mmWave + PIR + media fusion, vendor-agnostic camera stream strategies (`managed_proxy`, `high_efficiency`, `high_definition`), vacuum map exclusions, and Gemini Vision anomaly detection.
-- **Architectural SVG & Multi-Clip Walkthrough (`test_multiclip_walkthrough_and_symbols.py`)**: Multi-clip sequential processing, architectural door swing orientation arcs, and exterior window symbol synthesis.
-- **Habit Learning & Behavioral Modeling (`test_habit_manager.py`)**: SQLite recorder mining, habit routine clustering, bedtime deviation guards, and circadian curves.
-- **Autonomous Commissioning & Federation (`test_node_federation_commissioning.py`)**: Zero-config heuristic room mapping, satellite node sync, and remote service proxying.
-- **Groq Context Compaction & LLM Failover**: Compact entity representations preventing Groq HTTP 413 payload errors, dynamic token limits, and transparent cascade failover across Local Ollama → Google Gemini 2.5/1.5 Flash → Groq → OpenRouter Free Router.
-
----
-
 ## 🔧 Troubleshooting & Support
 
 - **Walkthrough Upload**: Verify that `/usr/bin/ffmpeg` is installed and that the recorded video includes an audible audio track speaking room names clearly.
