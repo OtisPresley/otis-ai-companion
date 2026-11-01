@@ -7,6 +7,31 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-11-01
+
+### Added
+- 🧙‍♂️ **Interactive Household Rules Wizard (`otis-companion-card.js`)**: Built an interactive 5-step wizard tab into the Otis Companion Card:
+  - Step 1 (Household & Habits): Guides resident names, work-from-home rooms/hours, and bedtime routines.
+  - Step 2 (Guest Mode & Entertaining): Guides guest door lock codes (`4411`), delayed night lighting turn-off (`00:00:00`), guest climate comfort, and holiday lighting sync.
+  - Step 3 (Security & Perimeter): Manages deadbolt verbal confirmation guards, security alarm safeguards, garage door alert thresholds, and perimeter camera monitoring.
+  - Step 4 (Audio & Media): Coordinates multi-zone matrix audio routing, voice assist spatial ducking, and quiet hours spoken volume caps.
+  - Step 5 (Review & Auto-Synthesize): Live markdown preview with 1-click **"Apply to Custom Instructions & Save"** and direct textarea handoff.
+- 🔍 **Real YAML Automation & Script Cross-Referencing (`automation_manager.py` & `__init__.py`)**: Added `AutomationManager.async_cross_reference()`. When entities or topics like `input_boolean.guest_mode` are referenced in conversation, Otis dynamically extracts matching real configurations from `automations.yaml` and `scripts.yaml` (e.g., "Security: Manage Guest Lock Code", "Lighting: Adaptive Inside Lights", "Lighting: Lights Off at Bed") and injects them directly into the prompt context to eliminate hallucinations.
+
+### Fixed & Improved
+- 🧠 **Multi-Turn Conversation Amnesia (`__init__.py`)**:
+  - Implemented unified `_record_turn` across cloud providers and local inference failovers to prevent context drops.
+  - Resolved session overwrite bug where detecting proposed YAML blocks previously cleared `session_data["history"]`.
+  - Expanded conversation context history window to 10 entries for deep conversational continuity.
+- ⚡ **Agent Priority & Transparent Offline Failover (`__init__.py`)**:
+  - Configured prioritized AI agents (Gemini 2.5 Flash, OpenRouter) to execute first as primary intelligence.
+  - Local LLM now operates as dedicated offline edge failover, smoothly engaging when cloud services encounter rate limits or network downtime.
+- 🌐 **Options Dialog Human-Readable Translations (`strings.json` & `translations/en.json`)**: Added user-friendly localized labels for `local_llm_enabled`, `local_llm_url`, `local_llm_model`, and `camera_stream_strategy`.
+- 🚀 **Local LLM Performance & Context Optimization (`local_llm.py`)**: Added `keep_alive: "15m"` to keep models in GPU VRAM and expanded Ollama context window to 8192 tokens (`num_ctx: 8192`).
+- 🔄 **Dynamic Options Listener Update (`__init__.py`)**: Updates to Local LLM URL or model now take effect immediately without requiring a Home Assistant restart.
+
+---
+
 ## [0.1.5] - 2026-10-31
 
 ### Improved

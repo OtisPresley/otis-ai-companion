@@ -7,6 +7,7 @@ import re
 import time
 from typing import Any
 
+import yaml
 from homeassistant.core import HomeAssistant
 from homeassistant.util import yaml as yaml_util
 
@@ -115,6 +116,154 @@ class AutomationManager:
         except Exception as err:
             _LOGGER.error("Failed to reload scripts: %s", err)
             return False
+
+    async def async_cross_reference(
+        self,
+        text: str,
+        max_matches: int = 4,
+    ) -> dict[str, Any]:
+        """Scan automations.yaml and scripts.yaml for mentioned entities or topics and return matching YAML blocks."""
+        if not text:
+            return {"matches": []}
+
+        # 1. Extract potential entity IDs from text (e.g. input_boolean.guest_mode, light.living_room)
+        entity_matches = re.findall(r"\b[a-z_]+[a-z0-9_]*\.[a-z0-9_]+\b", text.lower())
+
+        # 2. Extract potential domain keywords / phrases (e.g. 'guest mode', 'adaptive inside lights')
+        text_lower = text.lower()
+        phrases = set(entity_matches)
+        for em in entity_matches:
+            parts = em.split(".", 1)
+            if len(parts) == 2:
+                phrases.add(parts[1])
+                phrases.add(parts[1].replace("_", " "))
+
+        # Also search for multi-word phrases from text if keywords present
+        for candidate in ("guest mode", "adaptive lights", "adaptive inside lights", "lights off at bed", "guest lock code", "vacation mode", "away mode", "sleep mode", "bedtime"):
+            if candidate in text_lower:
+                phrases.add(candidate)
+
+        # Salient words (length >= 4)
+        stopwords = {"what", "does", "when", "turn", "turns", "with", "from", "that", "this", "have", "please", "about", "show", "tell", "check"}
+        words = [w for w in re.findall(r"\b[a-z]{4,}\b", text_lower) if w not in stopwords]
+
+        if not phrases and not words:
+            return {"matches": []}
+
+        automations = await self.async_read_automations()
+        scripts = await self.async_read_scripts()
+
+        scored_matches: list[tuple[float, dict[str, Any]]] = []
+
+        # Check automations
+        for auto in automations:
+            if not isinstance(auto, dict):
+                continue
+            auto_id = str(auto.get("id", ""))
+            alias = str(auto.get("alias", ""))
+
+            try:
+                dumped = yaml.dump(auto, sort_keys=False, default_flow_style=False)
+            except Exception:
+                dumped = str(auto)
+            dumped_lower = dumped.lower()
+            alias_lower = alias.lower()
+
+            score = 0.0
+            matched_terms = []
+
+            for em in entity_matches:
+                if em in dumped_lower:
+                    score += 100.0
+                    matched_terms.append(em)
+
+            for p in phrases:
+                if p in alias_lower:
+                    score += 50.0
+                    matched_terms.append(p)
+                elif p in dumped_lower and p not in entity_matches:
+                    score += 25.0
+                    matched_terms.append(p)
+
+            for w in words:
+                if w in alias_lower:
+                    score += 10.0
+                    matched_terms.append(w)
+
+            if score > 0:
+                lines = dumped.splitlines()
+                truncated = False
+                if len(lines) > 45:
+                    dumped = "\n".join(lines[:45]) + "\n  # ... [additional actions truncated for brevity]"
+                    truncated = True
+                scored_matches.append((
+                    score,
+                    {
+                        "type": "automation",
+                        "id": auto_id,
+                        "name": alias or auto_id,
+                        "score": score,
+                        "matched_terms": list(set(matched_terms)),
+                        "yaml": dumped,
+                        "truncated": truncated,
+                    }
+                ))
+
+        # Check scripts
+        for s_key, s_data in scripts.items():
+            if not isinstance(s_data, dict):
+                continue
+            alias = str(s_data.get("alias", s_key))
+            try:
+                dumped = yaml.dump({s_key: s_data}, sort_keys=False, default_flow_style=False)
+            except Exception:
+                dumped = str({s_key: s_data})
+            dumped_lower = dumped.lower()
+            alias_lower = alias.lower()
+
+            score = 0.0
+            matched_terms = []
+
+            for em in entity_matches:
+                if em in dumped_lower or em == f"script.{s_key}":
+                    score += 100.0
+                    matched_terms.append(em)
+
+            for p in phrases:
+                if p in alias_lower or p == s_key:
+                    score += 50.0
+                    matched_terms.append(p)
+                elif p in dumped_lower and p not in entity_matches:
+                    score += 25.0
+                    matched_terms.append(p)
+
+            for w in words:
+                if w in alias_lower or w in s_key:
+                    score += 10.0
+                    matched_terms.append(w)
+
+            if score > 0:
+                lines = dumped.splitlines()
+                truncated = False
+                if len(lines) > 45:
+                    dumped = "\n".join(lines[:45]) + "\n  # ... [additional sequence steps truncated for brevity]"
+                    truncated = True
+                scored_matches.append((
+                    score,
+                    {
+                        "type": "script",
+                        "id": s_key,
+                        "name": alias,
+                        "score": score,
+                        "matched_terms": list(set(matched_terms)),
+                        "yaml": dumped,
+                        "truncated": truncated,
+                    }
+                ))
+
+        scored_matches.sort(key=lambda x: x[0], reverse=True)
+        top_matches = [item for _, item in scored_matches[:max_matches]]
+        return {"matches": top_matches}
 
     async def async_improve_automation(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Improve or patch an existing automation in automations.yaml while preserving !include/structure."""

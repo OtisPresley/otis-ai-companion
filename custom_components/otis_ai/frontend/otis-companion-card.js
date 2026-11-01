@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.5";
+const CARD_VERSION = "0.1.6";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -62,6 +62,25 @@ class OtisCompanionCard extends HTMLElement {
     this._rulesModalOpen = false;
     this._rulesActiveTab = "persona";
     this._rulesDraft = null;
+    this._wizardStep = 1;
+    this._wizardState = {
+      residents: "Jamie, Amy",
+      workHours: "Jamie works in Study, 9:00 AM - 5:00 PM",
+      sleepHabits: "Bedtime navigation active when Jamie or Amy in bed",
+      guestLockCode: "4411",
+      guestDelayedOff: "00:00:00",
+      guestClimateComfort: true,
+      holidaySwitches: true,
+      requireDeadboltConfirm: true,
+      requireAlarmConfirm: true,
+      garageAlertMinutes: 15,
+      perimeterCameraAlerts: true,
+      matrixRouting: true,
+      voiceDucking: true,
+      quietHoursStart: "22:00",
+      quietHoursEnd: "07:00",
+      quietVolume: 25,
+    };
     this._savingRules = false;
     this._onboardingDismissed = false;
     this._userRules = null;
@@ -6584,6 +6603,7 @@ class OtisCompanionCard extends HTMLElement {
 
           <!-- Tabs Navigation -->
           <div style="display: flex; gap: 8px; border-bottom: 1px solid var(--otis-surface-border); padding: 0 0 10px 0; margin-bottom: 16px; overflow-x: auto;">
+            <button type="button" class="tab-btn ${activeTab === "wizard" ? "active" : ""}" id="rules-tab-wizard" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap; font-weight: 600; border-color: ${activeTab === "wizard" ? "var(--otis-primary)" : "rgba(14,165,233,0.3)"}; background: ${activeTab === "wizard" ? "var(--otis-primary)" : "rgba(14,165,233,0.1)"}; color: ${activeTab === "wizard" ? "#fff" : "var(--otis-primary)"};">🧙‍♂️ Rules Wizard</button>
             <button type="button" class="tab-btn ${activeTab === "dashboard" ? "active" : ""}" id="rules-tab-dashboard" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">📱 Dashboard & Layout</button>
             <button type="button" class="tab-btn ${activeTab === "persona" ? "active" : ""}" id="rules-tab-persona" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">🎭 Persona & Tone</button>
             <button type="button" class="tab-btn ${activeTab === "safety" ? "active" : ""}" id="rules-tab-safety" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">🛡️ Autonomy & Safety</button>
@@ -6593,6 +6613,7 @@ class OtisCompanionCard extends HTMLElement {
 
           <!-- Tab Content (Scrollable) -->
           <div style="overflow-y: auto; flex: 1; padding-right: 4px; display: flex; flex-direction: column; gap: 14px;">
+            ${activeTab === "wizard" ? this._renderRulesWizardTab(rules) : ""}
             ${activeTab === "dashboard" ? this._renderRulesDashboardTab(rules) : ""}
             ${activeTab === "persona" ? this._renderRulesPersonaTab(rules) : ""}
             ${activeTab === "safety" ? this._renderRulesSafetyTab(rules) : ""}
@@ -6941,11 +6962,282 @@ class OtisCompanionCard extends HTMLElement {
     `;
   }
 
+  _generateStructuredRulesText() {
+    const w = this._wizardState || {};
+    const lines = [];
+
+    lines.push("### Household & Schedule");
+    if (w.residents) lines.push(`- Primary Residents: ${w.residents}.`);
+    if (w.workHours) lines.push(`- Work-from-Home Routine: ${w.workHours}.`);
+    if (w.sleepHabits) lines.push(`- Sleep & Bed Navigation: ${w.sleepHabits}.`);
+
+    lines.push("\n### Guest Mode & Entertaining (input_boolean.guest_mode)");
+    lines.push("- When Guest Mode is ON:");
+    if (w.guestLockCode) lines.push(`  * Add temporary code '${w.guestLockCode}' to exterior deadbolts for guest access.`);
+    if (w.guestDelayedOff) lines.push(`  * Delay automatic bedtime lighting turn-off until ${w.guestDelayedOff}.`);
+    if (w.guestClimateComfort) lines.push("  * Maintain comfortable ambient climate in guest suites.");
+    if (w.holidaySwitches) lines.push("  * Coordinate holiday lighting & seasonal outlets.");
+    lines.push("- When Guest Mode is OFF:");
+    if (w.guestLockCode) lines.push(`  * Delete temporary guest code '${w.guestLockCode}' from deadbolts.`);
+
+    lines.push("\n### Security & Perimeter Safeguards");
+    if (w.requireDeadboltConfirm) lines.push("- Always require explicit spoken confirmation before unlocking exterior deadbolts.");
+    if (w.requireAlarmConfirm) lines.push("- Always require explicit spoken confirmation before changing alarm control panel arm states.");
+    if (w.garageAlertMinutes) lines.push(`- Alert if garage door remains open longer than ${w.garageAlertMinutes} minutes after sunset.`);
+    if (w.perimeterCameraAlerts) lines.push("- Monitor perimeter cameras for unrecognized evening activity.");
+
+    lines.push("\n### Audio & Matrix Media");
+    if (w.matrixRouting) lines.push("- Multi-zone audio: Route upstream bridge streamers (media_player.bridge) to active room zones.");
+    if (w.voiceDucking) lines.push("- Spatially duck background music zones during Voice Assist or vocal announcements.");
+    lines.push(`- Enforce quiet hours between ${w.quietHoursStart || "22:00"} and ${w.quietHoursEnd || "07:00"} with maximum volume capped at ${w.quietVolume || 25}%.`);
+
+    return lines.join("\n");
+  }
+
+  _renderRulesWizardTab(rules) {
+    const step = this._wizardStep || 1;
+    const w = this._wizardState || {};
+
+    const steps = [
+      { num: 1, label: "🏡 Household & Habits" },
+      { num: 2, label: "👥 Guest Mode" },
+      { num: 3, label: "🔒 Security & Perimeter" },
+      { num: 4, label: "🎵 Audio & Media" },
+      { num: 5, label: "✨ Review & Apply" },
+    ];
+
+    return `
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <!-- Wizard Stepper Indicator -->
+        <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px 12px; background: rgba(0,0,0,0.2); border-radius: 8px; border: 1px solid var(--otis-surface-border); overflow-x: auto;">
+          ${steps
+            .map(
+              (s) => `
+            <div class="wizard-step-pill" data-step-nav="${s.num}" style="display: flex; align-items: center; gap: 6px; font-size: 0.74rem; font-weight: ${step === s.num ? "700" : "500"}; color: ${step === s.num ? "#fff" : step > s.num ? "var(--otis-primary)" : "var(--otis-text-muted)"}; background: ${step === s.num ? "var(--otis-primary)" : "transparent"}; padding: 4px 10px; border-radius: 6px; cursor: pointer; white-space: nowrap;">
+              <span>${step > s.num ? "✓" : s.num}</span>
+              <span>${s.label}</span>
+            </div>
+          `
+            )
+            .join("")}
+        </div>
+
+        <!-- Step 1: Household & Habits -->
+        ${
+          step === 1
+            ? `
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            <div style="font-size: 0.88rem; font-weight: 700; color: var(--otis-primary);">Step 1: Household Members & Daily Habits</div>
+            <div style="font-size: 0.75rem; color: var(--otis-text-muted);">Define who lives in the home and their primary schedules so Otis can coordinate rooms and routines contextually.</div>
+
+            <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+              <div class="rules-setting-label">Primary Residents / Household Members:</div>
+              <input type="text" id="wiz-residents" value="${this._escapeHtml(w.residents || "")}" placeholder="e.g. Jamie, Amy" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+            </div>
+
+            <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+              <div class="rules-setting-label">Work-From-Home Rooms & Active Hours:</div>
+              <input type="text" id="wiz-work" value="${this._escapeHtml(w.workHours || "")}" placeholder="e.g. Jamie works in Study from 9:00 AM to 5:00 PM" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+            </div>
+
+            <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+              <div class="rules-setting-label">Sleep & Bed Navigation Preferences:</div>
+              <input type="text" id="wiz-sleep" value="${this._escapeHtml(w.sleepHabits || "")}" placeholder="e.g. Nighttime lights-off triggers when Amy or Jamie is in bed" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+            </div>
+          </div>
+        `
+            : ""
+        }
+
+        <!-- Step 2: Guest Mode & Entertaining -->
+        ${
+          step === 2
+            ? `
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            <div style="font-size: 0.88rem; font-weight: 700; color: var(--otis-primary);">Step 2: Guest Mode & Entertaining (input_boolean.guest_mode)</div>
+            <div style="font-size: 0.75rem; color: var(--otis-text-muted);">Specify automated behaviors when guests or visitors are staying in the home.</div>
+
+            <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+              <div class="rules-setting-label">Temporary Guest Door Lock Code:</div>
+              <div class="rules-setting-desc">Auto-programmed to exterior deadbolts when Guest Mode is turned ON, and auto-deleted when OFF.</div>
+              <input type="text" id="wiz-guest-code" value="${this._escapeHtml(w.guestLockCode || "")}" placeholder="e.g. 4411" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+            </div>
+
+            <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+              <div class="rules-setting-label">Guest Bedtime Lighting Delayed Shutoff Time:</div>
+              <div class="rules-setting-desc">Extends living area lighting past normal bedtime when guests are visiting.</div>
+              <input type="time" step="1" id="wiz-guest-off" value="${this._escapeHtml(w.guestDelayedOff || "00:00:00")}" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+            </div>
+
+            <label class="rules-setting-row" style="cursor: pointer;">
+              <div>
+                <div class="rules-setting-label">Guest Suite Climate Comfort</div>
+                <div class="rules-setting-desc">Automatically maintain conditioned climate in guest rooms when guest mode is active.</div>
+              </div>
+              <input type="checkbox" id="wiz-guest-climate" ${w.guestClimateComfort !== false ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
+            </label>
+
+            <label class="rules-setting-row" style="cursor: pointer;">
+              <div>
+                <div class="rules-setting-label">Coordinate Holiday & Festive Lighting</div>
+                <div class="rules-setting-desc">Synchronize decorative tree, seasonal outlets, and foyer accent lighting.</div>
+              </div>
+              <input type="checkbox" id="wiz-guest-holiday" ${w.holidaySwitches !== false ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
+            </label>
+          </div>
+        `
+            : ""
+        }
+
+        <!-- Step 3: Security & Perimeter Safeguards -->
+        ${
+          step === 3
+            ? `
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            <div style="font-size: 0.88rem; font-weight: 700; color: var(--otis-primary);">Step 3: Security & Perimeter Safeguards</div>
+            <div style="font-size: 0.75rem; color: var(--otis-text-muted);">Set strict guardrails on physical access points, exterior deadbolts, and perimeter alarms.</div>
+
+            <label class="rules-setting-row" style="cursor: pointer;">
+              <div>
+                <div class="rules-setting-label">Require Confirmation for Door Deadbolts</div>
+                <div class="rules-setting-desc">Otis will never unlock exterior doors without explicit user confirmation.</div>
+              </div>
+              <input type="checkbox" id="wiz-deadbolt-confirm" ${w.requireDeadboltConfirm !== false ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
+            </label>
+
+            <label class="rules-setting-row" style="cursor: pointer;">
+              <div>
+                <div class="rules-setting-label">Require Confirmation for Security Alarm</div>
+                <div class="rules-setting-desc">Explicit confirmation required before disarming alarm panels.</div>
+              </div>
+              <input type="checkbox" id="wiz-alarm-confirm" ${w.requireAlarmConfirm !== false ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
+            </label>
+
+            <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+              <div class="rules-setting-label">Garage Open Alert Threshold (Minutes):</div>
+              <div class="rules-setting-desc">Time before alert is triggered if garage door remains open after sunset.</div>
+              <input type="number" id="wiz-garage-mins" min="5" max="120" value="${w.garageAlertMinutes || 15}" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+            </div>
+
+            <label class="rules-setting-row" style="cursor: pointer;">
+              <div>
+                <div class="rules-setting-label">Perimeter Camera Presence Alerts</div>
+                <div class="rules-setting-desc">Audit unfamiliar perimeter motion or vehicle activity during night hours.</div>
+              </div>
+              <input type="checkbox" id="wiz-perimeter-alerts" ${w.perimeterCameraAlerts !== false ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
+            </label>
+          </div>
+        `
+            : ""
+        }
+
+        <!-- Step 4: Audio & Matrix Media -->
+        ${
+          step === 4
+            ? `
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            <div style="font-size: 0.88rem; font-weight: 700; color: var(--otis-primary);">Step 4: Audio & Matrix Media Preferences</div>
+            <div style="font-size: 0.75rem; color: var(--otis-text-muted);">Configure multi-zone audio streaming, voice assist ducking, and quiet hours.</div>
+
+            <label class="rules-setting-row" style="cursor: pointer;">
+              <div>
+                <div class="rules-setting-label">Multi-Zone Matrix Audio Coordination</div>
+                <div class="rules-setting-desc">Automatically route upstream streamer inputs to occupied room zones and media players.</div>
+              </div>
+              <input type="checkbox" id="wiz-matrix-routing" ${w.matrixRouting !== false ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
+            </label>
+
+            <label class="rules-setting-row" style="cursor: pointer;">
+              <div>
+                <div class="rules-setting-label">Voice Assist Spatial Audio Ducking</div>
+                <div class="rules-setting-desc">Temporarily duck active music playback volume when Voice Assist or Otis speaks.</div>
+              </div>
+              <input type="checkbox" id="wiz-voice-ducking" ${w.voiceDucking !== false ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
+            </label>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+              <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start;">
+                <div class="rules-setting-label">Quiet Hours Start:</div>
+                <input type="time" id="wiz-quiet-start" value="${this._escapeHtml(w.quietHoursStart || "22:00")}" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+              </div>
+              <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start;">
+                <div class="rules-setting-label">Quiet Hours End:</div>
+                <input type="time" id="wiz-quiet-end" value="${this._escapeHtml(w.quietHoursEnd || "07:00")}" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+              </div>
+            </div>
+
+            <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 8px;">
+              <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
+                <div class="rules-setting-label">Quiet Hours Spoken Volume Limit:</div>
+                <span id="wiz-vol-label" style="font-weight: 700; color: var(--otis-primary);">${w.quietVolume || 25}%</span>
+              </div>
+              <input type="range" id="wiz-quiet-vol" min="5" max="100" value="${w.quietVolume || 25}" style="width: 100%; cursor: pointer;" />
+            </div>
+          </div>
+        `
+            : ""
+        }
+
+        <!-- Step 5: Review & Synthesize -->
+        ${
+          step === 5
+            ? `
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            <div style="font-size: 0.88rem; font-weight: 700; color: var(--otis-primary);">Step 5: Synthesized Household Instructions</div>
+            <div style="font-size: 0.75rem; color: var(--otis-text-muted);">Here is the structured markdown generated from your wizard responses. Clicking "Apply to Custom Instructions & Save" will store this directly in Otis's cognitive prompt context.</div>
+
+            <pre style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 8px; border: 1px solid var(--otis-surface-border); font-family: monospace; font-size: 0.74rem; white-space: pre-wrap; color: var(--otis-text); max-height: 240px; overflow-y: auto;">${this._escapeHtml(this._generateStructuredRulesText())}</pre>
+
+            <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; flex-wrap: wrap;">
+              <button type="button" class="subview-chip" id="wiz-btn-copy-instructions" style="padding: 6px 14px; font-size: 0.76rem;">
+                ✏️ Edit in Textarea
+              </button>
+              <button type="button" class="subview-chip" id="wiz-btn-apply-save" style="background: var(--otis-primary, #0ea5e9); color: #fff; font-weight: 700; padding: 6px 18px; border: none; font-size: 0.76rem; cursor: pointer;">
+                ✨ Apply to Custom Instructions & Save
+              </button>
+            </div>
+          </div>
+        `
+            : ""
+        }
+
+        <!-- Wizard Navigation Footer -->
+        <div style="display: flex; justify-content: space-between; align-items: center; padding-top: 10px; border-top: 1px solid var(--otis-surface-border); margin-top: 6px;">
+          <div>
+            ${
+              step > 1
+                ? `<button type="button" class="subview-chip" id="wiz-btn-prev" style="padding: 6px 14px; font-size: 0.76rem; cursor: pointer;">◀ Previous</button>`
+                : `<span></span>`
+            }
+          </div>
+          <div>
+            ${
+              step < 5
+                ? `<button type="button" class="subview-chip" id="wiz-btn-next" style="background: var(--otis-primary, #0ea5e9); color: #fff; font-weight: 600; padding: 6px 16px; border: none; font-size: 0.76rem; cursor: pointer;">${step === 4 ? "Generate & Review ▶" : "Next Step ▶"}</button>`
+                : ""
+            }
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   _renderRulesInstructionsTab(rules) {
     const customInst = rules.custom_instructions || "";
 
     return `
       <div style="display: flex; flex-direction: column; gap: 12px;">
+        <!-- Wizard Launcher Banner -->
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: rgba(14, 165, 233, 0.1); border: 1px solid rgba(14, 165, 233, 0.3); border-radius: 8px; gap: 10px; flex-wrap: wrap;">
+          <div>
+            <div style="font-weight: 700; font-size: 0.82rem; color: var(--otis-primary);">🧙‍♂️ Interactive Household Rules Wizard</div>
+            <div style="font-size: 0.74rem; color: var(--otis-text-muted);">Step-by-step guidance for household habits, guest mode, security, and matrix audio.</div>
+          </div>
+          <button type="button" class="subview-chip" id="btn-launch-rules-wizard" style="background: var(--otis-primary, #0ea5e9); color: #fff; font-size: 0.76rem; font-weight: 600; padding: 6px 14px; border: none; cursor: pointer;">
+            Launch Wizard ➔
+          </button>
+        </div>
+
         <div>
           <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">Custom Household Rules & Persona Guidelines:</div>
           <div style="font-size: 0.74rem; color: var(--otis-text-muted); margin-top: 2px;">
@@ -7614,7 +7906,7 @@ class OtisCompanionCard extends HTMLElement {
       }
 
       // Rules Tab Switching
-      ["dashboard", "persona", "safety", "voice", "instructions"].forEach((tab) => {
+      ["wizard", "dashboard", "persona", "safety", "voice", "instructions"].forEach((tab) => {
         const tabBtn = root.querySelector(`#rules-tab-${tab}`);
         if (tabBtn) {
           tabBtn.onclick = () => {
@@ -7623,6 +7915,160 @@ class OtisCompanionCard extends HTMLElement {
           };
         }
       });
+
+      // Wizard Input Harvester
+      const _harvestWizardInputs = () => {
+        const w = { ...(this._wizardState || {}) };
+        const resInput = root.querySelector("#wiz-residents");
+        if (resInput) w.residents = resInput.value.trim();
+        const workInput = root.querySelector("#wiz-work");
+        if (workInput) w.workHours = workInput.value.trim();
+        const sleepInput = root.querySelector("#wiz-sleep");
+        if (sleepInput) w.sleepHabits = sleepInput.value.trim();
+
+        const codeInput = root.querySelector("#wiz-guest-code");
+        if (codeInput) w.guestLockCode = codeInput.value.trim();
+        const offInput = root.querySelector("#wiz-guest-off");
+        if (offInput) w.guestDelayedOff = offInput.value.trim();
+        const guestClimate = root.querySelector("#wiz-guest-climate");
+        if (guestClimate) w.guestClimateComfort = guestClimate.checked;
+        const guestHoliday = root.querySelector("#wiz-guest-holiday");
+        if (guestHoliday) w.holidaySwitches = guestHoliday.checked;
+
+        const deadboltConfirm = root.querySelector("#wiz-deadbolt-confirm");
+        if (deadboltConfirm) w.requireDeadboltConfirm = deadboltConfirm.checked;
+        const alarmConfirm = root.querySelector("#wiz-alarm-confirm");
+        if (alarmConfirm) w.requireAlarmConfirm = alarmConfirm.checked;
+        const garageMins = root.querySelector("#wiz-garage-mins");
+        if (garageMins) w.garageAlertMinutes = parseInt(garageMins.value, 10) || 15;
+        const perimAlerts = root.querySelector("#wiz-perimeter-alerts");
+        if (perimAlerts) w.perimeterCameraAlerts = perimAlerts.checked;
+
+        const matrixRouting = root.querySelector("#wiz-matrix-routing");
+        if (matrixRouting) w.matrixRouting = matrixRouting.checked;
+        const voiceDucking = root.querySelector("#wiz-voice-ducking");
+        if (voiceDucking) w.voiceDucking = voiceDucking.checked;
+        const quietStart = root.querySelector("#wiz-quiet-start");
+        if (quietStart) w.quietHoursStart = quietStart.value;
+        const quietEnd = root.querySelector("#wiz-quiet-end");
+        if (quietEnd) w.quietHoursEnd = quietEnd.value;
+        const quietVol = root.querySelector("#wiz-quiet-vol");
+        if (quietVol) w.quietVolume = parseInt(quietVol.value, 10) || 25;
+
+        this._wizardState = w;
+      };
+
+      // Wizard Stepper Controls
+      const launchWizBtn = root.querySelector("#btn-launch-rules-wizard");
+      if (launchWizBtn) {
+        launchWizBtn.onclick = () => {
+          this._rulesActiveTab = "wizard";
+          this._wizardStep = 1;
+          this._render();
+        };
+      }
+
+      root.querySelectorAll(".wizard-step-pill[data-step-nav]").forEach((pill) => {
+        pill.onclick = () => {
+          _harvestWizardInputs();
+          const targetStep = parseInt(pill.getAttribute("data-step-nav"), 10);
+          if (targetStep >= 1 && targetStep <= 5) {
+            this._wizardStep = targetStep;
+            this._render();
+          }
+        };
+      });
+
+      const wizPrevBtn = root.querySelector("#wiz-btn-prev");
+      if (wizPrevBtn) {
+        wizPrevBtn.onclick = () => {
+          _harvestWizardInputs();
+          if (this._wizardStep > 1) {
+            this._wizardStep--;
+            this._render();
+          }
+        };
+      }
+
+      const wizNextBtn = root.querySelector("#wiz-btn-next");
+      if (wizNextBtn) {
+        wizNextBtn.onclick = () => {
+          _harvestWizardInputs();
+          if (this._wizardStep < 5) {
+            this._wizardStep++;
+            this._render();
+          }
+        };
+      }
+
+      const wizVolInput = root.querySelector("#wiz-quiet-vol");
+      const wizVolLabel = root.querySelector("#wiz-vol-label");
+      if (wizVolInput && wizVolLabel) {
+        wizVolInput.oninput = () => {
+          wizVolLabel.textContent = `${wizVolInput.value}%`;
+          this._wizardState = { ...(this._wizardState || {}), quietVolume: parseInt(wizVolInput.value, 10) };
+        };
+      }
+
+      const wizCopyBtn = root.querySelector("#wiz-btn-copy-instructions");
+      if (wizCopyBtn) {
+        wizCopyBtn.onclick = () => {
+          _harvestWizardInputs();
+          const generated = this._generateStructuredRulesText();
+          this._rulesDraft = { ...(this._rulesDraft || {}), custom_instructions: generated };
+          this._rulesActiveTab = "instructions";
+          this._showToast("📋 Inserted wizard rules into Custom Instructions");
+          this._render();
+        };
+      }
+
+      const wizApplySaveBtn = root.querySelector("#wiz-btn-apply-save");
+      if (wizApplySaveBtn) {
+        wizApplySaveBtn.onclick = async () => {
+          if (this._savingRules) return;
+          this._savingRules = true;
+          this._render();
+          try {
+            _harvestWizardInputs();
+            const generated = this._generateStructuredRulesText();
+            const w = this._wizardState || {};
+
+            const draft = {
+              ...(this._rulesDraft || {}),
+              custom_instructions: generated,
+              require_lock_confirmation: w.requireDeadboltConfirm !== false,
+              require_security_confirmation: w.requireAlarmConfirm !== false,
+              quiet_hours_enabled: true,
+              quiet_hours_start: w.quietHoursStart || "22:00",
+              quiet_hours_end: w.quietHoursEnd || "07:00",
+              quiet_hours_volume: w.quietVolume !== undefined ? w.quietVolume : 25,
+              onboarding_completed: true,
+            };
+
+            this._showToast("⚙️ Saving wizard rules & updating preferences...");
+            const res = await this._hass.callService("otis_ai", "set_user_rules", { rules: draft });
+            const saved = res?.rules || draft;
+            this._userRules = saved;
+            this._rulesDraft = { ...saved };
+            this._rulesModalOpen = false;
+
+            try {
+              await this._hass.callService("otis_ai", "sync_dashboards", {});
+            } catch (syncErr) {
+              console.debug("Dashboard auto-sync notice:", syncErr);
+            }
+
+            this._showToast("✨ Household Rules wizard preferences saved & applied!");
+            await this._fetchData();
+          } catch (err) {
+            console.error("Failed to save wizard rules:", err);
+            this._showToast(`Failed to save rules: ${err.message || err}`, true);
+          } finally {
+            this._savingRules = false;
+            this._render();
+          }
+        };
+      }
 
       // Dashboard Layout & Style Selection Cards
       root.querySelectorAll(".persona-card[data-dashboard-layout]").forEach((card) => {

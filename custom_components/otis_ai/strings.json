@@ -7,7 +7,11 @@
         "data": {
           "conversation_agent": "AI Conversation Agent",
           "spatial_map_path": "Spatial Map JSON Filename",
-          "theme_name": "Dynamic Theme Name"
+          "theme_name": "Dynamic Theme Name",
+          "local_llm_enabled": "Enable Local Edge LLM (Offline Failover)",
+          "local_llm_url": "Local LLM Server URL (Ollama / OpenAI-compatible)",
+          "local_llm_model": "Local LLM Model",
+          "camera_stream_strategy": "Camera Stream Strategy"
         }
       },
       "onboarding": {
@@ -30,7 +34,11 @@
         "data": {
           "conversation_agent": "AI Conversation Agent",
           "spatial_map_path": "Spatial Map JSON Filename",
-          "theme_name": "Dynamic Theme Name"
+          "theme_name": "Dynamic Theme Name",
+          "local_llm_enabled": "Enable Local Edge LLM (Offline Failover)",
+          "local_llm_url": "Local LLM Server URL (Ollama / OpenAI-compatible)",
+          "local_llm_model": "Local LLM Model",
+          "camera_stream_strategy": "Camera Stream Strategy"
         }
       }
     }

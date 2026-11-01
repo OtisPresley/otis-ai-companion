@@ -176,9 +176,11 @@ class LocalLLMManager:
             "model": chosen_model,
             "messages": messages,
             "stream": False,
+            "keep_alive": "15m",
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
+                "num_ctx": 8192,
             },
         }
 

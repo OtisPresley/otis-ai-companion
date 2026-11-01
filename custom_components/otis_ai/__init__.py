@@ -498,6 +498,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             eng_inst = entry_store.get("engine")
             if eng_inst and hasattr(eng_inst, "invalidate_cache"):
                 eng_inst.invalidate_cache()
+            llm_inst = entry_store.get("local_llm_manager")
+            if llm_inst:
+                new_url = updated_entry.options.get(CONF_LOCAL_LLM_URL) or updated_entry.data.get(CONF_LOCAL_LLM_URL) or DEFAULT_LOCAL_LLM_URL
+                new_model = updated_entry.options.get(CONF_LOCAL_LLM_MODEL) or updated_entry.data.get(CONF_LOCAL_LLM_MODEL) or DEFAULT_LOCAL_LLM_MODEL
+                llm_inst.url = new_url.rstrip("/")
+                llm_inst.model = new_model
 
     if hasattr(entry, "async_on_unload") and hasattr(entry, "add_update_listener"):
         try:
@@ -2063,6 +2069,23 @@ class OtisAIConversationAgent(AbstractAgent):
                 conversation_id=getattr(user_input, "conversation_id", None),
             )
 
+    def _record_turn(
+        self,
+        session_data: dict[str, Any],
+        user_text: str,
+        assistant_text: str,
+    ) -> None:
+        """Record a conversation turn in session history to prevent multi-turn amnesia."""
+        if session_data is None:
+            return
+        history = session_data.setdefault("history", [])
+        if user_text:
+            history.append({"role": "user", "text": user_text})
+        if assistant_text:
+            history.append({"role": "assistant", "text": assistant_text})
+        if len(history) > 20:
+            session_data["history"] = history[-20:]
+
     async def async_process(
         self, user_input: conversation.UserInput
     ) -> conversation.ConversationResult:
@@ -2072,7 +2095,8 @@ class OtisAIConversationAgent(AbstractAgent):
         # Initialize session states
         self.hass.data.setdefault(DOMAIN, {}).setdefault("sessions", {})
         sessions = self.hass.data[DOMAIN]["sessions"]
-        conv_id = user_input.conversation_id
+        conv_id = user_input.conversation_id or "default"
+        session_data = sessions.setdefault(conv_id, {})
         user_text = user_input.text.strip().lower()
 
         def fire_progress(step_id: str, title: str, detail: str) -> None:
@@ -2093,11 +2117,11 @@ class OtisAIConversationAgent(AbstractAgent):
         rejections = {"no", "n", "cancel", "don't", "stop", "reject"}
 
         # Check for pending wizard confirmation (single or multi-item configuration)
-        if conv_id in sessions and (sessions[conv_id].get("pending_items") or sessions[conv_id].get("pending_yaml")):
+        if session_data.get("pending_items") or session_data.get("pending_yaml"):
             if user_text in confirmations:
-                items = sessions[conv_id].pop("pending_items", None)
+                items = session_data.pop("pending_items", None)
                 if not items:
-                    p = sessions[conv_id].pop("pending_yaml", None)
+                    p = session_data.pop("pending_yaml", None)
                     if p:
                         if isinstance(p, dict) and p.get("type"):
                             items = [p]
@@ -2108,7 +2132,7 @@ class OtisAIConversationAgent(AbstractAgent):
                     else:
                         items = []
                 else:
-                    sessions[conv_id].pop("pending_yaml", None)
+                    session_data.pop("pending_yaml", None)
 
                 try:
                     created_autos = []
@@ -2142,23 +2166,19 @@ class OtisAIConversationAgent(AbstractAgent):
                             parts.append(f"Automation(s): {', '.join(created_autos)}")
                         speech = "I have successfully created and enabled the configuration! Applied successfully!\n• " + "\n• ".join(parts)
 
-                    s_data = sessions.setdefault(conv_id, {})
-                    s_data.setdefault("history", []).append({"role": "user", "text": user_input.text})
-                    s_data["history"].append({"role": "assistant", "text": speech})
+                    self._record_turn(session_data, user_input.text, speech)
                     return self._create_response(user_input, speech)
                 except Exception as err:
                     _LOGGER.error("Failed to apply pending configuration: %s", err, exc_info=True)
-                    return self._create_response(
-                        user_input,
-                        f"I encountered an error while writing the configuration: {err}. Please check the logs."
-                    )
+                    err_speech = f"I encountered an error while writing the configuration: {err}. Please check the logs."
+                    self._record_turn(session_data, user_input.text, err_speech)
+                    return self._create_response(user_input, err_speech)
             elif user_text in rejections:
-                sessions[conv_id].pop("pending_items", None)
-                sessions[conv_id].pop("pending_yaml", None)
-                return self._create_response(
-                    user_input,
-                    "Okay, I have discarded the proposed configuration."
-                )
+                session_data.pop("pending_items", None)
+                session_data.pop("pending_yaml", None)
+                msg = "Okay, I have discarded the proposed configuration."
+                self._record_turn(session_data, user_input.text, msg)
+                return self._create_response(user_input, msg)
 
         # Check for pending macro confirmation
         if conv_id in sessions and sessions[conv_id].get("pending_macro"):
@@ -2590,12 +2610,14 @@ class OtisAIConversationAgent(AbstractAgent):
 
         prioritized_agents = await async_get_prioritized_agents(self.hass, preferred_agent_id=configured_agent)
 
-        if not prioritized_agents:
+        local_enabled = getattr(self, "entry", None) is not None and (
+            self.entry.options.get(CONF_LOCAL_LLM_ENABLED, self.entry.data.get(CONF_LOCAL_LLM_ENABLED, True))
+        )
+        if not prioritized_agents and not (local_enabled and self.local_llm_manager):
             _LOGGER.warning("No AI conversation agent discovered or configured for Otis AI Companion")
-            return self._create_response(
-                user_input,
-                "No AI conversation agent is installed or active. Please install an AI integration (such as Google Generative AI, OpenAI, or Ollama) in Settings > Devices & Services to enable Otis AI Companion."
-            )
+            msg = "No AI conversation agent is installed or active. Please install an AI integration (such as Google Generative AI, OpenAI, or Ollama) in Settings > Devices & Services to enable Otis AI Companion."
+            self._record_turn(session_data, user_input.text, msg)
+            return self._create_response(user_input, msg)
 
         # 2. Build the capability map
         fire_progress("topology", "Querying Topology", "Inspecting spatial adjacency graph & active entities")
@@ -2736,8 +2758,8 @@ class OtisAIConversationAgent(AbstractAgent):
         if getattr(self, "rules_manager", None):
             rules_snippet = self.rules_manager.get_system_prompt_snippet()
 
-        # Retrieve recent conversation turns (up to 6 turns) to guarantee topic focus and continuity
-        recent_history = session_data.get("history", [])[-6:]
+        # Retrieve recent conversation turns (up to 10 entries) to guarantee topic focus and continuity
+        recent_history = session_data.get("history", [])[-10:]
         history_snippet = ""
         if recent_history:
             history_lines = []
@@ -2745,6 +2767,25 @@ class OtisAIConversationAgent(AbstractAgent):
                 role = "User" if h["role"] == "user" else "Otis"
                 history_lines.append(f"{role}: {h['text']}")
             history_snippet = "Recent Conversation History:\n" + "\n".join(history_lines) + "\n\n"
+
+        # 3.2 Dynamic Cross-Referencing of Real Automations & Scripts
+        matched_yaml_context = ""
+        if getattr(self, "automation_manager", None):
+            try:
+                related = await self.automation_manager.async_cross_reference(user_input.text)
+                matches = related.get("matches", [])
+                if matches:
+                    fire_progress("domain", "Cross-Referencing Automations", f"Found {len(matches)} matching automations/scripts in YAML")
+                    lines = [
+                        "REAL SYSTEM AUTOMATIONS & SCRIPTS (Source: automations.yaml & scripts.yaml):",
+                        "CRITICAL: When the user asks about behaviors, entities, or rules, inspect these actual configurations instead of guessing!",
+                    ]
+                    for m in matches:
+                        lines.append(f"\n--- # {m['type'].upper()}: {m['name']} (ID: {m['id']})\n{m['yaml']}")
+                    matched_yaml_context = "\n".join(lines) + "\n\n"
+                    _LOGGER.info("Injected %d cross-referenced automation/script YAML blocks into conversation prompt", len(matches))
+            except Exception as cr_err:
+                _LOGGER.debug("Error cross-referencing automations: %s", cr_err)
 
         prompt = f"""You are the Otis AI Companion, an intelligent, proactive smart home architect, co-pilot, and butler.
 Your goal is to guide the user from a bare Home Assistant installation to a fully optimized, cohesive, automated smart home—and offer to build and configure everything for them.
@@ -2754,10 +2795,11 @@ CONVERSATION DISCIPLINE & FOCUS:
 - Stay strictly focused on the user's active goal, topic, and immediate thread.
 - If the user is discussing a specific domain (such as Media, Climate, Lighting, or Security), DO NOT switch to unrelated topics.
 - Follow up directly on what was discussed in the Recent Conversation History.
+- If real automations or scripts are cross-referenced below, inspect their exact triggers, conditions, and actions rather than guessing or hallucinating their logic!
 
 {rules_snippet}
 
-{history_snippet}Here is the current capability and architecture map of the home:
+{history_snippet}{matched_yaml_context}Here is the current capability and architecture map of the home:
 - System Maturity: {maturity_summary}
 - Key Integrations: {notable_integrations}
 - Areas: {list(capability_map['areas'].keys())}
@@ -2787,107 +2829,109 @@ Instructions for Automations & Scripts:
 User: {user_input.text}
 """
 
-        # 3.5 Check Local LLM as Tier 1 Zero-Cloud Provider
-        local_enabled = getattr(self, "entry", None) is not None and (
-            self.entry.options.get(CONF_LOCAL_LLM_ENABLED, self.entry.data.get(CONF_LOCAL_LLM_ENABLED, True))
-        )
-        if local_enabled and self.local_llm_manager:
-            try:
-                health = await self.local_llm_manager.async_health_check()
-                if health.get("status") == "online" and health.get("model_ready"):
-                    fire_progress(
-                        "llm",
-                        "Local Edge AI",
-                        f"Reasoning locally via {health.get('provider')} ({self.local_llm_manager.model})",
-                    )
-                    local_res = await self.local_llm_manager.async_generate(
-                        prompt=prompt,
-                        system_prompt=(
-                            "You are Otis AI, the ultimate proactive smart home companion. "
-                            "Analyze the home's active state and respond concisely and actionably."
-                        ),
-                    )
-                    if local_res.get("success") and local_res.get("response"):
-                        _LOGGER.info(
-                            "Local Edge AI (%s) responded in %ss (%s t/s)",
-                            self.local_llm_manager.model,
-                            local_res.get("total_duration_s"),
-                            local_res.get("tokens_per_sec"),
-                        )
-                        return self._create_response(user_input, local_res["response"])
-                    else:
-                        _LOGGER.warning(
-                            "Local LLM returned error: %s. Transparently falling back to cloud agents...",
-                            local_res.get("error"),
-                        )
-                        fire_progress(
-                            "llm",
-                            "Local AI Fallback",
-                            f"Local LLM notice ({local_res.get('error', 'timeout')}). Failing over to cloud agents...",
-                        )
-            except Exception as local_err:
-                _LOGGER.debug("Local LLM invocation notice: %s", local_err)
-
-        # 4. Delegate to the AI agent pool with automatic transparent failover
+        # 4. Delegate to prioritized AI agent pool first (e.g. Gemini 2.5 Flash, OpenRouter)
         result = None
         last_error_msg = None
 
-        for idx, agent_id in enumerate(prioritized_agents):
-            is_primary = (idx == 0)
-            role_label = "Primary" if is_primary else f"Failover #{idx}"
-            _LOGGER.debug("Attempting conversation with %s AI agent: %s", role_label, agent_id)
-            fire_progress("llm", f"Consulting {role_label} AI", f"Reasoning with model '{agent_id}'")
+        if prioritized_agents:
+            for idx, agent_id in enumerate(prioritized_agents):
+                is_primary = (idx == 0)
+                role_label = "Primary" if is_primary else f"Failover #{idx}"
+                _LOGGER.debug("Attempting conversation with %s AI agent: %s", role_label, agent_id)
+                fire_progress("llm", f"Consulting {role_label} AI", f"Reasoning with model '{agent_id}'")
 
-            try:
-                attempt_result = await conversation.async_converse(
-                    hass=self.hass,
-                    text=prompt,
-                    conversation_id=user_input.conversation_id,
-                    context=user_input.context,
-                    language=user_input.language,
-                    agent_id=agent_id,
-                    device_id=user_input.device_id,
-                )
-
-                resp_type = getattr(attempt_result.response, "response_type", None)
-                speech_text = attempt_result.response.speech.get("plain", {}).get("speech", "")
-                is_err_type = str(resp_type).lower().endswith("error")
-
-                if is_err_type or is_provider_error(speech_text):
-                    _LOGGER.warning(
-                        "%s AI agent '%s' returned provider error/quota exhaustion: %s. Transparently failing over to next agent...",
-                        role_label, agent_id, speech_text[:140]
+                try:
+                    attempt_result = await conversation.async_converse(
+                        hass=self.hass,
+                        text=prompt,
+                        conversation_id=user_input.conversation_id,
+                        context=user_input.context,
+                        language=user_input.language,
+                        agent_id=agent_id,
+                        device_id=user_input.device_id,
                     )
-                    last_error_msg = speech_text
+
+                    resp_type = getattr(attempt_result.response, "response_type", None)
+                    speech_text = attempt_result.response.speech.get("plain", {}).get("speech", "")
+                    is_err_type = str(resp_type).lower().endswith("error")
+
+                    if is_err_type or is_provider_error(speech_text):
+                        _LOGGER.warning(
+                            "%s AI agent '%s' returned provider error/quota exhaustion: %s. Transparently failing over to next agent...",
+                            role_label, agent_id, speech_text[:140]
+                        )
+                        last_error_msg = speech_text
+                        if idx + 1 < len(prioritized_agents):
+                            next_agent = prioritized_agents[idx + 1]
+                            fire_progress(
+                                "llm",
+                                f"Quota Failover ({role_label})",
+                                f"Agent '{agent_id}' quota limit reached. Transparently failing over to '{next_agent}'..."
+                            )
+                        continue
+
+                    _LOGGER.info("AI agent '%s' (%s) responded successfully", agent_id, role_label)
+                    result = attempt_result
+                    break
+                except Exception as err:
+                    _LOGGER.warning(
+                        "%s AI agent '%s' raised exception: %s. Transparently failing over...",
+                        role_label, agent_id, err
+                    )
+                    last_error_msg = str(err)
                     if idx + 1 < len(prioritized_agents):
                         next_agent = prioritized_agents[idx + 1]
                         fire_progress(
                             "llm",
-                            f"Quota Failover ({role_label})",
-                            f"Agent '{agent_id}' quota limit reached. Transparently failing over to '{next_agent}'..."
+                            f"Failover ({role_label})",
+                            f"Agent '{agent_id}' error. Failing over to '{next_agent}'..."
                         )
                     continue
 
-                _LOGGER.info("AI agent '%s' (%s) responded successfully", agent_id, role_label)
-                result = attempt_result
-                break
-            except Exception as err:
-                _LOGGER.warning(
-                    "%s AI agent '%s' raised exception: %s. Transparently failing over...",
-                    role_label, agent_id, err
-                )
-                last_error_msg = str(err)
-                if idx + 1 < len(prioritized_agents):
-                    next_agent = prioritized_agents[idx + 1]
-                    fire_progress(
-                        "llm",
-                        f"Failover ({role_label})",
-                        f"Agent '{agent_id}' error. Failing over to '{next_agent}'..."
-                    )
-                continue
+        # 4.5. Offline / Local LLM Failover (Engaged only when cloud agents fail or are unconfigured)
+        if result is None:
+            local_enabled = getattr(self, "entry", None) is not None and (
+                self.entry.options.get(CONF_LOCAL_LLM_ENABLED, self.entry.data.get(CONF_LOCAL_LLM_ENABLED, True))
+            )
+            if local_enabled and self.local_llm_manager:
+                try:
+                    fire_progress("llm", "Local Edge Failover", "Cloud unavailable. Engaging offline local LLM failover...")
+                    health = await self.local_llm_manager.async_health_check()
+                    if health.get("status") == "online" and health.get("model_ready"):
+                        fire_progress(
+                            "llm",
+                            "Local Edge AI Failover",
+                            f"Reasoning locally via {health.get('provider')} ({self.local_llm_manager.model})",
+                        )
+                        local_res = await self.local_llm_manager.async_generate(
+                            prompt=prompt,
+                            system_prompt=(
+                                "You are Otis AI, the ultimate proactive smart home companion. "
+                                "Analyze the home's active state and respond concisely and actionably."
+                            ),
+                        )
+                        if local_res.get("success") and local_res.get("response"):
+                            _LOGGER.info(
+                                "Local Edge AI (%s) failover responded in %ss (%s t/s)",
+                                self.local_llm_manager.model,
+                                local_res.get("total_duration_s"),
+                                local_res.get("tokens_per_sec"),
+                            )
+                            result = self._create_response(user_input, local_res["response"])
+                        else:
+                            _LOGGER.warning(
+                                "Local LLM failover returned error: %s",
+                                local_res.get("error"),
+                            )
+                            if not last_error_msg:
+                                last_error_msg = local_res.get("error")
+                except Exception as local_err:
+                    _LOGGER.debug("Local LLM failover invocation notice: %s", local_err)
+                    if not last_error_msg:
+                        last_error_msg = str(local_err)
 
         if result is None:
-            _LOGGER.error("All %d configured AI agents failed. Last error: %s", len(prioritized_agents), last_error_msg)
+            _LOGGER.error("All AI agents and local failovers failed. Last error: %s", last_error_msg)
             is_quota = (
                 last_error_msg
                 and any(q in last_error_msg.lower() for q in ("quota", "429", "413", "resource_exhausted", "capacity", "rate limit", "too large", "tpm", "payload"))
@@ -2897,11 +2941,11 @@ User: {user_input.text}
                     "⚠️ **AI Provider Quota Exhausted**: Your primary AI agent and failover agents have reached their API rate or quota limits.\n\n"
                     "Please check your API key quota & billing, or configure an additional backup provider (such as local Ollama, Groq, or OpenAI) in *Settings → Devices & Services → Otis AI Companion*."
                 )
+                self._record_turn(session_data, user_input.text, quota_msg)
                 return self._create_response(user_input, quota_msg)
-            return self._create_response(
-                user_input,
-                "All available AI services are currently experiencing high demand or downtime. Please try again in a moment."
-            )
+            msg = "All available AI services are currently experiencing high demand or downtime. Please try again in a moment."
+            self._record_turn(session_data, user_input.text, msg)
+            return self._create_response(user_input, msg)
 
         # Check for proposed YAML blocks in the response
         try:
@@ -2959,10 +3003,8 @@ User: {user_input.text}
                         _LOGGER.debug("Failed to parse YAML block: %s", yaml_err)
 
                 if pending_items:
-                    sessions[conv_id] = {
-                        "pending_items": pending_items,
-                        "pending_yaml": pending_items[0],
-                    }
+                    session_data["pending_items"] = pending_items
+                    session_data["pending_yaml"] = pending_items[0]
                     _LOGGER.debug("Stored %d pending configuration item(s): %s", len(pending_items), pending_items)
                     names_summary = ", ".join(f"'{item['name']}'" for item in pending_items)
                     if len(pending_items) == 1 and pending_items[0]["type"] == "automation":
@@ -2975,14 +3017,11 @@ User: {user_input.text}
         except Exception as parse_err:
             _LOGGER.error("Error parsing LLM response for YAML: %s", parse_err)
 
-        # Track conversation turns in session history
-        session_data.setdefault("history", []).append({"role": "user", "text": user_input.text})
+        # Track conversation turns in session history (both cloud and local LLM)
+        resp_speech = ""
         if result and getattr(result, "response", None):
             resp_speech = getattr(result.response, "speech", {}).get("plain", {}).get("speech", "")
-            if resp_speech:
-                session_data["history"].append({"role": "assistant", "text": resp_speech})
-        if len(session_data["history"]) > 16:
-            session_data["history"] = session_data["history"][-16:]
+        self._record_turn(session_data, user_input.text, resp_speech)
 
         fire_progress("synthesizing", "Synthesizing Actions", "Validating action safety guards & formatting plan")
         return result
