@@ -4382,6 +4382,33 @@ class TestModernSectionsDashboardGeneration(unittest.TestCase):
             self.assertIn("fix_blueprint_top_level_1645487876943", sugg_ids)
             self.assertIn("link_guest_mode_climate_comfort", sugg_ids)
 
+    def test_parse_ha_atom_feed_and_official_news(self):
+        """Test parsing of Home Assistant official Atom feed into recommendation cards."""
+        from custom_components.otis_ai import DiscoveryEngine
+
+        sample_atom_xml = """<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Home Assistant</title>
+  <entry>
+    <title>2026.10: You are here</title>
+    <link href="https://www.home-assistant.io/blog/2026/10/07/release-202610/"/>
+    <updated>2026-10-07T00:00:00+00:00</updated>
+    <content type="html"><![CDATA[<p>Home Assistant 2026.10 release notes with native floor cards and improved Assist.</p>]]></content>
+  </entry>
+</feed>"""
+
+        engine = DiscoveryEngine(self.hass)
+        news = engine._parse_ha_atom_feed(sample_atom_xml)
+
+        self.assertEqual(len(news), 1)
+        item = news[0]
+        self.assertEqual(item["category"], "news")
+        self.assertIn("2026.10: You are here", item["title"])
+        self.assertEqual(item["action_type"], "open_url")
+        self.assertEqual(item["action_payload"]["url"], "https://www.home-assistant.io/blog/2026/10/07/release-202610/")
+        self.assertEqual(item["action_payload"]["pub_date"], "2026-10-07")
+        self.assertTrue(item["id"].startswith("ha_news_release-202610_"))
+
 
 if __name__ == "__main__":
     unittest.main()

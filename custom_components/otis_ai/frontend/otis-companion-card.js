@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.10";
+const CARD_VERSION = "0.1.11";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -703,6 +703,14 @@ class OtisCompanionCard extends HTMLElement {
   async _applySuggestion(suggestion) {
     if (!this._hass || !suggestion) return;
     const sId = suggestion.id;
+
+    if (suggestion.action_type === "open_url" || suggestion.action_type === "read_article") {
+      const url = suggestion.action_payload?.url;
+      if (url) {
+        window.open(url, "_blank", "noopener,noreferrer");
+      }
+      return;
+    }
 
     if (suggestion.action_type === "upload_walkthrough") {
       this._activeTab = "floorplan";
@@ -1597,6 +1605,7 @@ class OtisCompanionCard extends HTMLElement {
     if (!filterKey || filterKey === "all") return true;
     const cat = String(suggestion?.category || "automation").toLowerCase();
     const map = {
+      news: ["news", "official_news", "announcement"],
       habits: ["habit_routine", "habit_deviation", "habits", "behavioral"],
       lighting: ["lighting", "automation"],
       media: ["media"],
@@ -1612,6 +1621,9 @@ class OtisCompanionCard extends HTMLElement {
 
   _getActionLabel(actionType) {
     switch (actionType) {
+      case "open_url":
+      case "read_article":
+        return "📰 Read Full Article ↗";
       case "create_automation":
         return "⚡ Create Habit Automation";
       case "create_package":
@@ -5130,6 +5142,7 @@ class OtisCompanionCard extends HTMLElement {
     const ignoredCount = activeIgnored.length;
     const categories = [
       { key: "all", label: "All" },
+      { key: "news", label: "📰 Official News" },
       { key: "habits", label: "Habits & Routines" },
       { key: "lighting", label: "Lighting & Auto" },
       { key: "media", label: "Media" },

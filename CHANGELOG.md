@@ -7,6 +7,17 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11] - 2026-11-01
+
+### Added & Improved
+- 📰 **Official Home Assistant News Cards in Proactive Feed (`__init__.py`, `otis-companion-card.js`)**:
+  - Implemented asynchronous live fetching and caching (6h TTL) of official Home Assistant releases and blog articles directly from `https://www.home-assistant.io/atom.xml`.
+  - Added formatted news recommendation cards with article publication dates, clean summary snippets, and a dedicated `"📰 Read Full Article ↗"` action button opening the official post in a new tab.
+  - Added a dedicated `"📰 Official News"` category filter pill in the Proactive Feed.
+  - Fully integrated with persistent recommendation dismissal: dismissing a news card writes its unique ID to localStorage and backend rules storage, ensuring it never returns to the active feed unless explicitly restored.
+
+---
+
 ## [0.1.10] - 2026-11-01
 
 ### Added & Improved

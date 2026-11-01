@@ -691,6 +691,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "dismissed_ids": dismissed,
             }
 
+        if action_type in ("open_url", "read_article"):
+            return {
+                "success": True,
+                "action": "open_url",
+                "url": payload.get("url"),
+                "title": payload.get("title"),
+            }
+
         if action_type == "remediate_sentinel_anomaly":
             res = await sm.async_remediate_anomaly(
                 payload.get("anomaly_id", suggestion_id),
@@ -3514,6 +3522,8 @@ class DiscoveryEngine:
         self._habits_cache_ts: float = 0.0
         self._habits_cache_key: tuple[Any, ...] | None = None
         self._suggestions_by_id: dict[str, dict[str, Any]] = {}
+        self._ha_news_cache: list[dict[str, Any]] = []
+        self._ha_news_cache_ts: float = 0.0
 
     def invalidate_cache(self) -> None:
         """Invalidate the cached capability map and suggestions."""
@@ -6260,6 +6270,13 @@ class DiscoveryEngine:
                 "action_payload": {"guide": "Configure media players or Music Assistant in your main rooms for coordinated multi-room audio."},
             })
 
+        # Surface Official Home Assistant News & Announcements
+        try:
+            ha_news = await self.async_fetch_ha_official_news()
+            suggestions.extend(ha_news)
+        except Exception as err:
+            _LOGGER.debug("Error adding official HA news to suggestions: %s", err)
+
         # Sort suggestions by priority: Critical -> High -> Medium -> Low
         priority_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
         suggestions.sort(
@@ -6268,6 +6285,89 @@ class DiscoveryEngine:
 
         self._suggestions_by_id = {s["id"]: s for s in suggestions if s.get("id")}
         return suggestions
+
+    async def async_fetch_ha_official_news(self) -> list[dict[str, Any]]:
+        """Fetch and cache official Home Assistant blog / release news entries from atom.xml."""
+        now = time.time()
+        # Cache news for 6 hours (21600 seconds)
+        if self._ha_news_cache and (now - self._ha_news_cache_ts < 21600):
+            return self._ha_news_cache
+
+        try:
+            from homeassistant.helpers.aiohttp_client import async_get_clientsession
+            import aiohttp
+            session = async_get_clientsession(self.hass)
+            async with session.get(
+                "https://www.home-assistant.io/atom.xml",
+                timeout=aiohttp.ClientTimeout(total=5),
+                headers={"User-Agent": "HomeAssistant-OtisAI/1.0"},
+            ) as resp:
+                if resp.status == 200:
+                    xml_content = await resp.text()
+                    news_items = await self.hass.async_add_executor_job(
+                        self._parse_ha_atom_feed, xml_content
+                    )
+                    if news_items:
+                        self._ha_news_cache = news_items
+                        self._ha_news_cache_ts = now
+                        return news_items
+        except Exception as err:
+            _LOGGER.debug("Could not fetch official Home Assistant news: %s", err)
+
+        return self._ha_news_cache
+
+    def _parse_ha_atom_feed(self, xml_content: str) -> list[dict[str, Any]]:
+        """Parse Home Assistant atom XML feed into recommendation items."""
+        import xml.etree.ElementTree as ET
+        import re
+        import hashlib
+        items: list[dict[str, Any]] = []
+        try:
+            root = ET.fromstring(xml_content)
+            ns = {"atom": "http://www.w3.org/2005/Atom"}
+            for entry in root.findall("atom:entry", ns)[:4]:
+                title_elem = entry.find("atom:title", ns)
+                title = title_elem.text.strip() if title_elem is not None and title_elem.text else "Official HA Update"
+                link_elem = entry.find("atom:link", ns)
+                link = link_elem.attrib.get("href", "") if link_elem is not None else "https://www.home-assistant.io/blog/"
+                updated_elem = entry.find("atom:updated", ns)
+                updated_raw = updated_elem.text.strip() if updated_elem is not None and updated_elem.text else ""
+                pub_date = updated_raw.split("T")[0] if "T" in updated_raw else updated_raw
+
+                content_elem = entry.find("atom:content", ns)
+                raw_content = content_elem.text if content_elem is not None and content_elem.text else ""
+                clean_text = re.sub(r"<template[\s\S]*?</template>", "", raw_content)
+                clean_text = re.sub(r"<style[\s\S]*?</style>", "", clean_text)
+                clean_text = re.sub(r"<script[\s\S]*?</script>", "", clean_text)
+                clean_text = re.sub(r"<[^>]+>", " ", clean_text)
+                clean_text = " ".join(clean_text.split())
+                if len(clean_text) > 180:
+                    clean_text = clean_text[:177] + "..."
+                if not clean_text:
+                    clean_text = "Read the latest official release and community news from the Home Assistant blog."
+
+                slug = link.rstrip("/").split("/")[-1]
+                slug_hash = hashlib.md5(slug.encode("utf-8")).hexdigest()[:8]
+                card_id = f"ha_news_{slug}_{slug_hash}"
+
+                is_major_release = "release" in slug.lower() or "release" in title.lower()
+                items.append({
+                    "id": card_id,
+                    "title": f"📰 {title}",
+                    "category": "news",
+                    "priority": "medium" if is_major_release else "low",
+                    "icon": "mdi:newspaper-variant-outline",
+                    "description": f"Official Home Assistant update ({pub_date}): {clean_text}",
+                    "action_type": "open_url",
+                    "action_payload": {
+                        "url": link,
+                        "title": title,
+                        "pub_date": pub_date,
+                    },
+                })
+        except Exception as err:
+            _LOGGER.debug("Error parsing HA atom feed: %s", err)
+        return items
 
     async def async_mine_historical_habits(self, days: int = 7) -> list[dict[str, Any]]:
         """Asynchronously mine Home Assistant SQLite recorder trends for habit routine patterns."""
