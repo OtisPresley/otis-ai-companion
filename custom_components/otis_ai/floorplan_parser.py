@@ -50,13 +50,13 @@ GROUND_AND_OUTDOOR_BLUEPRINT: dict[str, dict[str, Any]] = {
     "backyard": {
         "x": 180, "y": 85, "width": 580, "height": 140,
         "sub_zones": ["Deck & Grill", "Hot Tub", "Side Gate"],
-        "doors": [("bottom", 600, 44, "Mudroom Door")],
+        "doors": [("bottom", 600, 44, "Mudroom Door", "outward-left")],
     },
     "pool": {
         "x": 760, "y": 85, "width": 320, "height": 140,
         "sub_zones": ["Swimming Pool", "Pool Equipment"],
         "is_water": True,
-        "doors": [("left", 140, 50, "Pool Deck")],
+        "doors": [("left", 140, 50, "Pool Deck", "inward-top")],
     },
     "great_room": {
         "x": 260, "y": 225, "width": 310, "height": 220,
@@ -64,7 +64,8 @@ GROUND_AND_OUTDOOR_BLUEPRINT: dict[str, dict[str, Any]] = {
         "container_bounds": (260, 225, 500, 220),
         "sub_zones": ["Living Area", "Breakfast Nook"],
         "open_right": True,
-        "doors": [("bottom", 230, 60, "Open to Foyer"), ("bottom", 80, 50, "Dining")],
+        "doors": [("bottom", 230, 60, "Open to Foyer", "cased"), ("bottom", 80, 50, "Dining", "cased")],
+        "windows": [("top", 320, 60, "Backyard View", "exterior"), ("left", 280, 50, "Patio Window", "exterior")],
     },
     "kitchen": {
         "x": 570, "y": 225, "width": 190, "height": 220,
@@ -72,57 +73,62 @@ GROUND_AND_OUTDOOR_BLUEPRINT: dict[str, dict[str, Any]] = {
         "display_subtitle": "Kitchen Area (Inside Great Room)",
         "sub_zones": ["Kitchen Island", "Kitchen Camera"],
         "open_left": True,
-        "doors": [("right", 265, 36, "To Mudroom")],
+        "doors": [("right", 265, 36, "To Mudroom", "inward-top")],
+        "windows": [("top", 620, 50, "Garden Window", "exterior")],
     },
     "mudroom": {
         "x": 760, "y": 225, "width": 160, "height": 130,
         "sub_zones": ["Back Stairs (UP ↗)"],
         "has_stairs_up": True,
         "doors": [
-            ("top", 800, 32, "To Backyard"),
-            ("left", 265, 36, "Kitchen"),
-            ("bottom", 810, 28, "Powder Rm"),
-            ("right", 275, 34, "To Garage"),
+            ("top", 800, 32, "To Backyard", "outward-left"),
+            ("left", 265, 36, "Kitchen", "inward-top"),
+            ("bottom", 810, 28, "Powder Rm", "inward-left"),
+            ("right", 275, 34, "To Garage", "inward-top"),
         ],
     },
     "downstairs_bath": {
         "x": 760, "y": 355, "width": 160, "height": 90,
         "sub_zones": ["Powder Room"],
-        "doors": [("top", 810, 28, "Mudroom")],
+        "doors": [("top", 810, 28, "Mudroom", "inward-left")],
+        "windows": [("right", 390, 30, "Bath Window", "exterior")],
     },
     "garage": {
         "x": 920, "y": 225, "width": 260, "height": 360,
         "sub_zones": ["Large 2-Car Bay", "Small Bay • Water Heater"],
         "doors": [
-            ("left", 275, 34, "Mudroom"),
-            ("bottom", 960, 90, "Large Garage Door"),
-            ("bottom", 1090, 55, "Small Bay Door"),
+            ("left", 275, 34, "Mudroom", "inward-top"),
+            ("bottom", 960, 90, "Large Garage Door", "garage"),
+            ("bottom", 1090, 55, "Small Bay Door", "garage"),
         ],
+        "windows": [("right", 320, 45, "Side Garage Window", "exterior")],
     },
     "dining_room": {
         "x": 260, "y": 445, "width": 210, "height": 140,
         "sub_zones": ["Formal Dining"],
-        "doors": [("right", 495, 44, "Foyer"), ("top", 340, 50, "Great Room")],
+        "doors": [("right", 495, 44, "Foyer", "cased"), ("top", 340, 50, "Great Room", "cased")],
+        "windows": [("bottom", 280, 55, "Front Dining Window", "exterior"), ("left", 480, 45, "Side Dining Window", "exterior")],
     },
     "foyer": {
         "x": 470, "y": 445, "width": 140, "height": 140,
         "sub_zones": ["Main Entry"],
         "doors": [
-            ("bottom", 520, 40, "Front Door"),
-            ("top", 510, 55, "Great Room"),
-            ("left", 495, 44, "Dining"),
-            ("right", 495, 36, "Study"),
+            ("bottom", 520, 40, "Front Door", "inward-right"),
+            ("top", 510, 55, "Great Room", "cased"),
+            ("left", 495, 44, "Dining", "cased"),
+            ("right", 495, 36, "Study", "inward-top"),
         ],
     },
     "study": {
         "x": 610, "y": 445, "width": 150, "height": 140,
         "sub_zones": ["Study Closet"],
-        "doors": [("left", 495, 36, "Foyer")],
+        "doors": [("left", 495, 36, "Foyer", "inward-top")],
+        "windows": [("bottom", 650, 45, "Study Front Window", "exterior")],
     },
     "frontyard": {
         "x": 260, "y": 585, "width": 920, "height": 105,
         "sub_zones": ["Front Porch & Doorbell Cam", "Wrap-Around Driveway", "Driveway Cam → Side Gate"],
-        "doors": [("top", 520, 40, "Front Entry")],
+        "doors": [("top", 520, 40, "Front Entry", "inward-right")],
     },
 }
 
@@ -133,33 +139,38 @@ UPPER_FLOOR_BLUEPRINT: dict[str, dict[str, Any]] = {
     "guest_room": {
         "x": 180, "y": 805, "width": 270, "height": 150,
         "sub_zones": ["Guest Bedroom", "Ensuite Guest Bath"],
-        "doors": [("bottom", 300, 36, "Hallway")],
+        "doors": [("bottom", 300, 36, "Hallway", "inward-right")],
+        "windows": [("top", 240, 55, "Guest Bed Window", "exterior"), ("left", 850, 45, "Guest Side Window", "exterior")],
     },
     "laundry_room": {
         "x": 450, "y": 805, "width": 190, "height": 150,
         "sub_zones": ["Upper Laundry"],
-        "doors": [("bottom", 525, 36, "Hallway")],
+        "doors": [("bottom", 525, 36, "Hallway", "inward-left")],
+        "windows": [("top", 510, 40, "Laundry Window", "exterior")],
     },
     "office": {
         "x": 640, "y": 805, "width": 210, "height": 150,
         "sub_zones": ["Upstairs Office"],
-        "doors": [("bottom", 725, 36, "Hallway")],
+        "doors": [("bottom", 725, 36, "Hallway", "inward-right")],
+        "windows": [("top", 710, 50, "Office North Window", "exterior")],
     },
     "gym": {
         "x": 850, "y": 805, "width": 230, "height": 150,
         "sub_zones": ["Stair Landing (DN ↙)", "Reading Nook", "Fitness Zone"],
         "has_stairs_down": True,
-        "doors": [("bottom", 810, 44, "Upper Hall")],
+        "doors": [("bottom", 810, 44, "Upper Hall", "inward-left")],
+        "windows": [("top", 920, 55, "Gym North Window", "exterior"), ("right", 860, 45, "Gym East Window", "exterior")],
     },
     "hallway": {
         "x": 180, "y": 955, "width": 680, "height": 70,
         "sub_zones": ["Upper Corridor Spine", "Hall Bath"],
-        "doors": [("right", 975, 40, "To Theater")],
+        "doors": [("right", 975, 40, "To Theater", "inward-top")],
     },
     "theater": {
         "x": 860, "y": 955, "width": 280, "height": 185,
         "sub_zones": ["Home Theater • Wall Tablet", "AV Equipment Closet"],
-        "doors": [("left", 975, 40, "Hallway")],
+        "doors": [("left", 975, 40, "Hallway", "inward-top")],
+        "windows": [("right", 1010, 40, "Theater Window", "exterior")],
     },
     "master_bath": {
         "x": 180, "y": 1025, "width": 270, "height": 160,
@@ -167,14 +178,16 @@ UPPER_FLOOR_BLUEPRINT: dict[str, dict[str, Any]] = {
         "container_bounds": (180, 1025, 680, 160),
         "sub_zones": ["Master Bathroom", "Powder Room"],
         "open_right": True,
-        "doors": [("top", 300, 40, "Hallway"), ("right", 1085, 45, "To Master Bed")],
+        "doors": [("top", 300, 40, "Hallway", "inward-right"), ("right", 1085, 45, "To Master Bed", "cased")],
+        "windows": [("bottom", 240, 50, "Master Bath Window", "exterior"), ("left", 1070, 45, "Bath Side Window", "exterior")],
     },
     "master": {
         "x": 450, "y": 1025, "width": 410, "height": 160,
         "parent_container": "master_bath",
         "sub_zones": ["Master Bedroom • TV Wall", "Walk-In Closet"],
         "open_left": True,
-        "doors": [("top", 560, 40, "Hallway")],
+        "doors": [("top", 560, 40, "Hallway", "inward-left")],
+        "windows": [("bottom", 540, 60, "Master Bed Window", "exterior"), ("bottom", 680, 60, "Master Nook Window", "exterior")],
     },
 }
 
@@ -189,6 +202,250 @@ def classify_area_zone(area_key: str, area_name: str) -> str:
     if any(k in key or k in name for k in UPPER_KEYWORDS):
         return "upper"
     return "main"
+
+
+def detect_door_orientation(
+    room: dict[str, Any],
+    side: str,
+    pos: float,
+    length: float,
+    all_rooms: list[dict[str, Any]] | None = None,
+) -> str:
+    """Automatically detect architectural door swing orientation (inward/outward, left/right hinge)."""
+    rx = float(room.get("x", 0))
+    ry = float(room.get("y", 0))
+    rw = float(room.get("width", 200))
+    rh = float(room.get("height", 140))
+    rzone = room.get("zone", "main")
+    rid = room.get("id", "")
+
+    # Exterior boundaries and outdoor areas
+    is_outward = False
+    if room.get("is_water") or rzone == "outdoor":
+        is_outward = False
+    elif side == "top" and "mudroom" in rid:
+        # Mudroom door opening out to backyard
+        is_outward = True
+    elif side == "bottom" and (ry + rh) >= 550 and rzone == "main":
+        # Front door on main floor entrance swings inward into foyer
+        is_outward = False
+
+    # Standard corner clearance hinge calculation:
+    # Hinge on the side closest to adjacent perpendicular corner wall
+    if side in ("top", "bottom"):
+        dist_to_left = pos - rx
+        dist_to_right = (rx + rw) - (pos + length)
+        hinge = "left" if dist_to_left <= dist_to_right else "right"
+    else:
+        dist_to_top = pos - ry
+        dist_to_bottom = (ry + rh) - (pos + length)
+        hinge = "top" if dist_to_top <= dist_to_bottom else "bottom"
+
+    prefix = "outward" if is_outward else "inward"
+    return f"{prefix}-{hinge}"
+
+
+def normalize_door_spec(
+    door: Any,
+    room: dict[str, Any] | None = None,
+    all_rooms: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Normalize a door definition (tuple or dict) into a consistent schema with detected orientation."""
+    if isinstance(door, dict):
+        side = str(door.get("side", "bottom")).lower()
+        pos = float(door.get("pos", 0))
+        length = float(door.get("length", 36))
+        label = str(door.get("label", "Door"))
+        orientation = door.get("orientation")
+        door_type = str(door.get("type", "swing")).lower()
+    elif isinstance(door, (list, tuple)):
+        side = str(door[0]).lower()
+        pos = float(door[1])
+        length = float(door[2])
+        label = str(door[3]) if len(door) > 3 else "Door"
+        orientation = str(door[4]) if len(door) > 4 else None
+        door_type = str(door[5]) if len(door) > 5 else "swing"
+    else:
+        return {}
+
+    lbl_lower = label.lower()
+    if "garage" in lbl_lower:
+        door_type = "garage"
+    elif "sliding" in lbl_lower or "pocket" in lbl_lower:
+        door_type = "sliding"
+    elif "open" in lbl_lower or "cased" in lbl_lower or orientation in ("open", "cased"):
+        door_type = "cased"
+
+    if orientation in ("cased", "open"):
+        door_type = "cased"
+        orientation = None
+    elif orientation in ("garage",):
+        door_type = "garage"
+        orientation = None
+
+    if not orientation and room and door_type == "swing":
+        orientation = detect_door_orientation(room, side, pos, length, all_rooms)
+    elif not orientation and door_type == "swing":
+        orientation = "inward-left"
+
+    return {
+        "side": side,
+        "pos": pos,
+        "length": length,
+        "label": label,
+        "orientation": orientation,
+        "door_type": door_type,
+    }
+
+
+def normalize_window_spec(
+    window: Any,
+    room: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Normalize a window definition (tuple or dict) into a consistent schema."""
+    if isinstance(window, dict):
+        side = str(window.get("side", "top")).lower()
+        pos = float(window.get("pos", 0))
+        length = float(window.get("length", 48))
+        label = str(window.get("label", "Window"))
+        orientation = str(window.get("orientation", "exterior"))
+        window_type = str(window.get("type", "standard")).lower()
+    elif isinstance(window, (list, tuple)):
+        side = str(window[0]).lower()
+        pos = float(window[1])
+        length = float(window[2])
+        label = str(window[3]) if len(window) > 3 else "Window"
+        orientation = str(window[4]) if len(window) > 4 else "exterior"
+        window_type = str(window[5]) if len(window) > 5 else "standard"
+    else:
+        return {}
+
+    return {
+        "side": side,
+        "pos": pos,
+        "length": length,
+        "label": label,
+        "orientation": orientation,
+        "window_type": window_type,
+    }
+
+
+def detect_exterior_windows(
+    room: dict[str, Any],
+    all_rooms: list[dict[str, Any]],
+    min_wall_span: float = 70.0,
+) -> list[dict[str, Any]]:
+    """Automatically detect exterior walls and place oriented architectural window symbols."""
+    rx = float(room.get("x", 0))
+    ry = float(room.get("y", 0))
+    rw = float(room.get("width", 200))
+    rh = float(room.get("height", 140))
+    rzone = room.get("zone", "main")
+    rid = room.get("id", "")
+
+    if rzone == "outdoor" or room.get("is_water") or "hallway" in rid:
+        return []
+
+    if room.get("windows"):
+        return [normalize_window_spec(w, room) for w in room["windows"]]
+
+    windows: list[dict[str, Any]] = []
+    existing_doors = [normalize_door_spec(d, room) for d in room.get("doors", [])]
+
+    def _has_door_conflict(side: str, seg_pos: float, seg_len: float) -> bool:
+        for d in existing_doors:
+            if d.get("side") == side:
+                d_pos = d.get("pos", 0)
+                d_len = d.get("length", 36)
+                if not (seg_pos + seg_len < d_pos - 8 or seg_pos > d_pos + d_len + 8):
+                    return True
+        return False
+
+    # 1. Top wall
+    top_shared = any(
+        other.get("id") != rid
+        and other.get("zone") != "outdoor"
+        and abs((other.get("y", 0) + other.get("height", 0)) - ry) < 15
+        and not (other.get("x", 0) + other.get("width", 0) <= rx or other.get("x", 0) >= rx + rw)
+        for other in all_rooms
+    )
+    if not top_shared and rw >= min_wall_span:
+        w_len = min(60.0, rw * 0.4)
+        w_pos = rx + (rw - w_len) / 2.0
+        if not _has_door_conflict("top", w_pos, w_len):
+            windows.append({
+                "side": "top",
+                "pos": w_pos,
+                "length": w_len,
+                "label": f"{room.get('name', rid)} North Window",
+                "orientation": "exterior",
+                "window_type": "standard",
+            })
+
+    # 2. Bottom wall
+    bottom_shared = any(
+        other.get("id") != rid
+        and other.get("zone") != "outdoor"
+        and abs(other.get("y", 0) - (ry + rh)) < 15
+        and not (other.get("x", 0) + other.get("width", 0) <= rx or other.get("x", 0) >= rx + rw)
+        for other in all_rooms
+    )
+    if not bottom_shared and rw >= min_wall_span:
+        w_len = min(60.0, rw * 0.4)
+        w_pos = rx + (rw - w_len) / 2.0
+        if not _has_door_conflict("bottom", w_pos, w_len):
+            windows.append({
+                "side": "bottom",
+                "pos": w_pos,
+                "length": w_len,
+                "label": f"{room.get('name', rid)} South Window",
+                "orientation": "exterior",
+                "window_type": "standard",
+            })
+
+    # 3. Left wall
+    left_shared = any(
+        other.get("id") != rid
+        and other.get("zone") != "outdoor"
+        and abs((other.get("x", 0) + other.get("width", 0)) - rx) < 15
+        and not (other.get("y", 0) + other.get("height", 0) <= ry or other.get("y", 0) >= ry + rh)
+        for other in all_rooms
+    )
+    if not left_shared and rh >= min_wall_span:
+        w_len = min(50.0, rh * 0.4)
+        w_pos = ry + (rh - w_len) / 2.0
+        if not _has_door_conflict("left", w_pos, w_len):
+            windows.append({
+                "side": "left",
+                "pos": w_pos,
+                "length": w_len,
+                "label": f"{room.get('name', rid)} West Window",
+                "orientation": "exterior",
+                "window_type": "standard",
+            })
+
+    # 4. Right wall
+    right_shared = any(
+        other.get("id") != rid
+        and other.get("zone") != "outdoor"
+        and abs(other.get("y", 0) - (rx + rw)) < 15
+        and not (other.get("y", 0) + other.get("height", 0) <= ry or other.get("y", 0) >= ry + rh)
+        for other in all_rooms
+    )
+    if not right_shared and rh >= min_wall_span:
+        w_len = min(50.0, rh * 0.4)
+        w_pos = ry + (rh - w_len) / 2.0
+        if not _has_door_conflict("right", w_pos, w_len):
+            windows.append({
+                "side": "right",
+                "pos": w_pos,
+                "length": w_len,
+                "label": f"{room.get('name', rid)} East Window",
+                "orientation": "exterior",
+                "window_type": "standard",
+            })
+
+    return windows
 
 
 def find_room_group_span(svg: str, area_id: str) -> tuple[int, int, str, str] | None:
@@ -405,6 +662,107 @@ class FloorplanParser:
             _LOGGER.error("Error executing ffmpeg subprocess: %s", err)
             return False
 
+    async def async_extract_audio_from_videos(
+        self,
+        video_paths: list[str],
+        output_dir: str,
+        preferred_format: str = "mp3",
+    ) -> list[str]:
+        """Extract audio tracks sequentially from a list of walkthrough video clips."""
+        extracted_paths: list[str] = []
+        os.makedirs(output_dir, exist_ok=True)
+        for idx, vpath in enumerate(video_paths, start=1):
+            if not os.path.exists(vpath):
+                _LOGGER.warning("Video clip %s not found. Skipping.", vpath)
+                continue
+            ext = preferred_format.lower().lstrip(".")
+            target_name = f"walkthrough_audio.{ext}" if idx == 1 else f"walkthrough_audio_{idx}.{ext}"
+            target_path = os.path.join(output_dir, target_name)
+            success = await self.async_extract_audio_from_video(vpath, target_path)
+            if not success and ext == "mp3":
+                target_path = os.path.join(
+                    output_dir,
+                    "walkthrough_audio.wav" if idx == 1 else f"walkthrough_audio_{idx}.wav",
+                )
+                success = await self.async_extract_audio_from_video(vpath, target_path)
+            if success and os.path.exists(target_path):
+                extracted_paths.append(target_path)
+        return extracted_paths
+
+    async def async_concatenate_audio_clips(
+        self, audio_paths: list[str], output_path: str
+    ) -> bool:
+        """Concatenate multiple sequential audio clips into a unified audio track using ffmpeg."""
+        if not audio_paths:
+            return False
+        if len(audio_paths) == 1:
+            try:
+                if os.path.abspath(audio_paths[0]) != os.path.abspath(output_path):
+                    shutil.copyfile(audio_paths[0], output_path)
+                return True
+            except Exception as err:
+                _LOGGER.warning("Could not copy single audio track to %s: %s", output_path, err)
+                return False
+
+        ffmpeg_bin = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
+        if not os.path.exists(ffmpeg_bin):
+            _LOGGER.warning("ffmpeg binary not found. Skipping audio clip concatenation.")
+            return False
+
+        list_file = os.path.join(os.path.dirname(output_path), f"concat_manifest_{int(time.time())}.txt")
+        try:
+            with open(list_file, "w", encoding="utf-8") as f:
+                for a_path in audio_paths:
+                    escaped = a_path.replace("'", "'\\''")
+                    f.write(f"file '{escaped}'\n")
+
+            cmd = [
+                ffmpeg_bin,
+                "-f", "concat",
+                "-safe", "0",
+                "-i", list_file,
+                "-c", "copy",
+                "-y",
+                output_path,
+            ]
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await process.communicate()
+            if process.returncode == 0 and os.path.exists(output_path):
+                _LOGGER.info("Successfully concatenated %d audio clips into %s", len(audio_paths), output_path)
+                return True
+            else:
+                _LOGGER.debug("Direct concat copy failed, attempting re-encode concat: %s", stderr.decode("utf-8", "ignore")[-200:])
+                filter_inputs = "".join(f"[{i}:a]" for i in range(len(audio_paths)))
+                cmd_reencode = [ffmpeg_bin]
+                for a_p in audio_paths:
+                    cmd_reencode.extend(["-i", a_p])
+                cmd_reencode.extend([
+                    "-filter_complex", f"{filter_inputs}concat=n={len(audio_paths)}:v=0:a=1[outa]",
+                    "-map", "[outa]",
+                    "-y",
+                    output_path,
+                ])
+                proc2 = await asyncio.create_subprocess_exec(
+                    *cmd_reencode,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                await proc2.communicate()
+                return proc2.returncode == 0 and os.path.exists(output_path)
+        except Exception as err:
+            _LOGGER.warning("ffmpeg concatenation exception: %s", err)
+            return False
+        finally:
+            if os.path.exists(list_file):
+                try:
+                    os.remove(list_file)
+                except Exception:
+                    pass
+
     def _get_gemini_credentials(self) -> tuple[str | None, str]:
         """Retrieve Google Generative AI API key and model from Home Assistant config entries."""
         model = "models/gemini-3.5-flash"
@@ -478,13 +836,15 @@ class FloorplanParser:
         area_list: list[dict[str, Any]],
         frame_paths: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Transcribe walkthrough audio + video keyframes and extract ordered areas, containment, and adjacencies."""
+        """Transcribe walkthrough audio + video keyframes and extract ordered areas, containment, adjacencies, doors and windows."""
         result: dict[str, Any] = {
             "transcript": "",
             "ordered_areas": [],
             "adjacencies": [],
             "contained_areas": {},
             "floor_assignments": {},
+            "detected_doors": [],
+            "detected_windows": [],
         }
         if not audio_path or not os.path.exists(audio_path):
             return result
@@ -508,12 +868,17 @@ class FloorplanParser:
             "4. Identify any open-concept parent rooms that contain sub-areas (for example, if the Great Room comprises "
             "a living room area, a kitchen area (`kitchen`), and a breakfast nook).\n"
             "5. Identify which floor each area belongs to (`main` for ground floor, `outdoor` for yard/pool/perimeter, "
-            "`upper` for upstairs/second floor).\n\n"
+            "`upper` for upstairs/second floor).\n"
+            "6. Identify any doors mentioned or seen, noting the room, wall side (`top`, `bottom`, `left`, `right`), "
+            "and swing orientation (`inward-left`, `inward-right`, `outward-left`, `outward-right`, `sliding`, or `cased`).\n"
+            "7. Identify any windows mentioned or seen, noting the room and wall side (`top`, `bottom`, `left`, `right`).\n\n"
             "Respond strictly with valid JSON matching this schema:\n"
             '{"transcript": "...", "ordered_areas": ["area_id_1", "area_id_2"], '
             '"adjacencies": [["area_id_1", "area_id_2"]], '
             '"contained_areas": {"great_room": ["kitchen"]}, '
-            '"floor_assignments": {"area_id_1": "outdoor", "area_id_2": "main"}}'
+            '"floor_assignments": {"area_id_1": "outdoor", "area_id_2": "main"}, '
+            '"doors": [{"room": "foyer", "wall": "bottom", "orientation": "inward-right", "label": "Front Door"}], '
+            '"windows": [{"room": "dining_room", "wall": "bottom", "label": "Bay Window"}]}'
         )
 
         candidate_models = [preferred_model]
@@ -638,17 +1003,187 @@ class FloorplanParser:
                         floors[a_id] = fl_norm
             result["floor_assignments"] = floors
 
+            # Doors detection with orientation
+            doors_out: list[dict[str, Any]] = []
+            for raw_d in parsed.get("doors") or []:
+                if isinstance(raw_d, dict):
+                    r_id = resolve_area_identifier(str(raw_d.get("room") or raw_d.get("area_id") or ""), valid_ids)
+                    wall = str(raw_d.get("wall") or raw_d.get("side") or "bottom").lower()
+                    if r_id and wall in ("top", "bottom", "left", "right"):
+                        doors_out.append({
+                            "room": r_id,
+                            "side": wall,
+                            "orientation": str(raw_d.get("orientation") or "inward-left"),
+                            "label": str(raw_d.get("label") or "Door"),
+                            "type": str(raw_d.get("type") or "swing"),
+                        })
+            result["detected_doors"] = doors_out
+
+            # Windows detection with orientation
+            windows_out: list[dict[str, Any]] = []
+            for raw_w in parsed.get("windows") or []:
+                if isinstance(raw_w, dict):
+                    r_id = resolve_area_identifier(str(raw_w.get("room") or raw_w.get("area_id") or ""), valid_ids)
+                    wall = str(raw_w.get("wall") or raw_w.get("side") or "top").lower()
+                    if r_id and wall in ("top", "bottom", "left", "right"):
+                        windows_out.append({
+                            "room": r_id,
+                            "side": wall,
+                            "label": str(raw_w.get("label") or "Window"),
+                            "orientation": "exterior",
+                        })
+            result["detected_windows"] = windows_out
+
             _LOGGER.info(
-                "Walkthrough audio analysis complete: %d areas ordered (%s), %d adjacencies, contained=%s",
+                "Walkthrough audio analysis complete: %d areas ordered (%s), %d adjacencies, doors=%d, windows=%d",
                 len(ordered),
                 ordered,
                 len(adjacencies),
-                contained,
+                len(doors_out),
+                len(windows_out),
             )
         except Exception as err:
             _LOGGER.warning("Gemini walkthrough audio analysis failed: %s", err)
 
         return result
+
+    async def async_process_multiclip_walkthrough(
+        self,
+        clips: list[str] | list[dict[str, Any]],
+        area_list: list[dict[str, Any]],
+        upload_dir: str | None = None,
+        progress_callback: Any | None = None,
+    ) -> dict[str, Any]:
+        """Process multi-clip sequential video walkthrough uploads with cross-clip continuity."""
+        if not upload_dir:
+            upload_dir = "/tmp/walkthrough_processing"
+        os.makedirs(upload_dir, exist_ok=True)
+
+        combined_ordered_areas: list[str] = []
+        combined_adjacencies: list[list[str]] = []
+        combined_transcripts: list[str] = []
+        combined_floor_assignments: dict[str, str] = {}
+        combined_contained_areas: dict[str, list[str]] = {}
+        combined_detected_doors: list[dict[str, Any]] = []
+        combined_detected_windows: list[dict[str, Any]] = []
+        discovered_area_names: list[str] = []
+
+        area_name_by_id = {a.get("id"): a.get("name", a.get("id")) for a in area_list}
+        last_clip_last_area: str | None = None
+
+        for idx, clip in enumerate(clips, start=1):
+            if isinstance(clip, dict):
+                video_path = clip.get("video_path")
+                audio_path = clip.get("audio_path")
+                frame_paths = clip.get("frame_paths")
+            else:
+                video_path = str(clip)
+                audio_path = None
+                frame_paths = None
+
+            # 1. Extract audio if not provided
+            if not audio_path and video_path and os.path.exists(video_path):
+                audio_target = os.path.join(upload_dir, f"walkthrough_clip_{idx}.mp3")
+                extracted = await self.async_extract_audio_from_video(video_path, audio_target)
+                if not extracted:
+                    audio_target = os.path.join(upload_dir, f"walkthrough_clip_{idx}.wav")
+                    extracted = await self.async_extract_audio_from_video(video_path, audio_target)
+                if extracted:
+                    audio_path = audio_target
+
+            # 2. Extract keyframes if not provided
+            frame_dir = None
+            if not frame_paths and video_path and os.path.exists(video_path):
+                frame_dir = os.path.join(upload_dir, f"_frames_clip_{idx}")
+                frame_paths = await self.async_extract_keyframes_from_video(
+                    video_path, frame_dir, prefix=f"clip{idx}", max_frames=6
+                )
+
+            # 3. Analyze audio + frames with multimodal AI
+            if audio_path and os.path.exists(audio_path):
+                analysis = await self.async_analyze_walkthrough_audio(
+                    audio_path, area_list, frame_paths=frame_paths
+                )
+                t_text = (analysis.get("transcript") or "").strip()
+                if t_text:
+                    combined_transcripts.append(f"[Clip {idx}] {t_text}")
+
+                seg_areas = analysis.get("ordered_areas") or []
+                for aid in seg_areas:
+                    if aid not in combined_ordered_areas:
+                        combined_ordered_areas.append(aid)
+                        fname = area_name_by_id.get(aid, aid)
+                        if fname not in discovered_area_names:
+                            discovered_area_names.append(fname)
+                        if callable(progress_callback):
+                            try:
+                                res_coro = progress_callback(
+                                    f"Clip {idx}: Discovered {fname}", discovered_area_names
+                                )
+                                if asyncio.iscoroutine(res_coro):
+                                    await res_coro
+                            except Exception:
+                                pass
+
+                # Cross-clip sequential continuity: link previous clip's ending room to this clip's starting room
+                if last_clip_last_area and seg_areas:
+                    first_area = seg_areas[0]
+                    if last_clip_last_area != first_area:
+                        inter_pair = [last_clip_last_area, first_area]
+                        if inter_pair not in combined_adjacencies and [first_area, last_clip_last_area] not in combined_adjacencies:
+                            combined_adjacencies.append(inter_pair)
+
+                if seg_areas:
+                    last_clip_last_area = seg_areas[-1]
+
+                # Intra-clip adjacencies
+                for i in range(len(seg_areas) - 1):
+                    pair = [seg_areas[i], seg_areas[i + 1]]
+                    if pair[0] != pair[1] and pair not in combined_adjacencies and [pair[1], pair[0]] not in combined_adjacencies:
+                        combined_adjacencies.append(pair)
+
+                for pair in analysis.get("adjacencies") or []:
+                    if isinstance(pair, (list, tuple)) and len(pair) == 2 and pair[0] != pair[1]:
+                        p_list = [pair[0], pair[1]]
+                        if p_list not in combined_adjacencies and [pair[1], pair[0]] not in combined_adjacencies:
+                            combined_adjacencies.append(p_list)
+
+                # Merge floors & containment
+                combined_floor_assignments.update(analysis.get("floor_assignments") or {})
+                for p_k, c_list in (analysis.get("contained_areas") or {}).items():
+                    if p_k not in combined_contained_areas:
+                        combined_contained_areas[p_k] = []
+                    for c_item in c_list:
+                        if c_item not in combined_contained_areas[p_k]:
+                            combined_contained_areas[p_k].append(c_item)
+
+                # Merge detected doors and windows
+                for d in analysis.get("detected_doors") or []:
+                    if d not in combined_detected_doors:
+                        combined_detected_doors.append(d)
+                for w in analysis.get("detected_windows") or []:
+                    if w not in combined_detected_windows:
+                        combined_detected_windows.append(w)
+
+            # Cleanup temporary frame directory
+            if frame_dir and os.path.isdir(frame_dir):
+                try:
+                    await self.hass.async_add_executor_job(shutil.rmtree, frame_dir, True)
+                except Exception:
+                    pass
+
+        return {
+            "transcript": "\n".join(combined_transcripts),
+            "transcripts": combined_transcripts,
+            "ordered_areas": combined_ordered_areas,
+            "adjacencies": combined_adjacencies,
+            "contained_areas": combined_contained_areas,
+            "floor_assignments": combined_floor_assignments,
+            "detected_doors": combined_detected_doors,
+            "detected_windows": combined_detected_windows,
+            "discovered_names": discovered_area_names,
+            "clips_processed": len(clips),
+        }
 
     def parse_speech_callouts(self, transcript_or_text: str, area_list: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Parse spoken room callouts from speech transcription to order the walkthrough path."""
@@ -749,6 +1284,24 @@ class FloorplanParser:
                             return idx
                     return 999
                 r_list.sort(key=_sort_key)
+
+        # Attach detected doors and windows passed via kwargs to matching rooms
+        detected_doors = kwargs.get("detected_doors") or []
+        detected_windows = kwargs.get("detected_windows") or []
+        if detected_doors or detected_windows:
+            for z, r_list in zones.items():
+                for r in r_list:
+                    rid = r["id"]
+                    for d in detected_doors:
+                        if d.get("room") == rid:
+                            if "doors" not in r:
+                                r["doors"] = []
+                            r["doors"].append(d)
+                    for w in detected_windows:
+                        if w.get("room") == rid:
+                            if "windows" not in r:
+                                r["windows"] = []
+                            r["windows"].append(w)
 
         # Calculate layout coordinates for each room
         layout_by_zone = self._calculate_orthogonal_layout(zones)
@@ -1128,6 +1681,22 @@ class FloorplanParser:
                 if y_shift and "container_bounds" in extra_meta:
                     cb = extra_meta["container_bounds"]
                     extra_meta["container_bounds"] = (cb[0], cb[1] + y_shift, cb[2], cb[3])
+                if y_shift and "doors" in extra_meta:
+                    shifted_doors = []
+                    for d_entry in extra_meta["doors"]:
+                        norm_d = normalize_door_spec(d_entry)
+                        if norm_d.get("side") in ("left", "right"):
+                            norm_d["pos"] = norm_d.get("pos", 0) + y_shift
+                        shifted_doors.append(norm_d)
+                    extra_meta["doors"] = shifted_doors
+                if y_shift and "windows" in extra_meta:
+                    shifted_windows = []
+                    for w_entry in extra_meta["windows"]:
+                        norm_w = normalize_window_spec(w_entry)
+                        if norm_w.get("side") in ("left", "right"):
+                            norm_w["pos"] = norm_w.get("pos", 0) + y_shift
+                        shifted_windows.append(norm_w)
+                    extra_meta["windows"] = shifted_windows
             else:
                 col = unmapped_idx % 4
                 row = unmapped_idx // 4
@@ -1239,6 +1808,15 @@ class FloorplanParser:
 
         for zone_k in list(layout.keys()):
             layout[zone_k] = [r for r in layout[zone_k] if r.get("id") not in deleted_rooms]
+
+        # Automatic exterior window placement for rooms that don't have windows defined
+        all_placed = [r for r_list in layout.values() for r in r_list]
+        for z_key, r_list in layout.items():
+            for r in r_list:
+                if not r.get("windows"):
+                    detected_wins = detect_exterior_windows(r, all_placed)
+                    if detected_wins:
+                        r["windows"] = detected_wins
 
         return layout
 
@@ -1383,6 +1961,14 @@ class FloorplanParser:
       .badge-circle {{ fill: rgba(15, 23, 42, 0.92); stroke: {accent_color}; stroke-width: 1.5; }}
       .badge-icon {{ fill: {text_color}; font-size: 10px; text-anchor: middle; dominant-baseline: middle; }}
       .door-cut {{ stroke: {accent_secondary}; stroke-width: 4; stroke-linecap: round; }}
+      .door-leaf {{ stroke: {accent_color}; stroke-width: 2.2; stroke-linecap: round; }}
+      .door-swing {{ stroke: {accent_color}; stroke-width: 1.2; stroke-dasharray: 3 3; fill: none; opacity: 0.80; }}
+      .door-garage {{ stroke: #94a3b8; stroke-width: 2.5; stroke-dasharray: 4 2; opacity: 0.85; }}
+      .door-sliding {{ stroke: {accent_secondary}; stroke-width: 2.0; stroke-linecap: round; }}
+      .window-cut {{ stroke: {bg_color}; stroke-width: 4; stroke-linecap: square; }}
+      .window-sill {{ stroke: #64748b; stroke-width: 3.5; stroke-linecap: square; }}
+      .window-pane {{ stroke: #38bdf8; stroke-width: 1.4; opacity: 0.90; }}
+      .window-cap {{ stroke: #64748b; stroke-width: 2; }}
       .stairs-step {{ stroke: #38bdf8; stroke-width: 1.2; opacity: 0.65; }}
     </style>
   </defs>
@@ -1536,26 +2122,142 @@ class FloorplanParser:
                     f'    <line x1="{lx}" y1="{sy}" x2="{lx}" y2="{sy + 28}" class="stairs-step" />\n'
                 )
 
-        # Render doorway openings along walls
-        doors = room.get("doors", [])
-        if doors:
-            for side, pos, length, _label in doors:
-                if side == "top":
-                    dx = max(x + 8, min(pos, x + w - length - 8))
-                    parts.append(f'    <line x1="{dx}" y1="{y}" x2="{dx + length}" y2="{y}" class="door-cut" />\n')
-                elif side == "bottom":
-                    dx = max(x + 8, min(pos, x + w - length - 8))
-                    parts.append(f'    <line x1="{dx}" y1="{y + h}" x2="{dx + length}" y2="{y + h}" class="door-cut" />\n')
-                elif side == "left":
-                    dy = max(y + 8, min(pos, y + h - length - 8))
-                    parts.append(f'    <line x1="{x}" y1="{dy}" x2="{x}" y2="{dy + length}" class="door-cut" />\n')
-                elif side == "right":
-                    dy = max(y + 8, min(pos, y + h - length - 8))
-                    parts.append(f'    <line x1="{x + w}" y1="{dy}" x2="{x + w}" y2="{dy + length}" class="door-cut" />\n')
-        elif room.get("adjacent_areas"):
+        # Render doorway openings, door leaves, and swing arcs along walls
+        raw_doors = room.get("doors", [])
+        doors = [normalize_door_spec(d, room) for d in raw_doors] if raw_doors else []
+        if not doors and room.get("adjacent_areas"):
             door_x = x + w - 34
-            door_y = y + h
-            parts.append(f'    <line x1="{door_x}" y1="{door_y}" x2="{door_x + 22}" y2="{door_y}" class="door-cut" />\n')
+            doors.append(normalize_door_spec(("bottom", door_x, 22, "Passage", "inward-right", "swing"), room))
+
+        for d in doors:
+            side = d.get("side", "bottom")
+            pos = d.get("pos", 0)
+            length = d.get("length", 36)
+            orientation = d.get("orientation") or "inward-left"
+            door_type = d.get("door_type", "swing")
+
+            if side == "top":
+                dx = max(x + 8, min(pos, x + w - length - 8))
+                parts.append(f'    <line x1="{dx}" y1="{y}" x2="{dx + length}" y2="{y}" class="door-cut" />\n')
+                if door_type == "swing":
+                    if orientation == "inward-left":
+                        parts.append(f'    <line x1="{dx}" y1="{y}" x2="{dx}" y2="{y + length}" class="door-leaf" />\n')
+                        parts.append(f'    <path d="M {dx + length} {y} A {length} {length} 0 0 1 {dx} {y + length}" class="door-swing" />\n')
+                    elif orientation == "inward-right":
+                        parts.append(f'    <line x1="{dx + length}" y1="{y}" x2="{dx + length}" y2="{y + length}" class="door-leaf" />\n')
+                        parts.append(f'    <path d="M {dx} {y} A {length} {length} 0 0 0 {dx + length} {y + length}" class="door-swing" />\n')
+                    elif orientation == "outward-left":
+                        parts.append(f'    <line x1="{dx}" y1="{y}" x2="{dx}" y2="{y - length}" class="door-leaf" />\n')
+                        parts.append(f'    <path d="M {dx + length} {y} A {length} {length} 0 0 0 {dx} {y - length}" class="door-swing" />\n')
+                    elif orientation == "outward-right":
+                        parts.append(f'    <line x1="{dx + length}" y1="{y}" x2="{dx + length}" y2="{y - length}" class="door-leaf" />\n')
+                        parts.append(f'    <path d="M {dx} {y} A {length} {length} 0 0 1 {dx + length} {y - length}" class="door-swing" />\n')
+                elif door_type == "garage":
+                    for off_y in (-2, 0, 2):
+                        parts.append(f'    <line x1="{dx}" y1="{y + off_y}" x2="{dx + length}" y2="{y + off_y}" class="door-garage" />\n')
+                elif door_type == "sliding":
+                    parts.append(f'    <line x1="{dx}" y1="{y - 2}" x2="{dx + length * 0.55}" y2="{y - 2}" class="door-sliding" />\n')
+                    parts.append(f'    <line x1="{dx + length * 0.45}" y1="{y + 2}" x2="{dx + length}" y2="{y + 2}" class="door-sliding" />\n')
+            elif side == "bottom":
+                dx = max(x + 8, min(pos, x + w - length - 8))
+                parts.append(f'    <line x1="{dx}" y1="{y + h}" x2="{dx + length}" y2="{y + h}" class="door-cut" />\n')
+                if door_type == "swing":
+                    if orientation == "inward-left":
+                        parts.append(f'    <line x1="{dx}" y1="{y + h}" x2="{dx}" y2="{y + h - length}" class="door-leaf" />\n')
+                        parts.append(f'    <path d="M {dx + length} {y + h} A {length} {length} 0 0 0 {dx} {y + h - length}" class="door-swing" />\n')
+                    elif orientation == "inward-right":
+                        parts.append(f'    <line x1="{dx + length}" y1="{y + h}" x2="{dx + length}" y2="{y + h - length}" class="door-leaf" />\n')
+                        parts.append(f'    <path d="M {dx} {y + h} A {length} {length} 0 0 1 {dx + length} {y + h - length}" class="door-swing" />\n')
+                    elif orientation == "outward-left":
+                        parts.append(f'    <line x1="{dx}" y1="{y + h}" x2="{dx}" y2="{y + h + length}" class="door-leaf" />\n')
+                        parts.append(f'    <path d="M {dx + length} {y + h} A {length} {length} 0 0 1 {dx} {y + h + length}" class="door-swing" />\n')
+                    elif orientation == "outward-right":
+                        parts.append(f'    <line x1="{dx + length}" y1="{y + h}" x2="{dx + length}" y2="{y + h + length}" class="door-leaf" />\n')
+                        parts.append(f'    <path d="M {dx} {y + h} A {length} {length} 0 0 0 {dx + length} {y + h + length}" class="door-swing" />\n')
+                elif door_type == "garage":
+                    for off_y in (-2, 0, 2):
+                        parts.append(f'    <line x1="{dx}" y1="{y + h + off_y}" x2="{dx + length}" y2="{y + h + off_y}" class="door-garage" />\n')
+                elif door_type == "sliding":
+                    parts.append(f'    <line x1="{dx}" y1="{y + h - 2}" x2="{dx + length * 0.55}" y2="{y + h - 2}" class="door-sliding" />\n')
+                    parts.append(f'    <line x1="{dx + length * 0.45}" y1="{y + h + 2}" x2="{dx + length}" y2="{y + h + 2}" class="door-sliding" />\n')
+            elif side == "left":
+                dy = max(y + 8, min(pos, y + h - length - 8))
+                parts.append(f'    <line x1="{x}" y1="{dy}" x2="{x}" y2="{dy + length}" class="door-cut" />\n')
+                if door_type == "swing":
+                    if orientation in ("inward-top", "inward-left"):
+                        parts.append(f'    <line x1="{x}" y1="{dy}" x2="{x + length}" y2="{dy}" class="door-leaf" />\n')
+                        parts.append(f'    <path d="M {x} {dy + length} A {length} {length} 0 0 0 {x + length} {dy}" class="door-swing" />\n')
+                    elif orientation in ("inward-bottom", "inward-right"):
+                        parts.append(f'    <line x1="{x}" y1="{dy + length}" x2="{x + length}" y2="{dy + length}" class="door-leaf" />\n')
+                        parts.append(f'    <path d="M {x} {dy} A {length} {length} 0 0 1 {x + length} {dy + length}" class="door-swing" />\n')
+                    elif orientation in ("outward-top", "outward-left"):
+                        parts.append(f'    <line x1="{x}" y1="{dy}" x2="{x - length}" y2="{dy}" class="door-leaf" />\n')
+                        parts.append(f'    <path d="M {x} {dy + length} A {length} {length} 0 0 1 {x - length} {dy}" class="door-swing" />\n')
+                    elif orientation in ("outward-bottom", "outward-right"):
+                        parts.append(f'    <line x1="{x}" y1="{dy + length}" x2="{x - length}" y2="{dy + length}" class="door-leaf" />\n')
+                        parts.append(f'    <path d="M {x} {dy} A {length} {length} 0 0 0 {x - length} {dy + length}" class="door-swing" />\n')
+                elif door_type == "sliding":
+                    parts.append(f'    <line x1="{x - 2}" y1="{dy}" x2="{x - 2}" y2="{dy + length * 0.55}" class="door-sliding" />\n')
+                    parts.append(f'    <line x1="{x + 2}" y1="{dy + length * 0.45}" x2="{x + 2}" y2="{dy + length}" class="door-sliding" />\n')
+            elif side == "right":
+                dy = max(y + 8, min(pos, y + h - length - 8))
+                parts.append(f'    <line x1="{x + w}" y1="{dy}" x2="{x + w}" y2="{dy + length}" class="door-cut" />\n')
+                if door_type == "swing":
+                    if orientation in ("inward-top", "inward-left"):
+                        parts.append(f'    <line x1="{x + w}" y1="{dy}" x2="{x + w - length}" y2="{dy}" class="door-leaf" />\n')
+                        parts.append(f'    <path d="M {x + w} {dy + length} A {length} {length} 0 0 1 {x + w - length} {dy}" class="door-swing" />\n')
+                    elif orientation in ("inward-bottom", "inward-right"):
+                        parts.append(f'    <line x1="{x + w}" y1="{dy + length}" x2="{x + w - length}" y2="{dy + length}" class="door-leaf" />\n')
+                        parts.append(f'    <path d="M {x + w} {dy} A {length} {length} 0 0 0 {x + w - length} {dy + length}" class="door-swing" />\n')
+                    elif orientation in ("outward-top", "outward-left"):
+                        parts.append(f'    <line x1="{x + w}" y1="{dy}" x2="{x + w + length}" y2="{dy}" class="door-leaf" />\n')
+                        parts.append(f'    <path d="M {x + w} {dy + length} A {length} {length} 0 0 0 {x + w + length} {dy}" class="door-swing" />\n')
+                    elif orientation in ("outward-bottom", "outward-right"):
+                        parts.append(f'    <line x1="{x + w}" y1="{dy + length}" x2="{x + w + length}" y2="{dy + length}" class="door-leaf" />\n')
+                        parts.append(f'    <path d="M {x + w} {dy} A {length} {length} 0 0 1 {x + w + length} {dy + length}" class="door-swing" />\n')
+                elif door_type == "sliding":
+                    parts.append(f'    <line x1="{x + w - 2}" y1="{dy}" x2="{x + w - 2}" y2="{dy + length * 0.55}" class="door-sliding" />\n')
+                    parts.append(f'    <line x1="{x + w + 2}" y1="{dy + length * 0.45}" x2="{x + w + 2}" y2="{dy + length}" class="door-sliding" />\n')
+
+        # Render architectural windows along exterior/specified walls
+        raw_windows = room.get("windows", [])
+        windows = [normalize_window_spec(w, room) for w in raw_windows] if raw_windows else []
+        for w_item in windows:
+            side = w_item.get("side", "top")
+            pos = w_item.get("pos", 0)
+            length = w_item.get("length", 48)
+            if side == "top":
+                wx = max(x + 8, min(pos, x + w - length - 8))
+                parts.append(f'    <line x1="{wx}" y1="{y}" x2="{wx + length}" y2="{y}" class="window-cut" />\n')
+                parts.append(f'    <line x1="{wx}" y1="{y - 2}" x2="{wx + length}" y2="{y - 2}" class="window-sill" />\n')
+                parts.append(f'    <line x1="{wx}" y1="{y - 1}" x2="{wx + length}" y2="{y - 1}" class="window-pane" />\n')
+                parts.append(f'    <line x1="{wx}" y1="{y + 1}" x2="{wx + length}" y2="{y + 1}" class="window-pane" />\n')
+                parts.append(f'    <line x1="{wx}" y1="{y - 3}" x2="{wx}" y2="{y + 3}" class="window-cap" />\n')
+                parts.append(f'    <line x1="{wx + length}" y1="{y - 3}" x2="{wx + length}" y2="{y + 3}" class="window-cap" />\n')
+            elif side == "bottom":
+                wx = max(x + 8, min(pos, x + w - length - 8))
+                parts.append(f'    <line x1="{wx}" y1="{y + h}" x2="{wx + length}" y2="{y + h}" class="window-cut" />\n')
+                parts.append(f'    <line x1="{wx}" y1="{y + h + 2}" x2="{wx + length}" y2="{y + h + 2}" class="window-sill" />\n')
+                parts.append(f'    <line x1="{wx}" y1="{y + h - 1}" x2="{wx + length}" y2="{y + h - 1}" class="window-pane" />\n')
+                parts.append(f'    <line x1="{wx}" y1="{y + h + 1}" x2="{wx + length}" y2="{y + h + 1}" class="window-pane" />\n')
+                parts.append(f'    <line x1="{wx}" y1="{y + h - 3}" x2="{wx}" y2="{y + h + 3}" class="window-cap" />\n')
+                parts.append(f'    <line x1="{wx + length}" y1="{y + h - 3}" x2="{wx + length}" y2="{y + h + 3}" class="window-cap" />\n')
+            elif side == "left":
+                wy = max(y + 8, min(pos, y + h - length - 8))
+                parts.append(f'    <line x1="{x}" y1="{wy}" x2="{x}" y2="{wy + length}" class="window-cut" />\n')
+                parts.append(f'    <line x1="{x - 2}" y1="{wy}" x2="{x - 2}" y2="{wy + length}" class="window-sill" />\n')
+                parts.append(f'    <line x1="{x - 1}" y1="{wy}" x2="{x - 1}" y2="{wy + length}" class="window-pane" />\n')
+                parts.append(f'    <line x1="{x + 1}" y1="{wy}" x2="{x + 1}" y2="{wy + length}" class="window-pane" />\n')
+                parts.append(f'    <line x1="{x - 3}" y1="{wy}" x2="{x + 3}" y2="{wy}" class="window-cap" />\n')
+                parts.append(f'    <line x1="{x - 3}" y1="{wy + length}" x2="{x + 3}" y2="{wy + length}" class="window-cap" />\n')
+            elif side == "right":
+                wy = max(y + 8, min(pos, y + h - length - 8))
+                parts.append(f'    <line x1="{x + w}" y1="{wy}" x2="{x + w}" y2="{wy + length}" class="window-cut" />\n')
+                parts.append(f'    <line x1="{x + w + 2}" y1="{wy}" x2="{x + w + 2}" y2="{wy + length}" class="window-sill" />\n')
+                parts.append(f'    <line x1="{x + w - 1}" y1="{wy}" x2="{x + w - 1}" y2="{wy + length}" class="window-pane" />\n')
+                parts.append(f'    <line x1="{x + w + 1}" y1="{wy}" x2="{x + w + 1}" y2="{wy + length}" class="window-pane" />\n')
+                parts.append(f'    <line x1="{x + w - 3}" y1="{wy}" x2="{x + w + 3}" y2="{wy}" class="window-cap" />\n')
+                parts.append(f'    <line x1="{x + w - 3}" y1="{wy + length}" x2="{x + w + 3}" y2="{wy + length}" class="window-cap" />\n')
 
         # Render interactive entity badges along bottom of room footprint
         badge_start_x = x + 16

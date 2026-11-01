@@ -128,12 +128,12 @@ class TestVisionPresenceManager(unittest.TestCase):
 
         mgr = VisionPresenceManager(self.hass)
         cams = asyncio.run(mgr.async_get_cameras())
-        # Vacuum map excluded, Foyer multi-streams deduplicated to 1, Doorbell retained -> 2 total
+        # Vacuum map excluded, Foyer multi-streams deduplicated to 1 (Fluent by default/fallback), Doorbell retained -> 2 total
         self.assertEqual(len(cams), 2)
         cam_eids = [c["entity_id"] for c in cams]
         self.assertIn("camera.doorbell", cam_eids)
-        self.assertIn("camera.foyer_clear", cam_eids)
-        self.assertNotIn("camera.foyer_fluent", cam_eids)
+        self.assertIn("camera.foyer_fluent", cam_eids)
+        self.assertNotIn("camera.foyer_clear", cam_eids)
         self.assertNotIn("camera.larry_poppins_saved_map", cam_eids)
         self.assertTrue(cams[0]["is_doorbell"])
 
@@ -263,6 +263,65 @@ class TestVisionPresenceManager(unittest.TestCase):
         speech2 = u2.create_response.call_args[1]["speech"]
         self.assertIn("Front Porch Camera", speech2)
         self.assertIn("NORMAL", speech2)
+
+    @patch("custom_components.otis_ai.vision_manager.ar.async_get")
+    @patch("custom_components.otis_ai.vision_manager.er.async_get")
+    def test_camera_stream_strategies(self, mock_er, mock_ar):
+        """Test stream selection under Frigate, Fluent, and Clear strategies."""
+        from custom_components.otis_ai.const import (
+            DOMAIN,
+            CONF_CAMERA_STREAM_STRATEGY,
+            CAMERA_STRATEGY_FRIGATE,
+            CAMERA_STRATEGY_FLUENT,
+            CAMERA_STRATEGY_CLEAR,
+        )
+
+        area_reg = MagicMock()
+        area_reg.async_list_areas.return_value = [MockArea("kitchen", "Kitchen")]
+        mock_ar.return_value = area_reg
+
+        ent_reg = MagicMock()
+        ent_entry_frigate = MockEntityEntry("camera.kitchen_2", "kitchen")
+        ent_entry_frigate.platform = "frigate"
+        ent_entry_fluent = MockEntityEntry("camera.kitchen_fluent", "kitchen")
+        ent_entry_fluent.platform = "reolink"
+        ent_entry_clear = MockEntityEntry("camera.kitchen_clear", "kitchen")
+        ent_entry_clear.platform = "reolink"
+
+        ent_reg.entities = {
+            "camera.kitchen_2": ent_entry_frigate,
+            "camera.kitchen_fluent": ent_entry_fluent,
+            "camera.kitchen_clear": ent_entry_clear,
+        }
+        mock_er.return_value = ent_reg
+
+        states = [
+            MockEntityState("camera.kitchen_2", "idle", {"friendly_name": "Kitchen Frigate", "platform": "frigate"}),
+            MockEntityState("camera.kitchen_fluent", "idle", {"friendly_name": "Fluent", "platform": "reolink"}),
+            MockEntityState("camera.kitchen_clear", "idle", {"friendly_name": "Clear", "platform": "reolink"}),
+        ]
+        self.hass.states.async_all.return_value = states
+
+        # 1. Strategy = FRIGATE (Frigate stream preferred)
+        self.hass.data = {DOMAIN: {"entry_1": {"data": {CONF_CAMERA_STREAM_STRATEGY: CAMERA_STRATEGY_FRIGATE}}}}
+        mgr_frigate = VisionPresenceManager(self.hass)
+        cams_frigate = asyncio.run(mgr_frigate.async_get_cameras())
+        self.assertEqual(len(cams_frigate), 1)
+        self.assertEqual(cams_frigate[0]["entity_id"], "camera.kitchen_2")
+
+        # 2. Strategy = FLUENT (Direct lightweight stream preferred)
+        self.hass.data = {DOMAIN: {"entry_1": {"data": {CONF_CAMERA_STREAM_STRATEGY: CAMERA_STRATEGY_FLUENT}}}}
+        mgr_fluent = VisionPresenceManager(self.hass)
+        cams_fluent = asyncio.run(mgr_fluent.async_get_cameras())
+        self.assertEqual(len(cams_fluent), 1)
+        self.assertEqual(cams_fluent[0]["entity_id"], "camera.kitchen_fluent")
+
+        # 3. Strategy = CLEAR (Direct HD stream preferred)
+        self.hass.data = {DOMAIN: {"entry_1": {"data": {CONF_CAMERA_STREAM_STRATEGY: CAMERA_STRATEGY_CLEAR}}}}
+        mgr_clear = VisionPresenceManager(self.hass)
+        cams_clear = asyncio.run(mgr_clear.async_get_cameras())
+        self.assertEqual(len(cams_clear), 1)
+        self.assertEqual(cams_clear[0]["entity_id"], "camera.kitchen_clear")
 
 
 if __name__ == "__main__":

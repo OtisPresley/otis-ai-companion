@@ -20,9 +20,10 @@ SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 class SentinelManager:
     """Monitors telemetry across climate, battery, security perimeter, and integrations for anomalies."""
 
-    def __init__(self, hass: HomeAssistant) -> None:
+    def __init__(self, hass: HomeAssistant, local_llm_manager: Any | None = None) -> None:
         """Initialize the Sentinel watchdog manager."""
         self.hass = hass
+        self.local_llm_manager = local_llm_manager
         self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._anomalies: dict[str, dict[str, Any]] = {}
         self._last_scan_ts: float = 0.0
@@ -552,4 +553,40 @@ class SentinelManager:
                     },
                 })
         return suggestions
+
+    async def async_diagnose_anomaly(self, anomaly_id: str) -> dict[str, Any]:
+        """Diagnose an anomaly using zero-cloud local LLM reasoning."""
+        anomaly = self._anomalies.get(anomaly_id)
+        if not anomaly:
+            return {"success": False, "error": f"Anomaly '{anomaly_id}' not found."}
+
+        if not self.local_llm_manager:
+            return {
+                "success": False,
+                "error": "No Local LLM configured. Please enable and connect a local LLM in settings.",
+            }
+
+        prompt = (
+            f"You are Otis Sentinel, an autonomous smart home diagnostics and security watchdog. "
+            f"An anomaly was detected in the home: '{anomaly.get('title')}' "
+            f"(Severity: {anomaly.get('severity')}, Category: {anomaly.get('category')}).\n"
+            f"Details: {anomaly.get('description')}\n"
+            f"Telemetry: {anomaly.get('details', {})}\n"
+            f"Provide a 2-sentence diagnostic root-cause explanation and recommend the exact immediate action."
+        )
+
+        res = await self.local_llm_manager.async_generate(
+            prompt=prompt,
+            system_prompt="You are an expert Home Assistant systems architect. Be concise, precise, and actionable.",
+            max_tokens=200,
+        )
+        return {
+            "success": res.get("success", False),
+            "anomaly_id": anomaly_id,
+            "diagnosis": res.get("response", res.get("error")),
+            "model": res.get("model"),
+            "tokens_per_sec": res.get("tokens_per_sec"),
+            "duration_s": res.get("total_duration_s"),
+        }
+
 

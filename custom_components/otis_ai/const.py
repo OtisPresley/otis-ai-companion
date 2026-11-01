@@ -1,16 +1,29 @@
 """Constants for the Otis AI Companion integration."""
 
 DOMAIN = "otis_ai"
-INTEGRATION_VERSION = "0.1.0"
+INTEGRATION_VERSION = "0.1.4"
 
 # Configuration Keys
 CONF_CONVERSATION_AGENT = "conversation_agent"
 CONF_SPATIAL_MAP_PATH = "spatial_map_path"
 CONF_THEME_NAME = "theme_name"
+CONF_LOCAL_LLM_ENABLED = "local_llm_enabled"
+CONF_LOCAL_LLM_URL = "local_llm_url"
+CONF_LOCAL_LLM_MODEL = "local_llm_model"
+CONF_LOCAL_LLM_API_KEY = "local_llm_api_key"
+CONF_CAMERA_STREAM_STRATEGY = "camera_stream_strategy"
+
+# Camera Stream Strategy Options
+CAMERA_STRATEGY_FRIGATE = "frigate"
+CAMERA_STRATEGY_FLUENT = "fluent"
+CAMERA_STRATEGY_CLEAR = "clear"
+DEFAULT_CAMERA_STREAM_STRATEGY = CAMERA_STRATEGY_FRIGATE
 
 # Default Values
 DEFAULT_THEME_NAME = "ha_native"
 DEFAULT_SPATIAL_MAP_PATH = "otis_ai_spatial_map.json"
+DEFAULT_LOCAL_LLM_URL = "http://10.0.12.228:11434"
+DEFAULT_LOCAL_LLM_MODEL = "qwen2.5:3b"
 
 # Service Names
 SERVICE_GET_CAPABILITY_MAP = "get_capability_map"
@@ -68,6 +81,8 @@ SERVICE_RESET_DISMISSED_RECOMMENDATIONS = "reset_dismissed_recommendations"
 SERVICE_DUCK_MEDIA = "duck_media"
 SERVICE_RESTORE_MEDIA = "restore_media"
 SERVICE_GET_VOICE_ASSIST_STATUS = "get_voice_assist_status"
+SERVICE_TEST_LOCAL_LLM = "test_local_llm"
+SERVICE_BENCHMARK_LOCAL_LLM = "benchmark_local_llm"
 
 # Dashboard Constants
 COMMAND_CENTER_DASHBOARD_ID = "command-center"

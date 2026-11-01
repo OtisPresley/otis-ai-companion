@@ -2673,12 +2673,12 @@ class TestSentinelManager(unittest.TestCase):
         self.assertNotIn("switch.hades_filter_rules_101", power_eids)
         self.assertNotIn("switch.switch_foyer_port_1", power_eids)
 
-        # Cameras check: Vacuum maps excluded, deduplicated to 1 stream
+        # Cameras check: Vacuum maps excluded, deduplicated to 1 stream (Fluent/Sub preferred for efficiency)
         cameras_card = cards_by_title["Cameras"]
         camera_eids = [card["entity"] for card in cameras_card["cards"]]
         self.assertNotIn("camera.larry_poppins_saved_map", camera_eids)
         self.assertEqual(len(camera_eids), 1)
-        self.assertEqual(camera_eids[0], "camera.foyer_clear")
+        self.assertEqual(camera_eids[0], "camera.foyer_fluent")
 
         # Occupancy & Sensors check: Person/dog counters excluded, real motion/door included
         sensors_card = cards_by_title["Occupancy & Sensors"]

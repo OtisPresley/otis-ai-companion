@@ -17,8 +17,18 @@ from .const import (
     CONF_CONVERSATION_AGENT,
     CONF_SPATIAL_MAP_PATH,
     CONF_THEME_NAME,
+    CONF_LOCAL_LLM_ENABLED,
+    CONF_LOCAL_LLM_URL,
+    CONF_LOCAL_LLM_MODEL,
+    CONF_CAMERA_STREAM_STRATEGY,
+    CAMERA_STRATEGY_FRIGATE,
+    CAMERA_STRATEGY_FLUENT,
+    CAMERA_STRATEGY_CLEAR,
     DEFAULT_THEME_NAME,
     DEFAULT_SPATIAL_MAP_PATH,
+    DEFAULT_LOCAL_LLM_URL,
+    DEFAULT_LOCAL_LLM_MODEL,
+    DEFAULT_CAMERA_STREAM_STRATEGY,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -251,6 +261,31 @@ class OtisAIOptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_THEME_NAME,
                 default=options.get(CONF_THEME_NAME, data.get(CONF_THEME_NAME, DEFAULT_THEME_NAME))
             ): cv.string,
+            vol.Optional(
+                CONF_LOCAL_LLM_ENABLED,
+                default=options.get(CONF_LOCAL_LLM_ENABLED, data.get(CONF_LOCAL_LLM_ENABLED, True))
+            ): cv.boolean,
+            vol.Optional(
+                CONF_LOCAL_LLM_URL,
+                default=options.get(CONF_LOCAL_LLM_URL, data.get(CONF_LOCAL_LLM_URL, DEFAULT_LOCAL_LLM_URL))
+            ): cv.string,
+            vol.Optional(
+                CONF_LOCAL_LLM_MODEL,
+                default=options.get(CONF_LOCAL_LLM_MODEL, data.get(CONF_LOCAL_LLM_MODEL, DEFAULT_LOCAL_LLM_MODEL))
+            ): cv.string,
+            vol.Optional(
+                CONF_CAMERA_STREAM_STRATEGY,
+                default=options.get(CONF_CAMERA_STREAM_STRATEGY, data.get(CONF_CAMERA_STREAM_STRATEGY, DEFAULT_CAMERA_STREAM_STRATEGY))
+            ): selector({
+                "select": {
+                    "options": [
+                        {"value": CAMERA_STRATEGY_FRIGATE, "label": "Frigate Preferred (Low-latency Frigate streams, fallback to Fluent/Sub)"},
+                        {"value": CAMERA_STRATEGY_FLUENT, "label": "Direct Fluent/Sub (High-efficiency lightweight streams across all cameras)"},
+                        {"value": CAMERA_STRATEGY_CLEAR, "label": "Direct Clear/HD (High-definition streams across all cameras)"},
+                    ],
+                    "mode": "dropdown",
+                }
+            }),
         })
 
         schema = vol.Schema(schema_dict)

@@ -33,6 +33,12 @@ chat:
       required: false
       selector:
         text:
+    attachments:
+      name: Attachments
+      description: Optional list of files or images attached to the chat prompt.
+      required: false
+      selector:
+        object:
 
 get_spatial_map:
   name: Get Spatial Adjacency Map
@@ -764,5 +770,36 @@ restore_recommendation:
 reset_dismissed_recommendations:
   name: Reset Dismissed Recommendations
   description: Clear all ignored and dismissed recommendations, restoring them to the Proactive Feed.
+
+test_local_llm:
+  name: Test Local LLM Endpoint
+  description: Query a local LLM server (Ollama, vLLM, or LocalAI) for endpoint health, discovered models, and roundtrip latency.
+  fields:
+    url:
+      name: Endpoint URL
+      description: Optional override URL (defaults to configured local LLM URL).
+      required: false
+      example: "http://10.0.12.228:11434"
+      selector:
+        text:
+
+benchmark_local_llm:
+  name: Benchmark Local LLM
+  description: Execute a standardized smart home reasoning prompt against the local LLM and record throughput (tokens/sec), generation latency, and inference fidelity.
+  fields:
+    prompt:
+      name: Prompt
+      description: Optional custom prompt to benchmark (defaults to standard smart home telemetry reasoning test).
+      required: false
+      selector:
+        text:
+    model:
+      name: Model
+      description: Optional model name to benchmark (defaults to active local LLM model).
+      required: false
+      example: "qwen2.5:3b"
+      selector:
+        text:
+
 
 

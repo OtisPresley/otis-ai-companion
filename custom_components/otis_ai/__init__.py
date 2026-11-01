@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import time
 import uuid
 from typing import Any, Literal
@@ -33,6 +32,7 @@ from homeassistant.components.http import HomeAssistantView
 
 from .const import (
     DOMAIN,
+    DEFAULT_CAMERA_STREAM_STRATEGY,
     CONF_CONVERSATION_AGENT,
     SERVICE_GET_CAPABILITY_MAP,
     SERVICE_GET_SUGGESTIONS,
@@ -83,7 +83,16 @@ from .const import (
     SERVICE_DUCK_MEDIA,
     SERVICE_RESTORE_MEDIA,
     SERVICE_GET_VOICE_ASSIST_STATUS,
+    CONF_LOCAL_LLM_ENABLED,
+    CONF_LOCAL_LLM_URL,
+    CONF_LOCAL_LLM_MODEL,
+    CONF_LOCAL_LLM_API_KEY,
+    DEFAULT_LOCAL_LLM_URL,
+    DEFAULT_LOCAL_LLM_MODEL,
+    SERVICE_TEST_LOCAL_LLM,
+    SERVICE_BENCHMARK_LOCAL_LLM,
 )
+from .local_llm import LocalLLMManager
 from .audio_manager import AudioHandoffManager
 from .automation_manager import AutomationManager
 from .dashboard_manager import DashboardManager
@@ -228,73 +237,25 @@ class OtisWalkthroughUploadView(HomeAssistantView):
                 {"id": aid, "name": ainfo.get("name", aid)}
                 for aid, ainfo in areas_dict.items()
             ]
-            area_name_by_id = {aid: ainfo.get("name", aid) for aid, ainfo in areas_dict.items()}
 
-            combined_ordered_areas: list[str] = []
-            combined_adjacencies: list[list[str]] = []
-            transcripts: list[str] = []
-            discovered_names: list[str] = []
+            # Call enhanced multi-clip sequential processing pipeline
+            async def _on_multiclip_progress(msg: str, names: list[str]) -> None:
+                self._set_progress(msg, names, active=True)
+                await asyncio.sleep(0.2)
 
-            # Extract audio + keyframes and analyze speech callouts & room transitions for each uploaded video
-            for idx, v_path in enumerate(saved_videos, start=1):
-                audio_mp3 = os.path.join(
-                    upload_dir,
-                    "walkthrough_audio.mp3" if idx == 1 else f"walkthrough_audio_{idx}.mp3",
-                )
-                extracted = await self.floorplan_parser.async_extract_audio_from_video(
-                    v_path, audio_mp3
-                )
-                audio_target = audio_mp3
-                if not extracted:
-                    audio_wav = os.path.join(
-                        upload_dir,
-                        "walkthrough_audio.wav" if idx == 1 else f"walkthrough_audio_{idx}.wav",
-                    )
-                    extracted = await self.floorplan_parser.async_extract_audio_from_video(
-                        v_path, audio_wav
-                    )
-                    audio_target = audio_wav
+            multiclip_analysis = await self.floorplan_parser.async_process_multiclip_walkthrough(
+                saved_videos,
+                area_list,
+                upload_dir=upload_dir,
+                progress_callback=_on_multiclip_progress,
+            )
 
-                frame_dir = os.path.join(upload_dir, f"_frames_{idx}")
-                frames = await self.floorplan_parser.async_extract_keyframes_from_video(
-                    v_path, frame_dir, prefix=f"v{idx}", max_frames=6
-                )
-
-                if extracted:
-                    analysis = await self.floorplan_parser.async_analyze_walkthrough_audio(
-                        audio_target, area_list, frame_paths=frames
-                    )
-                    if analysis.get("transcript"):
-                        transcripts.append(analysis["transcript"])
-                    seg_areas = analysis.get("ordered_areas") or []
-                    for aid in seg_areas:
-                        if aid not in combined_ordered_areas:
-                            combined_ordered_areas.append(aid)
-                            friendly_name = area_name_by_id.get(aid, aid)
-                            if friendly_name not in discovered_names:
-                                discovered_names.append(friendly_name)
-                            self._set_progress(
-                                f"Discovered {friendly_name}", discovered_names, active=True
-                            )
-                            await asyncio.sleep(0.25)
-
-                    # Add consecutive areas within this video segment as adjacent
-                    for i in range(len(seg_areas) - 1):
-                        pair = [seg_areas[i], seg_areas[i + 1]]
-                        if pair[0] != pair[1] and pair not in combined_adjacencies:
-                            combined_adjacencies.append(pair)
-                    for pair in analysis.get("adjacencies") or []:
-                        if (
-                            isinstance(pair, list)
-                            and len(pair) == 2
-                            and pair[0] != pair[1]
-                            and pair not in combined_adjacencies
-                        ):
-                            combined_adjacencies.append(pair)
-
-                # Clean up temporary extracted frames directory
-                if os.path.isdir(frame_dir):
-                    await self.hass.async_add_executor_job(shutil.rmtree, frame_dir, True)
+            combined_ordered_areas = multiclip_analysis.get("ordered_areas") or []
+            combined_adjacencies = multiclip_analysis.get("adjacencies") or []
+            transcripts = multiclip_analysis.get("transcripts") or []
+            discovered_names = multiclip_analysis.get("discovered_names") or []
+            detected_doors = multiclip_analysis.get("detected_doors") or []
+            detected_windows = multiclip_analysis.get("detected_windows") or []
 
             # Update Spatial Adjacency Graph with transitions discovered from the walkthrough
             if self.spatial_manager and combined_adjacencies:
@@ -326,6 +287,8 @@ class OtisWalkthroughUploadView(HomeAssistantView):
                 spoken_order=final_order if final_order else None,
                 walkthrough_completed=True,
                 transcripts=transcripts,
+                detected_doors=detected_doors,
+                detected_windows=detected_windows,
             )
 
             if hasattr(self.engine, "invalidate_cache"):
@@ -399,7 +362,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     rules_manager = BehavioralRulesManager(hass)
     dashboard_manager = DashboardManager(hass, floorplan_parser=floorplan_parser, rules_manager=rules_manager)
     theme_manager = ThemeManager(hass)
-    sentinel_manager = SentinelManager(hass)
+    local_llm_manager = LocalLLMManager(
+        hass,
+        url=entry.options.get(CONF_LOCAL_LLM_URL) or entry.data.get(CONF_LOCAL_LLM_URL) or DEFAULT_LOCAL_LLM_URL,
+        model=entry.options.get(CONF_LOCAL_LLM_MODEL) or entry.data.get(CONF_LOCAL_LLM_MODEL) or DEFAULT_LOCAL_LLM_MODEL,
+        api_key=entry.options.get(CONF_LOCAL_LLM_API_KEY) or entry.data.get(CONF_LOCAL_LLM_API_KEY),
+    )
+    sentinel_manager = SentinelManager(hass, local_llm_manager=local_llm_manager)
     macro_manager = MacroManager(hass)
     audio_manager = AudioHandoffManager(hass, spatial_manager=spatial_manager, rules_manager=rules_manager)
     energy_manager = EnergyManager(hass, spatial_manager=spatial_manager)
@@ -429,6 +398,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         commissioning_manager=commissioning_manager,
         federation_manager=federation_manager,
         rules_manager=rules_manager,
+        local_llm_manager=local_llm_manager,
     )
 
     async def _async_sync_dashboards_on_startup() -> None:
@@ -482,6 +452,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         commissioning_manager=commissioning_manager,
         federation_manager=federation_manager,
         rules_manager=rules_manager,
+        local_llm_manager=local_llm_manager,
     )
 
     if hasattr(conversation, "async_register_agent"):
@@ -516,6 +487,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "commissioning_manager": commissioning_manager,
         "federation_manager": federation_manager,
         "rules_manager": rules_manager,
+        "local_llm_manager": local_llm_manager,
     }
 
     async def _async_update_listener(hass_inst: HomeAssistant, updated_entry: ConfigEntry) -> None:
@@ -951,8 +923,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_chat(call) -> ServiceResponse:
         """Handle service call to chat directly with Otis AI."""
         text = call.data.get("text")
+        attachments = call.data.get("attachments", [])
+        if attachments and isinstance(attachments, list):
+            text_parts = [text] if text else []
+            for att in attachments:
+                if not isinstance(att, dict):
+                    continue
+                name = att.get("name", "attachment")
+                if not att.get("isImage") and "content" in att:
+                    ext = name.rsplit(".", 1)[-1] if "." in name else "text"
+                    text_parts.append(f"\n--- Attached File: `{name}` ---\n```{ext}\n{att['content']}\n```")
+                elif att.get("isImage"):
+                    text_parts.append(f"\n[Attached Image: `{name}` ({att.get('type', 'image')})]")
+            text = "\n".join(text_parts).strip()
+
         if not text:
-            return {"response": "Please provide a message to chat with Otis."}
+            return {"response": "Please provide a message or attachment to chat with Otis."}
 
         conv_id = call.data.get("conversation_id")
         user_input_cls = getattr(conversation, "ConversationInput", getattr(conversation, "UserInput", None))
@@ -1633,6 +1619,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             eng.invalidate_cache()
         return {"success": True, "message": "All dismissed recommendations restored."}
 
+    async def handle_test_local_llm(call) -> ServiceResponse:
+        """Handle service call to test local LLM endpoint health and models."""
+        _LOGGER.debug("Service 'test_local_llm' triggered with: %s", call.data)
+        entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        llm_mgr = entry_store.get("local_llm_manager", local_llm_manager)
+        target_url = call.data.get("url")
+        return await llm_mgr.async_health_check(target_url)
+
+    async def handle_benchmark_local_llm(call) -> ServiceResponse:
+        """Handle service call to benchmark local LLM throughput and latency."""
+        _LOGGER.debug("Service 'benchmark_local_llm' triggered with: %s", call.data)
+        entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        llm_mgr = entry_store.get("local_llm_manager", local_llm_manager)
+        prompt = call.data.get("prompt")
+        return await llm_mgr.async_benchmark(prompt)
+
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
         DOMAIN,
@@ -1928,6 +1930,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_get_voice_assist_status,
         supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_TEST_LOCAL_LLM,
+        handle_test_local_llm,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_BENCHMARK_LOCAL_LLM,
+        handle_benchmark_local_llm,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
 
     _LOGGER.info("Otis AI Companion entry set up successfully")
     return True
@@ -1964,6 +1978,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             SERVICE_DUCK_MEDIA,
             SERVICE_RESTORE_MEDIA,
             SERVICE_GET_VOICE_ASSIST_STATUS,
+            SERVICE_TEST_LOCAL_LLM,
+            SERVICE_BENCHMARK_LOCAL_LLM,
         ):
             if hass.services.has_service(DOMAIN, srv):
                 _LOGGER.debug("Removing service: %s", srv)
@@ -1997,6 +2013,7 @@ class OtisAIConversationAgent(AbstractAgent):
         commissioning_manager: AutonomousCommissioningManager | None = None,
         federation_manager: FederationManager | None = None,
         rules_manager: BehavioralRulesManager | None = None,
+        local_llm_manager: LocalLLMManager | None = None,
     ) -> None:
         """Initialize the agent."""
         self.hass = hass
@@ -2014,6 +2031,7 @@ class OtisAIConversationAgent(AbstractAgent):
         self.commissioning_manager = commissioning_manager or AutonomousCommissioningManager(hass, spatial_manager=self.spatial_manager)
         self.federation_manager = federation_manager or FederationManager(hass)
         self.rules_manager = rules_manager or BehavioralRulesManager(hass)
+        self.local_llm_manager = local_llm_manager
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -2769,6 +2787,47 @@ Instructions for Automations & Scripts:
 User: {user_input.text}
 """
 
+        # 3.5 Check Local LLM as Tier 1 Zero-Cloud Provider
+        local_enabled = getattr(self, "entry", None) is not None and (
+            self.entry.options.get(CONF_LOCAL_LLM_ENABLED, self.entry.data.get(CONF_LOCAL_LLM_ENABLED, True))
+        )
+        if local_enabled and self.local_llm_manager:
+            try:
+                health = await self.local_llm_manager.async_health_check()
+                if health.get("status") == "online" and health.get("model_ready"):
+                    fire_progress(
+                        "llm",
+                        "Local Edge AI",
+                        f"Reasoning locally via {health.get('provider')} ({self.local_llm_manager.model})",
+                    )
+                    local_res = await self.local_llm_manager.async_generate(
+                        prompt=prompt,
+                        system_prompt=(
+                            "You are Otis AI, the ultimate proactive smart home companion. "
+                            "Analyze the home's active state and respond concisely and actionably."
+                        ),
+                    )
+                    if local_res.get("success") and local_res.get("response"):
+                        _LOGGER.info(
+                            "Local Edge AI (%s) responded in %ss (%s t/s)",
+                            self.local_llm_manager.model,
+                            local_res.get("total_duration_s"),
+                            local_res.get("tokens_per_sec"),
+                        )
+                        return self._create_response(user_input, local_res["response"])
+                    else:
+                        _LOGGER.warning(
+                            "Local LLM returned error: %s. Transparently falling back to cloud agents...",
+                            local_res.get("error"),
+                        )
+                        fire_progress(
+                            "llm",
+                            "Local AI Fallback",
+                            f"Local LLM notice ({local_res.get('error', 'timeout')}). Failing over to cloud agents...",
+                        )
+            except Exception as local_err:
+                _LOGGER.debug("Local LLM invocation notice: %s", local_err)
+
         # 4. Delegate to the AI agent pool with automatic transparent failover
         result = None
         last_error_msg = None
@@ -2790,13 +2849,23 @@ User: {user_input.text}
                     device_id=user_input.device_id,
                 )
 
+                resp_type = getattr(attempt_result.response, "response_type", None)
                 speech_text = attempt_result.response.speech.get("plain", {}).get("speech", "")
-                if is_provider_error(speech_text):
+                is_err_type = str(resp_type).lower().endswith("error")
+
+                if is_err_type or is_provider_error(speech_text):
                     _LOGGER.warning(
-                        "%s AI agent '%s' returned provider error: %s. Transparently failing over to next agent...",
+                        "%s AI agent '%s' returned provider error/quota exhaustion: %s. Transparently failing over to next agent...",
                         role_label, agent_id, speech_text[:140]
                     )
                     last_error_msg = speech_text
+                    if idx + 1 < len(prioritized_agents):
+                        next_agent = prioritized_agents[idx + 1]
+                        fire_progress(
+                            "llm",
+                            f"Quota Failover ({role_label})",
+                            f"Agent '{agent_id}' quota limit reached. Transparently failing over to '{next_agent}'..."
+                        )
                     continue
 
                 _LOGGER.info("AI agent '%s' (%s) responded successfully", agent_id, role_label)
@@ -2808,10 +2877,27 @@ User: {user_input.text}
                     role_label, agent_id, err
                 )
                 last_error_msg = str(err)
+                if idx + 1 < len(prioritized_agents):
+                    next_agent = prioritized_agents[idx + 1]
+                    fire_progress(
+                        "llm",
+                        f"Failover ({role_label})",
+                        f"Agent '{agent_id}' error. Failing over to '{next_agent}'..."
+                    )
                 continue
 
         if result is None:
             _LOGGER.error("All %d configured AI agents failed. Last error: %s", len(prioritized_agents), last_error_msg)
+            is_quota = (
+                last_error_msg
+                and any(q in last_error_msg.lower() for q in ("quota", "429", "resource_exhausted", "capacity", "rate limit"))
+            )
+            if is_quota:
+                quota_msg = (
+                    "⚠️ **AI Provider Quota Exhausted**: Your primary AI agent and failover agents have reached their API rate or quota limits.\n\n"
+                    "Please check your API key quota & billing, or configure an additional backup provider (such as local Ollama, Groq, or OpenAI) in *Settings → Devices & Services → Otis AI Companion*."
+                )
+                return self._create_response(user_input, quota_msg)
             return self._create_response(
                 user_input,
                 "All available AI services are currently experiencing high demand or downtime. Please try again in a moment."
@@ -2902,11 +2988,13 @@ User: {user_input.text}
         return result
 ERROR_SIGNATURES = [
     "sorry, i had a problem getting a response from",
+    "sorry, i had a problem talking to",
     "api error",
     "groq api error",
     "openai api error",
     "anthropic api error",
     "gemini api error",
+    "google generative ai error",
     "http 413",
     "http 429",
     "http 500",
@@ -2922,7 +3010,10 @@ ERROR_SIGNATURES = [
     "rate limit reached",
     "rate limit exceeded",
     "quota_exceeded",
+    "quota exceeded",
     "exceeded your current quota",
+    "exhausted your capacity",
+    "resource has been exhausted",
     "insufficient funds",
     "no credits remaining",
     "check your plan and billing details",
@@ -2935,6 +3026,8 @@ ERROR_SIGNATURES = [
     '"status": "resource_exhausted"',
     "spikes in demand are usually temporary",
     "protect_free_tier",
+    "insufficient_quota",
+    "too many requests",
 ]
 
 
@@ -2942,9 +3035,36 @@ def is_provider_error(speech: str) -> bool:
     """Detect if the LLM agent returned a provider error string instead of a valid conversation response."""
     if not speech:
         return True
-    if "```" in speech or len(speech) > 350:
-        return False
     speech_lower = speech.lower().strip()
+
+    # Critical quota and rate-limit signatures must trigger failover regardless of length or code formatting
+    CRITICAL_QUOTA_STRINGS = (
+        "resource_exhausted",
+        "resource has been exhausted",
+        "exhausted your capacity",
+        "quota exceeded",
+        "quota_exceeded",
+        "exceeded your current quota",
+        "rate limit exceeded",
+        "rate_limit_exceeded",
+        "rate limit reached",
+        "too many requests",
+        "insufficient_quota",
+        "protect_free_tier",
+        "429 you have exhausted",
+        "error code: 429",
+        "status code: 429",
+        "status code 429",
+    )
+    if any(q in speech_lower for q in CRITICAL_QUOTA_STRINGS):
+        return True
+
+    if re.search(r"\b(?:http\s*429|status\s*code\s*429|error\s*code\s*429|code\s*429)\b", speech_lower):
+        return True
+
+    if "```" in speech or len(speech) > 400:
+        return False
+
     if re.search(r"\b(?:api error|error code|http\s*(?:4\d\d|5\d\d)|status\s*code\s*(?:4\d\d|5\d\d))\b", speech_lower):
         return True
     return any(sig in speech_lower for sig in ERROR_SIGNATURES)
@@ -3002,6 +3122,7 @@ class DiscoveryEngine:
         commissioning_manager: AutonomousCommissioningManager | None = None,
         federation_manager: FederationManager | None = None,
         rules_manager: BehavioralRulesManager | None = None,
+        local_llm_manager: LocalLLMManager | None = None,
     ) -> None:
         """Initialize the discovery engine."""
         self.hass = hass
@@ -3015,6 +3136,7 @@ class DiscoveryEngine:
         self.commissioning_manager = commissioning_manager or AutonomousCommissioningManager(hass, spatial_manager=self.spatial_manager)
         self.federation_manager = federation_manager or FederationManager(hass)
         self.rules_manager = rules_manager or BehavioralRulesManager(hass)
+        self.local_llm_manager = local_llm_manager
         self.dashboard_manager = dashboard_manager or DashboardManager(
             hass, floorplan_parser=self.floorplan_parser, rules_manager=self.rules_manager
         )
@@ -3511,9 +3633,17 @@ class DiscoveryEngine:
                 continue
             ckey = get_canonical_camera_key(c_eid)
             cam_groups.setdefault(ckey, []).append(c_eid)
+
+        strategy = (
+            self.vision_manager.get_camera_stream_strategy()
+            if self.vision_manager and hasattr(self.vision_manager, "get_camera_stream_strategy")
+            else DEFAULT_CAMERA_STREAM_STRATEGY
+        )
+        ent_plat = {e.get("entity_id"): e.get("platform") for e in entities_list if "entity_id" in e}
+
         cameras = []
         for ckey, c_list in cam_groups.items():
-            c_list.sort(key=lambda x: stream_priority(x, x))
+            c_list.sort(key=lambda x: stream_priority(x, x, strategy=strategy, platform=ent_plat.get(x)))
             cameras.append(c_list[0])
         persons = [
             e["entity_id"]

@@ -16,6 +16,9 @@ from homeassistant.helpers import (
 )
 
 from .const import (
+    DOMAIN,
+    CONF_CAMERA_STREAM_STRATEGY,
+    DEFAULT_CAMERA_STREAM_STRATEGY,
     COMMAND_CENTER_DASHBOARD_ICON,
     COMMAND_CENTER_DASHBOARD_ID,
     COMMAND_CENTER_DASHBOARD_TITLE,
@@ -44,6 +47,19 @@ class DashboardManager:
         self.hass = hass
         self.floorplan_parser = floorplan_parser
         self.rules_manager = rules_manager
+
+    def get_camera_stream_strategy(self) -> str:
+        """Retrieve configured camera stream strategy from config entry."""
+        try:
+            if hasattr(self.hass, "data") and DOMAIN in self.hass.data:
+                for entry_val in self.hass.data[DOMAIN].values():
+                    if isinstance(entry_val, dict):
+                        data = entry_val.get("data", {})
+                        if CONF_CAMERA_STREAM_STRATEGY in data:
+                            return data[CONF_CAMERA_STREAM_STRATEGY]
+        except Exception:
+            pass
+        return DEFAULT_CAMERA_STREAM_STRATEGY
 
     def _get_user_rules(self) -> dict[str, Any]:
         """Fetch current user behavioral and dashboard rules safely."""
@@ -1870,8 +1886,14 @@ class DashboardManager:
             camera_groups.setdefault(group_key, []).append(c)
 
         deduped_cameras: list[str] = []
+        strategy = self.get_camera_stream_strategy()
         for gkey, cams in camera_groups.items():
-            cams.sort(key=lambda x: stream_priority(x.get("entity_id", ""), str(x.get("name") or "")))
+            cams.sort(key=lambda x: stream_priority(
+                x.get("entity_id", ""),
+                str(x.get("name") or ""),
+                strategy=strategy,
+                platform=x.get("platform"),
+            ))
             deduped_cameras.append(cams[0]["entity_id"])
 
         if deduped_cameras:
@@ -2256,8 +2278,9 @@ class DashboardManager:
             ckey = get_canonical_camera_key(c_eid)
             cam_groups.setdefault(ckey, []).append(c_eid)
         deduped_sec_cameras = []
+        strategy = self.get_camera_stream_strategy()
         for ckey, c_list in cam_groups.items():
-            c_list.sort(key=lambda x: stream_priority(x, x))
+            c_list.sort(key=lambda x: stream_priority(x, x, strategy=strategy))
             deduped_sec_cameras.append(c_list[0])
         cameras = deduped_sec_cameras
 

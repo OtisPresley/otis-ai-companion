@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.0";
+const CARD_VERSION = "0.1.4";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -40,6 +40,7 @@ class OtisCompanionCard extends HTMLElement {
     this._activeReasoningStep = 0;
     this._expandedReasoningIds = new Set();
     this._unsubReasoningEvents = null;
+    this._pendingAttachments = [];
     this._isListening = false;
     this._recognition = null;
     this._activeTab = this._loadActiveTab(); // 'suggestions' | 'chat' | 'capabilities' | 'floorplan' | 'vision'
@@ -832,13 +833,65 @@ class OtisCompanionCard extends HTMLElement {
     return null;
   }
 
+  _handleFilesSelected(files) {
+    if (!files || files.length === 0) return;
+    if (!this._pendingAttachments) this._pendingAttachments = [];
+    const maxFiles = 5;
+    const maxFileSize = 10 * 1024 * 1024; // 10MB limit
+
+    Array.from(files).slice(0, maxFiles).forEach((file) => {
+      if (file.size > maxFileSize) {
+        this._showToast(`File '${file.name}' exceeds 10MB limit.`, true);
+        return;
+      }
+      const isImg = file.type.startsWith("image/");
+      const reader = new FileReader();
+      if (isImg) {
+        reader.onload = (e) => {
+          this._pendingAttachments.push({
+            name: file.name,
+            type: file.type,
+            size: file.size,
+            isImage: true,
+            data: e.target.result,
+          });
+          this._render();
+        };
+        reader.readAsDataURL(file);
+      } else {
+        reader.onload = (e) => {
+          this._pendingAttachments.push({
+            name: file.name,
+            type: file.type,
+            size: file.size,
+            isImage: false,
+            content: e.target.result,
+          });
+          this._render();
+        };
+        reader.readAsText(file);
+      }
+    });
+  }
+
   async _sendChatMessage(text) {
     const userText = (text || "").trim();
-    if (!userText || !this._hass || this._isSendingChat) return;
+    const hasAttachments = this._pendingAttachments && this._pendingAttachments.length > 0;
+    if ((!userText && !hasAttachments) || !this._hass || this._isSendingChat) return;
+
+    const attachmentsToSend = this._pendingAttachments ? [...this._pendingAttachments] : [];
+    this._pendingAttachments = [];
 
     this._saveActiveTab("chat");
     const userMsgId = "user_" + Date.now();
-    this._chatMessages.push({ id: userMsgId, sender: "user", text: userText, timestamp: new Date().toISOString() });
+    const displayText = userText || (attachmentsToSend.length > 0 ? `[Attached ${attachmentsToSend.length} file(s)]` : "");
+    this._chatMessages.push({
+      id: userMsgId,
+      sender: "user",
+      text: displayText,
+      attachments: attachmentsToSend,
+      timestamp: new Date().toISOString()
+    });
     this._saveChatMessages();
     this._isSendingChat = true;
 
@@ -912,7 +965,10 @@ class OtisCompanionCard extends HTMLElement {
 
     const callPromise = (async () => {
       let speech = "";
-      const directPayload = { text: userText };
+      const directPayload = { text: displayText };
+      if (attachmentsToSend.length > 0) {
+        directPayload.attachments = attachmentsToSend;
+      }
       if (this._conversationId) {
         directPayload.conversation_id = this._conversationId;
       }
@@ -955,7 +1011,14 @@ class OtisCompanionCard extends HTMLElement {
       // 3. Fallback to conversation.process
       if (!speech) {
         const agentId = await this._getConversationAgentId();
-        const payload = { text: userText };
+        let promptWithFiles = displayText;
+        if (attachmentsToSend.length > 0) {
+          const fileTexts = attachmentsToSend
+            .filter((a) => !a.isImage && a.content)
+            .map((a) => `\n--- Attached File: ${a.name} ---\n${a.content}\n--- End File ---`);
+          if (fileTexts.length > 0) promptWithFiles += fileTexts.join("\n");
+        }
+        const payload = { text: promptWithFiles };
         if (agentId) payload.agent_id = agentId;
         if (this._conversationId) payload.conversation_id = this._conversationId;
 
@@ -993,8 +1056,8 @@ class OtisCompanionCard extends HTMLElement {
 
     const timeoutPromise = new Promise((_, reject) =>
       setTimeout(
-        () => reject(new Error("Request timed out after 40 seconds. Please try again.")),
-        40000
+        () => reject(new Error("Request timed out after 120 seconds. Please try again.")),
+        120000
       )
     );
 
@@ -1504,10 +1567,10 @@ class OtisCompanionCard extends HTMLElement {
     const filteredSuggestions = activeSuggestions.filter((s) =>
       this._matchesCategoryFilter(s, this._selectedCategory)
     );
-    const visibleSuggestions = filteredSuggestions.slice(
-      0,
-      this._config.max_suggestions || 5
-    );
+    const maxSuggestionsLimit = this._config.max_suggestions || 5;
+    const visibleSuggestions = showIgnored
+      ? filteredSuggestions
+      : filteredSuggestions.slice(0, maxSuggestionsLimit);
 
     const stats = {
       areas: Object.keys(this._capabilityMap?.areas || {}).length,
@@ -3455,6 +3518,106 @@ class OtisCompanionCard extends HTMLElement {
           animation: micPulse 1.5s infinite ease-in-out;
         }
 
+        .attach-btn {
+          background: var(--otis-chip-bg);
+          border: 1px solid var(--otis-chip-border);
+          color: var(--otis-text-muted);
+          width: 38px;
+          height: 38px;
+          border-radius: 10px;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+
+        .attach-btn:hover {
+          background: color-mix(in srgb, var(--otis-primary) 15%, transparent);
+          color: var(--otis-primary);
+          border-color: color-mix(in srgb, var(--otis-primary) 30%, transparent);
+        }
+
+        .attach-btn:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        .chat-attachments-tray {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
+          margin-bottom: 8px;
+          padding: 6px 10px;
+          background: rgba(0, 0, 0, 0.2);
+          border-radius: 8px;
+          border: 1px dashed var(--otis-chip-border);
+        }
+
+        .chat-attachment-item {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          background: var(--otis-surface);
+          border: 1px solid var(--otis-surface-border);
+          border-radius: 6px;
+          padding: 4px 8px;
+          font-size: 0.76rem;
+          color: var(--otis-text);
+        }
+
+        .chat-attachment-thumb {
+          width: 30px;
+          height: 30px;
+          border-radius: 4px;
+          object-fit: cover;
+        }
+
+        .chat-attachment-name {
+          max-width: 140px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .chat-attachment-remove {
+          cursor: pointer;
+          background: none;
+          border: none;
+          color: #f43f5e;
+          font-weight: bold;
+          font-size: 0.85rem;
+          padding: 0 3px;
+        }
+
+        .bubble-attachments {
+          display: flex;
+          gap: 6px;
+          flex-wrap: wrap;
+          margin-bottom: 8px;
+        }
+
+        .bubble-attachment-img {
+          max-width: 200px;
+          max-height: 140px;
+          border-radius: 8px;
+          object-fit: cover;
+          border: 1px solid rgba(255, 255, 255, 0.15);
+          cursor: pointer;
+        }
+
+        .bubble-attachment-file {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          padding: 4px 10px;
+          background: rgba(0, 0, 0, 0.3);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          border-radius: 6px;
+          font-size: 0.74rem;
+        }
+
         @keyframes micPulse {
           0%, 100% {
             transform: scale(1);
@@ -4533,6 +4696,12 @@ class OtisCompanionCard extends HTMLElement {
               `
                   : ""
               }
+              <button type="button" class="icon-btn" id="btn-open-themes" title="Dynamic AI Theme Studio">
+                🎨 Themes
+              </button>
+              <button type="button" class="icon-btn" id="btn-open-rules" title="Configure Household Persona, Rules & Behavioral Guidelines">
+                ⚙️ Rules
+              </button>
               <button type="button" class="icon-btn" id="refresh-btn" title="Refresh floor plan">
                 ↻ Refresh
               </button>
@@ -4559,6 +4728,12 @@ class OtisCompanionCard extends HTMLElement {
               </div>
             </div>
             <div class="header-actions">
+              <button type="button" class="icon-btn" id="btn-open-themes" title="Dynamic AI Theme Studio">
+                🎨 Themes
+              </button>
+              <button type="button" class="icon-btn" id="btn-open-rules" title="Configure Household Persona, Rules & Behavioral Guidelines">
+                ⚙️ Rules
+              </button>
               <button type="button" class="icon-btn" id="refresh-btn" title="Refresh intelligence">
                 ↻ Refresh
               </button>
@@ -4627,8 +4802,6 @@ class OtisCompanionCard extends HTMLElement {
               <button type="button" class="subview-chip" data-subview="${dashPrefix}/energy">⚡ Energy Studio</button>
               <button type="button" class="subview-chip" data-subview="${dashPrefix}/floorplan">🗺️ Floor Plan</button>
               ${isAdmin ? `<button type="button" class="subview-chip" id="btn-sync-dashboards" title="Sync all Studios & Rooms to Command Center" style="margin-left: auto;">🔄 Sync Command Center</button>` : ""}
-              <button type="button" class="subview-chip" id="btn-open-rules" title="Configure Household Persona, Rules & Behavioral Guidelines" style="${isAdmin ? "" : "margin-left: auto;"}">⚙️ Rules</button>
-              <button type="button" class="subview-chip" id="btn-open-themes">🎨 Themes</button>
             </div>
             ${
               activeAreas.length > 0
@@ -4807,6 +4980,8 @@ class OtisCompanionCard extends HTMLElement {
       this._config.show_ignored ||
       this._userRules?.show_ignored_recommendations
     );
+    const activeIgnored = (this._suggestions || []).filter((s) => this._dismissedIds.has(s.id));
+    const ignoredCount = activeIgnored.length;
     const categories = [
       { key: "all", label: "All" },
       { key: "habits", label: "Habits & Routines" },
@@ -4836,7 +5011,7 @@ class OtisCompanionCard extends HTMLElement {
             ? `
           <div style="display: flex; align-items: center; gap: 6px; margin-left: auto;">
             <button type="button" class="btn-subtle-toggle ${showIgnored ? "active" : ""}" id="btn-toggle-show-ignored" title="${showIgnored ? "Hide dismissed suggestions" : "Show dismissed suggestions"}">
-              ${showIgnored ? "👁️ Hide Ignored" : `👁️ Show Ignored (${this._dismissedIds.size})`}
+              ${showIgnored ? "👁️ Hide Ignored" : `👁️ Show Ignored (${ignoredCount})`}
             </button>
             <button type="button" class="btn-subtle-toggle" id="btn-reset-ignored" title="Restore all ignored suggestions">
               ↺ Reset
@@ -5018,6 +5193,21 @@ class OtisCompanionCard extends HTMLElement {
                   `
                   }
                   ${
+                    m.attachments && m.attachments.length > 0
+                      ? `
+                    <div class="bubble-attachments">
+                      ${m.attachments
+                        .map((att) =>
+                          att.isImage
+                            ? `<img src="${att.data}" class="bubble-attachment-img" alt="${this._escapeHtml(att.name)}" title="${this._escapeHtml(att.name)}" />`
+                            : `<div class="bubble-attachment-file"><span>📄</span> ${this._escapeHtml(att.name)}</div>`
+                        )
+                        .join("")}
+                    </div>
+                  `
+                      : ""
+                  }
+                  ${
                     m.sender === "otis" && m.reasoning && m.reasoning.steps && m.reasoning.steps.length
                       ? this._renderReasoningTrace(m)
                       : ""
@@ -5090,7 +5280,36 @@ class OtisCompanionCard extends HTMLElement {
         `
             : ""
         }
+        ${
+          this._pendingAttachments && this._pendingAttachments.length > 0
+            ? `
+          <div class="chat-attachments-tray">
+            ${this._pendingAttachments
+              .map(
+                (att, i) => `
+              <div class="chat-attachment-item">
+                ${
+                  att.isImage
+                    ? `<img src="${att.data}" class="chat-attachment-thumb" alt="${this._escapeHtml(att.name)}" />`
+                    : `<span>📄</span>`
+                }
+                <span class="chat-attachment-name" title="${this._escapeHtml(att.name)}">${this._escapeHtml(att.name)}</span>
+                <button type="button" class="chat-attachment-remove" data-remove-att="${i}" title="Remove file">✕</button>
+              </div>
+            `
+              )
+              .join("")}
+          </div>
+        `
+            : ""
+        }
         <div class="chat-input-bar">
+          <input type="file" id="chat-file-input" accept="image/*,.txt,.yaml,.yml,.json,.csv,.log,.svg" multiple style="display:none;" />
+          <button type="button" class="attach-btn" id="chat-attach-btn" title="Attach file or image" ${this._isSendingChat ? "disabled" : ""}>
+            <svg viewBox="0 0 24 24" style="width: 18px; height: 18px; fill: currentColor;">
+              <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5a2.5 2.5 0 0 1 5 0v10.5c0 .83-.67 1.5-1.5 1.5s-1.5-.67-1.5-1.5V6H9v9.5a3 3 0 0 0 6 0V5a4 4 0 0 0-8 0v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/>
+            </svg>
+          </button>
           <div class="chat-input-wrapper ${this._isListening ? "listening" : ""} ${this._isSendingChat ? "sending" : ""}">
             ${
               this._isListening
@@ -7244,11 +7463,25 @@ class OtisCompanionCard extends HTMLElement {
   _bindEvents() {
     const root = this.shadowRoot;
 
-    // Refresh button
-    const refreshBtn = root.querySelector("#refresh-btn");
-    if (refreshBtn) {
-      refreshBtn.onclick = () => this._fetchData();
-    }
+    // Header Action buttons
+    root.querySelectorAll("#refresh-btn").forEach((btn) => {
+      btn.onclick = () => this._fetchData();
+    });
+    root.querySelectorAll("#btn-open-rules").forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        this._rulesDraft = { ...(this._userRules || {}) };
+        this._rulesModalOpen = true;
+        this._render();
+      };
+    });
+    root.querySelectorAll("#btn-open-themes").forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        this._themeModalOpen = true;
+        this._render();
+      };
+    });
 
     // Weather & Calendar Glance Chips
     const glanceWeather = root.querySelector("#glance-weather");
@@ -7315,23 +7548,6 @@ class OtisCompanionCard extends HTMLElement {
 
     // Subview Launchpad
     root.querySelectorAll(".subview-chip").forEach((chip) => {
-      if (chip.id === "btn-open-rules") {
-        chip.onclick = (e) => {
-          e.stopPropagation();
-          this._rulesDraft = { ...(this._userRules || {}) };
-          this._rulesModalOpen = true;
-          this._render();
-        };
-        return;
-      }
-      if (chip.id === "btn-open-themes") {
-        chip.onclick = (e) => {
-          e.stopPropagation();
-          this._themeModalOpen = true;
-          this._render();
-        };
-        return;
-      }
       if (chip.id === "btn-sync-dashboards") {
         chip.onclick = async (e) => {
           e.stopPropagation();
@@ -8062,6 +8278,54 @@ class OtisCompanionCard extends HTMLElement {
           e.stopPropagation();
         }
         this._toggleVoiceRecording();
+      };
+    }
+
+    // Attachment button & file input
+    const attachBtn = root.querySelector("#chat-attach-btn");
+    const chatFileInput = root.querySelector("#chat-file-input");
+    if (attachBtn && chatFileInput) {
+      attachBtn.onclick = (e) => {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        chatFileInput.click();
+      };
+      chatFileInput.onchange = (e) => {
+        this._handleFilesSelected(e.target.files);
+        chatFileInput.value = "";
+      };
+    }
+
+    // Attachment removal
+    root.querySelectorAll(".chat-attachment-remove").forEach((btn) => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const idx = parseInt(btn.getAttribute("data-remove-att"), 10);
+        if (!isNaN(idx) && this._pendingAttachments) {
+          this._pendingAttachments.splice(idx, 1);
+          this._render();
+        }
+      };
+    });
+
+    // Drag-and-drop file upload on chat input wrapper
+    const chatWrapper = root.querySelector(".chat-input-wrapper");
+    if (chatWrapper) {
+      chatWrapper.ondragover = (e) => {
+        e.preventDefault();
+        chatWrapper.style.borderColor = "var(--otis-primary)";
+      };
+      chatWrapper.ondragleave = () => {
+        chatWrapper.style.borderColor = "";
+      };
+      chatWrapper.ondrop = (e) => {
+        e.preventDefault();
+        chatWrapper.style.borderColor = "";
+        if (e.dataTransfer && e.dataTransfer.files) {
+          this._handleFilesSelected(e.dataTransfer.files);
+        }
       };
     }
 
@@ -9569,7 +9833,7 @@ class OtisCompanionCard extends HTMLElement {
       };
     }
 
-    const fileInput = root.querySelector("#walkthrough-file-input");
+    const walkthroughFileInput = root.querySelector("#walkthrough-file-input");
     const dropzone = root.querySelector("#walkthrough-dropzone");
     const dropzoneText = root.querySelector("#dropzone-selected-filename");
     const submitBtn = root.querySelector("#btn-submit-walkthrough");
@@ -9581,7 +9845,7 @@ class OtisCompanionCard extends HTMLElement {
       };
     }
 
-    if (dropzone && fileInput) {
+    if (dropzone && walkthroughFileInput) {
       const updateSelectedFiles = (fileList) => {
         const files = Array.from(fileList || []);
         if (files.length === 0) return;
@@ -9596,7 +9860,7 @@ class OtisCompanionCard extends HTMLElement {
         if (submitBtn) submitBtn.disabled = false;
       };
 
-      dropzone.onclick = () => fileInput.click();
+      dropzone.onclick = () => walkthroughFileInput.click();
       dropzone.ondragover = (e) => {
         e.preventDefault();
         dropzone.classList.add("dragover");
@@ -9610,7 +9874,7 @@ class OtisCompanionCard extends HTMLElement {
         }
       };
 
-      fileInput.onchange = (e) => {
+      walkthroughFileInput.onchange = (e) => {
         if (e.target.files?.length > 0) {
           updateSelectedFiles(e.target.files);
         }

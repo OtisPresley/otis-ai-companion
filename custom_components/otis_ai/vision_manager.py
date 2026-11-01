@@ -17,6 +17,15 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er
 
+from .const import (
+    DOMAIN,
+    CONF_CAMERA_STREAM_STRATEGY,
+    CAMERA_STRATEGY_FRIGATE,
+    CAMERA_STRATEGY_FLUENT,
+    CAMERA_STRATEGY_CLEAR,
+    DEFAULT_CAMERA_STREAM_STRATEGY,
+)
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -36,28 +45,80 @@ def get_canonical_camera_key(eid: str) -> str:
         base = "front_doorbell" if "front" in base else "doorbell"
     elif "frontdoor" in base:
         base = "front_doorbell"
+    # Deduplicate duplicated prefixes like backyard_backyard -> backyard
+    parts = base.split("_")
+    if len(parts) == 2 and parts[0] == parts[1]:
+        base = parts[0]
     return base
 
 
-def stream_priority(eid: str, name: str) -> int:
-    """Score camera stream preference (0 = most preferred for live UI)."""
-    t = f"{eid.lower()} {name.lower()}"
-    # Prefer Clear / Main / High HD streams for crisp rendering
-    if "clear" in t or "main" in t or "high" in t:
-        return 0
-    # Secondary: standard stream without suffixes (e.g. camera.garage, camera.frontdoor)
-    if not any(k in t for k in ("snapshot", "map", "recording", "balanced", "_2", "_3", "fluent", "sub", "low")):
-        return 1
-    # Tertiary: Fluent / Sub streams if clear is not present
-    if "fluent" in t or "sub" in t or "low" in t:
-        return 2
-    if "balanced" in t:
+def stream_priority(
+    eid: str,
+    name: str = "",
+    strategy: str = DEFAULT_CAMERA_STREAM_STRATEGY,
+    platform: str | None = None,
+) -> int:
+    """Score camera stream preference (0 = most preferred for live UI).
+
+    Strategies:
+    - CAMERA_STRATEGY_FRIGATE ("frigate"): Prefer Frigate live streams for low-latency,
+      falling back to Fluent/Sub streams.
+    - CAMERA_STRATEGY_FLUENT ("fluent"): Prefer Fluent/Sub lightweight streams for
+      minimal resource/bandwidth consumption.
+    - CAMERA_STRATEGY_CLEAR ("clear"): Prefer Clear/Main/High HD streams for crisp rendering.
+    """
+    eid_lower = eid.lower()
+    name_lower = (name or "").lower()
+    t = f"{eid_lower} {name_lower}"
+    plat = (platform or "").lower()
+
+    # Drop snapshot entities, vacuum maps, faces, and license plate crops
+    if any(k in t for k in ("snapshot", "map", "recording", "face", "license_plate", "person_car")):
+        return 100
+
+    is_frigate = plat == "frigate" or "frigate" in eid_lower
+    is_fluent = any(k in t for k in ("fluent", "sub", "low", "balanced"))
+    is_clear = any(k in t for k in ("clear", "main", "high", "hd"))
+
+    if strategy == CAMERA_STRATEGY_FRIGATE:
+        # Frigate live streams are top priority
+        if is_frigate and not is_clear and not is_fluent:
+            return 0
+        if is_fluent:
+            return 1
+        if not is_clear:
+            return 2
         return 3
-    if "recording" in t:
-        return 4
-    if "snapshot" in t:
-        return 5
-    return 6
+
+    elif strategy == CAMERA_STRATEGY_CLEAR:
+        # Clear/HD streams are top priority
+        if is_clear:
+            return 0
+        if not is_fluent and not is_frigate:
+            return 1
+        if is_frigate:
+            return 2
+        return 3
+
+    elif strategy == CAMERA_STRATEGY_FLUENT:
+        # Direct Fluent/Sub is top priority
+        if is_fluent:
+            return 0
+        if is_frigate:
+            return 1
+        if not is_clear:
+            return 2
+        return 3
+
+    else:
+        # Default fallback: Direct Fluent/Sub priority
+        if is_fluent:
+            return 0
+        if is_frigate:
+            return 1
+        if not is_clear:
+            return 2
+        return 3
 
 
 class VisionPresenceManager:
@@ -71,6 +132,19 @@ class VisionPresenceManager:
         self._camera_audit_history: list[dict[str, Any]] = []
         self._presence_cache: dict[str, Any] = {}
         self._presence_cache_ts: float = 0.0
+
+    def get_camera_stream_strategy(self) -> str:
+        """Retrieve configured camera stream strategy from config entry."""
+        try:
+            if hasattr(self.hass, "data") and DOMAIN in self.hass.data:
+                for entry_val in self.hass.data[DOMAIN].values():
+                    if isinstance(entry_val, dict):
+                        data = entry_val.get("data", {})
+                        if CONF_CAMERA_STREAM_STRATEGY in data:
+                            return data[CONF_CAMERA_STREAM_STRATEGY]
+        except Exception:
+            pass
+        return DEFAULT_CAMERA_STREAM_STRATEGY
 
     def _build_entity_to_area_map(self) -> dict[str, str]:
         """Build mapping of entity_id -> area_id considering both entity and device registries."""
@@ -381,10 +455,20 @@ class VisionPresenceManager:
             camera_groups.setdefault(canonical_key, []).append((s, eid, name))
 
         cameras: list[dict[str, Any]] = []
+        strategy = self.get_camera_stream_strategy()
+        ent_platform_map: dict[str, str] = {}
+        if ent_reg and hasattr(ent_reg, "entities"):
+            for e_entry in ent_reg.entities.values():
+                ent_platform_map[e_entry.entity_id] = getattr(e_entry, "platform", "")
 
         for canonical_key, stream_list in camera_groups.items():
-            # Sort by stream priority to pick the stream that makes the most sense (fluent/sub first)
-            stream_list.sort(key=lambda item: stream_priority(item[1], item[2]))
+            # Sort by stream priority according to configured strategy
+            stream_list.sort(key=lambda item: stream_priority(
+                item[1],
+                item[2],
+                strategy=strategy,
+                platform=ent_platform_map.get(item[1]) or (getattr(item[0], "attributes", {}).get("platform") if hasattr(item[0], "attributes") else None),
+            ))
             best_s, best_eid, best_name = stream_list[0]
 
             area_id = entity_to_area.get(best_eid)
