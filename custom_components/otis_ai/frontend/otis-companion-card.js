@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.13";
+const CARD_VERSION = "0.1.14";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -5265,6 +5265,19 @@ class OtisCompanionCard extends HTMLElement {
   _renderChatActionButtons(m) {
     if (m.sender !== "otis" || m.isError) return "";
     const txt = m.text || "";
+    if (
+      txt.includes("Would you like me to update and deploy this blueprint") ||
+      txt.includes("Would you like me to update this blueprint") ||
+      txt.includes("Would you like me to create this blueprint") ||
+      (txt.includes("blueprint") && (txt.includes("Say 'yes' or 'apply'") || txt.includes("Say 'yes' or 'confirm'")))
+    ) {
+      return `
+        <div class="chat-macro-actions">
+          <button type="button" class="macro-action-btn confirm" data-chip="apply">🚀 Deploy & Update Blueprint</button>
+          <button type="button" class="macro-action-btn cancel" data-chip="cancel">✕ Cancel</button>
+        </div>
+      `;
+    }
     if (
       txt.includes("Would you like me to create and enable this automation") ||
       (txt.includes("automation") && (txt.includes("Say 'yes' or 'apply'") || txt.includes("Say 'yes' or 'confirm'")))

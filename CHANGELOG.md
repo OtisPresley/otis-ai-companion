@@ -7,6 +7,19 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.14] - 2026-11-01
+
+### Fixed & Improved
+- 📐 **Direct Blueprint Inspection, Editing & 1-Click Deployment (`automation_manager.py`, `__init__.py`, `otis-companion-card.js`)**:
+  - Added `async_write_blueprint` and `async_reload_blueprints` in `AutomationManager` giving Otis AI full filesystem access to update `/config/blueprints/automation/<path>`.
+  - Added blueprint YAML extraction (`type: "blueprint"`) and staging in `_extract_pending_items_from_speech`.
+  - Added 1-click `🚀 Deploy & Update Blueprint` action button in the Companion Card with autonomous confirmation handling.
+  - Enhanced system prompt across all model tiers explicitly noting full authority to update blueprints directly (preventing failover models from refusing to edit blueprints or attempting to unlink them into standalone automations).
+  - Grounded security prompt: explicitly noted perimeter locks (`lock.front_door`, `lock.back_door`, `lock.garage_door`) are WiFi Schlage Encode deadbolts running on native `schlage` integration (never Z-Wave).
+  - Bumped Companion Card version to v0.1.14.
+
+---
+
 ## [0.1.13] - 2026-11-01
 
 ### Fixed & Improved

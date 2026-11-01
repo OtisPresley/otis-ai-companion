@@ -4549,6 +4549,76 @@ class TestModernSectionsDashboardGeneration(unittest.TestCase):
         self.assertEqual(item["action_payload"]["pub_date"], "2026-10-07")
         self.assertTrue(item["id"].startswith("ha_news_release-202610_"))
 
+    def test_async_write_blueprint_and_reload(self):
+        """Test writing and reloading automation blueprints in AutomationManager."""
+        import yaml
+        from custom_components.otis_ai.automation_manager import AutomationManager
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            self.hass.config.path = lambda *args: os.path.join(tmp_dir, *args)
+            self.hass.async_add_executor_job = AsyncMock(side_effect=lambda func, *args: func(*args))
+            mgr = AutomationManager(self.hass)
+
+            bp_subpath = "lighting/test_adaptive_lighting.yaml"
+            bp_content = {
+                "blueprint": {
+                    "name": "Test Adaptive Lights",
+                    "domain": "automation",
+                    "input": {},
+                },
+                "mode": "single",
+                "trigger": [],
+                "action": [],
+            }
+
+            written_path = asyncio.run(mgr.async_write_blueprint(bp_subpath, bp_content))
+            self.assertEqual(written_path, bp_subpath)
+
+            full_path = os.path.join(tmp_dir, "blueprints", "automation", bp_subpath)
+            self.assertTrue(os.path.exists(full_path))
+
+            with open(full_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            self.assertEqual(data["blueprint"]["name"], "Test Adaptive Lights")
+
+            # Traversal attempt should raise ValueError
+            with self.assertRaises(ValueError):
+                asyncio.run(mgr.async_write_blueprint("../escaped.yaml", "bad"))
+
+    def test_extract_pending_blueprint_from_speech(self):
+        """Test extracting pending blueprint from model speech response."""
+        from custom_components.otis_ai import OtisAIConversationAgent
+
+        agent = OtisAIConversationAgent(self.hass, MagicMock(), MagicMock(), MagicMock())
+        speech = """Here is the corrected blueprint for `lighting/light_by_sun_elevation.yaml`:
+```yaml
+blueprint:
+  name: Adaptive Lights - Lighting Router Driven
+  domain: automation
+  input:
+    lights_primary:
+      selector:
+        target:
+          entity:
+            domain: light
+mode: single
+trigger:
+  - platform: numeric_state
+    entity_id: sun.sun
+    attribute: elevation
+    below: 5.0
+action:
+  - service: light.turn_on
+    target: !input lights_primary
+```
+"""
+        items, cleaned = agent._extract_pending_items_from_speech(speech, "Fix the blueprint for inside lights")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["type"], "blueprint")
+        self.assertEqual(items[0]["name"], "Adaptive Lights - Lighting Router Driven")
+        self.assertEqual(items[0]["path"], "lighting/light_by_sun_elevation.yaml")
+        self.assertIn("Would you like me to update and deploy this blueprint", cleaned)
+
 
 if __name__ == "__main__":
     unittest.main()

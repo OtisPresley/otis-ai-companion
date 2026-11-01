@@ -111,6 +111,31 @@ class AutomationManager:
         _LOGGER.debug("Updated script %s", script_key)
         await self.hass.async_add_executor_job(self._write_yaml_file, self.scripts_path, scripts)
 
+    async def async_write_blueprint(self, blueprint_subpath: str, blueprint_content: str | dict[str, Any]) -> str:
+        """Write or update a blueprint in /config/blueprints/automation/<blueprint_subpath>."""
+        if not hasattr(self.hass, "config") or not hasattr(self.hass.config, "path"):
+            raise ValueError("Home Assistant config path is not available")
+
+        # Sanitize path to prevent directory traversal
+        clean_subpath = os.path.normpath(blueprint_subpath.lstrip("/")).replace("\\", "/")
+        if clean_subpath.startswith("../") or clean_subpath.startswith("..") or clean_subpath.startswith("/"):
+            raise ValueError(f"Invalid blueprint path: {blueprint_subpath}")
+
+        bp_full_path = self.hass.config.path("blueprints", "automation", clean_subpath)
+
+        def _write_bp() -> None:
+            os.makedirs(os.path.dirname(bp_full_path), exist_ok=True)
+            if isinstance(blueprint_content, str):
+                with open(bp_full_path, "w", encoding="utf-8") as f:
+                    f.write(blueprint_content)
+            else:
+                with open(bp_full_path, "w", encoding="utf-8") as f:
+                    yaml.dump(blueprint_content, f, default_flow_style=False, sort_keys=False)
+
+        await self.hass.async_add_executor_job(_write_bp)
+        _LOGGER.info("Successfully wrote blueprint file: %s", bp_full_path)
+        return clean_subpath
+
     async def async_reload_automations(self) -> bool:
         """Trigger a reload of the automation integration."""
         _LOGGER.debug("Reloading Home Assistant automations...")
@@ -129,6 +154,17 @@ class AutomationManager:
             return True
         except Exception as err:
             _LOGGER.error("Failed to reload scripts: %s", err)
+            return False
+
+    async def async_reload_blueprints(self) -> bool:
+        """Trigger a reload of blueprints in Home Assistant."""
+        _LOGGER.debug("Reloading Home Assistant blueprints...")
+        try:
+            if self.hass.services.has_service("blueprint", "reload"):
+                await self.hass.services.async_call("blueprint", "reload")
+            return True
+        except Exception as err:
+            _LOGGER.debug("Blueprint reload service call note: %s", err)
             return False
 
     async def async_cross_reference(

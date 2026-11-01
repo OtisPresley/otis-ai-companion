@@ -2221,11 +2221,18 @@ class OtisAIConversationAgent(AbstractAgent):
         if not yaml_blocks:
             return [], speech_text
 
+        class _HALoader(yaml.SafeLoader):
+            pass
+
+        _HALoader.add_constructor("!input", lambda loader, node: f"!input {node.value}")
+        _HALoader.add_constructor("!secret", lambda loader, node: f"!secret {node.value}")
+        _HALoader.add_constructor("!include", lambda loader, node: f"!include {node.value}")
+
         pending_items: list[dict[str, Any]] = []
 
         for block in yaml_blocks:
             try:
-                parsed = yaml.safe_load(block)
+                parsed = yaml.load(block, Loader=_HALoader)
                 if not parsed:
                     continue
 
@@ -2265,6 +2272,30 @@ class OtisAIConversationAgent(AbstractAgent):
                         continue
 
                     inf_key = item.pop("_inferred_key", None)
+
+                    if "blueprint" in item:
+                        bp_meta = item.get("blueprint")
+                        bp_name = "Custom Blueprint"
+                        if isinstance(bp_meta, dict):
+                            bp_name = bp_meta.get("name") or bp_name
+                        elif isinstance(bp_meta, str):
+                            bp_name = bp_meta
+
+                        bp_path_match = re.search(r"(?:(?:blueprints/automation/|path:\s*|blueprint:\s*|blueprint(?:\s+file)?(?:\s+for)?\s*[`'\"]?)([\w/-]+\.ya?ml))", speech_text, re.IGNORECASE)
+                        if bp_path_match:
+                            bp_path = bp_path_match.group(1).strip()
+                        else:
+                            u_bp_match = re.search(r"([\w/-]+\.ya?ml)", user_text or "")
+                            bp_path = u_bp_match.group(1).strip() if u_bp_match else re.sub(r"\W+", "_", bp_name.lower()).strip("_") + ".yaml"
+
+                        pending_items.append({
+                            "type": "blueprint",
+                            "name": bp_name,
+                            "path": bp_path,
+                            "yaml_data": item,
+                            "raw_yaml": block.strip(),
+                        })
+                        continue
 
                     has_triggers = (
                         "trigger" in item
@@ -2336,6 +2367,8 @@ class OtisAIConversationAgent(AbstractAgent):
                 confirm_text = f"\n\nWould you like me to create and enable this automation '{pending_items[0]['name']}' in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
             elif len(pending_items) == 1 and pending_items[0]["type"] == "script":
                 confirm_text = f"\n\nWould you like me to create this script '{pending_items[0]['name']}' (`script.{pending_items[0]['id']}`) in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
+            elif len(pending_items) == 1 and pending_items[0]["type"] == "blueprint":
+                confirm_text = f"\n\nWould you like me to update and deploy this blueprint '{pending_items[0]['name']}' (`{pending_items[0]['path']}`) in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
             else:
                 confirm_text = f"\n\nWould you like me to create and configure these {len(pending_items)} items ({names_summary}) in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
 
@@ -2420,6 +2453,7 @@ class OtisAIConversationAgent(AbstractAgent):
                 try:
                     created_autos = []
                     created_scripts = []
+                    created_blueprints = []
                     for item in items:
                         if item.get("type") == "automation":
                             auto_id = await self.automation_manager.async_write_automation(item["yaml_data"])
@@ -2428,11 +2462,19 @@ class OtisAIConversationAgent(AbstractAgent):
                             s_key = item.get("id") or re.sub(r"\W+", "_", item["yaml_data"].get("alias", "custom_script").lower()).strip("_")
                             await self.automation_manager.async_write_script(s_key, item["yaml_data"])
                             created_scripts.append(item["yaml_data"].get("alias", s_key))
+                        elif item.get("type") == "blueprint":
+                            bp_path = item.get("path") or "custom_blueprint.yaml"
+                            content_to_write = item.get("raw_yaml") or item["yaml_data"]
+                            await self.automation_manager.async_write_blueprint(bp_path, content_to_write)
+                            created_blueprints.append(f"{item.get('name', 'Blueprint')} (`{bp_path}`)")
 
                     if created_autos:
                         await self.automation_manager.async_reload_automations()
                     if created_scripts:
                         await self.automation_manager.async_reload_scripts()
+                    if created_blueprints:
+                        await self.automation_manager.async_reload_blueprints()
+                        await self.automation_manager.async_reload_automations()
 
                     if hasattr(self.engine, "invalidate_cache") and callable(getattr(self.engine, "invalidate_cache", None)):
                         self.engine.invalidate_cache()
@@ -2441,8 +2483,12 @@ class OtisAIConversationAgent(AbstractAgent):
                         speech = f"I have successfully created and enabled the automation '{created_autos[0]}'!"
                     elif len(items) == 1 and created_scripts:
                         speech = f"I have successfully created the script '{created_scripts[0]}'!"
+                    elif len(items) == 1 and created_blueprints:
+                        speech = f"I have successfully updated and deployed the blueprint '{created_blueprints[0]}'!"
                     else:
                         parts = []
+                        if created_blueprints:
+                            parts.append(f"Blueprint(s): {', '.join(created_blueprints)}")
                         if created_scripts:
                             parts.append(f"Script(s): {', '.join(created_scripts)}")
                         if created_autos:
@@ -3221,8 +3267,8 @@ CONVERSATION DISCIPLINE & FOCUS:
 
 CRITICAL INSTRUCTIONS FOR AUTOMATIONS & SCRIPTS:
 1. Autonomous Co-Pilot Deployment & Offer:
-   - You are the active, fully integrated smart home co-pilot with autonomous deployment capability. Otis will automatically prompt the user with a 1-click button to deploy and enable any automation or script you propose.
-   - NEVER tell the user to manually edit or paste code into `automations.yaml`, `scripts.yaml`, or `configuration.yaml`.
+   - You are the active, fully integrated smart home co-pilot with autonomous deployment capability. Otis will automatically prompt the user with a 1-click button to deploy and enable any automation, script, or blueprint you propose.
+   - NEVER tell the user to manually edit or paste code into `automations.yaml`, `scripts.yaml`, blueprints, or `configuration.yaml`.
    - NEVER tell the user to "do it yourself", "open automations.yaml", "add this to your configuration", or "restart Home Assistant manually".
    - NEVER say "I cannot deploy automations" or claim you lack deployment capabilities. You CAN and DO deploy them via Otis's built-in deployment engine!
    - ALWAYS state that you have drafted the configuration and offer to deploy and enable it immediately for them.
@@ -3242,6 +3288,7 @@ CRITICAL INSTRUCTIONS FOR AUTOMATIONS & SCRIPTS:
 4. Reason deeply over the home's hardware topology:
    - When a Multi-Zone Matrix Amplifier (such as Control4) is present, audio is played on an upstream input streamer (`media_player.bridge`, Music Assistant) AND routed to output room zones via `media_player.select_source` + `media_player.volume_set`.
    - When designing security automations, coordinate `alarm_control_panel`, `lock.*`, `cover.*` garage doors, `siren.*`, and presence/occupancy sensors.
+   - Note that perimeter locks (`lock.front_door`, `lock.back_door`, `lock.garage_door`) are WiFi Schlage Encode deadbolts running on the native `schlage` integration (services `schlage.add_code` / `schlage.delete_code`). They are NOT Z-Wave. NEVER generate `zwave_js_notification` triggers for perimeter locks.
 
 5. Complete Spatial, Floor Level & Climate Grounding:
    - Check "Complete Area & Room Breakdown", "Discovered Climate & HVAC Architecture", and "Spatial Adjacency".
@@ -3249,12 +3296,12 @@ CRITICAL INSTRUCTIONS FOR AUTOMATIONS & SCRIPTS:
    - NEVER recommend creating or referencing non-existent room thermostats (such as `climate.guest_room`). The home operates on central dual-zone HVAC: Guest Room is upstairs and conditioned by `climate.upstairs`.
    - When analyzing whole-home modes (like `input_boolean.guest_mode`), inspect the real cross-referenced automations: lock codes ('Security: Manage Guest Lock Code'), bedtime lighting ('Lighting: Lights Off at Bed' using scheduled 22:00 trigger for guests who do not have SleepNumber bed occupancy sensors), and how climate handles absence of primary residents.
 
-6. Blueprint Automation Architecture Rules:
+6. Blueprint Automation Architecture & Direct Editing Rules:
    - When an automation uses blueprints (`use_blueprint:` with a blueprint path):
      * The automation's logic (triggers, conditions, sequences) lives in the blueprint file (`/config/blueprints/automation/<path>`), NOT in `automations.yaml`!
      * In `automations.yaml`, ONLY the blueprint input parameters (`input:`) can be configured.
      * NEVER inject top-level `triggers:`, `conditions:`, or `actions:` directly into a blueprint automation entry in `automations.yaml`—Home Assistant will reject it and fail setup.
-     * To modify logic for blueprint-backed automations, propose editing the blueprint YAML file itself, or propose unlinking it into a clean native standalone automation in GUI format!
+     * You have FULL ACCESS and authority to inspect and edit blueprint files directly (`/config/blueprints/automation/<path>`). When the user asks to analyze, fix, or update a blueprint, output the corrected blueprint YAML (starting with `blueprint:`) and specify the blueprint subpath! Otis will autonomously offer 1-click deployment to update the blueprint file directly in Home Assistant. Never claim you cannot edit blueprints, and never force unlinking into standalone automations unless the user explicitly requests to unlink it!
 
 7. Concise, Actionable Responses:
    - Keep conversational commentary brief. Present the GUI-ready YAML block cleanly and proactively conclude by offering to deploy and enable it for the user.
