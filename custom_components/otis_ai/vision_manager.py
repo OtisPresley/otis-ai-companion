@@ -20,10 +20,11 @@ from homeassistant.helpers import area_registry as ar, device_registry as dr, en
 from .const import (
     DOMAIN,
     CONF_CAMERA_STREAM_STRATEGY,
-    CAMERA_STRATEGY_FRIGATE,
-    CAMERA_STRATEGY_FLUENT,
-    CAMERA_STRATEGY_CLEAR,
+    CAMERA_STRATEGY_MANAGED_PROXY,
+    CAMERA_STRATEGY_HIGH_EFFICIENCY,
+    CAMERA_STRATEGY_HIGH_DEFINITION,
     DEFAULT_CAMERA_STREAM_STRATEGY,
+    CAMERA_STRATEGY_ALIASES,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ def get_canonical_camera_key(eid: str) -> str:
         "_snapshots_fluent", "_snapshots_clear", "_snapshots_sub", "_snapshots_main",
         "_snapshots", "_snapshot", "_fluent", "_clear", "_sub", "_main",
         "_balanced", "_recording", "_high", "_low", "_stream", "_live",
+        "_gateway", "_proxy", "_webrtc", "_rtc", "_cam", "_camera",
         "_2", "_3", "_4",
     ):
         if base.endswith(sfx):
@@ -57,66 +59,80 @@ def stream_priority(
     name: str = "",
     strategy: str = DEFAULT_CAMERA_STREAM_STRATEGY,
     platform: str | None = None,
+    is_managed_proxy: bool | None = None,
 ) -> int:
-    """Score camera stream preference (0 = most preferred for live UI).
+    """Score camera stream preference generically (0 = most preferred for live UI).
 
-    Strategies:
-    - CAMERA_STRATEGY_FRIGATE ("frigate"): Prefer Frigate live streams for low-latency,
-      falling back to Fluent/Sub streams.
-    - CAMERA_STRATEGY_FLUENT ("fluent"): Prefer Fluent/Sub lightweight streams for
-      minimal resource/bandwidth consumption.
-    - CAMERA_STRATEGY_CLEAR ("clear"): Prefer Clear/Main/High HD streams for crisp rendering.
+    Agnostic Strategies:
+    - CAMERA_STRATEGY_MANAGED_PROXY ("managed_proxy"): Prefer managed stream proxies
+      (NVRs, WebRTC gateways, stream proxies) for synchronized low latency, falling
+      back to high-efficiency sub-streams for unmanaged cameras.
+    - CAMERA_STRATEGY_HIGH_EFFICIENCY ("high_efficiency"): Prefer lightweight sub-streams
+      (sub, fluent, low, balanced, secondary) across all cameras to minimize browser lag
+      and bandwidth overhead.
+    - CAMERA_STRATEGY_HIGH_DEFINITION ("high_definition"): Prefer full-resolution main streams
+      (main, clear, high, primary, hd) across all cameras for maximum detail.
     """
     eid_lower = eid.lower()
     name_lower = (name or "").lower()
     t = f"{eid_lower} {name_lower}"
-    plat = (platform or "").lower()
 
     # Drop snapshot entities, vacuum maps, faces, and license plate crops
     if any(k in t for k in ("snapshot", "map", "recording", "face", "license_plate", "person_car")):
         return 100
 
-    is_frigate = plat == "frigate" or "frigate" in eid_lower
-    is_fluent = any(k in t for k in ("fluent", "sub", "low", "balanced"))
-    is_clear = any(k in t for k in ("clear", "main", "high", "hd"))
+    # Generic stream tier classification via standard RFC / RTSP stream terminology
+    is_substream = any(k in t for k in ("sub", "fluent", "low", "balanced", "secondary", "preview", "thumb"))
+    is_main_stream = any(k in t for k in ("main", "clear", "high", "primary", "hd", "full"))
 
-    if strategy == CAMERA_STRATEGY_FRIGATE:
-        # Frigate live streams are top priority
-        if is_frigate and not is_clear and not is_fluent:
+    # Generic managed proxy / gateway detection
+    if is_managed_proxy is None:
+        plat = (platform or "").lower()
+        is_managed_proxy = (
+            any(k in plat for k in ("proxy", "gateway", "webrtc", "nvr", "agent"))
+            or (not is_substream and not is_main_stream)
+        )
+
+    # Normalize strategy (handling legacy aliases)
+    norm_strategy = CAMERA_STRATEGY_ALIASES.get(strategy, strategy)
+
+    if norm_strategy == CAMERA_STRATEGY_MANAGED_PROXY:
+        # Managed proxy live streams are top priority
+        if is_managed_proxy and not is_main_stream and not is_substream:
             return 0
-        if is_fluent:
+        if is_substream:
             return 1
-        if not is_clear:
+        if not is_main_stream:
             return 2
         return 3
 
-    elif strategy == CAMERA_STRATEGY_CLEAR:
-        # Clear/HD streams are top priority
-        if is_clear:
+    elif norm_strategy == CAMERA_STRATEGY_HIGH_DEFINITION:
+        # Main / HD streams are top priority
+        if is_main_stream:
             return 0
-        if not is_fluent and not is_frigate:
+        if not is_substream and not is_managed_proxy:
             return 1
-        if is_frigate:
+        if is_managed_proxy:
             return 2
         return 3
 
-    elif strategy == CAMERA_STRATEGY_FLUENT:
-        # Direct Fluent/Sub is top priority
-        if is_fluent:
+    elif norm_strategy == CAMERA_STRATEGY_HIGH_EFFICIENCY:
+        # High efficiency sub-stream is top priority
+        if is_substream:
             return 0
-        if is_frigate:
+        if is_managed_proxy:
             return 1
-        if not is_clear:
+        if not is_main_stream:
             return 2
         return 3
 
     else:
-        # Default fallback: Direct Fluent/Sub priority
-        if is_fluent:
+        # Fallback to high-efficiency sub-stream priority
+        if is_substream:
             return 0
-        if is_frigate:
+        if is_managed_proxy:
             return 1
-        if not is_clear:
+        if not is_main_stream:
             return 2
         return 3
 
@@ -432,7 +448,14 @@ class VisionPresenceManager:
             pass
 
         all_states = self.hass.states.async_all() if hasattr(self.hass.states, "async_all") else []
-        VACUUM_MAP_KEYWORDS = ("map", "saved_map", "current_map", "cleaning_map", "vacuum")
+        VACUUM_MAP_KEYWORDS = ("map", "saved_map", "current_map", "cleaning_map", "vacuum", "floorplan")
+
+        # Discover devices in vacuum domain to filter out navigation/map cameras generically
+        vacuum_device_ids: set[str] = set()
+        if ent_reg and hasattr(ent_reg, "entities"):
+            for e_entry in ent_reg.entities.values():
+                if getattr(e_entry, "domain", None) == "vacuum" and getattr(e_entry, "device_id", None):
+                    vacuum_device_ids.add(e_entry.device_id)
 
         camera_groups: dict[str, list[tuple[Any, str, str]]] = {}
 
@@ -444,12 +467,15 @@ class VisionPresenceManager:
             name = s.attributes.get("friendly_name") or eid
             cam_lower = (eid + " " + name).lower()
 
-            # Skip vacuum cleaning maps and map data
+            # Skip vacuum cleaning maps and navigation map cameras generically
             if any(k in cam_lower for k in VACUUM_MAP_KEYWORDS):
                 continue
-            platform = str(s.attributes.get("platform") or "").lower()
-            if platform in ("roborock", "valetudo", "dreame", "ecovacs", "roomba", "xiaomi_miio"):
+            if s.attributes.get("device_class") == "map":
                 continue
+            if ent_reg and hasattr(ent_reg, "entities") and eid in ent_reg.entities:
+                entry = ent_reg.entities[eid]
+                if getattr(entry, "device_id", None) and entry.device_id in vacuum_device_ids:
+                    continue
 
             canonical_key = get_canonical_camera_key(eid)
             camera_groups.setdefault(canonical_key, []).append((s, eid, name))
@@ -555,7 +581,7 @@ class VisionPresenceManager:
         except Exception as img_err:
             _LOGGER.debug("Could not capture camera snapshot image: %s", img_err)
 
-        # 2. Inspect smart camera sensors in same area or prefix (Reolink, Protect, Frigate)
+        # 2. Inspect smart vision sensors in same area or prefix (AI object detection, perimeter alerts)
         detected_objects: list[str] = []
         is_doorbell = "doorbell" in cam_lower
         prefix = camera_entity_id.replace("camera.", "")

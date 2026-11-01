@@ -1,7 +1,7 @@
 """Constants for the Otis AI Companion integration."""
 
 DOMAIN = "otis_ai"
-INTEGRATION_VERSION = "0.1.4"
+INTEGRATION_VERSION = "0.1.5"
 
 # Configuration Keys
 CONF_CONVERSATION_AGENT = "conversation_agent"
@@ -13,11 +13,18 @@ CONF_LOCAL_LLM_MODEL = "local_llm_model"
 CONF_LOCAL_LLM_API_KEY = "local_llm_api_key"
 CONF_CAMERA_STREAM_STRATEGY = "camera_stream_strategy"
 
-# Camera Stream Strategy Options
-CAMERA_STRATEGY_FRIGATE = "frigate"
-CAMERA_STRATEGY_FLUENT = "fluent"
-CAMERA_STRATEGY_CLEAR = "clear"
-DEFAULT_CAMERA_STREAM_STRATEGY = CAMERA_STRATEGY_FRIGATE
+# Camera Stream Strategy Options (Agnostic stream classification)
+CAMERA_STRATEGY_MANAGED_PROXY = "managed_proxy"
+CAMERA_STRATEGY_HIGH_EFFICIENCY = "high_efficiency"
+CAMERA_STRATEGY_HIGH_DEFINITION = "high_definition"
+DEFAULT_CAMERA_STREAM_STRATEGY = CAMERA_STRATEGY_MANAGED_PROXY
+
+# Backward compatibility aliases for legacy strategy keys
+CAMERA_STRATEGY_ALIASES = {
+    "frigate": CAMERA_STRATEGY_MANAGED_PROXY,
+    "fluent": CAMERA_STRATEGY_HIGH_EFFICIENCY,
+    "clear": CAMERA_STRATEGY_HIGH_DEFINITION,
+}
 
 # Default Values
 DEFAULT_THEME_NAME = "ha_native"

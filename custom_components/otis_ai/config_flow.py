@@ -21,9 +21,9 @@ from .const import (
     CONF_LOCAL_LLM_URL,
     CONF_LOCAL_LLM_MODEL,
     CONF_CAMERA_STREAM_STRATEGY,
-    CAMERA_STRATEGY_FRIGATE,
-    CAMERA_STRATEGY_FLUENT,
-    CAMERA_STRATEGY_CLEAR,
+    CAMERA_STRATEGY_MANAGED_PROXY,
+    CAMERA_STRATEGY_HIGH_EFFICIENCY,
+    CAMERA_STRATEGY_HIGH_DEFINITION,
     DEFAULT_THEME_NAME,
     DEFAULT_SPATIAL_MAP_PATH,
     DEFAULT_LOCAL_LLM_URL,
@@ -279,9 +279,9 @@ class OtisAIOptionsFlowHandler(config_entries.OptionsFlow):
             ): selector({
                 "select": {
                     "options": [
-                        {"value": CAMERA_STRATEGY_FRIGATE, "label": "Frigate Preferred (Low-latency Frigate streams, fallback to Fluent/Sub)"},
-                        {"value": CAMERA_STRATEGY_FLUENT, "label": "Direct Fluent/Sub (High-efficiency lightweight streams across all cameras)"},
-                        {"value": CAMERA_STRATEGY_CLEAR, "label": "Direct Clear/HD (High-definition streams across all cameras)"},
+                        {"value": CAMERA_STRATEGY_MANAGED_PROXY, "label": "Managed Proxy / Gateway Preferred (Adaptive fallback to high-efficiency sub-stream)"},
+                        {"value": CAMERA_STRATEGY_HIGH_EFFICIENCY, "label": "High-Efficiency Sub-Stream (Sub/Fluent/Low across all cameras)"},
+                        {"value": CAMERA_STRATEGY_HIGH_DEFINITION, "label": "High-Definition Main Stream (Main/Clear/HD across all cameras)"},
                     ],
                     "mode": "dropdown",
                 }

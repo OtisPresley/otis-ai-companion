@@ -1867,7 +1867,7 @@ class DashboardManager:
             })
 
         # 6. Cameras (Filter out vacuum cleaning maps and deduplicate multi-stream RTSP cameras)
-        VACUUM_MAP_KEYWORDS = ("map", "saved_map", "current_map", "cleaning_map", "vacuum")
+        VACUUM_MAP_KEYWORDS = ("map", "saved_map", "current_map", "cleaning_map", "vacuum", "floorplan")
         raw_cameras = [e for e in active_entities if e.get("domain") == "camera"]
         camera_groups: dict[str, list[dict[str, Any]]] = {}
 
@@ -1875,10 +1875,10 @@ class DashboardManager:
             eid = c.get("entity_id", "").lower()
             name = str(c.get("name") or "").lower()
             combined = f"{eid} {name}"
-            # Skip vacuum map cameras
+            # Skip vacuum navigation map cameras generically
             if any(k in combined for k in VACUUM_MAP_KEYWORDS):
                 continue
-            if c.get("platform") in ("roborock", "valetudo", "dreame", "ecovacs", "roomba", "xiaomi_miio"):
+            if c.get("device_class") == "map":
                 continue
 
             # Group streams belonging to the same physical camera

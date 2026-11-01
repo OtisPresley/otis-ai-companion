@@ -267,13 +267,13 @@ class TestVisionPresenceManager(unittest.TestCase):
     @patch("custom_components.otis_ai.vision_manager.ar.async_get")
     @patch("custom_components.otis_ai.vision_manager.er.async_get")
     def test_camera_stream_strategies(self, mock_er, mock_ar):
-        """Test stream selection under Frigate, Fluent, and Clear strategies."""
+        """Test stream selection under Managed Proxy, High Efficiency, and High Definition strategies."""
         from custom_components.otis_ai.const import (
             DOMAIN,
             CONF_CAMERA_STREAM_STRATEGY,
-            CAMERA_STRATEGY_FRIGATE,
-            CAMERA_STRATEGY_FLUENT,
-            CAMERA_STRATEGY_CLEAR,
+            CAMERA_STRATEGY_MANAGED_PROXY,
+            CAMERA_STRATEGY_HIGH_EFFICIENCY,
+            CAMERA_STRATEGY_HIGH_DEFINITION,
         )
 
         area_reg = MagicMock()
@@ -281,47 +281,53 @@ class TestVisionPresenceManager(unittest.TestCase):
         mock_ar.return_value = area_reg
 
         ent_reg = MagicMock()
-        ent_entry_frigate = MockEntityEntry("camera.kitchen_2", "kitchen")
-        ent_entry_frigate.platform = "frigate"
+        ent_entry_proxy = MockEntityEntry("camera.kitchen_gateway", "kitchen")
+        ent_entry_proxy.platform = "webrtc_proxy"
         ent_entry_fluent = MockEntityEntry("camera.kitchen_fluent", "kitchen")
-        ent_entry_fluent.platform = "reolink"
+        ent_entry_fluent.platform = "hardware_cam"
         ent_entry_clear = MockEntityEntry("camera.kitchen_clear", "kitchen")
-        ent_entry_clear.platform = "reolink"
+        ent_entry_clear.platform = "hardware_cam"
 
         ent_reg.entities = {
-            "camera.kitchen_2": ent_entry_frigate,
+            "camera.kitchen_gateway": ent_entry_proxy,
             "camera.kitchen_fluent": ent_entry_fluent,
             "camera.kitchen_clear": ent_entry_clear,
         }
         mock_er.return_value = ent_reg
 
         states = [
-            MockEntityState("camera.kitchen_2", "idle", {"friendly_name": "Kitchen Frigate", "platform": "frigate"}),
-            MockEntityState("camera.kitchen_fluent", "idle", {"friendly_name": "Fluent", "platform": "reolink"}),
-            MockEntityState("camera.kitchen_clear", "idle", {"friendly_name": "Clear", "platform": "reolink"}),
+            MockEntityState("camera.kitchen_gateway", "idle", {"friendly_name": "Kitchen Gateway", "platform": "webrtc_proxy"}),
+            MockEntityState("camera.kitchen_fluent", "idle", {"friendly_name": "Fluent", "platform": "hardware_cam"}),
+            MockEntityState("camera.kitchen_clear", "idle", {"friendly_name": "Clear", "platform": "hardware_cam"}),
         ]
         self.hass.states.async_all.return_value = states
 
-        # 1. Strategy = FRIGATE (Frigate stream preferred)
-        self.hass.data = {DOMAIN: {"entry_1": {"data": {CONF_CAMERA_STREAM_STRATEGY: CAMERA_STRATEGY_FRIGATE}}}}
-        mgr_frigate = VisionPresenceManager(self.hass)
-        cams_frigate = asyncio.run(mgr_frigate.async_get_cameras())
-        self.assertEqual(len(cams_frigate), 1)
-        self.assertEqual(cams_frigate[0]["entity_id"], "camera.kitchen_2")
+        # 1. Strategy = MANAGED_PROXY (Managed stream preferred)
+        self.hass.data = {DOMAIN: {"entry_1": {"data": {CONF_CAMERA_STREAM_STRATEGY: CAMERA_STRATEGY_MANAGED_PROXY}}}}
+        mgr_proxy = VisionPresenceManager(self.hass)
+        cams_proxy = asyncio.run(mgr_proxy.async_get_cameras())
+        self.assertEqual(len(cams_proxy), 1)
+        self.assertEqual(cams_proxy[0]["entity_id"], "camera.kitchen_gateway")
 
-        # 2. Strategy = FLUENT (Direct lightweight stream preferred)
-        self.hass.data = {DOMAIN: {"entry_1": {"data": {CONF_CAMERA_STREAM_STRATEGY: CAMERA_STRATEGY_FLUENT}}}}
+        # 2. Strategy = HIGH_EFFICIENCY (Direct lightweight stream preferred)
+        self.hass.data = {DOMAIN: {"entry_1": {"data": {CONF_CAMERA_STREAM_STRATEGY: CAMERA_STRATEGY_HIGH_EFFICIENCY}}}}
         mgr_fluent = VisionPresenceManager(self.hass)
         cams_fluent = asyncio.run(mgr_fluent.async_get_cameras())
         self.assertEqual(len(cams_fluent), 1)
         self.assertEqual(cams_fluent[0]["entity_id"], "camera.kitchen_fluent")
 
-        # 3. Strategy = CLEAR (Direct HD stream preferred)
-        self.hass.data = {DOMAIN: {"entry_1": {"data": {CONF_CAMERA_STREAM_STRATEGY: CAMERA_STRATEGY_CLEAR}}}}
+        # 3. Strategy = HIGH_DEFINITION (Direct HD stream preferred)
+        self.hass.data = {DOMAIN: {"entry_1": {"data": {CONF_CAMERA_STREAM_STRATEGY: CAMERA_STRATEGY_HIGH_DEFINITION}}}}
         mgr_clear = VisionPresenceManager(self.hass)
         cams_clear = asyncio.run(mgr_clear.async_get_cameras())
         self.assertEqual(len(cams_clear), 1)
         self.assertEqual(cams_clear[0]["entity_id"], "camera.kitchen_clear")
+
+        # 4. Legacy alias backwards compatibility ("frigate" -> MANAGED_PROXY)
+        self.hass.data = {DOMAIN: {"entry_1": {"data": {CONF_CAMERA_STREAM_STRATEGY: "frigate"}}}}
+        mgr_legacy = VisionPresenceManager(self.hass)
+        cams_legacy = asyncio.run(mgr_legacy.async_get_cameras())
+        self.assertEqual(cams_legacy[0]["entity_id"], "camera.kitchen_gateway")
 
 
 if __name__ == "__main__":
