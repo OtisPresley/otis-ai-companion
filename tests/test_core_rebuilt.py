@@ -4246,6 +4246,142 @@ class TestModernSectionsDashboardGeneration(unittest.TestCase):
         resolved = mgr._resolve_key_with_synonyms("guest_room", norm_map)
         self.assertEqual(resolved, "area_guest_bedroom_id")
 
+    def test_classify_area_floor(self):
+        """Test accurate classification of rooms into Upper Floor, Ground Floor, and Outdoor."""
+        from custom_components.otis_ai import classify_area_floor
+
+        self.assertEqual(classify_area_floor("guest_room", "Guest Room"), "Upper Floor")
+        self.assertEqual(classify_area_floor("master", "Master Bedroom"), "Upper Floor")
+        self.assertEqual(classify_area_floor("gym", "Gym"), "Upper Floor")
+        self.assertEqual(classify_area_floor("theater", "Theater"), "Upper Floor")
+        self.assertEqual(classify_area_floor("study", "Study"), "Upper Floor")
+        self.assertEqual(classify_area_floor("hallway", "Hallway"), "Upper Floor")
+
+        self.assertEqual(classify_area_floor("great_room", "Great Room"), "Ground Floor")
+        self.assertEqual(classify_area_floor("foyer", "Foyer"), "Ground Floor")
+        self.assertEqual(classify_area_floor("dining_room", "Dining Room"), "Ground Floor")
+        self.assertEqual(classify_area_floor("downstairs_bath", "Downstairs Bath"), "Ground Floor")
+        self.assertEqual(classify_area_floor("mudroom", "Mudroom"), "Ground Floor")
+
+        self.assertEqual(classify_area_floor("backyard", "Backyard"), "Outdoor")
+        self.assertEqual(classify_area_floor("pool", "Swimming Pool"), "Outdoor")
+
+    def test_central_dual_zone_climate_topology(self):
+        """Test discovery of dual-zone HVAC correctly maps Upper Floor to climate.upstairs and Ground Floor to climate.downstairs."""
+        from custom_components.otis_ai import DiscoveryEngine
+
+        areas_map = {
+            "guest_room": {"name": "Guest Room", "entities": ["light.guest_lamp"]},
+            "master": {"name": "Master", "entities": ["light.master_overhead"]},
+            "great_room": {"name": "Great Room", "entities": ["light.great_room_chandeliers"]},
+            "downstairs_bath": {"name": "Downstairs Bath", "entities": ["light.downstairs_bath_vanity"]},
+            "backyard": {"name": "Backyard", "entities": []},
+        }
+
+        entities_list = [
+            {"entity_id": "climate.downstairs", "domain": "climate", "name": "Downstairs Thermostat"},
+            {"entity_id": "climate.upstairs", "domain": "climate", "name": "Upstairs Thermostat"},
+            {"entity_id": "climate.spa_thermostat", "domain": "climate", "name": "Spa Thermostat"},
+        ]
+
+        class MockClimateState:
+            def __init__(self, state, attrs):
+                self.state = state
+                self.attributes = attrs
+
+        self.hass.states.get = MagicMock(side_effect=lambda eid: {
+            "climate.downstairs": MockClimateState("heat_cool", {"current_temperature": 70, "temperature": 70, "friendly_name": "Thermostat Downstairs"}),
+            "climate.upstairs": MockClimateState("heat_cool", {"current_temperature": 68, "temperature": 69, "friendly_name": "Thermostat Upstairs"}),
+            "climate.spa_thermostat": MockClimateState("off", {"current_temperature": 85, "temperature": 100, "friendly_name": "Spa Thermostat"}),
+        }.get(eid))
+
+        engine = DiscoveryEngine(self.hass)
+        topo = engine._discover_climate_topology(areas_map, entities_list)
+
+        self.assertEqual(topo["architecture_type"], "Central Dual-Zone HVAC (Downstairs & Upstairs)")
+        self.assertEqual(topo["upstairs_thermostat"], "climate.upstairs")
+        self.assertEqual(topo["downstairs_thermostat"], "climate.downstairs")
+
+        # Verify Upper Floor rooms map to climate.upstairs
+        self.assertEqual(topo["area_to_thermostat"].get("guest_room"), "climate.upstairs")
+        self.assertEqual(topo["area_to_thermostat"].get("master"), "climate.upstairs")
+
+        # Verify Ground Floor rooms map to climate.downstairs
+        self.assertEqual(topo["area_to_thermostat"].get("great_room"), "climate.downstairs")
+        self.assertEqual(topo["area_to_thermostat"].get("downstairs_bath"), "climate.downstairs")
+
+        # Verify Outdoor area does not map to space thermostat
+        self.assertIsNone(topo["area_to_thermostat"].get("backyard"))
+
+        # Verify spa thermostat is classified as equipment
+        spa_t = next(t for t in topo["equipment_thermostats"] if t["entity_id"] == "climate.spa_thermostat")
+        self.assertTrue(spa_t["is_equipment"])
+
+    def test_get_agent_display_name(self):
+        """Test resolving user-friendly agent names from ID."""
+        from custom_components.otis_ai import get_agent_display_name
+
+        self.assertEqual(get_agent_display_name(self.hass, "conversation.google_generative_ai"), "Google Generative Ai")
+        self.assertEqual(get_agent_display_name(self.hass, "conversation.openrouter"), "Openrouter")
+        self.assertEqual(get_agent_display_name(self.hass, None), "Default Agent")
+
+    def test_sanitize_model_speech_and_tool_call_leak_detection(self):
+        """Test that raw tool call tags and think tags are stripped and trigger provider error detection."""
+        from custom_components.otis_ai import sanitize_model_speech, is_provider_error
+
+        leaked_dsml = (
+            "<tool_call>assistHomeAssistantGetLiveContext\n"
+            "<_observation>\n"
+            "</think><tool_call>assistHomeAssistantGetLiveContext<param_key>domain</param_key><param_value>[\"input_boolean\"]</param_value></tool_call>\n"
+            "<tool_call>\n"
+            "< | DSML | |tool_calls>\n"
+            "< | DSML | invoke name=\"assistantIntentHassTurnOn\">\n"
+            "< | DSML | parameter name=\"device_class\"></tool_call>"
+        )
+
+        self.assertTrue(is_provider_error(leaked_dsml))
+
+        mixed_speech = "<think>Let me reason about this.</think>Here is the plan for your automations."
+        cleaned = sanitize_model_speech(mixed_speech)
+        self.assertEqual(cleaned, "Here is the plan for your automations.")
+        self.assertFalse(is_provider_error(cleaned))
+
+    def test_blueprint_recommendation_and_guest_mode_climate(self):
+        """Test detection of invalid blueprint top-level injections and guest mode climate recommendations."""
+        import tempfile
+        import os
+        import yaml
+        from custom_components.otis_ai import DiscoveryEngine
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            self.hass.config.path = lambda *parts: os.path.join(tmp_dir, *parts)
+            auto_path = os.path.join(tmp_dir, "automations.yaml")
+
+            # Automation with invalid blueprint top-level condition
+            test_autos = [
+                {
+                    "id": "1645487876943",
+                    "alias": "Lighting: Lights Off at Bed",
+                    "use_blueprint": {"path": "homeassistant/motion_light.yaml"},
+                    "condition": [{"choose": []}],  # Invalid injection
+                },
+                {
+                    "id": "1785987345678",
+                    "alias": "Security: Manage Guest Lock Code",
+                    "trigger": [{"platform": "state", "entity_id": "input_boolean.guest_mode"}],
+                    "action": [{"service": "lock.set_usercode"}],
+                }
+            ]
+            with open(auto_path, "w", encoding="utf-8") as f:
+                yaml.dump(test_autos, f)
+
+            engine = DiscoveryEngine(self.hass)
+            audit = engine._inspect_config_files_sync(active_entity_ids={"input_boolean.guest_mode", "climate.upstairs"})
+
+            sugg_ids = [s["id"] for s in audit.get("improvement_suggestions", [])]
+            self.assertIn("fix_blueprint_top_level_1645487876943", sugg_ids)
+            self.assertIn("link_guest_mode_climate_comfort", sugg_ids)
+
 
 if __name__ == "__main__":
     unittest.main()

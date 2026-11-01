@@ -803,7 +803,7 @@ benchmark_local_llm:
 
 pull_local_llm_model:
   name: Pull Local LLM Model
-  description: Pull and download a local LLM model (such as qwen2.5:3b or qwen2.5:7b) onto the local Ollama instance.
+  description: Pull and download a local LLM model (such as qwen2.5:3b or qwen2.5:7b) onto the local Ollama instance, test it, and set as active model.
   fields:
     model:
       name: Model Name
@@ -819,6 +819,21 @@ pull_local_llm_model:
       example: "http://10.0.12.228:11434"
       selector:
         text:
+    test_after_pull:
+      name: Test Model After Pull
+      description: Automatically benchmark/test the pulled model to verify health before activation (defaults to true).
+      required: false
+      default: true
+      selector:
+        boolean:
+    set_as_active:
+      name: Set as Active in Options
+      description: Automatically update integration options to activate the new model upon successful pull and test (defaults to true).
+      required: false
+      default: true
+      selector:
+        boolean:
+
 
 
 

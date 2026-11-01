@@ -132,6 +132,43 @@ _LOGGER = logging.getLogger(__name__)
 CONFIG_SCHEMA = cv.empty_config_schema(DOMAIN)
 
 
+def classify_area_floor(area_id: str, area_name: str) -> str:
+    """Classify an area into 'Upper Floor', 'Ground Floor', or 'Outdoor'."""
+    text = f"{area_id} {area_name}".lower()
+    if any(k in text for k in ("backyard", "frontyard", "pool", "patio", "deck", "porch", "yard", "driveway", "garden", "exterior", "lawn")):
+        return "Outdoor"
+    if any(k in text for k in ("downstairs", "ground", "lower", "1st", "foyer", "garage", "mudroom", "kitchen", "dining", "great_room", "living")):
+        return "Ground Floor"
+    if any(k in text for k in ("upstairs", "upper", "second", "2nd", "attic", "loft", "master", "guest", "theater", "gym", "office", "study")):
+        return "Upper Floor"
+    if "hallway" in text:
+        return "Upper Floor"
+    return "Ground Floor"
+
+
+def get_agent_display_name(hass: HomeAssistant, agent_id: str | None) -> str:
+    """Resolve a user-friendly display name for a conversation agent ID."""
+    if not agent_id:
+        return "Default Agent"
+    from .config_flow import _get_agents
+    try:
+        agents = _get_agents(hass)
+        for a in agents:
+            if getattr(a, "id", None) == agent_id:
+                return getattr(a, "name", str(a))
+    except Exception:
+        pass
+    if agent_id.startswith("conversation."):
+        part = agent_id.split(".", 1)[1]
+        return part.replace("_", " ").title()
+    if hass and hasattr(hass, "config_entries"):
+        c_entry = hass.config_entries.async_get_entry(agent_id)
+        if c_entry:
+            return c_entry.title
+    return agent_id
+
+
+
 class OtisWalkthroughUploadView(HomeAssistantView):
     """HTTP view to accept video walkthrough uploads and trigger floor plan parsing."""
 
@@ -1016,10 +1053,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             or entry.data.get(CONF_REASONING_TIMEOUT)
             or DEFAULT_REASONING_TIMEOUT
         )
+        sessions = hass.data.get(DOMAIN, {}).get("sessions", {})
+        session_info = sessions.get(ret_conv_id or conv_id, {})
+        resolved_agent = session_info.get("last_resolved_agent") or "Primary Cloud AI"
+        failover_occurred = session_info.get("last_failover_occurred", False)
+
         return {
             "response": speech or "I didn't receive a response from the agent.",
             "conversation_id": ret_conv_id,
             "reasoning_timeout": r_timeout,
+            "resolved_agent": resolved_agent,
+            "failover_occurred": failover_occurred,
         }
 
     async def handle_get_spatial_map(call) -> ServiceResponse:
@@ -1600,6 +1644,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         updated = await rm.async_save(rules_payload)
         if hasattr(eng, "invalidate_cache"):
             eng.invalidate_cache()
+        if hasattr(hass, "bus") and hasattr(hass.bus, "async_fire"):
+            try:
+                hass.bus.async_fire("otis_ai_rules_updated", {"rules": updated})
+            except Exception:
+                pass
         if dm and hasattr(dm, "async_ensure_user_command_center_dashboard"):
             try:
                 cap_map = await eng.async_build_capability_map() if hasattr(eng, "async_build_capability_map") else None
@@ -1664,13 +1713,41 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return await llm_mgr.async_benchmark(prompt, model=model)
 
     async def handle_pull_local_llm(call) -> ServiceResponse:
-        """Handle service call to pull an edge model onto the local Ollama instance."""
+        """Handle service call to pull an edge model onto the local Ollama instance, test it, and update options."""
         _LOGGER.debug("Service 'pull_local_llm_model' triggered with: %s", call.data)
         entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
         llm_mgr = entry_store.get("local_llm_manager", local_llm_manager)
         model_name = call.data.get("model") or "qwen2.5:3b"
         target_url = call.data.get("url")
-        return await llm_mgr.async_pull_model(model_name, target_url=target_url)
+        test_after_pull = call.data.get("test_after_pull", True)
+        set_as_active = call.data.get("set_as_active", True)
+
+        pull_res = await llm_mgr.async_pull_model(model_name, target_url=target_url)
+        if not pull_res.get("success"):
+            return pull_res
+
+        test_res = None
+        if test_after_pull:
+            _LOGGER.info("Testing and benchmarking newly pulled model '%s'...", model_name)
+            test_res = await llm_mgr.async_benchmark(model=model_name)
+            pull_res["tested"] = bool(test_res.get("success"))
+            pull_res["benchmark"] = test_res
+
+        # If test was skipped or succeeded, and set_as_active is requested:
+        test_ok = (not test_after_pull) or (test_res and test_res.get("success"))
+        if set_as_active and test_ok:
+            _LOGGER.info("Setting newly verified local model '%s' as active in integration options", model_name)
+            llm_mgr.model = model_name
+            new_options = dict(entry.options)
+            new_options[CONF_LOCAL_LLM_MODEL] = model_name
+            hass.config_entries.async_update_entry(entry, options=new_options)
+            pull_res["options_updated"] = True
+            pull_res["active_model"] = model_name
+        else:
+            pull_res["options_updated"] = False
+            pull_res["active_model"] = llm_mgr.model
+
+        return pull_res
 
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
@@ -2722,17 +2799,27 @@ class OtisAIConversationAgent(AbstractAgent):
         # Summarize discovered Climate & HVAC topology
         climate_topo = capability_map.get("climate_topology", {})
         thermostats = climate_topo.get("thermostats", [])
+        arch_type = climate_topo.get("architecture_type", "Central Dual-Zone HVAC")
         if thermostats:
-            climate_lines = []
+            climate_lines = [
+                f"  • HVAC Architecture: {arch_type}",
+            ]
             for t in thermostats:
                 cur_t = f"{t.get('current_temperature')}°F" if t.get('current_temperature') is not None else "N/A"
                 tgt_t = f"{t.get('target_temperature')}°F" if t.get('target_temperature') is not None else ""
                 if not tgt_t and t.get("target_temp_low") is not None:
                     tgt_t = f"{t.get('target_temp_low')}°F - {t.get('target_temp_high')}°F"
                 target_str = f", target {tgt_t}" if tgt_t else ""
+                scope_str = f" [{t.get('zone_scope')}]" if t.get("zone_scope") else ""
                 climate_lines.append(
-                    f"  • {t['entity_id']} ('{t['name']}') in {t['area_name']} | state: {t['state']}{target_str} (current {cur_t})"
+                    f"  • {t['entity_id']} ('{t['name']}'){scope_str} in {t['area_name']} | state: {t['state']}{target_str} (current {cur_t})"
                 )
+            climate_lines.append(
+                "  • IMPORTANT HVAC RULE: Climate is controlled by whole-home dual zone thermostats "
+                "('climate.downstairs' for Ground Floor areas, 'climate.upstairs' for Upper Floor areas: Guest Room, Master, Gym, Study, Theater). "
+                "There are NO individual room thermostats (do NOT invent or reference 'climate.guest_room'). "
+                "Automations 'Climate: Thermostat Downstairs' and 'Climate: Thermostat Upstairs' drive the setpoints centrally using occupancy and sleep sensors."
+            )
             climate_summary = "\n".join(climate_lines)
         else:
             climate_summary = "  • No dedicated climate/thermostat entities detected."
@@ -2765,19 +2852,21 @@ class OtisAIConversationAgent(AbstractAgent):
         # Complete Area & Room Breakdown (Mapping rooms -> spatial connections, climate, devices, sensors)
         area_breakdown_lines = []
         area_to_thermo = climate_topo.get("area_to_thermostat", {})
+        area_to_floor = climate_topo.get("area_to_floor", {})
         primary_thermo = climate_topo.get("primary_thermostat")
 
         for aid, adata in sorted(capability_map.get("areas", {}).items(), key=lambda x: x[1].get("name", x[0])):
             aname = adata.get("name", aid)
             a_entities = adata.get("entities", [])
+            floor_str = area_to_floor.get(aid, "Ground Floor")
             
             room_thermo = area_to_thermo.get(aid)
             if room_thermo:
                 climate_str = f"Thermostat: {room_thermo}"
-            elif primary_thermo:
+            elif primary_thermo and floor_str != "Outdoor":
                 climate_str = f"Climate: Covered by primary thermostat ({primary_thermo})"
             else:
-                climate_str = "Climate: None assigned"
+                climate_str = "Climate: None (Outdoor/Unconditioned)"
 
             detailed_nbrs = named_adj_detailed.get(aname, [])
             if detailed_nbrs:
@@ -2793,7 +2882,7 @@ class OtisAIConversationAgent(AbstractAgent):
             a_sensors = [e for e in a_entities if e.startswith("binary_sensor.") and any(k in e for k in ("motion", "occupancy", "presence", "door", "contact", "window"))]
             a_other_controls = [e for e in a_entities if any(e.startswith(p) for p in ("lock.", "cover.", "switch.", "fan.", "vacuum."))]
 
-            entry_parts = [f"• **{aname}** (`{aid}`) | {adj_desc} | {climate_str}"]
+            entry_parts = [f"• **{aname}** (`{aid}`) | Floor: {floor_str} | {adj_desc} | {climate_str}"]
             if a_lights:
                 entry_parts.append(f"    - Lights: {', '.join(a_lights[:4])}")
             if a_media:
@@ -2915,6 +3004,10 @@ class OtisAIConversationAgent(AbstractAgent):
                     ]
                     for m in matches:
                         lines.append(f"\n--- # {m['type'].upper()}: {m['name']} (ID: {m['id']})\n{m['yaml']}")
+                    if related.get("recent_log_errors"):
+                        lines.append("\nRECENT HOME ASSISTANT SYSTEM & AUTOMATION LOG ERRORS:")
+                        for err in related["recent_log_errors"]:
+                            lines.append(f"• {err}")
                     matched_yaml_context = "\n".join(lines) + "\n\n"
                     _LOGGER.info("Injected %d cross-referenced automation/script YAML blocks into conversation prompt", len(matches))
             except Exception as cr_err:
@@ -2962,11 +3055,19 @@ Instructions for Automations & Scripts:
 2. Reason deeply over the home's hardware topology:
    - When a Multi-Zone Matrix Amplifier (such as Control4) is present, audio is played on an upstream input streamer (`media_player.bridge`, Music Assistant) AND routed to output room zones via `media_player.select_source` + `media_player.volume_set`.
    - When designing security automations, coordinate `alarm_control_panel`, `lock.*`, `cover.*` garage doors, `siren.*`, and presence/occupancy sensors.
-3. Complete Spatial, Climate & Room Grounding:
+3. Complete Spatial, Floor Level & Climate Grounding:
    - When asked where a room is, how it is connected, or which thermostat/devices control it:
      * Check "Complete Area & Room Breakdown", "Discovered Climate & HVAC Architecture", and "Spatial Adjacency".
-     * Always accurately identify room locations, adjacent rooms (and door vs open connections), and corresponding thermostats and devices without hallucination!
-4. Keep your responses concise, structured, and actionable.
+     * Always accurately identify room locations, floor levels (Upper Floor vs Ground Floor), adjacent rooms (and door vs open connections), and corresponding zone thermostats without hallucination!
+     * NEVER recommend creating or referencing non-existent room thermostats (such as `climate.guest_room`). The home operates on central dual-zone HVAC: Guest Room is upstairs and conditioned by `climate.upstairs`.
+     * When analyzing whole-home modes (like `input_boolean.guest_mode`), inspect the real cross-referenced automations: lock codes ('Security: Manage Guest Lock Code'), bedtime lighting ('Lighting: Lights Off at Bed' using scheduled 22:00 trigger for guests who do not have SleepNumber bed occupancy sensors), and how climate handles absence of primary residents.
+4. Blueprint Automation Architecture Rules:
+   - When an automation uses blueprints (`use_blueprint:` with a blueprint path):
+     * The automation's logic (triggers, conditions, sequences) lives in the blueprint file (`/config/blueprints/automation/<path>`), NOT in `automations.yaml`!
+     * In `automations.yaml`, ONLY the blueprint input parameters (`input:`) can be configured.
+     * NEVER inject top-level `triggers:`, `conditions:`, or `actions:` directly into a blueprint automation entry in `automations.yaml`—Home Assistant will reject it and fail setup.
+     * To modify logic for blueprint-backed automations, propose editing the blueprint YAML file itself, or propose unlinking it into a clean native standalone automation in `automations.yaml`!
+5. Keep your responses concise, structured, and actionable.
 
 User: {user_input.text}
 """
@@ -2974,13 +3075,17 @@ User: {user_input.text}
         # 4. Delegate to prioritized AI agent pool first (e.g. Gemini 2.5 Flash, OpenRouter)
         result = None
         last_error_msg = None
+        resolved_agent_name = None
+        resolved_agent_id = None
+        failover_occurred = False
 
         if prioritized_agents:
             for idx, agent_id in enumerate(prioritized_agents):
                 is_primary = (idx == 0)
                 role_label = "Primary" if is_primary else f"Failover #{idx}"
-                _LOGGER.debug("Attempting conversation with %s AI agent: %s (timeout=%ss)", role_label, agent_id, reasoning_timeout)
-                fire_progress("llm", f"Consulting {role_label} AI", f"Reasoning with model '{agent_id}' (max {int(reasoning_timeout)}s)")
+                agent_display = get_agent_display_name(self.hass, agent_id)
+                _LOGGER.debug("Attempting conversation with %s AI agent: %s (%s, timeout=%ss)", role_label, agent_display, agent_id, reasoning_timeout)
+                fire_progress("llm", f"Consulting {role_label} AI ({agent_display})", f"Reasoning with model '{agent_display}' (max {int(reasoning_timeout)}s)")
 
                 try:
                     converse_coro = conversation.async_converse(
@@ -2995,53 +3100,70 @@ User: {user_input.text}
                     attempt_result = await asyncio.wait_for(converse_coro, timeout=reasoning_timeout)
 
                     resp_type = getattr(attempt_result.response, "response_type", None)
-                    speech_text = attempt_result.response.speech.get("plain", {}).get("speech", "")
+                    raw_speech = attempt_result.response.speech.get("plain", {}).get("speech", "")
+                    speech_text = sanitize_model_speech(raw_speech)
+                    if getattr(attempt_result, "response", None) and getattr(attempt_result.response, "speech", None) and "plain" in attempt_result.response.speech:
+                        attempt_result.response.speech["plain"]["speech"] = speech_text
+
                     is_err_type = str(resp_type).lower().endswith("error")
 
-                    if is_err_type or is_provider_error(speech_text):
+                    if is_err_type or is_provider_error(raw_speech) or is_provider_error(speech_text) or not speech_text:
+                        failover_occurred = True
                         _LOGGER.warning(
-                            "%s AI agent '%s' returned provider error/quota exhaustion: %s. Transparently failing over to next agent...",
-                            role_label, agent_id, speech_text[:140]
+                            "%s AI agent '%s' (%s) returned provider error/quota exhaustion: %s. Transparently failing over to next agent...",
+                            role_label, agent_display, agent_id, speech_text[:140]
                         )
                         last_error_msg = speech_text
                         if idx + 1 < len(prioritized_agents):
                             next_agent = prioritized_agents[idx + 1]
+                            next_display = get_agent_display_name(self.hass, next_agent)
                             fire_progress(
                                 "llm",
                                 f"Quota Failover ({role_label})",
-                                f"Agent '{agent_id}' quota limit reached. Transparently failing over to '{next_agent}'..."
+                                f"Agent '{agent_display}' quota limit reached. Transparently failing over to '{next_display}'..."
                             )
                         continue
 
-                    _LOGGER.info("AI agent '%s' (%s) responded successfully", agent_id, role_label)
+                    _LOGGER.info("AI agent '%s' (%s) responded successfully", agent_display, role_label)
                     result = attempt_result
+                    resolved_agent_id = agent_id
+                    resolved_agent_name = agent_display
+                    fire_progress(
+                        "agent_resolution",
+                        f"Resolved by {agent_display}",
+                        f"Response generated by {role_label} AI: {agent_display} ({agent_id})",
+                    )
                     break
                 except asyncio.TimeoutError:
+                    failover_occurred = True
                     _LOGGER.warning(
-                        "%s AI agent '%s' timed out after %ss. Transparently failing over to next agent...",
-                        role_label, agent_id, reasoning_timeout
+                        "%s AI agent '%s' (%s) timed out after %ss. Transparently failing over to next agent...",
+                        role_label, agent_display, agent_id, reasoning_timeout
                     )
-                    last_error_msg = f"Agent '{agent_id}' timed out after {int(reasoning_timeout)}s"
+                    last_error_msg = f"Agent '{agent_display}' timed out after {int(reasoning_timeout)}s"
                     if idx + 1 < len(prioritized_agents):
                         next_agent = prioritized_agents[idx + 1]
+                        next_display = get_agent_display_name(self.hass, next_agent)
                         fire_progress(
                             "llm",
                             f"Timeout Failover ({role_label})",
-                            f"Agent '{agent_id}' timed out ({int(reasoning_timeout)}s). Transparently failing over to '{next_agent}'..."
+                            f"Agent '{agent_display}' timed out ({int(reasoning_timeout)}s). Transparently failing over to '{next_display}'..."
                         )
                     continue
                 except Exception as err:
+                    failover_occurred = True
                     _LOGGER.warning(
-                        "%s AI agent '%s' raised exception: %s. Transparently failing over...",
-                        role_label, agent_id, err
+                        "%s AI agent '%s' (%s) raised exception: %s. Transparently failing over...",
+                        role_label, agent_display, agent_id, err
                     )
                     last_error_msg = str(err)
                     if idx + 1 < len(prioritized_agents):
                         next_agent = prioritized_agents[idx + 1]
+                        next_display = get_agent_display_name(self.hass, next_agent)
                         fire_progress(
                             "llm",
                             f"Failover ({role_label})",
-                            f"Agent '{agent_id}' error. Failing over to '{next_agent}'..."
+                            f"Agent '{agent_display}' error. Failing over to '{next_display}'..."
                         )
                     continue
 
@@ -3052,6 +3174,7 @@ User: {user_input.text}
             )
             if local_enabled and self.local_llm_manager:
                 try:
+                    failover_occurred = True
                     fire_progress("llm", "Local Edge Failover", "Cloud unavailable. Engaging offline local LLM failover...")
                     health = await self.local_llm_manager.async_health_check()
                     if health.get("status") == "online" and health.get("model_ready"):
@@ -3069,11 +3192,18 @@ User: {user_input.text}
                             timeout=reasoning_timeout,
                         )
                         if local_res.get("success") and local_res.get("response"):
+                            resolved_agent_id = f"local_llm:{self.local_llm_manager.model}"
+                            resolved_agent_name = f"Local Edge ({self.local_llm_manager.model})"
                             _LOGGER.info(
                                 "Local Edge AI (%s) failover responded in %ss (%s t/s)",
                                 self.local_llm_manager.model,
                                 local_res.get("total_duration_s"),
                                 local_res.get("tokens_per_sec"),
+                            )
+                            fire_progress(
+                                "agent_resolution",
+                                f"Resolved by Local Edge ({self.local_llm_manager.model})",
+                                f"Cloud unavailable / offline failover: executed by {self.local_llm_manager.model} via Ollama in {local_res.get('total_duration_s')}s ({local_res.get('tokens_per_sec')} t/s)",
                             )
                             result = self._create_response(user_input, local_res["response"])
                         else:
@@ -3087,6 +3217,11 @@ User: {user_input.text}
                     _LOGGER.debug("Local LLM failover invocation notice: %s", local_err)
                     if not last_error_msg:
                         last_error_msg = str(local_err)
+
+        if result is not None:
+            session_data["last_resolved_agent"] = resolved_agent_name or "Primary Cloud AI"
+            session_data["last_resolved_agent_id"] = resolved_agent_id
+            session_data["last_failover_occurred"] = failover_occurred
 
         if result is None:
             _LOGGER.error("All AI agents and local failovers failed. Last error: %s", last_error_msg)
@@ -3228,11 +3363,46 @@ ERROR_SIGNATURES = [
 ]
 
 
+def sanitize_model_speech(speech: str) -> str:
+    """Strip leaked internal thinking tags or malformed tool call blocks from LLM speech."""
+    if not speech:
+        return speech
+    # Remove <think>...</think> blocks
+    cleaned = re.sub(r"<think>.*?</think>", "", speech, flags=re.DOTALL)
+    # Remove dangling </think>
+    cleaned = re.sub(r"^\s*</think>", "", cleaned)
+    # Remove <tool_call>...</tool_call>
+    cleaned = re.sub(r"<tool_call>.*?</tool_call>", "", cleaned, flags=re.DOTALL)
+    # Remove <_observation>...</_observation>
+    cleaned = re.sub(r"<_observation>.*?</_observation>", "", cleaned, flags=re.DOTALL)
+    # Remove <|dsml|... or < | dsml |...
+    cleaned = re.sub(r"<\s*\|\s*dsml\s*\|.*?>", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<\s*/\s*tool_call\s*>", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<\s*tool_call\s*>", "", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+
 def is_provider_error(speech: str) -> bool:
     """Detect if the LLM agent returned a provider error string instead of a valid conversation response."""
     if not speech:
         return True
     speech_lower = speech.lower().strip()
+
+    # Raw tool leakage or internal DSML tags indicate the provider failed to execute or format function calls
+    RAW_TOOL_LEAK_SIGNATURES = (
+        "<tool_call>",
+        "</tool_call>",
+        "<_observation>",
+        "</think><tool_call>",
+        "<|dsml|",
+        "< | dsml |",
+        "assistantintenthassturnon",
+        "assisthomeassistantgetlivecontext",
+        '{"data":{"error":"no exposed entities found',
+        "no exposed entities found in domain",
+    )
+    if any(sig in speech_lower for sig in RAW_TOOL_LEAK_SIGNATURES):
+        return True
 
     # Critical quota and rate-limit signatures must trigger failover regardless of length or code formatting
     CRITICAL_QUOTA_STRINGS = (
@@ -3917,21 +4087,28 @@ class DiscoveryEngine:
         climates = [e for e in entities_list if e.get("domain") == "climate"]
         area_lookup = build_area_lookup_map(areas_map)
         thermostats = []
-        area_to_thermostat: dict[str, str] = {}
+        space_thermostats = []
+        equipment_thermostats = []
+        area_to_thermostat: dict[str, str | None] = {}
+        area_to_floor: dict[str, str] = {}
+
+        upstairs_thermo = None
+        downstairs_thermo = None
 
         for c in climates:
             eid = c["entity_id"]
             state_obj = self.hass.states.get(eid)
             attrs = state_obj.attributes if state_obj else {}
             state_val = state_obj.state if state_obj else c.get("state", "unknown")
+            fname = attrs.get("friendly_name", c.get("name", eid))
+            check_text = f"{eid} {fname}".lower()
 
             assigned_area_id = c.get("area_id")
             if not assigned_area_id:
-                name_to_check = f"{eid} {attrs.get('friendly_name', '')}"
-                matched_id = resolve_area_identifier(name_to_check, area_lookup)
+                matched_id = resolve_area_identifier(check_text, area_lookup)
                 if not matched_id:
                     for aid in areas_map:
-                        if aid in eid.lower() or areas_map[aid].get("name", "").lower() in name_to_check.lower():
+                        if aid in eid.lower() or areas_map[aid].get("name", "").lower() in check_text:
                             assigned_area_id = aid
                             break
                 else:
@@ -3939,9 +4116,20 @@ class DiscoveryEngine:
 
             area_name = areas_map.get(assigned_area_id, {}).get("name", "Whole Home / Unassigned") if assigned_area_id else "Whole Home / Unassigned"
 
+            is_equipment = any(k in check_text for k in ("pool", "spa", "hot_tub", "water_heater", "boiler"))
+            zone_scope = "Equipment (Water/Pool/Spa)" if is_equipment else ""
+
+            if not is_equipment:
+                if any(k in check_text for k in ("upstairs", "upper", "second", "2nd")):
+                    zone_scope = "Upper Floor Zone"
+                elif any(k in check_text for k in ("downstairs", "ground", "lower", "main", "1st")):
+                    zone_scope = "Ground Floor Zone"
+                else:
+                    zone_scope = "Whole Home Zone"
+
             t_info = {
                 "entity_id": eid,
-                "name": attrs.get("friendly_name", c.get("name", eid)),
+                "name": fname,
                 "area_id": assigned_area_id,
                 "area_name": area_name,
                 "state": state_val,
@@ -3953,17 +4141,66 @@ class DiscoveryEngine:
                 "hvac_modes": attrs.get("hvac_modes", []),
                 "preset_mode": attrs.get("preset_mode"),
                 "fan_mode": attrs.get("fan_mode"),
+                "zone_scope": zone_scope,
+                "is_equipment": is_equipment,
             }
             thermostats.append(t_info)
-            if assigned_area_id:
-                area_to_thermostat[assigned_area_id] = eid
+            if is_equipment:
+                equipment_thermostats.append(t_info)
+            else:
+                space_thermostats.append(t_info)
+                if zone_scope == "Upper Floor Zone" and not upstairs_thermo:
+                    upstairs_thermo = t_info
+                elif zone_scope == "Ground Floor Zone" and not downstairs_thermo:
+                    downstairs_thermo = t_info
 
-        primary_thermostat = thermostats[0]["entity_id"] if thermostats else None
+        # Determine architecture
+        if upstairs_thermo and downstairs_thermo:
+            architecture_type = "Central Dual-Zone HVAC (Downstairs & Upstairs)"
+        elif space_thermostats:
+            architecture_type = f"Central Single-Zone HVAC ({len(space_thermostats)} space thermostat)"
+        else:
+            architecture_type = "No dedicated space HVAC detected"
+
+        primary_thermostat = (
+            downstairs_thermo["entity_id"]
+            if downstairs_thermo
+            else (space_thermostats[0]["entity_id"] if space_thermostats else (thermostats[0]["entity_id"] if thermostats else None))
+        )
+
+        # Map each area to its floor and controlling thermostat
+        for aid, adata in areas_map.items():
+            aname = adata.get("name", aid)
+            floor = classify_area_floor(aid, aname)
+            area_to_floor[aid] = floor
+
+            # 1. Exact assigned thermostat in this specific room
+            exact_match = next((t["entity_id"] for t in space_thermostats if t.get("area_id") == aid), None)
+            if exact_match:
+                area_to_thermostat[aid] = exact_match
+            elif floor == "Upper Floor" and upstairs_thermo:
+                area_to_thermostat[aid] = upstairs_thermo["entity_id"]
+            elif floor == "Ground Floor" and downstairs_thermo:
+                area_to_thermostat[aid] = downstairs_thermo["entity_id"]
+            elif floor == "Outdoor":
+                if any(k in aid.lower() for k in ("pool", "spa")) and equipment_thermostats:
+                    area_to_thermostat[aid] = equipment_thermostats[0]["entity_id"]
+                else:
+                    area_to_thermostat[aid] = None
+            else:
+                area_to_thermostat[aid] = primary_thermostat
 
         return {
             "thermostats": thermostats,
+            "space_thermostats": space_thermostats,
+            "equipment_thermostats": equipment_thermostats,
+            "architecture_type": architecture_type,
             "area_to_thermostat": area_to_thermostat,
+            "area_to_floor": area_to_floor,
             "primary_thermostat": primary_thermostat,
+            "upstairs_thermostat": upstairs_thermo["entity_id"] if upstairs_thermo else None,
+            "downstairs_thermostat": downstairs_thermo["entity_id"] if downstairs_thermo else None,
+            "has_per_room_thermostats": False,
             "total_count": len(thermostats),
         }
 
@@ -4464,6 +4701,66 @@ class DiscoveryEngine:
                                     "mode": "queued",
                                 },
                             })
+
+                        # Check D: Blueprint invalid top-level conditions or actions in automations.yaml
+                        if "use_blueprint" in auto:
+                            has_invalid_top_level = bool(
+                                auto.get("action")
+                                or auto.get("actions")
+                                or auto.get("condition")
+                                or auto.get("conditions")
+                            )
+                            if has_invalid_top_level:
+                                bp_info = auto.get("use_blueprint", {})
+                                bp_path = bp_info.get("path") if isinstance(bp_info, dict) else str(bp_info)
+                                result["improvement_suggestions"].append({
+                                    "id": f"fix_blueprint_top_level_{aid}",
+                                    "title": f"Fix Invalid Blueprint Logic Injected into '{alias}'",
+                                    "category": "automation",
+                                    "priority": "critical",
+                                    "icon": "mdi:alert-box-outline",
+                                    "description": (
+                                        f"Automation '{alias}' uses blueprint '{bp_path}' but contains top-level action/condition "
+                                        "definitions in automations.yaml. Blueprint automations can only define 'input:' variables; "
+                                        "top-level injections cause Home Assistant setup errors."
+                                    ),
+                                    "action_type": "repair_blueprint_automation",
+                                    "action_payload": {
+                                        "automation_id": aid,
+                                        "alias": alias,
+                                    },
+                                })
+
+                # Check E: Guest Mode Climate Comfort Integration
+                guest_mode_present = any("guest_mode" in eid for eid in active_entity_ids) or any("guest_mode" in eid for eid in result["automated_entities"])
+                if guest_mode_present and isinstance(parsed_autos, list):
+                    climate_mentions_guest = False
+                    for auto in parsed_autos:
+                        if not isinstance(auto, dict):
+                            continue
+                        adump = yaml.dump(auto).lower()
+                        if "climate" in adump and ("guest_mode" in adump or "guest mode" in adump):
+                            climate_mentions_guest = True
+                            break
+                    if not climate_mentions_guest:
+                        result["improvement_suggestions"].append({
+                            "id": "link_guest_mode_climate_comfort",
+                            "title": "Coordinate Guest Mode with Upstairs Climate & Guest Room",
+                            "category": "automation",
+                            "priority": "high",
+                            "icon": "mdi:account-group-outline",
+                            "description": (
+                                "Guest Mode is configured for door lock PINs and bedtime lighting, but your central upstairs "
+                                "thermostat (which conditions the Guest Room) does not adjust for guests. Coordinate "
+                                "input_boolean.guest_mode with climate.upstairs to maintain guest comfort setbacks (70°F-72°F) "
+                                "instead of unoccupied economy setbacks during visits."
+                            ),
+                            "action_type": "improve_automation",
+                            "action_payload": {
+                                "topic": "guest_mode_climate",
+                                "target_entity": "climate.upstairs",
+                            },
+                        })
             except Exception as err:
                 _LOGGER.debug("Could not inspect automations.yaml: %s", err)
 

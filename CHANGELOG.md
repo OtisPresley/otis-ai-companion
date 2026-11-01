@@ -7,6 +7,55 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] - 2026-11-01
+
+### Added & Improved
+- 📋 **Seamless Clipboard Screenshot Paste (`otis-companion-card.js`)**:
+  - Added direct clipboard image paste handler (`_handleClipboardPaste`) on the chat input textarea and container wrapper. Pasting screenshots with `Ctrl+V` automatically encodes the image and stages it into pending attachments without manual file dialogs or dragging.
+- 🔄 **One-Click Turn Retry Button (`otis-companion-card.js`)**:
+  - Added a `🔄 Retry` button to assistant response action bars in the Lovelace Companion Card. Allows immediately re-dispatching failed or interrupted turns with one click, preserving original prompt context and attachments.
+- ⚡ **Instant Rule & Dashboard Style Synchronization (`__init__.py`, `otis-companion-card.js`)**:
+  - Subscribed Lovelace card to the `"otis_ai_rules_updated"` Home Assistant bus event, ensuring prompt rules, visual styles, and dashboard behavior apply instantaneously in the background with zero page reload required.
+- 🏗️ **Blueprint Automation Architecture & Logic Inspection (`automation_manager.py`, `__init__.py`)**:
+  - Injected explicit architecture rules forbidding direct injection of `condition:` or `action:` blocks into `automations.yaml` for blueprint-backed automations (`use_blueprint:`).
+  - Enhanced `AutomationManager.async_cross_reference` to automatically locate and read the underlying `/config/blueprints/automation/<path>` logic so Co-Pilot understands full execution flows.
+  - Added proactive recommendations detecting malformed blueprint top-level injections.
+- 🌡️ **Guest Mode Climate Comfort Recommendation (`__init__.py`)**:
+  - Expanded proactive recommendations to check for `input_boolean.guest_mode` coordination with central upper floor climate (`climate.upstairs`), preventing uncomfortable economy setbacks when house guests are present.
+
+---
+
+## [0.1.9] - 2026-11-01
+
+### Fixed & Improved
+- 🛡️ **Model Scratchpad & Tool-Call Leak Sanitization (`__init__.py`)**:
+  - Implemented `sanitize_model_speech()` to strip unrendered `<think>...</think>`, `</think>`, and `<tool_call>` blocks leaked by open/free models (e.g. DeepSeek-R1/V3 or Qwen on OpenRouter Free Router).
+  - Enhanced `is_provider_error()` to detect raw DSML/tool call syntax (`<tool_call>`, `<|dsml|`, `_observation`, etc.). When a free router model emits broken tool call tokens instead of a valid conversational response, Otis treats it as a provider failure and transparently fails over down the cascade or to the local edge LLM (`qwen2.5:3b`).
+- 🔄 **Updated Home Assistant Google Generative AI to `gemini-3.8-flash`**:
+  - Migrated Home Assistant's primary `google_generative_ai_conversation` model from the deprecated `models/gemini-2.5-flash` (which began failing with HTTP 404 from Google) to `models/gemini-3.8-flash`.
+
+---
+
+## [0.1.8] - 2026-11-01
+
+### Added & Improved
+- 🌡️ **Grounding in Central Dual-Zone HVAC & Floor Levels (`__init__.py`)**:
+  - Implemented floor level classification (`Upper Floor`, `Ground Floor`, `Outdoor`) for all areas.
+  - Correctly recognized dual-zone space HVAC architecture: `climate.downstairs` (Ground Floor) and `climate.upstairs` (Upper Floor: Guest Room, Master, Gym, Study, Theater, Hallway).
+  - Explicitly separated water/pool equipment (`climate.spa_thermostat`) from space heating/cooling.
+  - Eliminated hallucinations of non-existent per-room climate entities (e.g. `climate.guest_room`), explicitly grounding Co-Pilot in the blueprint automations (`Climate: Thermostat Downstairs`, `Climate: Thermostat Upstairs`) driven by occupancy and sleep states.
+- ⚡ **Automated Local LLM Verification & Option Switching (`services.yaml`, `__init__.py`)**:
+  - Enhanced `otis_ai.pull_local_llm_model` with `test_after_pull` (default `true`) and `set_as_active` (default `true`).
+  - Pulling an edge model now automatically benchmarks the model on the Ollama host, verifies readiness, updates `LocalLLMManager`, and updates integration options (`CONF_LOCAL_LLM_MODEL`) seamlessly without manual user intervention.
+- 🔍 **Transparent AI Agent Attribution in Assist Co-Pilot (`__init__.py`, `otis-companion-card.js`)**:
+  - Tracked and resolved the exact executing AI agent (Primary Cloud AI, Failover Agent, or Local Edge Ollama LLM).
+  - Emitted real-time `agent_resolution` progress steps with friendly provider names and durations.
+  - Updated Lovelace Companion Card to render an agent attribution pill in the thought trace header (`• ☁️ Google Generative AI` or `• ⚡ Local Edge (qwen2.5:3b)`) and highlighted resolution step in the expanded reasoning list.
+- 📜 **Deepened Automation Cross-Referencing (`automation_manager.py`)**:
+  - Increased cross-reference capacity to 8 matches and enhanced salient keyword indexing for guest mode, bedtime, and climate coordinators.
+
+---
+
 ## [0.1.7] - 2026-11-01
 
 ### Added

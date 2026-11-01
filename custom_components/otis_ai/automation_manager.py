@@ -120,7 +120,7 @@ class AutomationManager:
     async def async_cross_reference(
         self,
         text: str,
-        max_matches: int = 4,
+        max_matches: int = 8,
     ) -> dict[str, Any]:
         """Scan automations.yaml and scripts.yaml for mentioned entities or topics and return matching YAML blocks."""
         if not text:
@@ -139,7 +139,11 @@ class AutomationManager:
                 phrases.add(parts[1].replace("_", " "))
 
         # Also search for multi-word phrases from text if keywords present
-        for candidate in ("guest mode", "adaptive lights", "adaptive inside lights", "lights off at bed", "guest lock code", "vacation mode", "away mode", "sleep mode", "bedtime"):
+        for candidate in (
+            "guest mode", "guest", "climate", "thermostat", "downstairs", "upstairs",
+            "adaptive lights", "adaptive inside lights", "lights off at bed", "guest lock code",
+            "vacation mode", "away mode", "sleep mode", "bedtime", "lock code", "schlage"
+        ):
             if candidate in text_lower:
                 phrases.add(candidate)
 
@@ -190,24 +194,58 @@ class AutomationManager:
                     score += 10.0
                     matched_terms.append(w)
 
+            # If user query is asking about whole-home guest mode, also include primary climate & bedtime automations
+            if ("guest" in text_lower or "guest_mode" in text_lower):
+                if "climate: thermostat" in alias_lower:
+                    score += 40.0
+                    matched_terms.append("climate_coordinator")
+
             if score > 0:
                 lines = dumped.splitlines()
                 truncated = False
-                if len(lines) > 45:
-                    dumped = "\n".join(lines[:45]) + "\n  # ... [additional actions truncated for brevity]"
+                # If explicitly named or high-relevance match, preserve up to 250 lines so full actions/conditions are visible
+                max_lines = 250 if (score >= 40.0 or (alias and alias.lower() in text_lower)) else 70
+                if len(lines) > max_lines:
+                    dumped = "\n".join(lines[:max_lines]) + "\n  # ... [additional actions truncated for brevity]"
                     truncated = True
-                scored_matches.append((
-                    score,
-                    {
-                        "type": "automation",
-                        "id": auto_id,
-                        "name": alias or auto_id,
-                        "score": score,
-                        "matched_terms": list(set(matched_terms)),
-                        "yaml": dumped,
-                        "truncated": truncated,
-                    }
-                ))
+
+                blueprint_info = auto.get("use_blueprint")
+                blueprint_path = ""
+                blueprint_file_content = None
+                if isinstance(blueprint_info, dict):
+                    blueprint_path = str(blueprint_info.get("path") or "")
+                elif isinstance(blueprint_info, str):
+                    blueprint_path = blueprint_info
+
+                if blueprint_path and hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
+                    bp_full_path = self.hass.config.path("blueprints", "automation", blueprint_path)
+                    if os.path.exists(bp_full_path):
+                        try:
+                            with open(bp_full_path, "r", encoding="utf-8", errors="ignore") as bpf:
+                                bp_lines = bpf.read().splitlines()
+                                bp_snippet = "\n".join(bp_lines[:120])
+                                if len(bp_lines) > 120:
+                                    bp_snippet += "\n# ... [blueprint sequence truncated]"
+                                blueprint_file_content = bp_snippet
+                        except Exception as bpe:
+                            _LOGGER.debug("Could not read blueprint file %s: %s", bp_full_path, bpe)
+
+                match_payload = {
+                    "type": "automation",
+                    "id": auto_id,
+                    "name": alias or auto_id,
+                    "score": score,
+                    "matched_terms": list(set(matched_terms)),
+                    "yaml": dumped,
+                    "truncated": truncated,
+                }
+                if blueprint_path:
+                    match_payload["uses_blueprint"] = True
+                    match_payload["blueprint_path"] = blueprint_path
+                    if blueprint_file_content:
+                        match_payload["blueprint_yaml"] = blueprint_file_content
+
+                scored_matches.append((score, match_payload))
 
         # Check scripts
         for s_key, s_data in scripts.items():
@@ -245,8 +283,9 @@ class AutomationManager:
             if score > 0:
                 lines = dumped.splitlines()
                 truncated = False
-                if len(lines) > 45:
-                    dumped = "\n".join(lines[:45]) + "\n  # ... [additional sequence steps truncated for brevity]"
+                max_lines = 250 if (score >= 40.0 or (alias and alias.lower() in text_lower)) else 70
+                if len(lines) > max_lines:
+                    dumped = "\n".join(lines[:max_lines]) + "\n  # ... [additional sequence steps truncated for brevity]"
                     truncated = True
                 scored_matches.append((
                     score,
@@ -263,7 +302,40 @@ class AutomationManager:
 
         scored_matches.sort(key=lambda x: x[0], reverse=True)
         top_matches = [item for _, item in scored_matches[:max_matches]]
-        return {"matches": top_matches}
+
+        # Scan recent logs if the user is asking about errors, setup failures, or broken automations
+        recent_log_errors = []
+        if any(k in text_lower for k in ("fail", "failed", "error", "setup", "broken", "bug", "traceback", "fix")):
+            log_path = self.hass.config.path("home-assistant.log")
+            if os.path.exists(log_path):
+                try:
+                    def _read_recent_log_errors():
+                        errs = []
+                        with open(log_path, "r", encoding="utf-8", errors="ignore") as lf:
+                            recent_lines = lf.readlines()[-150:]
+                            capturing = False
+                            current_err = []
+                            for line in recent_lines:
+                                if "ERROR" in line or "The automation" in line:
+                                    capturing = True
+                                    current_err.append(line.strip())
+                                elif capturing:
+                                    if re.match(r"^\d{4}-\d{2}-\d{2}", line):
+                                        capturing = False
+                                        if current_err:
+                                            errs.append("\n".join(current_err[:10]))
+                                            current_err = []
+                                    else:
+                                        current_err.append(line.strip())
+                            if current_err:
+                                errs.append("\n".join(current_err[:10]))
+                        return errs[-3:]
+
+                    recent_log_errors = await self.hass.async_add_executor_job(_read_recent_log_errors)
+                except Exception as log_err:
+                    _LOGGER.debug("Could not inspect home-assistant.log for errors: %s", log_err)
+
+        return {"matches": top_matches, "recent_log_errors": recent_log_errors}
 
     async def async_improve_automation(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Improve or patch an existing automation in automations.yaml while preserving !include/structure."""

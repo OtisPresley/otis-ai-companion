@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.7";
+const CARD_VERSION = "0.1.10";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -222,6 +222,7 @@ class OtisCompanionCard extends HTMLElement {
     if (!oldHass && hass) {
       this._fetchData();
       this._subscribeReasoningEvents();
+      this._subscribeRuleEvents();
     }
   }
 
@@ -232,6 +233,12 @@ class OtisCompanionCard extends HTMLElement {
       } catch (_) {}
       this._unsubReasoningEvents = null;
     }
+    if (this._unsubRuleEvents) {
+      try {
+        this._unsubRuleEvents();
+      } catch (_) {}
+      this._unsubRuleEvents = null;
+    }
     if (this._reasoningTimer) {
       clearInterval(this._reasoningTimer);
       this._reasoningTimer = null;
@@ -241,6 +248,23 @@ class OtisCompanionCard extends HTMLElement {
         this._viewportResizeObserver.disconnect();
       } catch (_) {}
       this._viewportResizeObserver = null;
+    }
+  }
+
+  async _subscribeRuleEvents() {
+    if (this._unsubRuleEvents) return;
+    try {
+      if (this._hass && this._hass.connection && typeof this._hass.connection.subscribeEvents === "function") {
+        this._unsubRuleEvents = await this._hass.connection.subscribeEvents((ev) => {
+          if (ev?.data?.rules) {
+            this._userRules = ev.data.rules;
+            this._rulesDraft = { ...this._userRules };
+            this._render();
+          }
+        }, "otis_ai_rules_updated");
+      }
+    } catch (e) {
+      console.debug("Could not subscribe to otis_ai_rules_updated events:", e);
     }
   }
 
@@ -893,8 +917,32 @@ class OtisCompanionCard extends HTMLElement {
     });
   }
 
-  async _sendChatMessage(text) {
+  _handleClipboardPaste(e) {
+    if (!e || !e.clipboardData) return;
+    const items = e.clipboardData.items;
+    if (!items || items.length === 0) return;
+
+    const imageFiles = [];
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type && items[i].type.startsWith("image/")) {
+        const file = items[i].getAsFile();
+        if (file) {
+          imageFiles.push(file);
+        }
+      }
+    }
+
+    if (imageFiles.length > 0) {
+      e.preventDefault();
+      this._handleFilesSelected(imageFiles);
+    }
+  }
+
+  async _sendChatMessage(text, explicitAttachments = null) {
     const userText = (text || "").trim();
+    if (explicitAttachments && Array.isArray(explicitAttachments)) {
+      this._pendingAttachments = [...explicitAttachments];
+    }
     const hasAttachments = this._pendingAttachments && this._pendingAttachments.length > 0;
     if ((!userText && !hasAttachments) || !this._hass || this._isSendingChat) return;
 
@@ -1136,6 +1184,35 @@ class OtisCompanionCard extends HTMLElement {
       this._render();
       this._scrollChatToBottom();
     }
+  }
+
+  _handleRetry(msgId) {
+    if (this._isSendingChat) return;
+    const msgIdx = this._chatMessages.findIndex((m) => m.id === msgId);
+    if (msgIdx === -1) return;
+
+    // Find the closest preceding user message
+    let userMsg = null;
+    let userIdx = -1;
+    for (let i = msgIdx - 1; i >= 0; i--) {
+      if (this._chatMessages[i].sender === "user") {
+        userMsg = this._chatMessages[i];
+        userIdx = i;
+        break;
+      }
+    }
+    if (!userMsg) return;
+
+    const promptText = userMsg.text;
+    const promptAttachments = userMsg.attachments ? [...userMsg.attachments] : [];
+
+    // Remove the failed turn (user message, assistant response, and anything between/after)
+    this._chatMessages.splice(userIdx);
+    this._saveChatMessages();
+    this._render();
+
+    // Re-dispatch message cleanly
+    this._sendChatMessage(promptText, promptAttachments);
   }
 
   _toggleVoiceRecording() {
@@ -2878,10 +2955,18 @@ class OtisCompanionCard extends HTMLElement {
           color: inherit;
         }
 
-        .response-copy-btn {
+        .bubble-actions-group {
           position: absolute;
           top: 6px;
           right: 6px;
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          z-index: 2;
+        }
+
+        .response-retry-btn,
+        .response-copy-btn {
           background: rgba(0, 0, 0, 0.4);
           border: 1px solid rgba(255, 255, 255, 0.18);
           color: var(--otis-text-muted);
@@ -2896,7 +2981,6 @@ class OtisCompanionCard extends HTMLElement {
           font-size: 0.68rem;
           font-weight: 500;
           opacity: 0.7;
-          z-index: 2;
         }
 
         .chat-bubble.otis {
@@ -2910,12 +2994,22 @@ class OtisCompanionCard extends HTMLElement {
           padding-top: 26px;
         }
 
+        .chat-bubble.otis:hover .response-retry-btn,
         .chat-bubble.otis:hover .response-copy-btn,
+        .response-retry-btn:hover,
         .response-copy-btn:hover {
           opacity: 1;
           color: #ffffff;
           background: color-mix(in srgb, var(--otis-primary) 30%, transparent);
           border-color: var(--otis-primary);
+        }
+
+        .response-retry-btn:hover svg {
+          transform: rotate(45deg);
+        }
+
+        .response-retry-btn svg {
+          transition: transform 0.2s ease;
         }
 
         .chat-bubble.otis.thinking-bubble {
@@ -3156,6 +3250,37 @@ class OtisCompanionCard extends HTMLElement {
           font-family: monospace;
           font-size: 0.65rem;
           color: rgba(255, 255, 255, 0.4);
+        }
+
+        .reasoning-agent-pill {
+          display: inline-flex;
+          align-items: center;
+          gap: 3px;
+          padding: 1px 6px;
+          border-radius: 999px;
+          font-size: 0.65rem;
+          font-weight: 600;
+          vertical-align: middle;
+          margin-left: 4px;
+        }
+
+        .reasoning-agent-pill.cloud {
+          background: rgba(59, 130, 246, 0.2);
+          color: #93c5fd;
+          border: 1px solid rgba(59, 130, 246, 0.4);
+        }
+
+        .reasoning-agent-pill.edge {
+          background: rgba(16, 185, 129, 0.2);
+          color: #6ee7b7;
+          border: 1px solid rgba(16, 185, 129, 0.4);
+        }
+
+        .reasoning-step-item.resolution {
+          background: rgba(255, 255, 255, 0.04);
+          border-left: 2px solid #38bdf8;
+          padding: 4px 6px 4px 8px;
+          border-radius: 4px;
         }
 
         .chat-thinking-banner {
@@ -5137,29 +5262,47 @@ class OtisCompanionCard extends HTMLElement {
   _renderReasoningTrace(m) {
     const traceId = m.id || m.timestamp || m.text;
     const isExpanded = this._expandedReasoningIds.has(traceId);
+    const steps = (m.reasoning && m.reasoning.steps) || [];
+
+    // Check if an agent_resolution step exists
+    const resStep = steps.find((s) => s.id === "agent_resolution" || (s.title && s.title.startsWith("Resolved by")));
+    let agentBadge = "";
+    if (resStep) {
+      const isLocal = resStep.title.toLowerCase().includes("local") || resStep.title.toLowerCase().includes("edge");
+      const icon = isLocal ? "⚡" : "☁️";
+      const cleanTitle = resStep.title.replace("Resolved by ", "").trim();
+      agentBadge = ` • <span class="reasoning-agent-pill ${isLocal ? 'edge' : 'cloud'}" title="${this._escapeHtml(resStep.detail || cleanTitle)}">${icon} ${this._escapeHtml(cleanTitle)}</span>`;
+    }
+
     return `
       <div class="reasoning-trace-container">
         <button type="button" class="reasoning-trace-toggle ${isExpanded ? "expanded" : ""}" data-trace-id="${this._escapeHtml(traceId)}">
           <span class="reasoning-brain-icon">🧠</span>
-          <span class="reasoning-summary-text">Thought for ${this._escapeHtml(m.reasoning.duration || "a moment")} (${m.reasoning.steps.length} steps)</span>
+          <span class="reasoning-summary-text">Thought for ${this._escapeHtml(m.reasoning.duration || "a moment")} (${steps.length} steps)${agentBadge}</span>
           <svg class="reasoning-chevron" viewBox="0 0 24 24"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
         </button>
         ${
           isExpanded
             ? `
           <div class="reasoning-steps-list">
-            ${m.reasoning.steps
+            ${steps
               .map(
-                (s) => `
-              <div class="reasoning-step-item done">
-                <span class="step-check">✓</span>
+                (s) => {
+                  const isResolution = s.id === "agent_resolution" || (s.title && s.title.startsWith("Resolved by"));
+                  const isLocal = isResolution && (s.title.toLowerCase().includes("local") || s.title.toLowerCase().includes("edge"));
+                  const checkIcon = isResolution ? (isLocal ? "⚡" : "☁️") : "✓";
+                  const itemClass = isResolution ? "reasoning-step-item done resolution" : "reasoning-step-item done";
+                  return `
+              <div class="${itemClass}">
+                <span class="step-check">${checkIcon}</span>
                 <div class="step-content">
                   <div class="step-title">${this._escapeHtml(s.title || "Step")}</div>
                   <div class="step-detail">${this._escapeHtml(s.detail || "")}</div>
                 </div>
                 <span class="step-time">${this._escapeHtml(s.time || "")}</span>
               </div>
-            `
+            `;
+                }
               )
               .join("")}
           </div>
@@ -5205,12 +5348,20 @@ class OtisCompanionCard extends HTMLElement {
                     </button>
                   `
                       : `
-                    <button type="button" class="response-copy-btn" title="Copy response to clipboard" data-response="${this._escapeHtml(m.text)}">
-                      <svg viewBox="0 0 24 24" class="copy-icon">
-                        <path d="M16 1H4C2.9 1 2 1.9 2 3v14h2V3h12V1zm3 4H8C6.9 5 6 5.9 6 7v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-                      </svg>
-                      <span class="copy-label">Copy</span>
-                    </button>
+                    <div class="bubble-actions-group">
+                      <button type="button" class="response-retry-btn" title="Retry this turn" data-msg-id="${this._escapeHtml(m.id || "")}">
+                        <svg viewBox="0 0 24 24" class="copy-icon">
+                          <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+                        </svg>
+                        <span class="retry-label">Retry</span>
+                      </button>
+                      <button type="button" class="response-copy-btn" title="Copy response to clipboard" data-response="${this._escapeHtml(m.text)}">
+                        <svg viewBox="0 0 24 24" class="copy-icon">
+                          <path d="M16 1H4C2.9 1 2 1.9 2 3v14h2V3h12V1zm3 4H8C6.9 5 6 5.9 6 7v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
+                        </svg>
+                        <span class="copy-label">Copy</span>
+                      </button>
+                    </div>
                   `
                   }
                   ${
@@ -8671,6 +8822,20 @@ class OtisCompanionCard extends HTMLElement {
       };
     });
 
+    // Otis response retry buttons
+    root.querySelectorAll(".response-retry-btn").forEach((btn) => {
+      btn.onclick = (e) => {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        const msgId = btn.getAttribute("data-msg-id");
+        if (msgId) {
+          this._handleRetry(msgId);
+        }
+      };
+    });
+
     // Otis response copy buttons
     root.querySelectorAll(".response-copy-btn").forEach((btn) => {
       btn.onclick = async (e) => {
@@ -8792,6 +8957,7 @@ class OtisCompanionCard extends HTMLElement {
           this._handleFilesSelected(e.dataTransfer.files);
         }
       };
+      chatWrapper.addEventListener("paste", (e) => this._handleClipboardPaste(e));
     }
 
     // Chat input & send
@@ -8802,6 +8968,7 @@ class OtisCompanionCard extends HTMLElement {
     const previewClose = root.querySelector("#chat-preview-close");
 
     if (chatInput) {
+      chatInput.addEventListener("paste", (e) => this._handleClipboardPaste(e));
       const updateLivePreview = () => {
         const val = chatInput.value || "";
         this._draftChatText = val;
