@@ -7,6 +7,21 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.12] - 2026-11-01
+
+### Fixed & Improved
+- 🤖 **Universal Automation Deployment Across All Conversation Agents (`__init__.py`, `automation_manager.py`)**:
+  - Enforced strict autonomous deployment rules across all prioritized AI conversation agents (Gemini, OpenRouter, Groq, Ollama) and offline local LLMs. Models are strictly forbidden from telling users to manually edit `automations.yaml` or "do it yourself".
+  - Mandated clean Home Assistant GUI Visual Automation Editor format (standalone dictionary with `alias:`, `description:`, `triggers:`/`trigger:`, `conditions:`/`condition:`, `actions:`/`action:`, `mode:` without leading dashes or `- id:`).
+  - Built robust multi-format YAML extraction (`_extract_pending_items_from_speech`) supporting lists, unwrapped/wrapped dictionaries, modern plural keys (`triggers:`, `actions:`), and blueprints.
+  - Added natural language deployment confirmation matching ("deploy", "apply", "create it", "install it", "yes please", "do it") and turn recovery from prior conversation history.
+  - Implemented automatic speech sanitization stripping leaked manual file instructions before presentation to the user.
+- 🚀 **1-Click Automation & Script Deployment Action Buttons (`otis-companion-card.js`)**:
+  - Added dedicated `"🚀 Deploy & Enable Automation"` and `"🚀 Deploy & Enable Script"` action buttons to Assist Co-Pilot chat bubbles, providing instant 1-click deployment.
+  - Bumped Companion Card version to v0.1.12.
+
+---
+
 ## [0.1.11] - 2026-11-01
 
 ### Added & Improved

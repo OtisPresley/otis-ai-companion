@@ -1009,13 +1009,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         conv_id = call.data.get("conversation_id")
         user_input_cls = getattr(conversation, "ConversationInput", getattr(conversation, "UserInput", None))
         language = call.data.get("language") or getattr(hass.config, "language", "en")
+        target_agent_id = call.data.get("agent_id") or entry.entry_id
         try:
             user_input = user_input_cls(
                 text=text,
                 context=call.context,
                 conversation_id=conv_id,
                 language=language,
-                agent_id=entry.entry_id,
+                agent_id=target_agent_id,
             )
         except TypeError:
             try:
@@ -1027,13 +1028,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
             except Exception:
                 class SimpleInput:
-                    def __init__(self, t, cid, ctx, lang):
+                    def __init__(self, t, cid, ctx, lang, aid=None):
                         self.text = t
                         self.conversation_id = cid
                         self.context = ctx
                         self.language = lang
                         self.device_id = None
-                user_input = SimpleInput(text, conv_id, call.context, language)
+                        self.agent_id = aid
+                user_input = SimpleInput(text, conv_id, call.context, language, target_agent_id)
 
         if hasattr(hass, "bus") and hasattr(hass.bus, "async_fire"):
             try:
@@ -2208,6 +2210,140 @@ class OtisAIConversationAgent(AbstractAgent):
         if len(history) > 20:
             session_data["history"] = history[-20:]
 
+    def _extract_pending_items_from_speech(
+        self, speech_text: str, user_text: str = ""
+    ) -> tuple[list[dict[str, Any]], str]:
+        """Extract automation and script items from YAML blocks and sanitize speech for GUI co-pilot deployment."""
+        if not speech_text:
+            return [], speech_text
+
+        yaml_blocks = re.findall(r"```(?:yaml)?\s*\n(.*?)```", speech_text, re.DOTALL)
+        if not yaml_blocks:
+            return [], speech_text
+
+        pending_items: list[dict[str, Any]] = []
+
+        for block in yaml_blocks:
+            try:
+                parsed = yaml.safe_load(block)
+                if not parsed:
+                    continue
+
+                candidates: list[dict[str, Any]] = []
+                if isinstance(parsed, list):
+                    candidates = [c for c in parsed if isinstance(c, dict)]
+                elif isinstance(parsed, dict):
+                    if "automation" in parsed and isinstance(parsed["automation"], (dict, list)):
+                        val = parsed["automation"]
+                        candidates = val if isinstance(val, list) else [val]
+                    elif "automations" in parsed and isinstance(parsed["automations"], (dict, list)):
+                        val = parsed["automations"]
+                        candidates = val if isinstance(val, list) else [val]
+                    elif "script" in parsed and isinstance(parsed["script"], (dict, list)):
+                        val = parsed["script"]
+                        candidates = val if isinstance(val, list) else [val]
+                    elif "scripts" in parsed and isinstance(parsed["scripts"], (dict, list)):
+                        val = parsed["scripts"]
+                        candidates = val if isinstance(val, list) else [val]
+                    elif len(parsed) == 1 and not any(k in parsed for k in ("sequence", "actions", "action", "trigger", "triggers")):
+                        single_key = next(iter(parsed.keys()))
+                        single_val = parsed[single_key]
+                        if isinstance(single_val, dict) and any(k in single_val for k in ("sequence", "actions", "action", "trigger", "triggers")):
+                            if "alias" not in single_val:
+                                single_val["alias"] = single_key.replace("_", " ").title()
+                            single_val["_inferred_key"] = single_key
+                            candidates = [single_val]
+                        elif isinstance(single_val, list):
+                            candidates = [c for c in single_val if isinstance(c, dict)]
+                        else:
+                            candidates = [parsed]
+                    else:
+                        candidates = [parsed]
+
+                for item in candidates:
+                    if not isinstance(item, dict):
+                        continue
+
+                    inf_key = item.pop("_inferred_key", None)
+
+                    has_triggers = (
+                        "trigger" in item
+                        or "triggers" in item
+                        or "platform" in item
+                        or "use_blueprint" in item
+                    )
+                    has_actions = "action" in item or "actions" in item
+                    has_sequence = "sequence" in item
+
+                    if has_triggers or (has_actions and not has_sequence):
+                        auto_name = item.get("alias")
+                        if not auto_name and inf_key:
+                            auto_name = inf_key.replace("_", " ").title()
+                        elif not auto_name:
+                            auto_name = "Proposed Automation"
+                        item["alias"] = auto_name
+
+                        pending_items.append({
+                            "type": "automation",
+                            "name": auto_name,
+                            "yaml_data": item,
+                        })
+
+                    elif has_sequence or (has_actions and not has_triggers):
+                        alias = item.get("alias")
+                        if not alias and inf_key:
+                            alias = inf_key.replace("_", " ").title()
+                        elif not alias:
+                            u_low = (user_text or "").lower()
+                            if any(w in u_low for w in ("media", "audio", "matrix", "speaker", "music", "volume", "sound")):
+                                alias = "Media Matrix Zone Coordinator"
+                            elif any(w in u_low for w in ("light", "lamp", "dimmer")):
+                                alias = "Smart Lighting Coordinator"
+                            elif any(w in u_low for w in ("climate", "temp", "thermostat", "hvac")):
+                                alias = "Climate Zone Coordinator"
+                            elif any(w in u_low for w in ("security", "lock", "alarm", "perimeter")):
+                                alias = "Perimeter Security Coordinator"
+                            else:
+                                alias = "Otis System Routine"
+                        item["alias"] = alias
+                        script_key = inf_key or re.sub(r"\W+", "_", alias.lower()).strip("_")
+                        pending_items.append({
+                            "type": "script",
+                            "id": script_key,
+                            "name": alias,
+                            "yaml_data": item,
+                        })
+
+            except Exception as yaml_err:
+                _LOGGER.debug("Failed to parse YAML block: %s", yaml_err)
+
+        cleaned_speech = speech_text
+
+        if pending_items:
+            patterns_to_remove = [
+                r"(?i)(?:to\s+(?:add|use|install|implement|deploy)\s+this(?:\s+automation)?,\s+)?(?:open|paste|add|copy)\s+(?:the\s+following(?:\s+code|\s+yaml)?\s+(?:in|into|to)\s+)?(?:your\s+)?(?:/config/)?automations\.yaml(?:\s+file)?(?:\s+and\s+(?:reload|restart)[^.\n]*)?[.]?",
+                r"(?i)you\s+(?:can|will\s+need\s+to|must)\s+(?:add|paste|put)\s+this\s+(?:in|into|to)\s+(?:your\s+)?(?:/config/)?automations\.yaml[^.\n]*[.]?",
+                r"(?i)(?:i\s+cannot|i'm\s+unable\s+to|i\s+am\s+unable\s+to)\s+(?:directly\s+)?deploy[^.\n]*[.]?",
+                r"(?i)to\s+deploy\s+(?:it|this)\s+(?:manually|yourself)[^.\n]*[.]?",
+            ]
+            for pat in patterns_to_remove:
+                cleaned_speech = re.sub(pat, "", cleaned_speech)
+
+            cleaned_speech = cleaned_speech.rstrip()
+
+            names_summary = ", ".join(f"'{item['name']}'" for item in pending_items)
+            if len(pending_items) == 1 and pending_items[0]["type"] == "automation":
+                confirm_text = f"\n\nWould you like me to create and enable this automation '{pending_items[0]['name']}' in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
+            elif len(pending_items) == 1 and pending_items[0]["type"] == "script":
+                confirm_text = f"\n\nWould you like me to create this script '{pending_items[0]['name']}' (`script.{pending_items[0]['id']}`) in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
+            else:
+                confirm_text = f"\n\nWould you like me to create and configure these {len(pending_items)} items ({names_summary}) in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
+
+            if "Would you like me to create" not in cleaned_speech and "Say 'yes' or 'apply'" not in cleaned_speech:
+                cleaned_speech += confirm_text
+
+        return pending_items, cleaned_speech
+
     async def async_process(
         self, user_input: conversation.UserInput
     ) -> conversation.ConversationResult:
@@ -2238,9 +2374,34 @@ class OtisAIConversationAgent(AbstractAgent):
         confirmations = {"yes", "y", "apply", "confirm", "go ahead", "do it"}
         rejections = {"no", "n", "cancel", "don't", "stop", "reject"}
 
+        is_rejection = (
+            user_text in rejections
+            or any(k in user_text for k in ("cancel", "don't", "dont", "abort", "discard", "nevermind", "do not deploy", "don't deploy"))
+        )
+        is_confirmation = not is_rejection and (
+            user_text in confirmations
+            or any(k in user_text for k in (
+                "deploy", "apply", "confirm", "go ahead", "do it", "yes", "install",
+                "create it", "set it up", "add it", "deploy it", "deploy this",
+                "deploy automation", "create this", "create automation"
+            ))
+        )
+
+        # If not already pending in session, check if user is asking to deploy a configuration from the immediate prior turn
+        if not (session_data.get("pending_items") or session_data.get("pending_yaml")) and is_confirmation:
+            history = session_data.get("history", [])
+            for turn in reversed(history):
+                if turn.get("role") == "assistant" and "```" in turn.get("text", ""):
+                    recovered_items, _ = self._extract_pending_items_from_speech(turn["text"], user_input.text)
+                    if recovered_items:
+                        session_data["pending_items"] = recovered_items
+                        session_data["pending_yaml"] = recovered_items[0]
+                        _LOGGER.info("Recovered %d pending item(s) from prior conversation turn for deployment", len(recovered_items))
+                        break
+
         # Check for pending wizard confirmation (single or multi-item configuration)
         if session_data.get("pending_items") or session_data.get("pending_yaml"):
-            if user_text in confirmations:
+            if is_confirmation:
                 items = session_data.pop("pending_items", None)
                 if not items:
                     p = session_data.pop("pending_yaml", None)
@@ -2295,7 +2456,7 @@ class OtisAIConversationAgent(AbstractAgent):
                     err_speech = f"I encountered an error while writing the configuration: {err}. Please check the logs."
                     self._record_turn(session_data, user_input.text, err_speech)
                     return self._create_response(user_input, err_speech)
-            elif user_text in rejections:
+            elif is_rejection:
                 session_data.pop("pending_items", None)
                 session_data.pop("pending_yaml", None)
                 msg = "Okay, I have discarded the proposed configuration."
@@ -2728,7 +2889,11 @@ class OtisAIConversationAgent(AbstractAgent):
         # 1. Resolve prioritized AI agent cascade (Primary + Fallbacks)
         options = self.entry.options
         data = self.entry.data
-        configured_agent = options.get(CONF_CONVERSATION_AGENT) or data.get(CONF_CONVERSATION_AGENT)
+        req_agent = getattr(user_input, "agent_id", None)
+        if isinstance(req_agent, str) and req_agent and req_agent != getattr(self.entry, "entry_id", None):
+            configured_agent = req_agent
+        else:
+            configured_agent = options.get(CONF_CONVERSATION_AGENT) or data.get(CONF_CONVERSATION_AGENT)
 
         prioritized_agents = await async_get_prioritized_agents(self.hass, preferred_agent_id=configured_agent)
 
@@ -3054,28 +3219,45 @@ CONVERSATION DISCIPLINE & FOCUS:
 - Proactive Recommendations:
 {suggestions_summary}
 
-Instructions for Automations & Scripts:
-1. Cohesive End-to-End Orchestration:
-   - When creating or recommending a new script to elevate a maturity dimension or solve an architectural need (such as a matrix audio router, lighting coordinator, or bedtime flow):
-     * ALWAYS provide the script with descriptive `alias: 'Descriptive Name'` and `sequence:`.
-     * ALWAYS inspect "Existing Automations" and "Existing Scripts": if an existing automation or script needs to be updated to utilize, trigger, or call this new script (or if a new caller automation is needed, such as wall switch press, schedule, or presence arrival trigger), provide that automation YAML block as well!
-     * Provide each automation and script in its own clean ```yaml code block so Otis can create the script AND update the calling automations together!
-2. Reason deeply over the home's hardware topology:
+CRITICAL INSTRUCTIONS FOR AUTOMATIONS & SCRIPTS:
+1. Autonomous Co-Pilot Deployment & Offer:
+   - You are the active, fully integrated smart home co-pilot with autonomous deployment capability. Otis will automatically prompt the user with a 1-click button to deploy and enable any automation or script you propose.
+   - NEVER tell the user to manually edit or paste code into `automations.yaml`, `scripts.yaml`, or `configuration.yaml`.
+   - NEVER tell the user to "do it yourself", "open automations.yaml", "add this to your configuration", or "restart Home Assistant manually".
+   - NEVER say "I cannot deploy automations" or claim you lack deployment capabilities. You CAN and DO deploy them via Otis's built-in deployment engine!
+   - ALWAYS state that you have drafted the configuration and offer to deploy and enable it immediately for them.
+
+2. GUI-Compatible Automation Format (Visual Automation Editor Ready):
+   - Provide all automations strictly in standard Home Assistant GUI YAML format (clean standalone dictionary):
+     * Start directly with `alias: "Descriptive Name"` and `description: "Clear explanation"`.
+     * Use standard Home Assistant keys: `triggers:` (or `trigger:`), `conditions:` (or `condition:`), `actions:` (or `action:`), and `mode:`.
+     * DO NOT prefix the block with a list dash (`- id:` or `- alias:`).
+     * DO NOT manually define an `id:` field. Otis automatically provisions unique persistent IDs and registers the automation with Home Assistant so it is 100% editable in the GUI Automation Editor (Settings → Automations & Scenes)!
+     * Always enclose the automation in its own clean ```yaml ... ``` code block.
+
+3. Script Format & Multi-Item Orchestration:
+   - When creating or recommending scripts, provide each script in its own clean ```yaml ... ``` block starting with `alias: "Descriptive Name"`, `sequence:` (or `actions:`), `mode:`, etc.
+   - If an automation needs to call the script, provide both the script block AND the calling automation block in separate clean ```yaml blocks so Otis can deploy both together.
+
+4. Reason deeply over the home's hardware topology:
    - When a Multi-Zone Matrix Amplifier (such as Control4) is present, audio is played on an upstream input streamer (`media_player.bridge`, Music Assistant) AND routed to output room zones via `media_player.select_source` + `media_player.volume_set`.
    - When designing security automations, coordinate `alarm_control_panel`, `lock.*`, `cover.*` garage doors, `siren.*`, and presence/occupancy sensors.
-3. Complete Spatial, Floor Level & Climate Grounding:
-   - When asked where a room is, how it is connected, or which thermostat/devices control it:
-     * Check "Complete Area & Room Breakdown", "Discovered Climate & HVAC Architecture", and "Spatial Adjacency".
-     * Always accurately identify room locations, floor levels (Upper Floor vs Ground Floor), adjacent rooms (and door vs open connections), and corresponding zone thermostats without hallucination!
-     * NEVER recommend creating or referencing non-existent room thermostats (such as `climate.guest_room`). The home operates on central dual-zone HVAC: Guest Room is upstairs and conditioned by `climate.upstairs`.
-     * When analyzing whole-home modes (like `input_boolean.guest_mode`), inspect the real cross-referenced automations: lock codes ('Security: Manage Guest Lock Code'), bedtime lighting ('Lighting: Lights Off at Bed' using scheduled 22:00 trigger for guests who do not have SleepNumber bed occupancy sensors), and how climate handles absence of primary residents.
-4. Blueprint Automation Architecture Rules:
+
+5. Complete Spatial, Floor Level & Climate Grounding:
+   - Check "Complete Area & Room Breakdown", "Discovered Climate & HVAC Architecture", and "Spatial Adjacency".
+   - Always accurately identify room locations, floor levels (Upper Floor vs Ground Floor), adjacent rooms (and door vs open connections), and corresponding zone thermostats without hallucination!
+   - NEVER recommend creating or referencing non-existent room thermostats (such as `climate.guest_room`). The home operates on central dual-zone HVAC: Guest Room is upstairs and conditioned by `climate.upstairs`.
+   - When analyzing whole-home modes (like `input_boolean.guest_mode`), inspect the real cross-referenced automations: lock codes ('Security: Manage Guest Lock Code'), bedtime lighting ('Lighting: Lights Off at Bed' using scheduled 22:00 trigger for guests who do not have SleepNumber bed occupancy sensors), and how climate handles absence of primary residents.
+
+6. Blueprint Automation Architecture Rules:
    - When an automation uses blueprints (`use_blueprint:` with a blueprint path):
      * The automation's logic (triggers, conditions, sequences) lives in the blueprint file (`/config/blueprints/automation/<path>`), NOT in `automations.yaml`!
      * In `automations.yaml`, ONLY the blueprint input parameters (`input:`) can be configured.
      * NEVER inject top-level `triggers:`, `conditions:`, or `actions:` directly into a blueprint automation entry in `automations.yaml`—Home Assistant will reject it and fail setup.
-     * To modify logic for blueprint-backed automations, propose editing the blueprint YAML file itself, or propose unlinking it into a clean native standalone automation in `automations.yaml`!
-5. Keep your responses concise, structured, and actionable.
+     * To modify logic for blueprint-backed automations, propose editing the blueprint YAML file itself, or propose unlinking it into a clean native standalone automation in GUI format!
+
+7. Concise, Actionable Responses:
+   - Keep conversational commentary brief. Present the GUI-ready YAML block cleanly and proactively conclude by offering to deploy and enable it for the user.
 
 User: {user_input.text}
 """
@@ -3194,8 +3376,10 @@ User: {user_input.text}
                         local_res = await self.local_llm_manager.async_generate(
                             prompt=prompt,
                             system_prompt=(
-                                "You are Otis AI, the ultimate proactive smart home companion. "
-                                "Analyze the home's active state and respond concisely and actionably."
+                                "You are Otis AI, the ultimate proactive smart home companion and butler. "
+                                "Analyze the home's active state and respond concisely and actionably. "
+                                "Provide automations strictly in Home Assistant GUI YAML format (clean top-level dict starting with alias:, description:, triggers:, conditions:, actions:, mode: without - id: or leading dashes). "
+                                "Never tell the user to edit automations.yaml themselves; always offer to deploy and enable it for them."
                             ),
                             timeout=reasoning_timeout,
                         )
@@ -3252,69 +3436,12 @@ User: {user_input.text}
         try:
             speech_text = result.response.speech.get("plain", {}).get("speech", "")
             if speech_text:
-                yaml_blocks = re.findall(r"```(?:yaml)?\n(.*?)```", speech_text, re.DOTALL)
-                pending_items = []
-                for block in yaml_blocks:
-                    try:
-                        parsed = yaml.safe_load(block)
-                        if isinstance(parsed, dict):
-                            inferred_key = None
-                            if len(parsed) == 1 and not ("sequence" in parsed or "trigger" in parsed or "action" in parsed):
-                                single_key = next(iter(parsed.keys()))
-                                single_val = parsed[single_key]
-                                if isinstance(single_val, dict) and ("sequence" in single_val or "action" in single_val or "trigger" in single_val):
-                                    inferred_key = single_key
-                                    if "alias" not in single_val:
-                                        single_val["alias"] = single_key.replace("_", " ").title()
-                                    parsed = single_val
-
-                            if "trigger" in parsed or "action" in parsed:
-                                auto_name = parsed.get("alias", (inferred_key.replace("_", " ").title() if inferred_key else "Proposed Automation"))
-                                parsed["alias"] = auto_name
-                                pending_items.append({
-                                    "type": "automation",
-                                    "name": auto_name,
-                                    "yaml_data": parsed,
-                                })
-                            elif "sequence" in parsed:
-                                alias = parsed.get("alias")
-                                if not alias and inferred_key:
-                                    alias = inferred_key.replace("_", " ").title()
-                                elif not alias:
-                                    user_low = user_input.text.lower()
-                                    if any(w in user_low for w in ("media", "audio", "matrix", "speaker", "music", "volume", "sound")):
-                                        alias = "Media Matrix Zone Coordinator"
-                                    elif any(w in user_low for w in ("light", "lamp", "dimmer")):
-                                        alias = "Smart Lighting Coordinator"
-                                    elif any(w in user_low for w in ("climate", "temp", "thermostat", "hvac")):
-                                        alias = "Climate Zone Coordinator"
-                                    elif any(w in user_low for w in ("security", "lock", "alarm", "perimeter")):
-                                        alias = "Perimeter Security Coordinator"
-                                    else:
-                                        alias = "Otis System Routine"
-                                parsed["alias"] = alias
-                                script_key = inferred_key or re.sub(r"\W+", "_", alias.lower()).strip("_")
-                                pending_items.append({
-                                    "type": "script",
-                                    "id": script_key,
-                                    "name": alias,
-                                    "yaml_data": parsed,
-                                })
-                    except Exception as yaml_err:
-                        _LOGGER.debug("Failed to parse YAML block: %s", yaml_err)
-
+                pending_items, cleaned_speech = self._extract_pending_items_from_speech(speech_text, user_input.text)
                 if pending_items:
                     session_data["pending_items"] = pending_items
                     session_data["pending_yaml"] = pending_items[0]
                     _LOGGER.debug("Stored %d pending configuration item(s): %s", len(pending_items), pending_items)
-                    names_summary = ", ".join(f"'{item['name']}'" for item in pending_items)
-                    if len(pending_items) == 1 and pending_items[0]["type"] == "automation":
-                        confirm_text = f"\n\nWould you like me to create and enable this automation '{pending_items[0]['name']}' in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
-                    elif len(pending_items) == 1 and pending_items[0]["type"] == "script":
-                        confirm_text = f"\n\nWould you like me to create this script '{pending_items[0]['name']}' (`script.{pending_items[0]['id']}`) in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
-                    else:
-                        confirm_text = f"\n\nWould you like me to create and configure these {len(pending_items)} items ({names_summary}) in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
-                    result.response.speech["plain"]["speech"] += confirm_text
+                    result.response.speech["plain"]["speech"] = cleaned_speech
         except Exception as parse_err:
             _LOGGER.error("Error parsing LLM response for YAML: %s", parse_err)
 

@@ -59,36 +59,50 @@ class AutomationManager:
         """Add or update an automation in automations.yaml."""
         automations = await self.async_read_automations()
         
-        target_id = automation_data.get("id")
-        target_alias = automation_data.get("alias")
+        # Clean temporary internal keys
+        clean_data = {k: v for k, v in automation_data.items() if not str(k).startswith("_")}
+        target_id = clean_data.get("id")
+        target_alias = clean_data.get("alias")
 
         # Find existing automation by ID or by exact alias
         index = -1
         for i, auto in enumerate(automations):
-            if target_id and auto.get("id") == target_id:
+            if not isinstance(auto, dict):
+                continue
+            if target_id and str(auto.get("id")) == str(target_id):
                 index = i
                 break
             if target_alias and auto.get("alias") == target_alias:
                 index = i
                 if not target_id and auto.get("id"):
                     target_id = auto.get("id")
-                    automation_data["id"] = target_id
+                    clean_data["id"] = target_id
                 break
 
         if not target_id:
-            target_id = str(int(time.time()))
+            existing_ids = {str(a.get("id")) for a in automations if isinstance(a, dict) and a.get("id")}
+            base_id = str(int(time.time()))
+            candidate_id = base_id
+            suffix = 1
+            while candidate_id in existing_ids:
+                candidate_id = f"{base_id}_{suffix}"
+                suffix += 1
+            target_id = candidate_id
+            clean_data["id"] = target_id
             automation_data["id"] = target_id
-            _LOGGER.debug("Generated new ID for automation: %s", target_id)
+            _LOGGER.debug("Generated unique ID for automation: %s", target_id)
+        else:
+            automation_data["id"] = target_id
 
         if index >= 0:
-            automations[index] = automation_data
+            automations[index] = clean_data
             _LOGGER.debug("Updated existing automation %s ('%s')", target_id, target_alias)
         else:
-            automations.append(automation_data)
+            automations.append(clean_data)
             _LOGGER.debug("Appended new automation %s ('%s')", target_id, target_alias)
 
         await self.hass.async_add_executor_job(self._write_yaml_file, self.automations_path, automations)
-        return target_id
+        return str(target_id)
 
     async def async_write_script(self, script_key: str, script_data: dict[str, Any]) -> None:
         """Add or update a script in scripts.yaml."""

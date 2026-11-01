@@ -665,6 +665,146 @@ class TestOtisAICore(unittest.TestCase):
         user_input.create_response.assert_called_once()
         self.assertIn("successfully created and enabled the automation", user_input.create_response.call_args[1]["speech"])
 
+    def test_conversation_agent_natural_deploy_confirmation(self):
+        """Test that natural phrasing like 'I want you to deploy this automation' triggers deployment."""
+        from custom_components.otis_ai import OtisAIConversationAgent
+
+        entry = MagicMock()
+        engine = MagicMock()
+        manager = MagicMock()
+        manager.async_write_automation = AsyncMock(return_value="12345")
+        manager.async_reload_automations = AsyncMock()
+
+        agent = OtisAIConversationAgent(self.hass, entry, engine, manager)
+
+        # Pre-populate session with pending automation
+        self.hass.data[DOMAIN] = {
+            "sessions": {
+                "test_conv_id": {
+                    "pending_items": [{
+                        "type": "automation",
+                        "name": "Guest Mode PIN Alerts",
+                        "yaml_data": {"alias": "Guest Mode PIN Alerts", "triggers": [], "actions": []}
+                    }]
+                }
+            }
+        }
+
+        user_input = MagicMock()
+        user_input.text = "I want you to deploy this automation"
+        user_input.conversation_id = "test_conv_id"
+        user_input.create_response = MagicMock(return_value="confirm_response")
+
+        import asyncio
+        result = asyncio.run(agent.async_process(user_input))
+
+        manager.async_write_automation.assert_called_once()
+        manager.async_reload_automations.assert_called_once()
+        self.assertNotIn("pending_items", self.hass.data[DOMAIN]["sessions"]["test_conv_id"])
+        self.assertIn("successfully created and enabled the automation 'Guest Mode PIN Alerts'", user_input.create_response.call_args[1]["speech"])
+
+    def test_conversation_agent_prior_turn_recovery(self):
+        """Test that if pending_items was missed, saying 'deploy this' recovers YAML from previous assistant turn."""
+        from custom_components.otis_ai import OtisAIConversationAgent
+
+        entry = MagicMock()
+        engine = MagicMock()
+        manager = MagicMock()
+        manager.async_write_automation = AsyncMock(return_value="999")
+        manager.async_reload_automations = AsyncMock()
+
+        agent = OtisAIConversationAgent(self.hass, entry, engine, manager)
+
+        prior_assistant_speech = (
+            "Here is the proposed automation:\n"
+            "```yaml\n"
+            "alias: Night Lights Off\n"
+            "triggers:\n"
+            "  - trigger: time\n"
+            "    at: '23:00:00'\n"
+            "actions:\n"
+            "  - action: light.turn_off\n"
+            "    target:\n"
+            "      entity_id: all\n"
+            "```"
+        )
+        self.hass.data[DOMAIN] = {
+            "sessions": {
+                "test_recovery_conv": {
+                    "history": [
+                        {"role": "user", "text": "Turn off lights at 11pm"},
+                        {"role": "assistant", "text": prior_assistant_speech}
+                    ]
+                }
+            }
+        }
+
+        user_input = MagicMock()
+        user_input.text = "Please deploy this automation for me"
+        user_input.conversation_id = "test_recovery_conv"
+        user_input.create_response = MagicMock(return_value="deployed_resp")
+
+        import asyncio
+        result = asyncio.run(agent.async_process(user_input))
+
+        manager.async_write_automation.assert_called_once()
+        self.assertIn("Night Lights Off", manager.async_write_automation.call_args[0][0]["alias"])
+        self.assertIn("successfully created and enabled the automation 'Night Lights Off'", user_input.create_response.call_args[1]["speech"])
+
+    def test_conversation_agent_modern_gui_yaml_and_sanitization(self):
+        """Test modern HA YAML keys (triggers/actions), list syntax (- id:), and speech sanitization."""
+        from custom_components.otis_ai import OtisAIConversationAgent
+
+        entry = MagicMock()
+        engine = MagicMock()
+        engine.async_build_capability_map = AsyncMock(return_value={"integrations": [], "areas": {}, "entities": [], "orphaned_entities": []})
+        manager = MagicMock()
+
+        agent = OtisAIConversationAgent(self.hass, entry, engine, manager)
+
+        raw_llm_speech = (
+            "To add this automation, open your automations.yaml file and paste the following code:\n"
+            "```yaml\n"
+            "- id: '1730000000'\n"
+            "  alias: 'Notification: Guest Mode & PIN Alerts'\n"
+            "  description: 'Notifies Jamie and Amy when Guest Mode is toggled'\n"
+            "  triggers:\n"
+            "    - trigger: state\n"
+            "      entity_id: input_boolean.guest_mode\n"
+            "  actions:\n"
+            "    - action: notify.notify\n"
+            "      data:\n"
+            "        message: 'Guest Mode changed'\n"
+            "```\n"
+            "You can add this to your automations.yaml file and restart Home Assistant manually."
+        )
+
+        mock_llm_response = MagicMock()
+        mock_llm_response.response.speech = {"plain": {"speech": raw_llm_speech}}
+        mock_conversation.async_converse = AsyncMock(return_value=mock_llm_response)
+
+        user_input = MagicMock()
+        user_input.text = "Alert me when guest mode changes"
+        user_input.conversation_id = "test_gui_conv"
+
+        import asyncio
+        result = asyncio.run(agent.async_process(user_input))
+
+        sessions = self.hass.data[DOMAIN]["sessions"]
+        self.assertIn("test_gui_conv", sessions)
+        self.assertIn("pending_items", sessions["test_gui_conv"])
+        items = sessions["test_gui_conv"]["pending_items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["type"], "automation")
+        self.assertEqual(items[0]["name"], "Notification: Guest Mode & PIN Alerts")
+
+        speech = result.response.speech["plain"]["speech"]
+        # Verify manual automations.yaml instructions were stripped
+        self.assertNotIn("open your automations.yaml file", speech)
+        self.assertNotIn("restart Home Assistant manually", speech)
+        # Verify co-pilot deployment offer was appended
+        self.assertIn("Would you like me to create and enable this automation 'Notification: Guest Mode & PIN Alerts'", speech)
+
     def test_conversation_agent_multi_item_orchestration(self):
         """Test that the agent parses multiple YAML blocks (script + automation) and writes both on confirm."""
         from custom_components.otis_ai import OtisAIConversationAgent

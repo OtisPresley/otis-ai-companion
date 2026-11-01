@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.11";
+const CARD_VERSION = "0.1.12";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -5254,10 +5254,32 @@ class OtisCompanionCard extends HTMLElement {
   _renderChatActionButtons(m) {
     if (m.sender !== "otis" || m.isError) return "";
     const txt = m.text || "";
+    if (
+      txt.includes("Would you like me to create and enable this automation") ||
+      (txt.includes("automation") && (txt.includes("Say 'yes' or 'apply'") || txt.includes("Say 'yes' or 'confirm'")))
+    ) {
+      return `
+        <div class="chat-macro-actions">
+          <button type="button" class="macro-action-btn confirm" data-chip="apply">🚀 Deploy & Enable Automation</button>
+          <button type="button" class="macro-action-btn cancel" data-chip="cancel">✕ Cancel</button>
+        </div>
+      `;
+    }
+    if (
+      txt.includes("Would you like me to create this script") ||
+      (txt.includes("script") && (txt.includes("Say 'yes' or 'apply'") || txt.includes("Say 'yes' or 'confirm'")))
+    ) {
+      return `
+        <div class="chat-macro-actions">
+          <button type="button" class="macro-action-btn confirm" data-chip="apply">🚀 Deploy & Enable Script</button>
+          <button type="button" class="macro-action-btn cancel" data-chip="cancel">✕ Cancel</button>
+        </div>
+      `;
+    }
     if (txt.includes("Say 'yes' or 'confirm'") || txt.includes("Say 'yes' or 'apply'")) {
       return `
         <div class="chat-macro-actions">
-          <button type="button" class="macro-action-btn confirm" data-chip="confirm">✅ Confirm & Execute</button>
+          <button type="button" class="macro-action-btn confirm" data-chip="apply">✅ Confirm & Deploy</button>
           <button type="button" class="macro-action-btn cancel" data-chip="cancel">✕ Cancel</button>
         </div>
       `;
