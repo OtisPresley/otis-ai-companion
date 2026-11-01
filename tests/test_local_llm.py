@@ -218,3 +218,57 @@ def test_sentinel_anomaly_diagnosis_local_llm():
     assert "Root Cause" in diag["diagnosis"]
     assert diag["model"] == "qwen2.5:1.5b"
     assert diag["tokens_per_sec"] == 40.0
+
+
+def test_pull_local_llm_model_success():
+    """Test pulling an edge model via Ollama /api/pull."""
+    hass = MagicMock()
+    mgr = LocalLLMManager(hass, url="http://10.0.12.228:11434")
+
+    mock_resp = AsyncMock()
+    mock_resp.status = 200
+    mock_resp.json = AsyncMock(return_value={"status": "success"})
+
+    mock_session = MagicMock()
+    mock_session.post.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_session.post.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("custom_components.otis_ai.local_llm.async_get_clientsession", return_value=mock_session), \
+         patch.object(mgr, "async_health_check", return_value={"status": "online"}):
+        res = asyncio.run(mgr.async_pull_model("qwen2.5:3b"))
+        assert res["success"] is True
+        assert res["model"] == "qwen2.5:3b"
+        assert res["status"] == "success"
+
+
+def test_list_local_llm_models():
+    """Test listing installed models from health check."""
+    hass = MagicMock()
+    mgr = LocalLLMManager(hass)
+
+    with patch.object(mgr, "async_health_check", return_value={"status": "online", "models": ["qwen2.5:3b", "qwen2.5:1.5b"]}):
+        models = asyncio.run(mgr.async_list_models())
+        assert "qwen2.5:3b" in models
+        assert "qwen2.5:1.5b" in models
+
+
+def test_benchmark_custom_model():
+    """Test running benchmark targeting a specific local edge model."""
+    hass = MagicMock()
+    mgr = LocalLLMManager(hass, model="qwen2.5:1.5b")
+    mgr.async_generate = AsyncMock(return_value={
+        "success": True,
+        "response": "Adjust temperature to 71F and dim lights.",
+        "model": "qwen2.5:3b",
+        "tokens_per_sec": 18.5,
+        "tokens_generated": 15,
+    })
+    mgr.async_health_check = AsyncMock(return_value={"status": "online", "provider": "ollama"})
+
+    res = asyncio.run(mgr.async_benchmark(model="qwen2.5:3b"))
+    assert res["success"] is True
+    assert res["model"] == "qwen2.5:3b"
+    assert res["tokens_per_second"] == 18.5
+    mgr.async_generate.assert_called_once()
+    assert mgr.async_generate.call_args[1]["model"] == "qwen2.5:3b"
+

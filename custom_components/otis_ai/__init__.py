@@ -87,10 +87,13 @@ from .const import (
     CONF_LOCAL_LLM_URL,
     CONF_LOCAL_LLM_MODEL,
     CONF_LOCAL_LLM_API_KEY,
+    CONF_REASONING_TIMEOUT,
+    DEFAULT_REASONING_TIMEOUT,
     DEFAULT_LOCAL_LLM_URL,
     DEFAULT_LOCAL_LLM_MODEL,
     SERVICE_TEST_LOCAL_LLM,
     SERVICE_BENCHMARK_LOCAL_LLM,
+    SERVICE_PULL_LOCAL_LLM_MODEL,
 )
 from .local_llm import LocalLLMManager
 from .audio_manager import AudioHandoffManager
@@ -362,11 +365,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     rules_manager = BehavioralRulesManager(hass)
     dashboard_manager = DashboardManager(hass, floorplan_parser=floorplan_parser, rules_manager=rules_manager)
     theme_manager = ThemeManager(hass)
+    reasoning_timeout = float(
+        entry.options.get(CONF_REASONING_TIMEOUT)
+        or entry.data.get(CONF_REASONING_TIMEOUT)
+        or DEFAULT_REASONING_TIMEOUT
+    )
     local_llm_manager = LocalLLMManager(
         hass,
         url=entry.options.get(CONF_LOCAL_LLM_URL) or entry.data.get(CONF_LOCAL_LLM_URL) or DEFAULT_LOCAL_LLM_URL,
         model=entry.options.get(CONF_LOCAL_LLM_MODEL) or entry.data.get(CONF_LOCAL_LLM_MODEL) or DEFAULT_LOCAL_LLM_MODEL,
         api_key=entry.options.get(CONF_LOCAL_LLM_API_KEY) or entry.data.get(CONF_LOCAL_LLM_API_KEY),
+        timeout=reasoning_timeout,
     )
     sentinel_manager = SentinelManager(hass, local_llm_manager=local_llm_manager)
     macro_manager = MacroManager(hass)
@@ -502,8 +511,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if llm_inst:
                 new_url = updated_entry.options.get(CONF_LOCAL_LLM_URL) or updated_entry.data.get(CONF_LOCAL_LLM_URL) or DEFAULT_LOCAL_LLM_URL
                 new_model = updated_entry.options.get(CONF_LOCAL_LLM_MODEL) or updated_entry.data.get(CONF_LOCAL_LLM_MODEL) or DEFAULT_LOCAL_LLM_MODEL
+                new_timeout = float(
+                    updated_entry.options.get(CONF_REASONING_TIMEOUT)
+                    or updated_entry.data.get(CONF_REASONING_TIMEOUT)
+                    or DEFAULT_REASONING_TIMEOUT
+                )
                 llm_inst.url = new_url.rstrip("/")
                 llm_inst.model = new_model
+                llm_inst.timeout = new_timeout
 
     if hasattr(entry, "async_on_unload") and hasattr(entry, "add_update_listener"):
         try:
@@ -996,9 +1011,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 speech = resp_dict.get("speech", {}).get("plain", {}).get("speech", "")
 
         ret_conv_id = getattr(result, "conversation_id", None) or conv_id
+        r_timeout = float(
+            entry.options.get(CONF_REASONING_TIMEOUT)
+            or entry.data.get(CONF_REASONING_TIMEOUT)
+            or DEFAULT_REASONING_TIMEOUT
+        )
         return {
             "response": speech or "I didn't receive a response from the agent.",
             "conversation_id": ret_conv_id,
+            "reasoning_timeout": r_timeout,
         }
 
     async def handle_get_spatial_map(call) -> ServiceResponse:
@@ -1639,7 +1660,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
         llm_mgr = entry_store.get("local_llm_manager", local_llm_manager)
         prompt = call.data.get("prompt")
-        return await llm_mgr.async_benchmark(prompt)
+        model = call.data.get("model")
+        return await llm_mgr.async_benchmark(prompt, model=model)
+
+    async def handle_pull_local_llm(call) -> ServiceResponse:
+        """Handle service call to pull an edge model onto the local Ollama instance."""
+        _LOGGER.debug("Service 'pull_local_llm_model' triggered with: %s", call.data)
+        entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        llm_mgr = entry_store.get("local_llm_manager", local_llm_manager)
+        model_name = call.data.get("model") or "qwen2.5:3b"
+        target_url = call.data.get("url")
+        return await llm_mgr.async_pull_model(model_name, target_url=target_url)
 
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
@@ -1946,6 +1977,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         SERVICE_BENCHMARK_LOCAL_LLM,
         handle_benchmark_local_llm,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_PULL_LOCAL_LLM_MODEL,
+        handle_pull_local_llm,
         supports_response=SupportsResponse.OPTIONAL,
     )
 
@@ -2665,14 +2702,110 @@ class OtisAIConversationAgent(AbstractAgent):
         orphan_domains = Counter(e['domain'] for e in capability_map['orphaned_entities'])
         orphan_summary = ", ".join(f"{count} {domain}s" for domain, count in sorted(orphan_domains.items()))
 
+        # Retrieve configured Assist Co-Pilot reasoning timeout
+        reasoning_timeout = float(
+            self.entry.options.get(CONF_REASONING_TIMEOUT)
+            or self.entry.data.get(CONF_REASONING_TIMEOUT)
+            or DEFAULT_REASONING_TIMEOUT
+        )
+
         # Summarize spatial graph
         spatial_graph = capability_map.get("spatial_graph", {})
         named_adj = spatial_graph.get("named_adjacencies", {})
+        named_adj_detailed = spatial_graph.get("named_adjacencies_detailed", {})
         spatial_summary = "; ".join(
             f"{area} ↔ [{', '.join(nbrs)}]"
             for area, nbrs in named_adj.items()
             if nbrs
         ) or "None configured"
+
+        # Summarize discovered Climate & HVAC topology
+        climate_topo = capability_map.get("climate_topology", {})
+        thermostats = climate_topo.get("thermostats", [])
+        if thermostats:
+            climate_lines = []
+            for t in thermostats:
+                cur_t = f"{t.get('current_temperature')}°F" if t.get('current_temperature') is not None else "N/A"
+                tgt_t = f"{t.get('target_temperature')}°F" if t.get('target_temperature') is not None else ""
+                if not tgt_t and t.get("target_temp_low") is not None:
+                    tgt_t = f"{t.get('target_temp_low')}°F - {t.get('target_temp_high')}°F"
+                target_str = f", target {tgt_t}" if tgt_t else ""
+                climate_lines.append(
+                    f"  • {t['entity_id']} ('{t['name']}') in {t['area_name']} | state: {t['state']}{target_str} (current {cur_t})"
+                )
+            climate_summary = "\n".join(climate_lines)
+        else:
+            climate_summary = "  • No dedicated climate/thermostat entities detected."
+
+        # Summarize Multi-Modal Vision, Presence & Perimeter intelligence
+        vision_topo = capability_map.get("vision_topology", {})
+        presence_data = vision_topo.get("presence", {})
+        occ_areas = presence_data.get("occupied_areas", [])
+        likely_areas = presence_data.get("likely_areas", [])
+        vacant_areas = presence_data.get("vacant_areas", [])
+        cameras_list = vision_topo.get("cameras", [])
+
+        persons_summary = [
+            f"{s.attributes.get('friendly_name', s.entity_id)} ({s.state})"
+            for s in self.hass.states.async_all("person")
+        ]
+        
+        occ_str = f"Occupied: [{', '.join(occ_areas)}]" if occ_areas else "None currently active"
+        likely_str = f" | Likely: [{', '.join(likely_areas)}]" if likely_areas else ""
+        cams_str = ", ".join(f"{c.get('name', c['entity_id'])} in {c.get('area_name', 'unassigned')}" for c in cameras_list[:6]) or "None"
+        
+        vision_presence_summary = (
+            f"  • Household Status: {'Residents Home' if presence_data.get('household_present', True) else 'All Residents Away'}\n"
+            f"  • Persons: {', '.join(persons_summary) or 'None registered'}\n"
+            f"  • Live Room Occupancy: {occ_str}{likely_str}\n"
+            f"  • Vacant Rooms: [{', '.join(vacant_areas[:8])}]\n"
+            f"  • Perimeter Cameras: {cams_str}"
+        )
+
+        # Complete Area & Room Breakdown (Mapping rooms -> spatial connections, climate, devices, sensors)
+        area_breakdown_lines = []
+        area_to_thermo = climate_topo.get("area_to_thermostat", {})
+        primary_thermo = climate_topo.get("primary_thermostat")
+
+        for aid, adata in sorted(capability_map.get("areas", {}).items(), key=lambda x: x[1].get("name", x[0])):
+            aname = adata.get("name", aid)
+            a_entities = adata.get("entities", [])
+            
+            room_thermo = area_to_thermo.get(aid)
+            if room_thermo:
+                climate_str = f"Thermostat: {room_thermo}"
+            elif primary_thermo:
+                climate_str = f"Climate: Covered by primary thermostat ({primary_thermo})"
+            else:
+                climate_str = "Climate: None assigned"
+
+            detailed_nbrs = named_adj_detailed.get(aname, [])
+            if detailed_nbrs:
+                nbr_parts = [f"{d['neighbor']} ({d['type']})" for d in detailed_nbrs]
+                adj_desc = f"Connected to: [{', '.join(nbr_parts)}]"
+            else:
+                nbr_raw = adata.get("adjacent_areas", [])
+                nbr_names = [capability_map.get("areas", {}).get(nid, {}).get("name", nid) for nid in nbr_raw]
+                adj_desc = f"Connected to: [{', '.join(nbr_names)}]" if nbr_names else "Standalone area"
+
+            a_lights = [e for e in a_entities if e.startswith("light.")]
+            a_media = [e for e in a_entities if e.startswith("media_player.")]
+            a_sensors = [e for e in a_entities if e.startswith("binary_sensor.") and any(k in e for k in ("motion", "occupancy", "presence", "door", "contact", "window"))]
+            a_other_controls = [e for e in a_entities if any(e.startswith(p) for p in ("lock.", "cover.", "switch.", "fan.", "vacuum."))]
+
+            entry_parts = [f"• **{aname}** (`{aid}`) | {adj_desc} | {climate_str}"]
+            if a_lights:
+                entry_parts.append(f"    - Lights: {', '.join(a_lights[:4])}")
+            if a_media:
+                entry_parts.append(f"    - Audio/Media: {', '.join(a_media[:2])}")
+            if a_sensors:
+                entry_parts.append(f"    - Sensors: {', '.join(a_sensors[:4])}")
+            if a_other_controls:
+                entry_parts.append(f"    - Controls: {', '.join(a_other_controls[:3])}")
+            
+            area_breakdown_lines.append("\n".join(entry_parts))
+
+        area_breakdown_summary = "\n".join(area_breakdown_lines) or "No areas configured."
 
         # Summarize discovered Media & Matrix Amp topology
         media_topo = capability_map.get("media_topology", {})
@@ -2802,11 +2935,16 @@ CONVERSATION DISCIPLINE & FOCUS:
 {history_snippet}{matched_yaml_context}Here is the current capability and architecture map of the home:
 - System Maturity: {maturity_summary}
 - Key Integrations: {notable_integrations}
-- Areas: {list(capability_map['areas'].keys())}
 - Spatial Adjacency (Connected Rooms): {spatial_summary}
+- Discovered Climate & HVAC Architecture:
+{climate_summary}
+- Discovered Multi-Modal Vision, Presence & Perimeter:
+{vision_presence_summary}
 - Discovered Media & Matrix Audio Architecture: {media_summary}
-- Discovered Security, Presence & Sleep Architecture: {security_summary}
+- Discovered Security & Sleep Architecture: {security_summary}
 - Discovered Energy & Load Topology: {energy_summary}
+- Complete Area & Room Breakdown (Rooms, Adjacencies, Climate & Devices):
+{area_breakdown_summary}
 - Active Entities: {entity_summary}
 - Detailed Control Entities (Actionable): {detailed_entities[:30]}
 - Existing Automations: {existing_automations[:15]}
@@ -2824,7 +2962,11 @@ Instructions for Automations & Scripts:
 2. Reason deeply over the home's hardware topology:
    - When a Multi-Zone Matrix Amplifier (such as Control4) is present, audio is played on an upstream input streamer (`media_player.bridge`, Music Assistant) AND routed to output room zones via `media_player.select_source` + `media_player.volume_set`.
    - When designing security automations, coordinate `alarm_control_panel`, `lock.*`, `cover.*` garage doors, `siren.*`, and presence/occupancy sensors.
-3. Keep your responses concise, structured, and actionable.
+3. Complete Spatial, Climate & Room Grounding:
+   - When asked where a room is, how it is connected, or which thermostat/devices control it:
+     * Check "Complete Area & Room Breakdown", "Discovered Climate & HVAC Architecture", and "Spatial Adjacency".
+     * Always accurately identify room locations, adjacent rooms (and door vs open connections), and corresponding thermostats and devices without hallucination!
+4. Keep your responses concise, structured, and actionable.
 
 User: {user_input.text}
 """
@@ -2837,11 +2979,11 @@ User: {user_input.text}
             for idx, agent_id in enumerate(prioritized_agents):
                 is_primary = (idx == 0)
                 role_label = "Primary" if is_primary else f"Failover #{idx}"
-                _LOGGER.debug("Attempting conversation with %s AI agent: %s", role_label, agent_id)
-                fire_progress("llm", f"Consulting {role_label} AI", f"Reasoning with model '{agent_id}'")
+                _LOGGER.debug("Attempting conversation with %s AI agent: %s (timeout=%ss)", role_label, agent_id, reasoning_timeout)
+                fire_progress("llm", f"Consulting {role_label} AI", f"Reasoning with model '{agent_id}' (max {int(reasoning_timeout)}s)")
 
                 try:
-                    attempt_result = await conversation.async_converse(
+                    converse_coro = conversation.async_converse(
                         hass=self.hass,
                         text=prompt,
                         conversation_id=user_input.conversation_id,
@@ -2850,6 +2992,7 @@ User: {user_input.text}
                         agent_id=agent_id,
                         device_id=user_input.device_id,
                     )
+                    attempt_result = await asyncio.wait_for(converse_coro, timeout=reasoning_timeout)
 
                     resp_type = getattr(attempt_result.response, "response_type", None)
                     speech_text = attempt_result.response.speech.get("plain", {}).get("speech", "")
@@ -2873,6 +3016,20 @@ User: {user_input.text}
                     _LOGGER.info("AI agent '%s' (%s) responded successfully", agent_id, role_label)
                     result = attempt_result
                     break
+                except asyncio.TimeoutError:
+                    _LOGGER.warning(
+                        "%s AI agent '%s' timed out after %ss. Transparently failing over to next agent...",
+                        role_label, agent_id, reasoning_timeout
+                    )
+                    last_error_msg = f"Agent '{agent_id}' timed out after {int(reasoning_timeout)}s"
+                    if idx + 1 < len(prioritized_agents):
+                        next_agent = prioritized_agents[idx + 1]
+                        fire_progress(
+                            "llm",
+                            f"Timeout Failover ({role_label})",
+                            f"Agent '{agent_id}' timed out ({int(reasoning_timeout)}s). Transparently failing over to '{next_agent}'..."
+                        )
+                    continue
                 except Exception as err:
                     _LOGGER.warning(
                         "%s AI agent '%s' raised exception: %s. Transparently failing over...",
@@ -2909,6 +3066,7 @@ User: {user_input.text}
                                 "You are Otis AI, the ultimate proactive smart home companion. "
                                 "Analyze the home's active state and respond concisely and actionably."
                             ),
+                            timeout=reasoning_timeout,
                         )
                         if local_res.get("success") and local_res.get("response"):
                             _LOGGER.info(
@@ -3386,6 +3544,7 @@ class DiscoveryEngine:
         # 6. Discover advanced Media (Matrix Amp / Cinema) & Security topologies + System Maturity
         media_topology = self._discover_media_topology(areas_map, entities_list, active_integrations)
         security_topology = self._discover_security_topology(areas_map, entities_list, active_integrations)
+        climate_topology = self._discover_climate_topology(areas_map, entities_list)
         maturity = self._discover_system_maturity(
             areas_map,
             devices_map,
@@ -3414,6 +3573,7 @@ class DiscoveryEngine:
             },
             "media_topology": media_topology,
             "security_topology": security_topology,
+            "climate_topology": climate_topology,
             "maturity": maturity,
         }
         sentinel_data = {"active_anomalies": [], "count": 0}
@@ -3476,6 +3636,16 @@ class DiscoveryEngine:
         if getattr(self, "rules_manager", None):
             user_rules = self.rules_manager.get_rules()
         cap_map["user_rules"] = user_rules
+
+        reasoning_timeout = DEFAULT_REASONING_TIMEOUT
+        for entry in self.hass.config_entries.async_entries(DOMAIN):
+            reasoning_timeout = float(
+                entry.options.get(CONF_REASONING_TIMEOUT)
+                or entry.data.get(CONF_REASONING_TIMEOUT)
+                or DEFAULT_REASONING_TIMEOUT
+            )
+            break
+        cap_map["reasoning_timeout"] = reasoning_timeout
 
         # Discovered registered Home Assistant users & person entities
         discovered_users = []
@@ -3736,6 +3906,65 @@ class DiscoveryEngine:
             "ready_for_unified_coordinator": bool(
                 alarm_panels or locks or garage_covers or bed_occupancy_sensors
             ),
+        }
+
+    def _discover_climate_topology(
+        self,
+        areas_map: dict[str, Any],
+        entities_list: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Discover HVAC and climate architecture, mapping thermostats to rooms, setpoints, and zones."""
+        climates = [e for e in entities_list if e.get("domain") == "climate"]
+        area_lookup = build_area_lookup_map(areas_map)
+        thermostats = []
+        area_to_thermostat: dict[str, str] = {}
+
+        for c in climates:
+            eid = c["entity_id"]
+            state_obj = self.hass.states.get(eid)
+            attrs = state_obj.attributes if state_obj else {}
+            state_val = state_obj.state if state_obj else c.get("state", "unknown")
+
+            assigned_area_id = c.get("area_id")
+            if not assigned_area_id:
+                name_to_check = f"{eid} {attrs.get('friendly_name', '')}"
+                matched_id = resolve_area_identifier(name_to_check, area_lookup)
+                if not matched_id:
+                    for aid in areas_map:
+                        if aid in eid.lower() or areas_map[aid].get("name", "").lower() in name_to_check.lower():
+                            assigned_area_id = aid
+                            break
+                else:
+                    assigned_area_id = matched_id
+
+            area_name = areas_map.get(assigned_area_id, {}).get("name", "Whole Home / Unassigned") if assigned_area_id else "Whole Home / Unassigned"
+
+            t_info = {
+                "entity_id": eid,
+                "name": attrs.get("friendly_name", c.get("name", eid)),
+                "area_id": assigned_area_id,
+                "area_name": area_name,
+                "state": state_val,
+                "current_temperature": attrs.get("current_temperature"),
+                "target_temperature": attrs.get("temperature"),
+                "target_temp_high": attrs.get("target_temp_high"),
+                "target_temp_low": attrs.get("target_temp_low"),
+                "hvac_action": attrs.get("hvac_action"),
+                "hvac_modes": attrs.get("hvac_modes", []),
+                "preset_mode": attrs.get("preset_mode"),
+                "fan_mode": attrs.get("fan_mode"),
+            }
+            thermostats.append(t_info)
+            if assigned_area_id:
+                area_to_thermostat[assigned_area_id] = eid
+
+        primary_thermostat = thermostats[0]["entity_id"] if thermostats else None
+
+        return {
+            "thermostats": thermostats,
+            "area_to_thermostat": area_to_thermostat,
+            "primary_thermostat": primary_thermostat,
+            "total_count": len(thermostats),
         }
 
     def _discover_system_maturity(

@@ -7,6 +7,29 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-11-01
+
+### Added
+- ⏱️ **Configurable Assist Co-Pilot Reasoning Timeout (`const.py`, `config_flow.py`, `__init__.py`, `otis-companion-card.js`)**:
+  - Added user-configurable `reasoning_timeout` (range 10s - 300s, default 60s) in Integration Options Flow (*Settings ➔ Devices & Services ➔ Otis AI Companion ➔ Configure*).
+  - Enforced timeout via `asyncio.wait_for` during conversation agent converse calls with transparent failover cascading on timeout.
+  - Added reasoning timeout control into Companion Card's "Autonomy & Safety" settings and dynamically scaled card client timeout to match backend setting.
+- 🌡️ **Discovery & Architecture Grounding for Climate & HVAC (`__init__.py`)**:
+  - Added `DiscoveryEngine._discover_climate_topology()` to index all `climate.*` entities, mapping them to areas, current temperatures, target setpoints, HVAC modes, and zone relationships.
+  - Integrated `climate_topology` directly into the Assist Co-Pilot system prompt and capability map.
+- 👁️ **Multi-Modal Vision, Presence & Occupancy Grounding (`__init__.py`)**:
+  - Grounded Assist Co-Pilot prompt with live household status, person locations, occupied rooms (fusing mmWave radar, PIR, media playback), vacant rooms, and perimeter security cameras.
+- 🗺️ **Comprehensive Area & Room Topology Breakdown (`__init__.py` & `spatial_manager.py`)**:
+  - Grounded Assist prompt with complete per-area breakdowns displaying exact room names, door/open adjacency connections, assigned or inherited thermostat coverage, lights, audio, and sensors.
+  - Enhanced spatial manager with topological synonyms (`guest_room` ↔ `guest_bedroom`, `guest_suite`, etc.) and fallback connectivity heuristics to ensure 100% graph connectivity for all registered rooms.
+- ⚡ **Enhanced Local Edge Model Capabilities (`local_llm.py` & `services.yaml`)**:
+  - Pulled and verified `qwen2.5:3b` edge model on Ollama host (`10.0.12.228:11434`), delivering ~15 tokens/sec local smart home reasoning.
+  - Added `async_pull_model` and `async_list_models` to `LocalLLMManager`.
+  - Registered service `otis_ai.pull_local_llm_model` to allow pulling local edge models directly from Home Assistant.
+  - Enhanced `otis_ai.benchmark_local_llm` service with custom `model` parameter.
+
+---
+
 ## [0.1.6] - 2026-11-01
 
 ### Added

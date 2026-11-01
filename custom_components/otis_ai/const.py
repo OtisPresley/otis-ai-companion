@@ -1,12 +1,13 @@
 """Constants for the Otis AI Companion integration."""
 
 DOMAIN = "otis_ai"
-INTEGRATION_VERSION = "0.1.6"
+INTEGRATION_VERSION = "0.1.7"
 
 # Configuration Keys
 CONF_CONVERSATION_AGENT = "conversation_agent"
 CONF_SPATIAL_MAP_PATH = "spatial_map_path"
 CONF_THEME_NAME = "theme_name"
+CONF_REASONING_TIMEOUT = "reasoning_timeout"
 CONF_LOCAL_LLM_ENABLED = "local_llm_enabled"
 CONF_LOCAL_LLM_URL = "local_llm_url"
 CONF_LOCAL_LLM_MODEL = "local_llm_model"
@@ -29,6 +30,7 @@ CAMERA_STRATEGY_ALIASES = {
 # Default Values
 DEFAULT_THEME_NAME = "ha_native"
 DEFAULT_SPATIAL_MAP_PATH = "otis_ai_spatial_map.json"
+DEFAULT_REASONING_TIMEOUT = 60
 DEFAULT_LOCAL_LLM_URL = "http://10.0.12.228:11434"
 DEFAULT_LOCAL_LLM_MODEL = "qwen2.5:3b"
 
@@ -90,6 +92,7 @@ SERVICE_RESTORE_MEDIA = "restore_media"
 SERVICE_GET_VOICE_ASSIST_STATUS = "get_voice_assist_status"
 SERVICE_TEST_LOCAL_LLM = "test_local_llm"
 SERVICE_BENCHMARK_LOCAL_LLM = "benchmark_local_llm"
+SERVICE_PULL_LOCAL_LLM_MODEL = "pull_local_llm_model"
 
 # Dashboard Constants
 COMMAND_CENTER_DASHBOARD_ID = "command-center"

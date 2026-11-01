@@ -801,5 +801,24 @@ benchmark_local_llm:
       selector:
         text:
 
+pull_local_llm_model:
+  name: Pull Local LLM Model
+  description: Pull and download a local LLM model (such as qwen2.5:3b or qwen2.5:7b) onto the local Ollama instance.
+  fields:
+    model:
+      name: Model Name
+      description: The name and tag of the model to pull (e.g. qwen2.5:3b, qwen2.5:7b).
+      required: true
+      example: "qwen2.5:3b"
+      selector:
+        text:
+    url:
+      name: Endpoint URL
+      description: Optional override URL (defaults to configured local LLM URL).
+      required: false
+      example: "http://10.0.12.228:11434"
+      selector:
+        text:
+
 
 

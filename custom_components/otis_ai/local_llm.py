@@ -151,6 +151,57 @@ class LocalLLMManager:
         self._last_health = result
         return result
 
+    async def async_list_models(self, target_url: str | None = None) -> list[str]:
+        """Discover installed models from the local LLM server."""
+        health = await self.async_health_check(target_url=target_url)
+        return health.get("models", [])
+
+    async def async_pull_model(self, model_name: str, target_url: str | None = None) -> dict[str, Any]:
+        """Pull/download a model onto the local Ollama instance."""
+        base_url = (target_url or self.url).rstrip("/")
+        session = self._get_session()
+        headers = self._get_headers()
+        t0 = time.perf_counter()
+
+        try:
+            ollama_url = f"{base_url}/api/pull"
+            _LOGGER.info("Initiating local model pull '%s' on %s...", model_name, base_url)
+            async with session.post(
+                ollama_url,
+                json={"name": model_name, "stream": False},
+                headers=headers,
+                timeout=ClientTimeout(total=600.0),
+            ) as resp:
+                elapsed = round(time.perf_counter() - t0, 1)
+                if resp.status == 200:
+                    data = await resp.json()
+                    status = data.get("status", "success")
+                    _LOGGER.info("Successfully pulled local model '%s' in %ss", model_name, elapsed)
+                    # Refresh health/models cache
+                    await self.async_health_check(target_url=base_url)
+                    return {
+                        "success": True,
+                        "model": model_name,
+                        "status": status,
+                        "duration_s": elapsed,
+                    }
+                err_text = await resp.text()
+                return {
+                    "success": False,
+                    "model": model_name,
+                    "error": f"HTTP {resp.status}: {err_text[:200]}",
+                    "duration_s": elapsed,
+                }
+        except Exception as err:
+            elapsed = round(time.perf_counter() - t0, 1)
+            _LOGGER.error("Failed to pull local model '%s': %s", model_name, err)
+            return {
+                "success": False,
+                "model": model_name,
+                "error": str(err),
+                "duration_s": elapsed,
+            }
+
     async def async_generate(
         self,
         prompt: str,
@@ -158,9 +209,11 @@ class LocalLLMManager:
         model: str | None = None,
         temperature: float = 0.3,
         max_tokens: int = 1024,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         """Send a prompt to the local LLM and return structured output and metrics."""
         chosen_model = model or self.model
+        req_timeout = timeout or self.timeout
         session = self._get_session()
         headers = self._get_headers()
         t0 = time.perf_counter()
@@ -181,6 +234,7 @@ class LocalLLMManager:
                 "temperature": temperature,
                 "num_predict": max_tokens,
                 "num_ctx": 8192,
+                "stop": ["<|im_end|>", "<|endoftext|>", "Observation:", "User:"],
             },
         }
 
@@ -189,7 +243,7 @@ class LocalLLMManager:
                 ollama_endpoint,
                 json=payload,
                 headers=headers,
-                timeout=ClientTimeout(total=self.timeout),
+                timeout=ClientTimeout(total=req_timeout),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -265,8 +319,9 @@ class LocalLLMManager:
                 "total_duration_s": round(time.perf_counter() - t0, 2),
             }
 
-    async def async_benchmark(self, prompt: str | None = None) -> dict[str, Any]:
+    async def async_benchmark(self, prompt: str | None = None, model: str | None = None) -> dict[str, Any]:
         """Run a standardized smart home reasoning benchmark against the local LLM."""
+        target_model = model or self.model
         test_prompt = prompt or (
             "You are Otis AI, a smart home co-pilot. "
             "Living Room: Motion detected, ambient light is 15 lux, temperature is 74F, target is 71F. "
@@ -276,6 +331,7 @@ class LocalLLMManager:
         result = await self.async_generate(
             prompt=test_prompt,
             system_prompt="You are a smart home automation expert. Be concise and actionable.",
+            model=target_model,
             max_tokens=150,
         )
         total_time = round(time.perf_counter() - t0, 2)
@@ -283,7 +339,7 @@ class LocalLLMManager:
 
         return {
             "success": result.get("success", False),
-            "model": result.get("model", self.model),
+            "model": result.get("model", target_model),
             "provider": result.get("provider", health.get("provider")),
             "tokens_per_second": result.get("tokens_per_sec", 0.0),
             "tokens_generated": result.get("tokens_generated", 0),

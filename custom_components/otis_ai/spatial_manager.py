@@ -41,6 +41,17 @@ DEFAULT_ADJACENCY_PAIRS = [
     ("backyard", "pool", "open"),
 ]
 
+AREA_SYNONYM_MAPPINGS = {
+    "guest_room": ("guest_bedroom", "guest_suite", "guest_bath", "guest", "bedroom_2", "bedroom_3", "guestroom"),
+    "master": ("master_bedroom", "primary_bedroom", "primary", "master_bed", "main_bedroom"),
+    "great_room": ("living_room", "family_room", "living", "lounge", "main_room"),
+    "hallway": ("hall", "corridor", "upstairs_hallway", "downstairs_hallway", "upstairs", "downstairs", "landing"),
+    "study": ("office", "den", "library", "workroom"),
+    "downstairs_bath": ("powder_room", "half_bath", "guest_bath", "bath_2"),
+    "backyard": ("patio", "deck", "porch", "yard", "terrace"),
+    "frontyard": ("front_porch", "porch", "driveway", "entryway"),
+}
+
 
 MOTION_KEYWORDS = ("motion", "occupancy", "presence")
 CONTACT_KEYWORDS = ("door", "window", "contact", "opening")
@@ -191,6 +202,25 @@ class SpatialGraphManager:
         await self._store.async_save(data)
         _LOGGER.debug("Saved %d spatial connections to storage", len(self._connections))
 
+    def _resolve_key_with_synonyms(self, key_norm: str, norm_to_area_id: dict[str, str]) -> str:
+        """Resolve an area key checking direct matches, affixes, and synonym mappings."""
+        resolved = resolve_area_identifier(key_norm, norm_to_area_id)
+        if resolved:
+            return resolved
+        for k, v in norm_to_area_id.items():
+            if k.endswith(f"_{key_norm}") or k.startswith(f"{key_norm}_"):
+                return v
+
+        synonyms = AREA_SYNONYM_MAPPINGS.get(key_norm, ())
+        for syn in synonyms:
+            syn_id = resolve_area_identifier(syn, norm_to_area_id)
+            if syn_id:
+                return syn_id
+            for k, v in norm_to_area_id.items():
+                if syn in k:
+                    return v
+        return ""
+
     def _infer_default_connections(self) -> list[dict[str, str]]:
         """Infer default area connections matching registered areas in Home Assistant."""
         area_reg = ar.async_get(self.hass)
@@ -201,18 +231,9 @@ class SpatialGraphManager:
         seen_pairs: set[tuple[str, str]] = set()
 
         for a1_norm, a2_norm, conn_type in DEFAULT_ADJACENCY_PAIRS:
-            id1 = resolve_area_identifier(a1_norm, norm_to_area_id)
-            if not id1:
-                for k, v in norm_to_area_id.items():
-                    if k.endswith(f"_{a1_norm}") or k.startswith(f"{a1_norm}_"):
-                        id1 = v
-                        break
-            id2 = resolve_area_identifier(a2_norm, norm_to_area_id)
-            if not id2:
-                for k, v in norm_to_area_id.items():
-                    if k.endswith(f"_{a2_norm}") or k.startswith(f"{a2_norm}_"):
-                        id2 = v
-                        break
+            id1 = self._resolve_key_with_synonyms(a1_norm, norm_to_area_id)
+            id2 = self._resolve_key_with_synonyms(a2_norm, norm_to_area_id)
+
             if id1 and id2:
                 pair = tuple(sorted([id1, id2]))
                 if pair not in seen_pairs and id1 != id2:
@@ -222,6 +243,42 @@ class SpatialGraphManager:
                         "area_2": pair[1],
                         "type": conn_type,
                     })
+
+        # Identify central hub rooms for fallback linking of stranded areas
+        hub_hallway = self._resolve_key_with_synonyms("hallway", norm_to_area_id)
+        hub_living = self._resolve_key_with_synonyms("great_room", norm_to_area_id)
+        hub_foyer = self._resolve_key_with_synonyms("foyer", norm_to_area_id)
+        default_hub = hub_hallway or hub_living or hub_foyer or (existing_areas[0].id if existing_areas else None)
+
+        # Connect any registered area that has 0 connections
+        connected_ids = {c["area_1"] for c in connections} | {c["area_2"] for c in connections}
+        for a in existing_areas:
+            aid = getattr(a, "id", "")
+            if not aid or aid in connected_ids:
+                continue
+            aname = str(getattr(a, "name", "") or aid).lower()
+            target_hub = default_hub
+            conn_type = "door"
+            if any(k in aname for k in ("bed", "bath", "guest", "room", "closet")):
+                target_hub = hub_hallway or default_hub
+                conn_type = "door"
+            elif any(k in aname for k in ("dining", "kitchen", "family", "media", "theater", "lounge")):
+                target_hub = hub_living or default_hub
+                conn_type = "open"
+            elif any(k in aname for k in ("entry", "porch", "patio", "yard", "garage")):
+                target_hub = hub_foyer or hub_living or default_hub
+                conn_type = "door"
+
+            if target_hub and target_hub != aid:
+                pair = tuple(sorted([aid, target_hub]))
+                if pair not in seen_pairs:
+                    seen_pairs.add(pair)
+                    connections.append({
+                        "area_1": pair[0],
+                        "area_2": pair[1],
+                        "type": conn_type,
+                    })
+                    connected_ids.add(aid)
 
         _LOGGER.info(
             "Inferred %d default spatial connections across %d registered areas",
@@ -277,15 +334,28 @@ class SpatialGraphManager:
 
         # Build human-readable neighbor summary
         named_adjacencies: dict[str, list[str]] = {}
+        named_adjacencies_detailed: dict[str, list[dict[str, str]]] = {}
         for aid, neighbors in adjacencies.items():
             area_name = id_to_name.get(aid, aid)
             named_neighbors = [id_to_name.get(n, n) for n in neighbors]
             named_adjacencies[area_name] = named_neighbors
 
+            detailed = []
+            for n in neighbors:
+                n_name = id_to_name.get(n, n)
+                conn_type = "open"
+                for c in self._connections:
+                    if (c.get("area_1") == aid and c.get("area_2") == n) or (c.get("area_1") == n and c.get("area_2") == aid):
+                        conn_type = c.get("type", "open")
+                        break
+                detailed.append({"neighbor": n_name, "neighbor_id": n, "type": conn_type})
+            named_adjacencies_detailed[area_name] = detailed
+
         return {
             "connections": list(self._connections),
             "adjacencies": adjacencies,
             "named_adjacencies": named_adjacencies,
+            "named_adjacencies_detailed": named_adjacencies_detailed,
             "area_count": len(area_meta),
             "connection_count": len(self._connections),
         }

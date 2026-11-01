@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.6";
+const CARD_VERSION = "0.1.7";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -1073,10 +1073,12 @@ class OtisCompanionCard extends HTMLElement {
       return speech || "I'm here to assist, but received an empty response.";
     })();
 
+    const configuredTimeout = (this._config && this._config.reasoning_timeout) || (this._capabilityMap && this._capabilityMap.reasoning_timeout) || 60;
+    const clientTimeoutMs = (configuredTimeout + 15) * 1000;
     const timeoutPromise = new Promise((_, reject) =>
       setTimeout(
-        () => reject(new Error("Request timed out after 120 seconds. Please try again.")),
-        120000
+        () => reject(new Error(`Assist Co-Pilot reasoning timed out after ${configuredTimeout} seconds. Please verify your AI provider or check failover cascades.`)),
+        clientTimeoutMs
       )
     );
 
@@ -6909,6 +6911,21 @@ class OtisCompanionCard extends HTMLElement {
             <input type="checkbox" id="rules-input-sec-confirm" ${requireSec ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
           </label>
         </div>
+
+        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 8px;">Assist Co-Pilot Reasoning Timeout:</div>
+        <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 8px;">
+          <div>
+            <div class="rules-setting-label">Reasoning &amp; Failover Timeout</div>
+            <div class="rules-setting-desc">Maximum seconds Otis will wait for cloud LLM reasoning before transparently cascading to the next agent or local edge LLM.</div>
+          </div>
+          <div style="display: flex; align-items: center; gap: 10px; width: 100%;">
+            <input type="number" id="rules-input-reasoning-timeout" min="10" max="300" step="5" value="${rules.reasoning_timeout || (this._capabilityMap && this._capabilityMap.reasoning_timeout) || (this._config && this._config.reasoning_timeout) || 60}" style="width: 90px; padding: 6px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+            <span style="font-size: 0.78rem; color: var(--otis-text-muted);">seconds (default: 60s)</span>
+          </div>
+          <div style="font-size: 0.72rem; color: var(--otis-text-muted);">
+            Configurable system-wide in <em>Settings ➔ Devices &amp; Services ➔ Otis AI Companion ➔ Configure</em>.
+          </div>
+        </div>
       </div>
     `;
   }
@@ -8247,6 +8264,8 @@ class OtisCompanionCard extends HTMLElement {
             if (quietVol) draft.quiet_hours_volume = parseInt(quietVol.value, 10);
             if (speakerInput) draft.preferred_speaker = speakerInput.value.trim();
             if (showIgnoredCheck) draft.show_ignored_recommendations = showIgnoredCheck.checked;
+            const timeoutInput = root.querySelector("#rules-input-reasoning-timeout");
+            if (timeoutInput && timeoutInput.value) draft.reasoning_timeout = parseInt(timeoutInput.value, 10);
 
             const payload = {
               ...draft,

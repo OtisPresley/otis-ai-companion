@@ -4203,6 +4203,49 @@ class TestModernSectionsDashboardGeneration(unittest.TestCase):
 
         asyncio.run(_run_multi_satellite_stress())
 
+    def test_discover_climate_topology(self):
+        """Test DiscoveryEngine discovers climate entities, setpoints, and area mapping."""
+        areas_map = {
+            "guest_bedroom": {"name": "Guest Bedroom", "entities": []},
+            "living_room": {"name": "Living Room", "entities": []},
+        }
+        entities_list = [
+            {"entity_id": "climate.guest_room", "name": "Guest Thermostat", "domain": "climate", "area_id": "guest_bedroom"},
+            {"entity_id": "climate.main_floor", "name": "Main Floor", "domain": "climate", "area_id": "living_room"},
+        ]
+
+        class MockClimateState:
+            def __init__(self, state, attrs):
+                self.state = state
+                self.attributes = attrs
+
+        self.hass.states.get = MagicMock(side_effect=lambda eid: {
+            "climate.guest_room": MockClimateState("heat_cool", {"current_temperature": 69, "temperature": 70, "friendly_name": "Guest Thermostat"}),
+            "climate.main_floor": MockClimateState("cool", {"current_temperature": 72, "temperature": 71, "friendly_name": "Main Floor"}),
+        }.get(eid))
+
+        engine = DiscoveryEngine(self.hass)
+        topo = engine._discover_climate_topology(areas_map, entities_list)
+
+        self.assertEqual(topo["total_count"], 2)
+        self.assertEqual(topo["area_to_thermostat"].get("guest_bedroom"), "climate.guest_room")
+        self.assertEqual(topo["area_to_thermostat"].get("living_room"), "climate.main_floor")
+        guest_t = next(t for t in topo["thermostats"] if t["entity_id"] == "climate.guest_room")
+        self.assertEqual(guest_t["current_temperature"], 69)
+        self.assertEqual(guest_t["target_temperature"], 70)
+        self.assertEqual(guest_t["area_name"], "Guest Bedroom")
+
+    def test_spatial_synonyms_and_connectivity(self):
+        """Test SpatialGraphManager resolves area synonyms like guest_bedroom to guest_room."""
+        from custom_components.otis_ai.spatial_manager import SpatialGraphManager
+        mgr = SpatialGraphManager(self.hass)
+        norm_map = {
+            "guest_bedroom": "area_guest_bedroom_id",
+            "hallway": "area_hallway_id",
+        }
+        resolved = mgr._resolve_key_with_synonyms("guest_room", norm_map)
+        self.assertEqual(resolved, "area_guest_bedroom_id")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,6 +17,7 @@ from .const import (
     CONF_CONVERSATION_AGENT,
     CONF_SPATIAL_MAP_PATH,
     CONF_THEME_NAME,
+    CONF_REASONING_TIMEOUT,
     CONF_LOCAL_LLM_ENABLED,
     CONF_LOCAL_LLM_URL,
     CONF_LOCAL_LLM_MODEL,
@@ -26,6 +27,7 @@ from .const import (
     CAMERA_STRATEGY_HIGH_DEFINITION,
     DEFAULT_THEME_NAME,
     DEFAULT_SPATIAL_MAP_PATH,
+    DEFAULT_REASONING_TIMEOUT,
     DEFAULT_LOCAL_LLM_URL,
     DEFAULT_LOCAL_LLM_MODEL,
     DEFAULT_CAMERA_STREAM_STRATEGY,
@@ -261,6 +263,18 @@ class OtisAIOptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_THEME_NAME,
                 default=options.get(CONF_THEME_NAME, data.get(CONF_THEME_NAME, DEFAULT_THEME_NAME))
             ): cv.string,
+            vol.Optional(
+                CONF_REASONING_TIMEOUT,
+                default=options.get(CONF_REASONING_TIMEOUT, data.get(CONF_REASONING_TIMEOUT, DEFAULT_REASONING_TIMEOUT))
+            ): selector({
+                "number": {
+                    "min": 10,
+                    "max": 300,
+                    "step": 5,
+                    "unit_of_measurement": "s",
+                    "mode": "box",
+                }
+            }),
             vol.Optional(
                 CONF_LOCAL_LLM_ENABLED,
                 default=options.get(CONF_LOCAL_LLM_ENABLED, data.get(CONF_LOCAL_LLM_ENABLED, True))
