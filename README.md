@@ -53,7 +53,7 @@ It replaces fragile Jinja2 templates, hardcoded entity mappings, and rigid autom
 - 💬 **Assist AI Co-Pilot with Real-Time Audio Streaming & Failover**: Interactive multi-turn chat co-pilot (`otis_ai.chat`) with direct Web Speech microphone input, 5-bar animated audio waveform visualizer, instant Markdown live preview, compacted entity representations resolving Groq HTTP 413, and automated failover cascade across Google Generative AI / Gemini.
 
 <div align="center">
-  <img width="900" alt="image" src="https://github.com/user-attachments/assets/317266e6-1470-4d90-afa9-5f7f0432de53" />
+  <img width="1141" height="1189" alt="image" src="https://github.com/user-attachments/assets/d436b1ab-42eb-4452-bab0-29603fafd105" />
 </div>
 
 ---
