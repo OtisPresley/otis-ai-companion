@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import html
 import json
 import logging
@@ -517,6 +518,14 @@ class FloorplanParser:
         self._initialized: bool = False
         self._cached_svg_room_bounds: dict[str, dict[str, float]] = {}
 
+    async def _async_run_in_executor(self, func: Any, *args: Any, **kwargs: Any) -> Any:
+        """Execute a blocking function in the Home Assistant executor pool."""
+        target = func if not kwargs else functools.partial(func, *args, **kwargs)
+        actual_args = args if not kwargs else ()
+        if hasattr(self.hass, "async_add_executor_job"):
+            return await self.hass.async_add_executor_job(target, *actual_args)
+        return await asyncio.to_thread(target, *actual_args)
+
     def _parse_svg_room_bounds_sync(self, svg_file_path: str) -> dict[str, dict[str, float]]:
         """Parse room coordinates from floorplan SVG synchronously in executor."""
         bounds: dict[str, dict[str, float]] = {}
@@ -670,7 +679,7 @@ class FloorplanParser:
     ) -> list[str]:
         """Extract audio tracks sequentially from a list of walkthrough video clips."""
         extracted_paths: list[str] = []
-        os.makedirs(output_dir, exist_ok=True)
+        await self._async_run_in_executor(os.makedirs, output_dir, exist_ok=True)
         for idx, vpath in enumerate(video_paths, start=1):
             if not os.path.exists(vpath):
                 _LOGGER.warning("Video clip %s not found. Skipping.", vpath)
@@ -697,8 +706,11 @@ class FloorplanParser:
             return False
         if len(audio_paths) == 1:
             try:
-                if os.path.abspath(audio_paths[0]) != os.path.abspath(output_path):
-                    shutil.copyfile(audio_paths[0], output_path)
+                def _copy_single() -> None:
+                    if os.path.abspath(audio_paths[0]) != os.path.abspath(output_path):
+                        shutil.copyfile(audio_paths[0], output_path)
+
+                await self._async_run_in_executor(_copy_single)
                 return True
             except Exception as err:
                 _LOGGER.warning("Could not copy single audio track to %s: %s", output_path, err)
@@ -711,10 +723,13 @@ class FloorplanParser:
 
         list_file = os.path.join(os.path.dirname(output_path), f"concat_manifest_{int(time.time())}.txt")
         try:
-            with open(list_file, "w", encoding="utf-8") as f:
-                for a_path in audio_paths:
-                    escaped = a_path.replace("'", "'\\''")
-                    f.write(f"file '{escaped}'\n")
+            def _write_manifest() -> None:
+                with open(list_file, "w", encoding="utf-8") as f:
+                    for a_path in audio_paths:
+                        escaped = a_path.replace("'", "'\\''")
+                        f.write(f"file '{escaped}'\n")
+
+            await self._async_run_in_executor(_write_manifest)
 
             cmd = [
                 ffmpeg_bin,
@@ -757,11 +772,14 @@ class FloorplanParser:
             _LOGGER.warning("ffmpeg concatenation exception: %s", err)
             return False
         finally:
-            if os.path.exists(list_file):
-                try:
-                    os.remove(list_file)
-                except Exception:
-                    pass
+            def _cleanup_manifest() -> None:
+                if os.path.exists(list_file):
+                    try:
+                        os.remove(list_file)
+                    except Exception:
+                        pass
+
+            await self._async_run_in_executor(_cleanup_manifest)
 
     def _get_gemini_credentials(self) -> tuple[str | None, str]:
         """Retrieve Google Generative AI API key and model from Home Assistant config entries."""
@@ -796,13 +814,19 @@ class FloorplanParser:
         self, video_path: str, output_dir: str, prefix: str = "frame", max_frames: int = 8
     ) -> list[str]:
         """Extract sampled JPEG keyframes from a walkthrough video using ffmpeg for visual layout analysis."""
-        if not os.path.exists(video_path):
-            return []
-        ffmpeg_bin = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
-        if not os.path.exists(ffmpeg_bin):
+        def _check_inputs() -> tuple[bool, str | None]:
+            if not os.path.exists(video_path):
+                return False, None
+            f_bin = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
+            if not os.path.exists(f_bin):
+                return False, None
+            os.makedirs(output_dir, exist_ok=True)
+            return True, f_bin
+
+        valid, ffmpeg_bin = await self._async_run_in_executor(_check_inputs)
+        if not valid or not ffmpeg_bin:
             return []
 
-        os.makedirs(output_dir, exist_ok=True)
         pattern = os.path.join(output_dir, f"{prefix}_%02d.jpg")
         cmd = [
             ffmpeg_bin,
@@ -820,11 +844,17 @@ class FloorplanParser:
                 stderr=asyncio.subprocess.PIPE,
             )
             await process.communicate()
-            frames = sorted(
-                os.path.join(output_dir, f)
-                for f in os.listdir(output_dir)
-                if f.startswith(prefix) and f.endswith(".jpg")
-            )
+
+            def _collect_frames() -> list[str]:
+                if not os.path.exists(output_dir):
+                    return []
+                return sorted(
+                    os.path.join(output_dir, f)
+                    for f in os.listdir(output_dir)
+                    if f.startswith(prefix) and f.endswith(".jpg")
+                )
+
+            frames = await self._async_run_in_executor(_collect_frames)
             return frames
         except Exception as err:
             _LOGGER.debug("Keyframe extraction skipped: %s", err)
@@ -1057,7 +1087,7 @@ class FloorplanParser:
         """Process multi-clip sequential video walkthrough uploads with cross-clip continuity."""
         if not upload_dir:
             upload_dir = "/tmp/walkthrough_processing"
-        os.makedirs(upload_dir, exist_ok=True)
+        await self._async_run_in_executor(os.makedirs, upload_dir, exist_ok=True)
 
         combined_ordered_areas: list[str] = []
         combined_adjacencies: list[list[str]] = []
@@ -1315,13 +1345,12 @@ class FloorplanParser:
             if hasattr(self.hass, "config") and hasattr(self.hass.config, "path")
             else output_relative_path
         )
-        os.makedirs(os.path.dirname(output_full_path), exist_ok=True)
-
         def write_sync():
+            os.makedirs(os.path.dirname(output_full_path), exist_ok=True)
             with open(output_full_path, "w", encoding="utf-8") as f:
                 f.write(svg_content)
 
-        await self.hass.async_add_executor_job(write_sync)
+        await self._async_run_in_executor(write_sync)
         await self.async_refresh_svg_cache(output_relative_path)
         _LOGGER.info("Generated vector SVG floor plan saved to %s (walkthrough=%s)", output_full_path, is_walkthrough)
 
