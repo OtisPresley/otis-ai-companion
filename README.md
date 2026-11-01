@@ -35,7 +35,11 @@ It replaces fragile Jinja2 templates, hardcoded entity mappings, and rigid autom
 
 ## ✨ Core Highlights
 
-- 🗺️ **Zero-Hardcoding Spatial Intelligence (Phase 1 & 4)**: Dynamically discovers Area, Device, and Entity registries. Maintains an in-memory physical topological adjacency graph with Breadth-First Search (BFS) pathfinding between rooms. Full visual canvas editor (`mode: "floorplan_studio"`) with dynamic SVG matrix transforms (`getScreenCTM()`), dual `ResizeObserver`, drag-and-drop pin repositioning, and interactive boundary resizing.
+- 🗺️ **Zero-Hardcoding Spatial Intelligence (Phase 1 & 4)**: Dynamically discovers Area, Device, and Entity registries. Maintains an in-memory physical topological adjacency graph with Breadth-First Search (BFS) pathfinding between rooms. Full visual canvas editor (`mode: "floorplan_studio"`) with dynamic SVG matrix transforms (`getScreenCTM()`), dual `ResizeObserver`, drag-and-drop pin repositioning, interactive boundary resizing, and **architectural door swing orientation arcs and exterior window symbol synthesis**.
+- 🎥 **Multi-Clip Video Walkthrough Pipeline**: Ingest single or multi-clip smartphone walkthrough videos in sequence. Automatically extracts audio with FFmpeg, transcribes transition sequences via Google Generative AI / Gemini, and compiles contiguous multi-floor SVG blueprints.
+- 💻 **Local LLM & Offline Edge AI Reasoning (Tier-1 Zero-Cloud)**: Dedicated `LocalLLMManager` integrating local Ollama servers (e.g. `http://10.0.12.228:11434`) and OpenAI-compatible endpoints (vLLM, LocalAI, LM Studio). Features dynamic model discovery via `/api/tags` and `/v1/models`, automatic adoption of active installed models (e.g. `qwen2.5:1.5b`), and zero-cloud offline fallback.
+- 🛡️ **Autonomous Multi-Provider AI Failover Cascade**: Seamless resilient cascade: **Local Edge Ollama → Primary Cloud (Google Gemini 2.5/1.5 Flash) → Secondary Cloud (Groq) → Tertiary Cloud (OpenRouter Free Router)**. Transparently handles quota exhaustion (HTTP 429) and token payload overflow (HTTP 413) with automated context compaction.
+- 📹 **100% Vendor-Agnostic Camera Stream Architecture**: Completely integration-independent camera management with user-selectable strategies (`managed_proxy` with adaptive sub-stream fallback, `high_efficiency`, and `high_definition`). Generic robot vacuum map camera filtering via entity-registry device domain association (`domain == "vacuum"`).
 - 🎨 **Dynamic AI Themes Studio (Phase 2)**: Natural language theme generator synthesizing modern CSS variables with instant zero-profile-switching live activation, live STT voice microphone input with animated waveform equalizer, and robust dark/light contrast.
 - 🛡️ **Otis Sentinel Watchdog & Self-Healing (Phase 3)**: Continuous background telemetry watchdog monitoring battery depletion, short-cycling climate compressors, unattended garage doors, and failed integrations with 1-click atomic remediation.
 - ⚡ **Dynamic Macro Orchestrator & Assist Pipelines (Phase 5)**: Multi-step atomic lifestyle macros (Movie Night, Goodnight, Party Mode, Lockdown) with prior state snapshotting, pre-flight safety gates, and 1-click state rollback.
@@ -47,6 +51,8 @@ It replaces fragile Jinja2 templates, hardcoded entity mappings, and rigid autom
 - ⚙️ **User Behavioral Rules & Interactive Onboarding (Roadmap Item 7)**: Persistent persona engine (`rules_manager.py`) governing assistant personality (Concierge, Butler, Minimalist, Custom), conversational tone, response verbosity, autonomy safeguards (explicit deadbolt/alarm confirmations), quiet hours volume limiting, and custom household rules. Dynamic prompt injection into Assist conversation turns and an interactive 4-tab onboarding modal.
 - ⛅ **Command Center Home View Resilience**: Weather forecast (`weather.home`) and calendar agenda glance strip seamlessly integrated between Studios and Rooms. Automatic direct registry fallback and storage overwrite guards for all 16 room and area subviews.
 - 💬 **Assist AI Co-Pilot with Real-Time Audio Streaming & Failover**: Interactive multi-turn chat co-pilot (`otis_ai.chat`) with direct Web Speech microphone input, 5-bar animated audio waveform visualizer, instant Markdown live preview, compacted entity representations resolving Groq HTTP 413, and automated failover cascade across Google Generative AI / Gemini.
+
+<!-- IMAGE PLACEHOLDER: [AI Command Center Overview: Full dashboard view featuring Otis AI Companion card, quick action chips, weather glance strip, and multi-room Studio navigation launchpad] -->
 
 <div align="center">
   <img width="900" alt="image" src="https://github.com/user-attachments/assets/317266e6-1470-4d90-afa9-5f7f0432de53" />
@@ -253,9 +259,17 @@ Otis AI Companion provides **46 registered services** structured by architectura
 | `otis_ai.restore_recommendation` | Unhide and restore a previously dismissed recommendation to the active feed. | `data: { recommendation_id: "rec_reach_level_2_media" }` |
 | `otis_ai.reset_dismissed_recommendations` | Reset all dismissed recommendations, restoring them to the Proactive Feed. | `action: otis_ai.reset_dismissed_recommendations` |
 
+### 12. Local Edge LLM & Diagnostic Benchmarking
+| Service Name | Description | Example Target |
+| :--- | :--- | :--- |
+| `otis_ai.test_local_llm` | Test local Ollama or OpenAI-compatible server connectivity, model readiness, and round-trip ping. | `data: { url: "http://10.0.12.228:11434" }` |
+| `otis_ai.benchmark_local_llm` | Benchmark local LLM inference throughput (tokens/sec), generation latency, and output tokens. | `data: { model: "qwen2.5:1.5b" }` |
+
 ---
 
 ## 🎛️ Otis Companion Lovelace Card
+
+<!-- IMAGE PLACEHOLDER: [Otis Companion Lovelace Card in Proactive Feed Mode: displaying active suggestions, 1-click execution chips, and quick macro triggers] -->
 
 The custom Lovelace card (`custom:otis-companion-card`) provides an interactive interface for dashboards:
 
@@ -268,11 +282,17 @@ show_suggestions: true
 show_chat: true
 ```
 
+<!-- IMAGE PLACEHOLDER: [Assist Co-Pilot Multi-Turn Chat: interactive conversational interface with audio waveform equalizer, reasoning trace badges, and Markdown preview] -->
+
+<!-- IMAGE PLACEHOLDER: [Vector Floor Plan Studio: interactive SVG floor plan canvas with door swing arcs, exterior windows, glowing light badges, and drag-and-drop pin editor] -->
+
 ### Features:
 * **Interactive Rules Launchpad & Onboarding Wizard**: `⚙️ Rules` chip launches a 4-tab modal for persona selection (Concierge, Butler, Minimalist, Custom), response verbosity, autonomy safeguards (deadbolt & alarm confirmation), quiet hours volume limiting, and custom household rules with first-run onboarding banner.
+<!-- IMAGE PLACEHOLDER: [User Behavioral Rules & Onboarding Modal: 4-tab modal displaying persona profiles, autonomy safety toggles, quiet hours sliders, and custom household rules] -->
 * **Proactive Feed Dismissal & Storage Persistence**: Sleek "Ignore this" and quick-dismiss buttons on all recommendation cards, backed by persistent HA storage (`.storage/otis_ai_rules`), with interactive "Show Ignored / Reset Ignored" toggles in card header, card editor, and rules modal.
 * **Resilient Command Center Home View**: Glance strip seamlessly displaying live weather forecast (`weather.home`) and calendar agenda events, with automatic registry fallback and persistence protection across all 16 room subviews.
 * **6 Theme Presets & Voice STT**: `ha_native` (Default, follows HA theme), `cyberpunk`, `midnight`, `emerald`, `sunset`, and `light_frost`, with integrated microphone streaming and 5-bar animated audio equalizer in both Chat and Theme Studio.
+<!-- IMAGE PLACEHOLDER: [Dynamic AI Themes Studio: real-time theme generator showing live palette preview, color hex pickers, voice STT input, and instant CSS activation] -->
 * **Vector Floor Plan Studio & Dynamic Pins**: High-performance SVG canvas editor with dynamic matrix transforms (`getScreenCTM()`), dual `ResizeObserver` for zero-drift responsive pin tracking across all aspect ratios, native `ha-state-icon` rendering, and drag-and-drop pin editing.
 * **Live Markdown Preview**: Auto-expanding live markdown preview above the chat input box.
 * **Visual Card Editor**: Complete visual configuration via Home Assistant's dashboard editor.
@@ -284,18 +304,20 @@ show_chat: true
 Otis AI Companion includes a comprehensive test suite running against an asynchronous mock Home Assistant core:
 
 ```bash
-python3 -m unittest discover tests
+pytest tests/
 ```
 
-### Coverage (107/107 Passing):
+### Coverage (137/137 Passing, 100% Ruff Clean):
 - **Core Engine & Registries (`test_core_rebuilt.py`)**: Registry discovery, maturity scoring, BFS spatial pathfinding, floor plan rendering, themes, Sentinel watchdog, and atomic macros.
+- **Local Edge LLM & Telemetry (`test_local_llm.py`)**: Ollama `/api/tags` and OpenAI-compatible `/v1/models` health checks, dynamic model discovery, automatic adoption of installed models (e.g. `qwen2.5:1.5b`), and benchmark diagnostics.
 - **Voice Assist & Spatial Audio Ducking (`test_core_rebuilt.py`)**: Acoustic ducking of targeted/adjacent media players, volume restoration, whisper/quiet hours mode, and Assist pipeline status.
 - **User Behavioral Rules & Recommendation Persistence (`test_core_rebuilt.py`)**: Persona profiles, tone guidelines, autonomy policies, quiet hours volume limiting, recommendation dismissal persistence (`.storage/otis_ai_rules`), and services.
 - **Production Hardening & Stress Resilience (`test_core_rebuilt.py`)**: Concurrent service calls, offline edge recovery, and multi-satellite spatial audio handoffs.
-- **Vision & Presence Fusion (`test_vision_presence.py`)**: mmWave + PIR + media fusion, camera stream deduplication, and Gemini Vision anomaly detection.
+- **Vision & Presence Fusion (`test_vision_presence.py`)**: mmWave + PIR + media fusion, vendor-agnostic camera stream strategies (`managed_proxy`, `high_efficiency`, `high_definition`), vacuum map exclusions, and Gemini Vision anomaly detection.
+- **Architectural SVG & Multi-Clip Walkthrough (`test_multiclip_walkthrough_and_symbols.py`)**: Multi-clip sequential processing, architectural door swing orientation arcs, and exterior window symbol synthesis.
 - **Habit Learning & Behavioral Modeling (`test_habit_manager.py`)**: SQLite recorder mining, habit routine clustering, bedtime deviation guards, and circadian curves.
 - **Autonomous Commissioning & Federation (`test_node_federation_commissioning.py`)**: Zero-config heuristic room mapping, satellite node sync, and remote service proxying.
-- **Groq Context Compaction & LLM Failover**: Compact entity representations preventing Groq HTTP 413 payload errors, dynamic token limits, and transparent cascade failover to Google Generative AI / Gemini.
+- **Groq Context Compaction & LLM Failover**: Compact entity representations preventing Groq HTTP 413 payload errors, dynamic token limits, and transparent cascade failover across Local Ollama → Google Gemini 2.5/1.5 Flash → Groq → OpenRouter Free Router.
 
 ---
 
