@@ -4892,6 +4892,79 @@ action:
         )
         self.assertIn("target-temperature", [f["type"] for f in room_tile.get("features", [])])
 
+    def test_interactive_floorplan_pinning_and_conversational_intents(self):
+        """Verify floorplan entity pinning, stacking offset, unpinning, and Assist conversational commands."""
+        import tempfile
+        from custom_components.otis_ai.floorplan_parser import FloorplanParser
+        from custom_components.otis_ai import OtisAIConversationAgent
+
+        # 1. Test FloorplanParser async_pin_entity & async_unpin_entity
+        fp = FloorplanParser(self.hass)
+        with tempfile.NamedTemporaryFile("w+", suffix=".svg", delete=False) as tf:
+            tf.write(
+                '<svg viewBox="0 0 1300 800">\n'
+                '  <g class="room-group" data-area-id="dining_room">\n'
+                '    <rect x="200" y="300" width="160" height="120" class="room-box" />\n'
+                '    <text x="214" y="322">Dining Room</text>\n'
+                '  </g>\n'
+                '</svg>'
+            )
+            temp_svg_path = tf.name
+
+        try:
+            # Pin to area (should center at x: 280.0, y: 360.0)
+            res_pin = asyncio.run(fp.async_pin_entity("light.dining_chandelier", area_id="dining_room", svg_relative_path=temp_svg_path))
+            self.assertTrue(res_pin["success"])
+            self.assertEqual(res_pin["x"], 280.0)
+            self.assertEqual(res_pin["y"], 360.0)
+
+            # Pin another entity to same room (stacking offset +24)
+            res_pin2 = asyncio.run(fp.async_pin_entity("switch.dining_lamp", area_id="dining_room", svg_relative_path=temp_svg_path))
+            self.assertTrue(res_pin2["success"])
+            self.assertEqual(res_pin2["x"], 304.0)
+
+            # Unpin
+            res_unpin = asyncio.run(fp.async_unpin_entity("light.dining_chandelier", svg_relative_path=temp_svg_path))
+            self.assertTrue(res_unpin["success"])
+        finally:
+            if os.path.exists(temp_svg_path):
+                os.remove(temp_svg_path)
+
+        # 2. Test Conversational Assist Pinning & Unpinning
+        engine = MagicMock()
+        engine.async_build_capability_map = AsyncMock(return_value={
+            "areas": {
+                "dining_room": {"name": "Dining Room", "entities": ["light.dining_chandelier"]},
+            },
+            "entities": [
+                {"entity_id": "light.dining_chandelier", "name": "Dining Chandelier", "area_id": "dining_room"},
+            ],
+        })
+        entry = MagicMock()
+        manager = MagicMock()
+        agent = OtisAIConversationAgent(self.hass, entry, engine, manager, floorplan_parser=fp)
+        fp.async_pin_entity = AsyncMock(return_value={"success": True, "x": 280.0, "y": 360.0, "area_id": "dining_room"})
+        fp.async_unpin_entity = AsyncMock(return_value={"success": True})
+
+        # Test Pin intent
+        u_pin = MagicMock()
+        u_pin.text = "Pin dining chandelier to dining room on the floorplan"
+        u_pin.conversation_id = "test_conv_fp"
+        u_pin.create_response = MagicMock(side_effect=lambda speech, **kwargs: MagicMock(speech={"plain": {"speech": speech}}))
+        res_conv_pin = asyncio.run(agent.async_process(u_pin))
+        speech_pin = res_conv_pin.response.speech.get("plain", {}).get("speech", "")
+        self.assertIn("Floor Plan Pin Placed", speech_pin)
+        self.assertIn("light.dining_chandelier", speech_pin)
+
+        # Test Unpin intent
+        u_unpin = MagicMock()
+        u_unpin.text = "Unpin light.dining_chandelier from the floorplan"
+        u_unpin.conversation_id = "test_conv_fp"
+        u_unpin.create_response = MagicMock(side_effect=lambda speech, **kwargs: MagicMock(speech={"plain": {"speech": speech}}))
+        res_conv_unpin = asyncio.run(agent.async_process(u_unpin))
+        speech_unpin = res_conv_unpin.response.speech.get("plain", {}).get("speech", "")
+        self.assertIn("Floor Plan Pin Removed", speech_unpin)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,16 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.17] - 2026-11-01
+
+### Added
+- **Floorplan Interactive Pinning & Conversational Assist (Roadmap Item 2)**:
+  - **Conversational Floorplan Pinning**: Assist Co-Pilot dynamically parses natural language commands to pin or reposition devices onto the 2D floorplan (e.g. *"Pin dining chandelier to dining room on the floorplan"*, *"Pin light.patio at 450, 320"*, *"Unpin light.patio from floorplan"*), computing room centers and anti-stacking offsets automatically.
+  - **Native Home Assistant Services**: Registered `otis_ai.pin_floorplan_entity` and `otis_ai.unpin_floorplan_entity` with full schema in `services.yaml` and Lovelace event notifications (`lovelace_updated`, `otis_ai_floorplan_updated`).
+  - **Spatially Aware Drag-and-Drop Drop-In**: Dropping newly discovered entities via the Floor Plan tab's Add Marker modal calculates the entity's registered room bounding polygon and automatically centers the pin in that room rather than an arbitrary default coordinate.
+- Bumped total registered native services to 55.
+- Bumped Lovelace Companion Card to `v0.1.17`.
+
 ## [0.1.16] - 2026-11-01
 
 ### Added

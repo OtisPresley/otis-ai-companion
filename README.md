@@ -165,7 +165,7 @@ data:
 
 ## 🏷️ Services Reference
 
-Otis AI Companion provides **53 registered services** structured by architectural subsystem:
+Otis AI Companion provides **55 registered services** structured by architectural subsystem:
 
 ### 1. AI Co-Pilot & Suggestion Engine
 | Service Name | Description | Example Target |
@@ -182,6 +182,8 @@ Otis AI Companion provides **53 registered services** structured by architectura
 | `otis_ai.update_spatial_map` | Connect or disconnect physical rooms. | `data: { area_1: "foyer", area_2: "study" }` |
 | `otis_ai.generate_floorplan` | Synthesize an interactive vector SVG floor plan. | `data: { theme: "cyberpunk" }` |
 | `otis_ai.update_floorplan_layout`| Update floor plan room bounds, dimensions, and device pin coordinates. | `data: { updates: [...] }` |
+| `otis_ai.pin_floorplan_entity` | Pin or reposition entity badge on floor plan by room area or explicit coordinates. | `data: { entity_id: "light.patio_lights", area_id: "backyard" }` |
+| `otis_ai.unpin_floorplan_entity` | Remove entity badge pin from interactive floor plan. | `data: { entity_id: "light.patio_lights" }` |
 
 ### 3. Dynamic Themes & Dashboard Studio
 | Service Name | Description | Example Target |

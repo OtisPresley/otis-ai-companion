@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.16";
+const CARD_VERSION = "0.1.17";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -10401,15 +10401,45 @@ class OtisCompanionCard extends HTMLElement {
       btn.onclick = () => {
         const eid = btn.getAttribute("data-entity-id");
         if (eid) {
+          let targetX = 340;
+          let targetY = 260;
+          let placedAreaName = "";
+
+          const ent = (this._capabilityMap?.entities || []).find((e) => (typeof e === "string" ? e : e?.entity_id) === eid);
+          const areaId = typeof ent === "object" ? ent?.area_id : null;
+          if (areaId) {
+            const svgEl = root.querySelector("#floorplan-viewport svg");
+            const roomEl = svgEl ? (svgEl.querySelector(`#area-${areaId}`) || svgEl.querySelector(`[data-area-id="${areaId}"]`)) : null;
+            if (roomEl) {
+              const rect = roomEl.querySelector("rect");
+              if (rect) {
+                const rx = parseFloat(rect.getAttribute("x") || 0);
+                const ry = parseFloat(rect.getAttribute("y") || 0);
+                const rw = parseFloat(rect.getAttribute("width") || 200);
+                const rh = parseFloat(rect.getAttribute("height") || 140);
+                targetX = Math.round(rx + rw / 2);
+                targetY = Math.round(ry + rh / 2);
+                placedAreaName = (typeof ent === "object" && ent?.area_name) ? ent.area_name : areaId;
+              }
+            }
+          }
+          if (!placedAreaName && this._selectedFloorZone === "upper") {
+            targetX = 600;
+            targetY = 950;
+          }
+
           this._dirtyBadges[eid] = {
             entity_id: eid,
-            x: 340,
-            y: 260,
+            x: targetX,
+            y: targetY,
           };
           this._hasUnsavedLayout = true;
           this._addMarkerModalOpen = false;
           this._addMarkerFilter = "";
-          this._showToast(`📍 Dropped pin for ${eid}! Drag to position and click "Save Changes".`);
+          const msg = placedAreaName
+            ? `📍 Dropped pin for ${eid} into ${placedAreaName}! Drag to fine-tune and click "Save Changes".`
+            : `📍 Dropped pin for ${eid}! Drag to position and click "Save Changes".`;
+          this._showToast(msg);
           this._render();
         }
       };

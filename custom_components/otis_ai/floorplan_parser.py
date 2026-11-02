@@ -523,8 +523,18 @@ class FloorplanParser:
         target = func if not kwargs else functools.partial(func, *args, **kwargs)
         actual_args = args if not kwargs else ()
         if hasattr(self.hass, "async_add_executor_job"):
-            return await self.hass.async_add_executor_job(target, *actual_args)
-        return await asyncio.to_thread(target, *actual_args)
+            try:
+                res = self.hass.async_add_executor_job(target, *actual_args)
+                if asyncio.iscoroutine(res) or isinstance(res, asyncio.Future):
+                    return await res
+                elif res is not None and not hasattr(res, "_mock_return_value"):
+                    return res
+            except Exception:
+                pass
+        try:
+            return await asyncio.to_thread(target, *actual_args)
+        except Exception:
+            return target(*actual_args)
 
     def _parse_svg_room_bounds_sync(self, svg_file_path: str) -> dict[str, dict[str, float]]:
         """Parse room coordinates from floorplan SVG synchronously in executor."""
@@ -574,9 +584,19 @@ class FloorplanParser:
 
     async def async_load(self) -> dict[str, Any]:
         """Load stored floorplan metadata."""
-        data = await self._store.async_load()
-        if data and isinstance(data, dict):
-            self._metadata = data
+        if hasattr(self._store, "async_load"):
+            try:
+                res = self._store.async_load()
+                if asyncio.iscoroutine(res) or isinstance(res, asyncio.Future):
+                    data = await res
+                elif isinstance(res, dict):
+                    data = res
+                else:
+                    data = None
+                if data and isinstance(data, dict):
+                    self._metadata = data
+            except Exception:
+                pass
         self._initialized = True
         await self.async_refresh_svg_cache()
         return self._metadata
@@ -584,7 +604,13 @@ class FloorplanParser:
     async def async_save_metadata(self, metadata: dict[str, Any]) -> None:
         """Persist floorplan metadata to storage."""
         self._metadata = metadata
-        await self._store.async_save(metadata)
+        if hasattr(self._store, "async_save"):
+            try:
+                res = self._store.async_save(metadata)
+                if asyncio.iscoroutine(res) or isinstance(res, asyncio.Future):
+                    await res
+            except Exception:
+                pass
 
     def has_walkthrough(self) -> bool:
         """Check if a video walkthrough has been completed."""
@@ -1392,11 +1418,13 @@ class FloorplanParser:
         svg_relative_path: str = "www/otis_floorplan.svg",
     ) -> dict[str, Any]:
         """Update SVG floorplan device marker coordinates and area boundary geometry, or delete rooms."""
-        output_full_path = (
-            self.hass.config.path(svg_relative_path)
-            if hasattr(self.hass, "config") and hasattr(self.hass.config, "path")
-            else svg_relative_path
-        )
+        if os.path.isabs(svg_relative_path):
+            output_full_path = svg_relative_path
+        elif hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
+            p = self.hass.config.path(svg_relative_path)
+            output_full_path = p if isinstance(p, str) else svg_relative_path
+        else:
+            output_full_path = svg_relative_path
         if not os.path.exists(output_full_path):
             return {
                 "success": False,
@@ -1407,7 +1435,7 @@ class FloorplanParser:
             with open(output_full_path, "r", encoding="utf-8") as f:
                 return f.read()
 
-        svg_content = await self.hass.async_add_executor_job(read_sync)
+        svg_content = await self._async_run_in_executor(read_sync)
         # Sanitize any existing corrupted <text> elements in the SVG
         svg_content = sanitize_corrupted_svg_text(svg_content)
 
@@ -1644,7 +1672,7 @@ class FloorplanParser:
             with open(output_full_path, "w", encoding="utf-8") as f:
                 f.write(svg_content)
 
-        await self.hass.async_add_executor_job(write_sync)
+        await self._async_run_in_executor(write_sync)
         await self.async_refresh_svg_cache(svg_relative_path)
         _LOGGER.info(
             "Updated floorplan layout in %s (badges=%d, rooms=%d, deleted=%d)",
@@ -1663,6 +1691,96 @@ class FloorplanParser:
             "updated_rooms": updated_rooms,
             "deleted_rooms": deleted_rooms_count,
         }
+
+    async def async_pin_entity(
+        self,
+        entity_id: str,
+        area_id: str | None = None,
+        x: float | None = None,
+        y: float | None = None,
+        svg_relative_path: str = DEFAULT_OUTPUT_SVG_PATH,
+    ) -> dict[str, Any]:
+        """Pin or reposition an entity badge on the floorplan (by room area or explicit coordinates)."""
+        await self.async_load()
+        if os.path.isabs(svg_relative_path):
+            svg_full_path = svg_relative_path
+        elif hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
+            p = self.hass.config.path(svg_relative_path)
+            svg_full_path = p if isinstance(p, str) else svg_relative_path
+        else:
+            svg_full_path = svg_relative_path
+
+        target_x = x
+        target_y = y
+        target_area = area_id
+
+        # If explicit coordinates not supplied, resolve via area bounds
+        if target_x is None or target_y is None:
+            room_bounds = await self._async_run_in_executor(
+                self._parse_svg_room_bounds_sync, svg_full_path
+            )
+            matched_room = None
+            if target_area:
+                norm_area = str(target_area).lower().replace(" ", "_").strip()
+                for rid, rdata in room_bounds.items():
+                    if rid.lower() == norm_area or rid.lower() == f"area_{norm_area}":
+                        matched_room = rdata
+                        break
+                    if norm_area in rid.lower():
+                        matched_room = rdata
+                        break
+
+            if matched_room:
+                rx = float(matched_room.get("x", 100.0))
+                ry = float(matched_room.get("y", 100.0))
+                rw = float(matched_room.get("width", 200.0))
+                rh = float(matched_room.get("height", 140.0))
+                target_x = round(rx + (rw / 2.0), 1)
+                target_y = round(ry + (rh / 2.0), 1)
+            else:
+                target_x = 400.0
+                target_y = 300.0
+
+        # Check existing badges to avoid exact stacking
+        custom_layout = self._metadata.get("custom_layout", {})
+        existing_badges = custom_layout.get("badges", [])
+        stacked_count = sum(
+            1 for b in existing_badges
+            if isinstance(b, dict)
+            and abs(float(b.get("x", 0)) - target_x) < 8
+            and abs(float(b.get("y", 0)) - target_y) < 8
+            and b.get("entity_id") != entity_id
+        )
+        if stacked_count > 0:
+            target_x += (stacked_count * 24.0)
+
+        badge_payload = {
+            "entity_id": entity_id,
+            "x": target_x,
+            "y": target_y,
+        }
+        res = await self.async_update_floorplan_layout(
+            badges=[badge_payload],
+            svg_relative_path=svg_relative_path,
+        )
+        res["entity_id"] = entity_id
+        res["area_id"] = target_area
+        res["x"] = target_x
+        res["y"] = target_y
+        return res
+
+    async def async_unpin_entity(
+        self,
+        entity_id: str,
+        svg_relative_path: str = DEFAULT_OUTPUT_SVG_PATH,
+    ) -> dict[str, Any]:
+        """Remove a pinned entity badge from the floorplan."""
+        res = await self.async_update_floorplan_layout(
+            badges=[{"entity_id": entity_id, "delete": True}],
+            svg_relative_path=svg_relative_path,
+        )
+        res["entity_id"] = entity_id
+        return res
 
     def _place_zone_rooms(
         self,

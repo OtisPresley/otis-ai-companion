@@ -42,6 +42,8 @@ from .const import (
     SERVICE_UPDATE_SPATIAL_MAP,
     SERVICE_GENERATE_FLOORPLAN,
     SERVICE_UPDATE_FLOORPLAN_LAYOUT,
+    SERVICE_PIN_FLOORPLAN_ENTITY,
+    SERVICE_UNPIN_FLOORPLAN_ENTITY,
     SERVICE_GENERATE_THEME,
     SERVICE_APPLY_THEME,
     SERVICE_LIST_THEMES,
@@ -501,6 +503,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         rules_manager=rules_manager,
         local_llm_manager=local_llm_manager,
         dashboard_manager=dashboard_manager,
+        floorplan_parser=floorplan_parser,
     )
 
     if hasattr(conversation, "async_register_agent"):
@@ -1188,6 +1191,80 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.debug("Could not refresh dashboards after floorplan update: %s", d_err)
         return res
 
+    async def handle_pin_floorplan_entity(call) -> ServiceResponse:
+        """Handle service call to pin or reposition an entity badge on the floorplan."""
+        _LOGGER.debug("Service 'pin_floorplan_entity' triggered with: %s", call.data)
+        eng = _get_engine()
+        fp = _get_floorplan_parser()
+        dm = _get_dashboard_manager()
+        entity_id = call.data.get("entity_id")
+        area_id = call.data.get("area_id")
+        x = call.data.get("x")
+        y = call.data.get("y")
+        svg_path = call.data.get("svg_path", "www/otis_floorplan.svg")
+
+        if not entity_id:
+            return {"success": False, "error": "entity_id is required"}
+
+        res = await fp.async_pin_entity(
+            entity_id=entity_id,
+            area_id=area_id,
+            x=float(x) if x is not None else None,
+            y=float(y) if y is not None else None,
+            svg_relative_path=svg_path,
+        )
+        if hasattr(eng, "invalidate_cache"):
+            eng.invalidate_cache()
+        if dm and hasattr(dm, "async_ensure_admin_companion_dashboard"):
+            try:
+                cap_map = (
+                    await eng.async_build_capability_map()
+                    if hasattr(eng, "async_build_capability_map")
+                    else None
+                )
+                await dm.async_ensure_admin_companion_dashboard(cap_map)
+                await dm.async_ensure_user_command_center_dashboard(cap_map)
+                hass.bus.async_fire("lovelace_updated", {"url_path": "otis-ai"})
+                hass.bus.async_fire("lovelace_updated", {"url_path": "command-center"})
+                hass.bus.async_fire("otis_ai_floorplan_updated", {"url": res.get("url")})
+            except Exception as d_err:
+                _LOGGER.debug("Could not refresh dashboards after floorplan pin: %s", d_err)
+        return res
+
+    async def handle_unpin_floorplan_entity(call) -> ServiceResponse:
+        """Handle service call to remove a pinned entity badge from the floorplan."""
+        _LOGGER.debug("Service 'unpin_floorplan_entity' triggered with: %s", call.data)
+        eng = _get_engine()
+        fp = _get_floorplan_parser()
+        dm = _get_dashboard_manager()
+        entity_id = call.data.get("entity_id")
+        svg_path = call.data.get("svg_path", "www/otis_floorplan.svg")
+
+        if not entity_id:
+            return {"success": False, "error": "entity_id is required"}
+
+        res = await fp.async_unpin_entity(
+            entity_id=entity_id,
+            svg_relative_path=svg_path,
+        )
+        if hasattr(eng, "invalidate_cache"):
+            eng.invalidate_cache()
+        if dm and hasattr(dm, "async_ensure_admin_companion_dashboard"):
+            try:
+                cap_map = (
+                    await eng.async_build_capability_map()
+                    if hasattr(eng, "async_build_capability_map")
+                    else None
+                )
+                await dm.async_ensure_admin_companion_dashboard(cap_map)
+                await dm.async_ensure_user_command_center_dashboard(cap_map)
+                hass.bus.async_fire("lovelace_updated", {"url_path": "otis-ai"})
+                hass.bus.async_fire("lovelace_updated", {"url_path": "command-center"})
+                hass.bus.async_fire("otis_ai_floorplan_updated", {"url": res.get("url")})
+            except Exception as d_err:
+                _LOGGER.debug("Could not refresh dashboards after floorplan unpin: %s", d_err)
+        return res
+
     async def handle_sync_dashboards(call) -> ServiceResponse:
         """Handle service call to synchronize Studios and Rooms across Otis AI and Command Center."""
         call_data = getattr(call, "data", {}) or {}
@@ -1824,6 +1901,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     hass.services.async_register(
         DOMAIN,
+        SERVICE_PIN_FLOORPLAN_ENTITY,
+        handle_pin_floorplan_entity,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_UNPIN_FLOORPLAN_ENTITY,
+        handle_unpin_floorplan_entity,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
         SERVICE_GENERATE_THEME,
         handle_generate_theme,
         supports_response=SupportsResponse.OPTIONAL,
@@ -2120,6 +2209,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             SERVICE_UPDATE_SPATIAL_MAP,
             SERVICE_GENERATE_FLOORPLAN,
             SERVICE_UPDATE_FLOORPLAN_LAYOUT,
+            SERVICE_PIN_FLOORPLAN_ENTITY,
+            SERVICE_UNPIN_FLOORPLAN_ENTITY,
             SERVICE_GET_USER_RULES,
             SERVICE_SET_USER_RULES,
             SERVICE_DISMISS_RECOMMENDATION,
@@ -2165,6 +2256,7 @@ class OtisAIConversationAgent(AbstractAgent):
         rules_manager: BehavioralRulesManager | None = None,
         local_llm_manager: LocalLLMManager | None = None,
         dashboard_manager: DashboardManager | None = None,
+        floorplan_parser: FloorplanParser | None = None,
     ) -> None:
         """Initialize the agent."""
         self.hass = hass
@@ -2184,6 +2276,40 @@ class OtisAIConversationAgent(AbstractAgent):
         self.rules_manager = rules_manager or BehavioralRulesManager(hass)
         self.local_llm_manager = local_llm_manager
         self.dashboard_manager = dashboard_manager or getattr(hass.data.get(DOMAIN, {}), "get", lambda k: None)("dashboard_manager") or DashboardManager(hass)
+        self.floorplan_parser = floorplan_parser or getattr(hass.data.get(DOMAIN, {}), "get", lambda k: None)("floorplan_parser") or FloorplanParser(hass)
+
+    def _resolve_entity_from_text(self, text: str, entities_list: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Resolve entity dictionary from entity_id, friendly name, or partial search text."""
+        clean = text.strip().lower()
+        # 1. Exact entity_id match
+        for e in entities_list:
+            if e.get("entity_id", "").lower() == clean:
+                return e
+        # 2. Exact name match
+        for e in entities_list:
+            ename = str(e.get("name") or "").lower()
+            if ename and ename == clean:
+                return e
+        # 3. Substring match
+        for e in entities_list:
+            eid = e.get("entity_id", "").lower()
+            ename = str(e.get("name") or "").lower()
+            if clean in eid or (ename and clean in ename):
+                return e
+        return None
+
+    def _resolve_area_from_text(self, text: str, areas_dict: dict[str, Any]) -> tuple[str, str] | None:
+        """Resolve area_id and area friendly name from area_id or room name string."""
+        clean = text.strip().lower()
+        for aid, ainfo in areas_dict.items():
+            aname = str(ainfo.get("name") or aid).lower()
+            if aid.lower() == clean or aname == clean:
+                return (aid, ainfo.get("name") or aid.replace("_", " ").title())
+        for aid, ainfo in areas_dict.items():
+            aname = str(ainfo.get("name") or aid).lower()
+            if clean in aid.lower() or clean in aname or aname in clean:
+                return (aid, ainfo.get("name") or aid.replace("_", " ").title())
+        return None
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -2713,6 +2839,100 @@ class OtisAIConversationAgent(AbstractAgent):
                     err_speech = f"Encountered an issue regenerating dashboards: {err}"
                     self._record_turn(session_data, user_input.text, err_speech)
                     return self._create_response(user_input, err_speech)
+
+        # Check for conversational floorplan pinning and unpinning commands
+        # Examples: "pin chandelier to dining room on the floorplan", "pin light.desk to 420, 310", "unpin light.desk from floorplan"
+        user_lower = user_text.lower()
+        has_fp_pin_verb = (
+            user_lower.startswith(("pin ", "unpin ", "remove pin ", "delete pin "))
+            or any(verb in user_lower for verb in ("pin ", "add pin ", "place pin ", "unpin ", "remove pin "))
+        )
+        if has_fp_pin_verb and (
+            any(k in user_lower for k in ("floorplan", "floor plan", "map"))
+            or user_lower.startswith(("pin ", "unpin ", "remove pin ", "delete pin "))
+        ) and getattr(self, "floorplan_parser", None):
+            is_unpin = any(k in user_lower for k in ("unpin", "remove pin", "delete pin")) or user_lower.startswith(("unpin ", "remove pin ", "delete pin "))
+            if is_unpin:
+                unpin_m = re.search(
+                    r"^(?:please\s+)?(?:can you\s+)?(?:unpin|remove pin for|delete pin for|remove)\s+(.+?)(?:\s+from\s+(?:the\s+)?floor\s*plan)?$",
+                    user_text,
+                    re.IGNORECASE,
+                )
+                if unpin_m:
+                    raw_target = unpin_m.group(1).strip()
+                    raw_target = re.sub(r"\s+from\s+(?:the\s+)?floor\s*plan\s*$", "", raw_target, flags=re.IGNORECASE).strip()
+                    cap_map = await self.engine.async_build_capability_map() if hasattr(self.engine, "async_build_capability_map") else {}
+                    ent_list = cap_map.get("entities", [])
+                    matched_ent = self._resolve_entity_from_text(raw_target, ent_list)
+                    target_eid = matched_ent["entity_id"] if matched_ent else raw_target
+                    target_name = matched_ent.get("name", target_eid) if matched_ent else target_eid
+                    await self.floorplan_parser.async_unpin_entity(target_eid)
+                    if self.dashboard_manager:
+                        try:
+                            await self.dashboard_manager.async_ensure_user_command_center_dashboard(cap_map)
+                            await self.dashboard_manager.async_ensure_admin_companion_dashboard(cap_map)
+                        except Exception:
+                            pass
+                    self.hass.bus.async_fire("lovelace_updated", {"url_path": "command-center"})
+                    self.hass.bus.async_fire("lovelace_updated", {"url_path": "otis-ai"})
+                    speech = f"🗑️ **Floor Plan Pin Removed**: Unpinned **{target_name}** (`{target_eid}`) from the interactive 2D floor plan."
+                    self._record_turn(session_data, user_input.text, speech)
+                    return self._create_response(user_input, speech)
+            else:
+                pin_m = re.search(
+                    r"^(?:please\s+)?(?:can you\s+)?(?:pin|add pin for|place pin for|place)\s+(.+?)\s+(?:to|in|at|on)\s+(.+?)(?:\s+on\s+(?:the\s+)?floor\s*plan)?$",
+                    user_text,
+                    re.IGNORECASE,
+                )
+                if pin_m:
+                    raw_ent = pin_m.group(1).strip()
+                    raw_dest = pin_m.group(2).strip()
+                    raw_dest = re.sub(r"\s+on\s+(?:the\s+)?floor\s*plan\s*$", "", raw_dest, flags=re.IGNORECASE).strip()
+                    raw_dest = re.sub(r"^the\s+", "", raw_dest, flags=re.IGNORECASE).strip()
+
+                    cap_map = await self.engine.async_build_capability_map() if hasattr(self.engine, "async_build_capability_map") else {}
+                    ent_list = cap_map.get("entities", [])
+                    areas_dict = cap_map.get("areas", {})
+
+                    matched_ent = self._resolve_entity_from_text(raw_ent, ent_list)
+                    target_eid = matched_ent["entity_id"] if matched_ent else raw_ent
+                    target_name = matched_ent.get("name", target_eid) if matched_ent else target_eid
+
+                    coord_m = re.search(r"(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)", raw_dest)
+                    target_x = float(coord_m.group(1)) if coord_m else None
+                    target_y = float(coord_m.group(2)) if coord_m else None
+                    target_area_id = None
+                    target_area_name = None
+
+                    if target_x is None:
+                        area_res = self._resolve_area_from_text(raw_dest, areas_dict)
+                        if area_res:
+                            target_area_id, target_area_name = area_res
+                        else:
+                            target_area_id = raw_dest.lower().replace(" ", "_")
+                            target_area_name = raw_dest.title()
+
+                    res = await self.floorplan_parser.async_pin_entity(
+                        entity_id=target_eid,
+                        area_id=target_area_id,
+                        x=target_x,
+                        y=target_y,
+                    )
+                    if self.dashboard_manager:
+                        try:
+                            await self.dashboard_manager.async_ensure_user_command_center_dashboard(cap_map)
+                            await self.dashboard_manager.async_ensure_admin_companion_dashboard(cap_map)
+                        except Exception:
+                            pass
+                    self.hass.bus.async_fire("lovelace_updated", {"url_path": "command-center"})
+                    self.hass.bus.async_fire("lovelace_updated", {"url_path": "otis-ai"})
+
+                    px = res.get("x", target_x)
+                    py = res.get("y", target_y)
+                    loc_desc = f"**{target_area_name}** (X: {px}, Y: {py})" if target_area_name else f"coordinates (X: {px}, Y: {py})"
+                    speech = f"📍 **Floor Plan Pin Placed**: Successfully pinned **{target_name}** (`{target_eid}`) to {loc_desc} on the interactive floor plan!"
+                    self._record_turn(session_data, user_input.text, speech)
+                    return self._create_response(user_input, speech)
 
         # Check for Otis Sentinel Watchdog commands
         if any(w in user_text for w in ("run sentinel", "sentinel audit", "sentinel scan", "check anomalies", "watchdog scan", "watchdog audit")):

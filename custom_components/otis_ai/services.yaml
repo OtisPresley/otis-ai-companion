@@ -131,6 +131,59 @@ update_floorplan_layout:
       selector:
         text:
 
+pin_floorplan_entity:
+  name: Pin Floor Plan Entity
+  description: Pin or reposition an entity badge on the 2D floorplan by room area or explicit coordinates.
+  fields:
+    entity_id:
+      name: Entity ID
+      description: Home Assistant entity ID to pin (e.g. light.patio_lights).
+      required: true
+      selector:
+        entity:
+    area_id:
+      name: Room Area ID
+      description: Target room area to place the pin in (e.g. dining_room or backyard).
+      selector:
+        area:
+    x:
+      name: X Coordinate
+      description: Explicit horizontal coordinate on the vector canvas (0-1300).
+      selector:
+        number:
+          min: 0
+          max: 1300
+    y:
+      name: Y Coordinate
+      description: Explicit vertical coordinate on the vector canvas.
+      selector:
+        number:
+          min: 0
+          max: 2000
+    svg_path:
+      name: Floor Plan SVG Path
+      description: Destination SVG path relative to Home Assistant config.
+      default: www/otis_floorplan.svg
+      selector:
+        text:
+
+unpin_floorplan_entity:
+  name: Unpin Floor Plan Entity
+  description: Remove an entity badge pin from the interactive floor plan.
+  fields:
+    entity_id:
+      name: Entity ID
+      description: Home Assistant entity ID to unpin.
+      required: true
+      selector:
+        entity:
+    svg_path:
+      name: Floor Plan SVG Path
+      description: Destination SVG path relative to Home Assistant config.
+      default: www/otis_floorplan.svg
+      selector:
+        text:
+
 generate_theme:
   name: Generate Custom Theme
   description: Generate custom Home Assistant theme definitions directly into /config/themes/otis_<theme_name>.yaml from natural language prompts or presets and automatically reload themes.
