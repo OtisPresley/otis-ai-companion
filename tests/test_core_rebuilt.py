@@ -1562,6 +1562,89 @@ class TestFloorplanParser(unittest.TestCase):
         self.assertIn("Ground / Main Floor", content)
         self.assertIn("Outdoor &amp; Perimeter", content)
 
+    def test_multi_floor_3d_isometric_view(self):
+        """Verify Multi-Floor 3D Isometric View calculation, depth facets, and dual-layer SVG generation."""
+        from custom_components.otis_ai.floorplan_parser import FloorplanParser
+
+        parser = FloorplanParser(self.hass)
+        mock_cap_map = {
+            "areas": {
+                "great_room": {"name": "Great Room", "entities": ["light.living_room"]},
+                "mudroom": {"name": "Mudroom", "entities": []},
+                "gym": {"name": "Gym", "entities": ["light.gym_light"]},
+                "office": {"name": "Office", "entities": ["light.office_desk"]},
+                "backyard": {"name": "Backyard", "entities": ["light.patio"]},
+            },
+            "entities": [
+                {"entity_id": "light.living_room", "name": "Living Light", "domain": "light"},
+                {"entity_id": "light.gym_light", "name": "Gym Light", "domain": "light"},
+                {"entity_id": "light.office_desk", "name": "Desk Lamp", "domain": "light"},
+                {"entity_id": "light.patio", "name": "Patio Lights", "domain": "light"},
+            ],
+            "spatial_graph": {
+                "adjacencies": {
+                    "great_room": ["mudroom", "backyard"],
+                    "gym": ["office"],
+                }
+            },
+        }
+
+        # 1. Generate multi-floor SVG
+        res = asyncio.run(parser.async_generate_svg_floorplan(mock_cap_map, output_relative_path="test_iso_fp.svg"))
+        self.assertTrue(res["success"])
+        self.assertIn("svg_path_3d", res)
+        self.assertIn("url_3d", res)
+        self.assertEqual(res["svg_path_3d"], "test_iso_fp_3d.svg")
+
+        # 2. Verify dual-mode SVG output (contains both 2D and 3D isometric groups)
+        svg_file = self.hass.config.path("test_iso_fp.svg")
+        self.assertTrue(os.path.exists(svg_file))
+        with open(svg_file, "r", encoding="utf-8") as f:
+            content_2d = f.read()
+
+        self.assertIn('<g id="view-mode-2d">', content_2d)
+        self.assertIn('<g id="view-mode-3d" style="display: none;">', content_2d)
+        self.assertIn('data-iso-viewbox="0 0 1300 1080"', content_2d)
+        self.assertIn('class="iso-floor-slab', content_2d)
+        self.assertIn('class="iso-slab-facet south-facet"', content_2d)
+        self.assertIn('class="iso-slab-facet east-facet"', content_2d)
+        self.assertIn('class="iso-structural-pillar"', content_2d)
+        self.assertIn('class="iso-stairs-step"', content_2d)
+        self.assertIn('id="iso-ground"', content_2d)
+        self.assertIn('id="iso-upper"', content_2d)
+        self.assertIn('data-area-id="gym"', content_2d)
+        self.assertIn('data-area-id="great_room"', content_2d)
+
+        # 3. Verify standalone 3D isometric SVG output
+        svg_3d_file = self.hass.config.path("test_iso_fp_3d.svg")
+        self.assertTrue(os.path.exists(svg_3d_file))
+        with open(svg_3d_file, "r", encoding="utf-8") as f:
+            content_3d = f.read()
+
+        self.assertIn('<g id="view-mode-3d">', content_3d)
+        self.assertIn('<g id="view-mode-2d" style="display: none;">', content_3d)
+        self.assertIn('viewBox="0 0 1300 1080"', content_3d)
+        self.assertIn('height="1080"', content_3d)
+
+        # 4. Test direct layout projection math
+        layout_2d = {
+            "main": [{"id": "living", "name": "Living", "x": 260, "y": 225, "width": 310, "height": 220, "zone": "main"}],
+            "upper": [{"id": "suite", "name": "Suite", "x": 260, "y": 805, "width": 310, "height": 220, "zone": "upper"}],
+            "outdoor": [{"id": "patio", "name": "Patio", "x": 260, "y": 85, "width": 310, "height": 140, "zone": "outdoor"}],
+        }
+        iso_layout = parser._calculate_isometric_layout(layout_2d)
+        self.assertEqual(len(iso_layout["main"]), 1)
+        self.assertEqual(len(iso_layout["upper"]), 1)
+        self.assertEqual(len(iso_layout["outdoor"]), 1)
+
+        # Main floor at z=0, Upper floor at z=320, Outdoor at z=-6
+        self.assertEqual(iso_layout["main"][0]["elevation"], 0.0)
+        self.assertEqual(iso_layout["upper"][0]["elevation"], 320.0)
+        self.assertEqual(iso_layout["outdoor"][0]["elevation"], -6.0)
+
+        # Upper floor y center is elevated (lower y screen coordinate) compared to ground floor
+        self.assertLess(iso_layout["upper"][0]["iso_center"][1], iso_layout["main"][0]["iso_center"][1])
+
     def test_update_floorplan_layout(self):
         """Verify Phase 4 interactive layout update: device pin repositioning and room boundary resizing."""
         from custom_components.otis_ai.floorplan_parser import FloorplanParser

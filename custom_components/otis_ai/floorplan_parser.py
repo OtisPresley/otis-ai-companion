@@ -1361,9 +1361,13 @@ class FloorplanParser:
 
         # Calculate layout coordinates for each room
         layout_by_zone = self._calculate_orthogonal_layout(zones)
+        # Calculate stacked multi-floor 3D isometric layout coordinates
+        iso_layout_by_zone = self._calculate_isometric_layout(layout_by_zone)
 
         # Render complete SVG markup
-        svg_content = self._render_svg_markup(layout_by_zone, entities, theme)
+        svg_content = self._render_svg_markup(
+            layout_by_zone, entities, theme, iso_layout_by_zone=iso_layout_by_zone
+        )
 
         # Write SVG file to destination
         output_full_path = (
@@ -1371,14 +1375,32 @@ class FloorplanParser:
             if hasattr(self.hass, "config") and hasattr(self.hass.config, "path")
             else output_relative_path
         )
+        output_dir = os.path.dirname(output_full_path)
+        base_name = os.path.basename(output_full_path)
+        name_no_ext, ext = os.path.splitext(base_name)
+        output_3d_rel = (
+            f"{os.path.dirname(output_relative_path)}/{name_no_ext}_3d{ext}".lstrip("/")
+            if os.path.dirname(output_relative_path)
+            else f"{name_no_ext}_3d{ext}"
+        )
+        output_3d_full = os.path.join(output_dir, f"{name_no_ext}_3d{ext}")
+        svg_3d_content = self._make_3d_primary_svg(svg_content)
+
         def write_sync():
-            os.makedirs(os.path.dirname(output_full_path), exist_ok=True)
+            os.makedirs(output_dir, exist_ok=True)
             with open(output_full_path, "w", encoding="utf-8") as f:
                 f.write(svg_content)
+            with open(output_3d_full, "w", encoding="utf-8") as f_3d:
+                f_3d.write(svg_3d_content)
 
         await self._async_run_in_executor(write_sync)
         await self.async_refresh_svg_cache(output_relative_path)
-        _LOGGER.info("Generated vector SVG floor plan saved to %s (walkthrough=%s)", output_full_path, is_walkthrough)
+        _LOGGER.info(
+            "Generated vector SVG floor plans saved to %s and %s (walkthrough=%s)",
+            output_full_path,
+            output_3d_full,
+            is_walkthrough,
+        )
 
         # Generate Lovelace Picture-Elements Card YAML snippet
         lovelace_card_yaml = self._generate_lovelace_card_yaml(output_relative_path, layout_by_zone)
@@ -1388,6 +1410,7 @@ class FloorplanParser:
         meta = {
             "version": STORAGE_VERSION,
             "svg_path": output_relative_path,
+            "svg_path_3d": output_3d_rel,
             "theme": theme,
             "zones": {z: [a["name"] for a in room_list] for z, room_list in zones.items()},
             "room_count": len(areas_map),
@@ -1401,7 +1424,9 @@ class FloorplanParser:
         return {
             "success": True,
             "svg_path": output_relative_path,
+            "svg_path_3d": output_3d_rel,
             "url": f"/local/{os.path.basename(output_relative_path)}",
+            "url_3d": f"/local/{os.path.basename(output_3d_rel)}",
             "room_count": len(areas_map),
             "zones": meta["zones"],
             "walkthrough_completed": is_walkthrough,
@@ -1467,17 +1492,17 @@ class FloorplanParser:
                 if not eid:
                     continue
                 if b.get("delete") or b.get("deleted"):
-                    pattern = rf'<g\b[^>]*class="[^"]*entity-badge[^"]*"[^>]*data-entity-id="{re.escape(eid)}"[^>]*>[\s\S]*?</g>'
+                    pattern = rf'<g\b[^>]*class="[^"]*(?:entity-badge|iso-marker-badge)[^"]*"[^>]*data-entity-id="{re.escape(eid)}"[^>]*>[\s\S]*?</g>'
                     new_svg, count = re.subn(pattern, "", svg_content)
                     if count > 0:
                         svg_content = new_svg
-                        deleted_badges_count += count
-                    else:
-                        pattern_alt = rf'<g\b[^>]*data-entity-id="{re.escape(eid)}"[^>]*class="[^"]*entity-badge[^"]*"[^>]*>[\s\S]*?</g>'
-                        new_svg, count = re.subn(pattern_alt, "", svg_content)
-                        if count > 0:
-                            svg_content = new_svg
-                            deleted_badges_count += count
+                        deleted_badges_count += 1
+                    pattern_alt = rf'<g\b[^>]*data-entity-id="{re.escape(eid)}"[^>]*class="[^"]*(?:entity-badge|iso-marker-badge)[^"]*"[^>]*>[\s\S]*?</g>'
+                    new_svg, count = re.subn(pattern_alt, "", svg_content)
+                    if count > 0:
+                        svg_content = new_svg
+                        if deleted_badges_count == 0:
+                            deleted_badges_count += 1
                     continue
 
                 if "x" not in b or "y" not in b:
@@ -1967,6 +1992,283 @@ class FloorplanParser:
 
         return layout
 
+    def _calculate_isometric_layout(
+        self, layout_by_zone: dict[str, list[dict[str, Any]]]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Project 2D orthogonal room layouts into stacked 2.5D isometric spatial coordinates."""
+        iso_layout: dict[str, list[dict[str, Any]]] = {
+            "main": [],
+            "upper": [],
+            "outdoor": [],
+        }
+
+        origin_x = 650.0
+        origin_y = 640.0
+        scale = 0.58
+        cx = 680.0
+        cy = 385.0
+        cos30 = 0.866025
+        sin30 = 0.500000
+        slab_thickness = 12.0
+
+        def project(x: float, y: float, z: float) -> tuple[float, float]:
+            dx = (x - cx) * scale
+            dy = (y - cy) * scale
+            ix = origin_x + (dx - dy) * cos30
+            iy = origin_y + (dx + dy) * sin30 - z
+            return round(ix, 1), round(iy, 1)
+
+        # 1. Main & Outdoor (z = 0.0, Outdoor z = -6.0)
+        for zone_k in ("outdoor", "main"):
+            z_elevation = -6.0 if zone_k == "outdoor" else 0.0
+            for r in layout_by_zone.get(zone_k, []):
+                rx = float(r["x"])
+                ry = float(r["y"])
+                rw = float(r["width"])
+                rh = float(r["height"])
+
+                p1 = project(rx, ry, z_elevation)
+                p2 = project(rx + rw, ry, z_elevation)
+                p3 = project(rx + rw, ry + rh, z_elevation)
+                p4 = project(rx, ry + rh, z_elevation)
+
+                center = project(rx + rw / 2.0, ry + rh / 2.0, z_elevation)
+
+                south_facet = [
+                    p4,
+                    p3,
+                    (p3[0], round(p3[1] + slab_thickness, 1)),
+                    (p4[0], round(p4[1] + slab_thickness, 1)),
+                ]
+                east_facet = [
+                    p3,
+                    p2,
+                    (p2[0], round(p2[1] + slab_thickness, 1)),
+                    (p3[0], round(p3[1] + slab_thickness, 1)),
+                ]
+
+                iso_r = dict(r)
+                iso_r["iso_points"] = [p1, p2, p3, p4]
+                iso_r["iso_points_str"] = f"{p1[0]},{p1[1]} {p2[0]},{p2[1]} {p3[0]},{p3[1]} {p4[0]},{p4[1]}"
+                iso_r["iso_center"] = center
+                iso_r["iso_south_facet"] = " ".join(f"{pt[0]},{pt[1]}" for pt in south_facet)
+                iso_r["iso_east_facet"] = " ".join(f"{pt[0]},{pt[1]}" for pt in east_facet)
+                iso_r["elevation"] = z_elevation
+                iso_layout[zone_k].append(iso_r)
+
+        # 2. Upper Level Floor (Suspended above ground floor at z = 320.0)
+        upper_rooms = layout_by_zone.get("upper", [])
+        if upper_rooms:
+            min_u_y = min(float(r["y"]) for r in upper_rooms)
+            y_shift = min_u_y - 85.0
+            z_elevation_upper = 320.0
+
+            for r in upper_rooms:
+                rx = float(r["x"])
+                ry_loc = float(r["y"]) - y_shift
+                rw = float(r["width"])
+                rh = float(r["height"])
+
+                p1 = project(rx, ry_loc, z_elevation_upper)
+                p2 = project(rx + rw, ry_loc, z_elevation_upper)
+                p3 = project(rx + rw, ry_loc + rh, z_elevation_upper)
+                p4 = project(rx, ry_loc + rh, z_elevation_upper)
+
+                center = project(rx + rw / 2.0, ry_loc + rh / 2.0, z_elevation_upper)
+
+                south_facet = [
+                    p4,
+                    p3,
+                    (p3[0], round(p3[1] + slab_thickness, 1)),
+                    (p4[0], round(p4[1] + slab_thickness, 1)),
+                ]
+                east_facet = [
+                    p3,
+                    p2,
+                    (p2[0], round(p2[1] + slab_thickness, 1)),
+                    (p3[0], round(p3[1] + slab_thickness, 1)),
+                ]
+
+                iso_r = dict(r)
+                iso_r["iso_points"] = [p1, p2, p3, p4]
+                iso_r["iso_points_str"] = f"{p1[0]},{p1[1]} {p2[0]},{p2[1]} {p3[0]},{p3[1]} {p4[0]},{p4[1]}"
+                iso_r["iso_center"] = center
+                iso_r["iso_south_facet"] = " ".join(f"{pt[0]},{pt[1]}" for pt in south_facet)
+                iso_r["iso_east_facet"] = " ".join(f"{pt[0]},{pt[1]}" for pt in east_facet)
+                iso_r["elevation"] = z_elevation_upper
+                iso_layout["upper"].append(iso_r)
+
+        return iso_layout
+
+    def _render_isometric_svg_markup(
+        self,
+        iso_layout: dict[str, list[dict[str, Any]]],
+        accent_color: str,
+        outdoor_accent: str,
+    ) -> str:
+        """Render stacked 2.5D multi-floor architectural isometric view SVG group."""
+        parts: list[str] = []
+
+        main_rooms = iso_layout.get("main", [])
+        outdoor_rooms = iso_layout.get("outdoor", [])
+        upper_rooms = iso_layout.get("upper", [])
+
+        # 1. Multi-Floor Structural Connectors
+        parts.append('    <!-- ISO: MULTI-FLOOR STRUCTURAL CONNECTORS & VERTICAL RISERS -->\n')
+        parts.append('    <g id="iso-connectors" data-connector="multi-floor">\n')
+
+        origin_x = 650.0
+        origin_y = 640.0
+        scale = 0.58
+        cx = 680.0
+        cy = 385.0
+        cos30 = 0.866025
+        sin30 = 0.500000
+
+        def project(x: float, y: float, z: float) -> tuple[float, float]:
+            dx = (x - cx) * scale
+            dy = (y - cy) * scale
+            ix = origin_x + (dx - dy) * cos30
+            iy = origin_y + (dx + dy) * sin30 - z
+            return round(ix, 1), round(iy, 1)
+
+        corners = [(180.0, 85.0), (1140.0, 85.0), (180.0, 465.0), (1140.0, 465.0)]
+        for cx_pt, cy_pt in corners:
+            g_pt = project(cx_pt, cy_pt, 0.0)
+            u_pt = project(cx_pt, cy_pt, 320.0)
+            parts.append(
+                f'      <line x1="{g_pt[0]}" y1="{g_pt[1]}" x2="{u_pt[0]}" y2="{u_pt[1]}" class="iso-structural-pillar" />\n'
+            )
+
+        stair_g = project(840.0, 290.0, 0.0)
+        stair_u = project(960.0, 160.0, 320.0)
+        parts.append(
+            '      <!-- Multi-Floor Staircase Connector -->\n'
+            f'      <path d="M {stair_g[0]} {stair_g[1]} L {stair_g[0] + 25} {stair_g[1] - 80} '
+            f'L {stair_u[0] - 25} {stair_u[1] + 80} L {stair_u[0]} {stair_u[1]}" '
+            'class="iso-stairs-step" fill="none" stroke-dasharray="6 3" />\n'
+        )
+        parts.append('    </g>\n')
+
+        # 2. Ground & Outdoor Slab (z = 0, z = -6)
+        if main_rooms or outdoor_rooms:
+            parts.append('    <!-- ISO FLOOR: GROUND & OUTDOOR SLAB -->\n')
+            parts.append('    <g id="iso-ground" data-floor="ground">\n')
+            parts.append('      <text x="65" y="470" class="iso-floor-badge">Ground &amp; Outdoor</text>\n')
+            parts.append('      <text x="65" y="492" class="iso-floor-subbadge">Level 1 • Elevation 0.0m</text>\n')
+
+            for r in outdoor_rooms + main_rooms:
+                parts.append(self._render_iso_room(r, accent_color, outdoor_accent))
+            parts.append('    </g>\n')
+
+        # 3. Upper Level Floor Slab (z = 320)
+        if upper_rooms:
+            parts.append('    <!-- ISO FLOOR: UPPER LEVEL SLAB -->\n')
+            parts.append('    <g id="iso-upper" data-floor="upper">\n')
+            parts.append('      <text x="65" y="125" class="iso-floor-badge">Upper Level</text>\n')
+            parts.append('      <text x="65" y="147" class="iso-floor-subbadge">Level 2 • Elevation +3.2m</text>\n')
+
+            for r in upper_rooms:
+                parts.append(self._render_iso_room(r, accent_color, outdoor_accent))
+            parts.append('    </g>\n')
+
+        return "".join(parts)
+
+    def _render_iso_room(
+        self,
+        room: dict[str, Any],
+        accent_color: str,
+        outdoor_accent: str,
+    ) -> str:
+        """Render a single 3D isometric room slab with facets, headers, and device badges."""
+        rid = room.get("id", "room")
+        rname = room.get("name", rid)
+        rzone = room.get("zone", "main")
+        pts_str = room.get("iso_points_str", "")
+        south_facet = room.get("iso_south_facet", "")
+        east_facet = room.get("iso_east_facet", "")
+        center = room.get("iso_center", (650.0, 500.0))
+        entities = room.get("entities", [])
+        buckets = classify_area_entities(entities)
+
+        box_classes = ["iso-floor-slab"]
+        if rzone == "outdoor":
+            if room.get("is_water"):
+                box_classes.append("water-box")
+            else:
+                box_classes.append("outdoor-box")
+
+        sub_zones = room.get("sub_zones", [])
+        subzone_preview = sub_zones[0] if sub_zones else ""
+
+        room_parts = [
+            f'      <g class="room-group iso-room-group" data-area-id="{rid}" data-zone="{rzone}" data-iso-cx="{center[0]}" data-iso-cy="{center[1]}">\n',
+        ]
+        if south_facet:
+            room_parts.append(f'        <polygon points="{south_facet}" class="iso-slab-facet south-facet" />\n')
+        if east_facet:
+            room_parts.append(f'        <polygon points="{east_facet}" class="iso-slab-facet east-facet" />\n')
+        room_parts.extend([
+            f'        <polygon points="{pts_str}" class="{" ".join(box_classes)}" />\n',
+            f'        <text x="{center[0]}" y="{center[1] - 4}" class="iso-room-header" text-anchor="middle">{rname}</text>\n',
+        ])
+        if subzone_preview:
+            room_parts.append(
+                f'        <text x="{center[0]}" y="{center[1] + 11}" class="iso-subzone-pill" text-anchor="middle">{subzone_preview}</text>\n'
+            )
+
+        # Entity badges in 3D
+        badge_spacing = 22
+        active_badges = []
+        for domain_key, icon_char in (
+            ("lights", "💡"),
+            ("media", "📺"),
+            ("fans", "🌀"),
+            ("vacuums", "🧹"),
+            ("covers", "🚪"),
+            ("switches", "🔌"),
+            ("climates", "🌡️"),
+            ("motion", "🚶"),
+            ("cameras", "📹"),
+            ("locks", "🔒"),
+        ):
+            domain_entities = buckets.get(domain_key, [])
+            if domain_entities:
+                active_badges.append((domain_entities[0], icon_char))
+
+        total_b = len(active_badges)
+        for idx, (eid, icon_char) in enumerate(active_badges[:4]):
+            offset_x = (idx - (min(total_b, 4) - 1) / 2.0) * badge_spacing
+            bx = round(center[0] + offset_x, 1)
+            by = round(center[1] + 25.0, 1)
+            room_parts.append(
+                f'        <g class="iso-marker-badge" data-entity-id="{eid}" transform="translate({bx}, {by})">\n'
+                f'          <circle cx="0" cy="0" r="9" class="badge-circle" />\n'
+                f'          <text class="badge-icon">{icon_char}</text>\n'
+                f'        </g>\n'
+            )
+
+        room_parts.append('      </g>\n')
+        return "".join(room_parts)
+
+    def _make_3d_primary_svg(self, svg_content: str) -> str:
+        """Create a standalone 3D isometric SVG where 3D is active and 2D is hidden."""
+        res = re.sub(
+            r'viewBox="0 0 1300 \d+"',
+            'viewBox="0 0 1300 1080"',
+            svg_content,
+            count=1,
+        )
+        res = re.sub(
+            r'height="\d+"',
+            'height="1080"',
+            res,
+            count=1,
+        )
+        res = res.replace('<g id="view-mode-2d">', '<g id="view-mode-2d" style="display: none;">', 1)
+        res = res.replace('<g id="view-mode-3d" style="display: none;">', '<g id="view-mode-3d">', 1)
+        return res
+
     def _get_canvas_height(self, layout_by_zone: dict[str, list[dict[str, Any]]]) -> int:
         """Compute total SVG canvas height required to fit all positioned rooms without clipping."""
         max_bottom = 0
@@ -1982,8 +2284,9 @@ class FloorplanParser:
         layout_by_zone: dict[str, list[dict[str, Any]]],
         entities: list[dict[str, Any]],
         theme: str = "cyberpunk",
+        iso_layout_by_zone: dict[str, list[dict[str, Any]]] | None = None,
     ) -> str:
-        """Render architectural vector SVG floor plans (Ground+Outdoor combined, Upper Level separate)."""
+        """Render architectural vector SVG floor plans (Ground+Outdoor combined, Upper Level separate, and 3D Isometric)."""
         accent_color = "#0ea5e9"  # Sky Cyan
         accent_secondary = "#a855f7"  # Lavender Purple
         outdoor_accent = "#10b981"  # Emerald Perimeter
@@ -2008,7 +2311,7 @@ class FloorplanParser:
 
         svg_parts = [
             f'''<?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1300 {canvas_height}" data-full-viewbox="0 0 1300 {canvas_height}" width="1300" height="{canvas_height}" class="otis-floorplan {theme}">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1300 {canvas_height}" data-full-viewbox="0 0 1300 {canvas_height}" data-iso-viewbox="0 0 1300 1080" width="1300" height="{canvas_height}" class="otis-floorplan {theme}">
   <defs>
     <style>
       .otis-floorplan {{
@@ -2097,12 +2400,12 @@ class FloorplanParser:
         fill: #94a3b8;
         letter-spacing: 0.6px;
       }}
-      .entity-badge {{
+      .entity-badge, .iso-marker-badge {{
         display: inline;
         cursor: pointer;
         transition: transform 0.2s ease;
       }}
-      .entity-badge:hover {{
+      .entity-badge:hover, .iso-marker-badge:hover {{
         transform: scale(1.2);
       }}
       .badge-circle {{ fill: rgba(15, 23, 42, 0.92); stroke: {accent_color}; stroke-width: 1.5; }}
@@ -2117,6 +2420,84 @@ class FloorplanParser:
       .window-pane {{ stroke: #38bdf8; stroke-width: 1.4; opacity: 0.90; }}
       .window-cap {{ stroke: #64748b; stroke-width: 2; }}
       .stairs-step {{ stroke: #38bdf8; stroke-width: 1.2; opacity: 0.65; }}
+      /* 3D Isometric Styles */
+      .iso-room-group {{
+        cursor: pointer;
+        transition: transform 0.25s ease, filter 0.25s ease;
+      }}
+      .iso-room-group:hover .iso-floor-slab {{
+        fill-opacity: 1;
+        stroke: {accent_color};
+        filter: drop-shadow(0 0 12px {accent_color});
+      }}
+      .iso-floor-slab {{
+        fill: {card_bg};
+        fill-opacity: 0.88;
+        stroke: {wall_color};
+        stroke-width: 2.0;
+        transition: all 0.25s ease;
+      }}
+      .iso-floor-slab.outdoor-box {{
+        fill: rgba(6, 78, 59, 0.32);
+        stroke: {outdoor_accent};
+        stroke-width: 1.8;
+        stroke-dasharray: 6 3;
+      }}
+      .iso-floor-slab.water-box {{
+        fill: rgba(14, 165, 233, 0.28);
+        stroke: #38bdf8;
+        stroke-width: 2.0;
+      }}
+      .iso-slab-facet {{
+        transition: all 0.25s ease;
+      }}
+      .iso-slab-facet.south-facet {{
+        fill: rgba(15, 23, 42, 0.95);
+        stroke: rgba(56, 189, 248, 0.45);
+        stroke-width: 1.2;
+      }}
+      .iso-slab-facet.east-facet {{
+        fill: rgba(30, 41, 59, 0.85);
+        stroke: rgba(56, 189, 248, 0.35);
+        stroke-width: 1.2;
+      }}
+      .iso-room-header {{
+        font-size: 12px;
+        font-weight: 700;
+        fill: {text_color};
+        letter-spacing: 0.4px;
+        pointer-events: none;
+      }}
+      .iso-subzone-pill {{
+        font-size: 9px;
+        font-weight: 600;
+        fill: #94a3b8;
+        letter-spacing: 0.2px;
+        pointer-events: none;
+      }}
+      .iso-structural-pillar {{
+        stroke: rgba(56, 189, 248, 0.40);
+        stroke-width: 1.5;
+        stroke-dasharray: 4 4;
+      }}
+      .iso-floor-badge {{
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 1.2px;
+        text-transform: uppercase;
+        fill: {accent_color};
+      }}
+      .iso-floor-subbadge {{
+        font-size: 10px;
+        font-weight: 600;
+        fill: #94a3b8;
+        letter-spacing: 0.4px;
+      }}
+      .iso-stairs-step {{
+        stroke: #38bdf8;
+        stroke-width: 2.0;
+        fill: rgba(56, 189, 248, 0.25);
+      }}
     </style>
   </defs>
 
@@ -2133,6 +2514,10 @@ class FloorplanParser:
         main_rooms = layout_by_zone.get("main", [])
         outdoor_rooms = layout_by_zone.get("outdoor", [])
         upper_rooms = layout_by_zone.get("upper", [])
+
+        # Wrap 2D orthogonal views
+        svg_parts.append('  <!-- 2D ORTHOGONAL BLUEPRINT VIEW -->\n')
+        svg_parts.append('  <g id="view-mode-2d">\n')
 
         # PLAN 1: GROUND FLOOR & OUTDOOR PERIMETER (Combined Architectural Plan)
         if main_rooms or outdoor_rooms:
@@ -2199,6 +2584,19 @@ class FloorplanParser:
             for r in upper_rooms:
                 svg_parts.append(self._render_room_svg(r, entity_by_id, accent_color))
             svg_parts.append('  </g>\n')
+
+        svg_parts.append('  </g>  <!-- /view-mode-2d -->\n\n')
+
+        # 3D MULTI-FLOOR ISOMETRIC VIEW
+        if iso_layout_by_zone:
+            svg_parts.append('  <!-- 3D MULTI-FLOOR ISOMETRIC VIEW -->\n')
+            svg_parts.append('  <g id="view-mode-3d" style="display: none;">\n')
+            svg_parts.append(
+                self._render_isometric_svg_markup(
+                    iso_layout_by_zone, accent_color, outdoor_accent
+                )
+            )
+            svg_parts.append('  </g>  <!-- /view-mode-3d -->\n')
 
         svg_parts.append('</svg>\n')
         return "".join(svg_parts)

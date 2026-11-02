@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.18";
+const CARD_VERSION = "0.1.19";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -99,6 +99,11 @@ class OtisCompanionCard extends HTMLElement {
       this._selectedFloorZone = localStorage.getItem("otis_floorplan_selected_zone") || "all";
     } catch (_) {
       this._selectedFloorZone = "all";
+    }
+    try {
+      this._floorplanViewMode = localStorage.getItem("otis_floorplan_view_mode") || "2d";
+    } catch (_) {
+      this._floorplanViewMode = "2d";
     }
     this._selectedRoomInfo = null;
     this._spokenOrderOverride = "";
@@ -4045,6 +4050,37 @@ class OtisCompanionCard extends HTMLElement {
           padding: 8px 12px;
         }
 
+        .view-mode-pills {
+          display: inline-flex;
+          background: rgba(15, 23, 42, 0.65);
+          border: 1px solid var(--otis-surface-border, rgba(56, 189, 248, 0.22));
+          border-radius: 9px;
+          padding: 2px;
+          gap: 2px;
+        }
+
+        .view-mode-pill {
+          background: transparent;
+          border: none;
+          color: var(--otis-text-muted, #94a3b8);
+          font-size: 0.72rem;
+          font-weight: 700;
+          padding: 4px 9px;
+          border-radius: 7px;
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+
+        .view-mode-pill:hover {
+          color: #fff;
+        }
+
+        .view-mode-pill.active {
+          background: var(--otis-primary, #0ea5e9);
+          color: #fff;
+          box-shadow: 0 0 8px rgba(14, 165, 233, 0.45);
+        }
+
         .zone-pills {
           display: flex;
           align-items: center;
@@ -5869,11 +5905,17 @@ class OtisCompanionCard extends HTMLElement {
     return `
       <div class="floorplan-panel">
         <div class="floorplan-toolbar">
-          <div class="zone-pills">
-            <button type="button" class="zone-pill ${this._selectedFloorZone === "all" ? "active" : ""}" data-zone="all">All Floors</button>
-            <button type="button" class="zone-pill ${this._selectedFloorZone === "main" ? "active" : ""}" data-zone="main">Ground &amp; Outdoor</button>
-            <button type="button" class="zone-pill ${this._selectedFloorZone === "upper" ? "active" : ""}" data-zone="upper">Upper Level</button>
-            <button type="button" class="zone-pill ${this._selectedFloorZone === "outdoor" ? "active" : ""}" data-zone="outdoor">Outdoor Only</button>
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+            <div class="view-mode-pills">
+              <button type="button" class="view-mode-pill ${this._floorplanViewMode === "2d" ? "active" : ""}" data-view-mode="2d" title="2D Orthogonal Blueprint">📐 2D</button>
+              <button type="button" class="view-mode-pill ${this._floorplanViewMode === "3d" ? "active" : ""}" data-view-mode="3d" title="Multi-Floor 3D Isometric View">🧊 3D</button>
+            </div>
+            <div class="zone-pills">
+              <button type="button" class="zone-pill ${this._selectedFloorZone === "all" ? "active" : ""}" data-zone="all">All Floors</button>
+              <button type="button" class="zone-pill ${this._selectedFloorZone === "main" ? "active" : ""}" data-zone="main">Ground &amp; Outdoor</button>
+              <button type="button" class="zone-pill ${this._selectedFloorZone === "upper" ? "active" : ""}" data-zone="upper">Upper Level</button>
+              <button type="button" class="zone-pill ${this._selectedFloorZone === "outdoor" ? "active" : ""}" data-zone="outdoor">Outdoor Only</button>
+            </div>
           </div>
           <div class="floorplan-actions">
             ${
@@ -6077,6 +6119,24 @@ class OtisCompanionCard extends HTMLElement {
     `;
   }
 
+  _projectToIso(x, y) {
+    const originX = 650.0;
+    const originY = 640.0;
+    const scale = 0.58;
+    const cx = 680.0;
+    const cy = 385.0;
+    const cos30 = 0.866025;
+    const sin30 = 0.500000;
+    const isUpper = y >= 720;
+    const yLoc = isUpper ? y - 720 : y;
+    const z = isUpper ? 320.0 : (y >= 580 ? -6.0 : 0.0);
+    const dx = (x - cx) * scale;
+    const dy = (yLoc - cy) * scale;
+    const ix = originX + (dx - dy) * cos30;
+    const iy = originY + (dx + dy) * sin30 - z;
+    return { x: Math.round(ix * 10) / 10, y: Math.round(iy * 10) / 10, isUpper };
+  }
+
   _renderFloorplanPins() {
     const rawBadges = this._capabilityMap?.floorplan?.custom_layout?.badges || [];
     const badgesMap = {};
@@ -6114,6 +6174,7 @@ class OtisCompanionCard extends HTMLElement {
             const activeColor = domainColors[dom] || "#38bdf8";
             const bx = parseFloat(b.x || 300);
             const by = parseFloat(b.y || 300);
+            const isoPt = this._projectToIso(bx, by);
 
             return `
               <div
@@ -6121,6 +6182,9 @@ class OtisCompanionCard extends HTMLElement {
                 data-entity-id="${eid}"
                 data-x="${bx}"
                 data-y="${by}"
+                data-iso-x="${isoPt.x}"
+                data-iso-y="${isoPt.y}"
+                data-is-upper="${isoPt.isUpper ? "1" : "0"}"
                 title="${name}: ${state}"
                 style="display: none; top: 0px; left: 0px; --paper-item-icon-active-color: ${activeColor}; color: ${isActive ? activeColor : "#94a3b8"};"
               >
@@ -9162,6 +9226,7 @@ class OtisCompanionCard extends HTMLElement {
       if (!oRect.width || !oRect.height) return;
 
       const curZone = this._selectedFloorZone || "all";
+      const is3d = this._floorplanViewMode === "3d";
       const planUpper = currentSvgEl.querySelector("#plan-upper");
 
       let uVbY = 730;
@@ -9174,9 +9239,13 @@ class OtisCompanionCard extends HTMLElement {
       }
 
       pinsOverlay.querySelectorAll(".floorplan-device-pin").forEach((pin) => {
-        const bx = parseFloat(pin.getAttribute("data-x") || 300);
-        const by = parseFloat(pin.getAttribute("data-y") || 300);
-        const isUpperPin = by >= uVbY;
+        const bx = is3d
+          ? parseFloat(pin.getAttribute("data-iso-x") || pin.getAttribute("data-x") || 300)
+          : parseFloat(pin.getAttribute("data-x") || 300);
+        const by = is3d
+          ? parseFloat(pin.getAttribute("data-iso-y") || pin.getAttribute("data-y") || 300)
+          : parseFloat(pin.getAttribute("data-y") || 300);
+        const isUpperPin = is3d ? pin.getAttribute("data-is-upper") === "1" : by >= uVbY;
 
         if (curZone === "main" && isUpperPin) {
           pin.style.display = "none";
@@ -9217,60 +9286,120 @@ class OtisCompanionCard extends HTMLElement {
     const applyZoneFilterToSvg = (zone) => {
       const svgEl = root.querySelector("#floorplan-viewport svg");
       if (!svgEl) return;
-      const planGround = svgEl.querySelector("#plan-ground");
-      const planUpper = svgEl.querySelector("#plan-upper");
-      const fullVb = svgEl.getAttribute("data-full-viewbox") || "0 0 1300 1250";
+      const is3d = this._floorplanViewMode === "3d";
+      const view2d = svgEl.querySelector("#view-mode-2d");
+      const view3d = svgEl.querySelector("#view-mode-3d");
 
-      if (zone === "main") {
-        // Ground floorplan includes outdoor areas; draw separately from Upper Floor
-        if (planGround) {
-          planGround.style.display = "";
-          const gVb = planGround.getAttribute("data-viewbox");
-          if (gVb) svgEl.setAttribute("viewBox", gVb);
-        }
-        if (planUpper) planUpper.style.display = "none";
-        svgEl.querySelectorAll("[data-zone]").forEach((el) => {
-          el.style.opacity = "1";
-          el.style.filter = "none";
-        });
-      } else if (zone === "upper") {
-        // Upper floorplan drawn separately
-        if (planGround) planGround.style.display = "none";
-        if (planUpper) {
-          planUpper.style.display = "";
-          const uVb = planUpper.getAttribute("data-viewbox");
-          if (uVb) svgEl.setAttribute("viewBox", uVb);
-        }
-        svgEl.querySelectorAll("[data-zone]").forEach((el) => {
-          el.style.opacity = "1";
-          el.style.filter = "none";
-        });
-      } else if (zone === "outdoor") {
-        if (planGround) {
-          planGround.style.display = "";
-          const gVb = planGround.getAttribute("data-viewbox");
-          if (gVb) svgEl.setAttribute("viewBox", gVb);
-        }
-        if (planUpper) planUpper.style.display = "none";
-        svgEl.querySelectorAll("[data-zone]").forEach((el) => {
-          const elZone = el.getAttribute("data-zone");
-          if (elZone === "outdoor") {
+      if (is3d && view3d) {
+        if (view2d) view2d.style.display = "none";
+        view3d.style.display = "";
+
+        const isoGround = view3d.querySelector("#iso-ground");
+        const isoUpper = view3d.querySelector("#iso-upper");
+        const isoConn = view3d.querySelector("#iso-connectors");
+
+        if (zone === "main") {
+          if (isoGround) isoGround.style.display = "";
+          if (isoUpper) isoUpper.style.display = "none";
+          if (isoConn) isoConn.style.display = "none";
+          svgEl.setAttribute("viewBox", "0 360 1300 680");
+          view3d.querySelectorAll("[data-zone]").forEach((el) => {
             el.style.opacity = "1";
             el.style.filter = "none";
-          } else {
-            el.style.opacity = "0.22";
-            el.style.filter = "grayscale(75%)";
-          }
-        });
+          });
+        } else if (zone === "upper") {
+          if (isoGround) isoGround.style.display = "none";
+          if (isoUpper) isoUpper.style.display = "";
+          if (isoConn) isoConn.style.display = "none";
+          svgEl.setAttribute("viewBox", "0 40 1300 580");
+          view3d.querySelectorAll("[data-zone]").forEach((el) => {
+            el.style.opacity = "1";
+            el.style.filter = "none";
+          });
+        } else if (zone === "outdoor") {
+          if (isoGround) isoGround.style.display = "";
+          if (isoUpper) isoUpper.style.display = "none";
+          if (isoConn) isoConn.style.display = "none";
+          svgEl.setAttribute("viewBox", "0 360 1300 680");
+          view3d.querySelectorAll("[data-zone]").forEach((el) => {
+            const elZone = el.getAttribute("data-zone");
+            if (elZone === "outdoor") {
+              el.style.opacity = "1";
+              el.style.filter = "none";
+            } else {
+              el.style.opacity = "0.22";
+              el.style.filter = "grayscale(75%)";
+            }
+          });
+        } else {
+          // "all": Multi-floor stacked isometric view
+          if (isoGround) isoGround.style.display = "";
+          if (isoUpper) isoUpper.style.display = "";
+          if (isoConn) isoConn.style.display = "";
+          svgEl.setAttribute("viewBox", svgEl.getAttribute("data-iso-viewbox") || "0 0 1300 1080");
+          view3d.querySelectorAll("[data-zone]").forEach((el) => {
+            el.style.opacity = "1";
+            el.style.filter = "none";
+          });
+        }
       } else {
-        // "all": Show both Ground+Outdoor and Upper Level plans
-        if (planGround) planGround.style.display = "";
-        if (planUpper) planUpper.style.display = "";
-        svgEl.setAttribute("viewBox", fullVb);
-        svgEl.querySelectorAll("[data-zone]").forEach((el) => {
-          el.style.opacity = "1";
-          el.style.filter = "none";
-        });
+        if (view2d) view2d.style.display = "";
+        if (view3d) view3d.style.display = "none";
+        const planGround = svgEl.querySelector("#plan-ground");
+        const planUpper = svgEl.querySelector("#plan-upper");
+        const fullVb = svgEl.getAttribute("data-full-viewbox") || "0 0 1300 1250";
+
+        if (zone === "main") {
+          // Ground floorplan includes outdoor areas; draw separately from Upper Floor
+          if (planGround) {
+            planGround.style.display = "";
+            const gVb = planGround.getAttribute("data-viewbox");
+            if (gVb) svgEl.setAttribute("viewBox", gVb);
+          }
+          if (planUpper) planUpper.style.display = "none";
+          svgEl.querySelectorAll("[data-zone]").forEach((el) => {
+            el.style.opacity = "1";
+            el.style.filter = "none";
+          });
+        } else if (zone === "upper") {
+          // Upper floorplan drawn separately
+          if (planGround) planGround.style.display = "none";
+          if (planUpper) {
+            planUpper.style.display = "";
+            const uVb = planUpper.getAttribute("data-viewbox");
+            if (uVb) svgEl.setAttribute("viewBox", uVb);
+          }
+          svgEl.querySelectorAll("[data-zone]").forEach((el) => {
+            el.style.opacity = "1";
+            el.style.filter = "none";
+          });
+        } else if (zone === "outdoor") {
+          if (planGround) {
+            planGround.style.display = "";
+            const gVb = planGround.getAttribute("data-viewbox");
+            if (gVb) svgEl.setAttribute("viewBox", gVb);
+          }
+          if (planUpper) planUpper.style.display = "none";
+          svgEl.querySelectorAll("[data-zone]").forEach((el) => {
+            const elZone = el.getAttribute("data-zone");
+            if (elZone === "outdoor") {
+              el.style.opacity = "1";
+              el.style.filter = "none";
+            } else {
+              el.style.opacity = "0.22";
+              el.style.filter = "grayscale(75%)";
+            }
+          });
+        } else {
+          // "all": Show both Ground+Outdoor and Upper Level plans
+          if (planGround) planGround.style.display = "";
+          if (planUpper) planUpper.style.display = "";
+          svgEl.setAttribute("viewBox", fullVb);
+          svgEl.querySelectorAll("[data-zone]").forEach((el) => {
+            el.style.opacity = "1";
+            el.style.filter = "none";
+          });
+        }
       }
 
       updatePinPositions();
@@ -9281,6 +9410,18 @@ class OtisCompanionCard extends HTMLElement {
     setTimeout(updatePinPositions, 60);
     setTimeout(updatePinPositions, 200);
     setTimeout(updatePinPositions, 600);
+
+    root.querySelectorAll(".view-mode-pill").forEach((pill) => {
+      pill.onclick = (e) => {
+        const mode = e.currentTarget.getAttribute("data-view-mode") || "2d";
+        this._floorplanViewMode = mode;
+        try {
+          localStorage.setItem("otis_floorplan_view_mode", mode);
+        } catch (_) {}
+        root.querySelectorAll(".view-mode-pill").forEach((p) => p.classList.toggle("active", p === e.currentTarget));
+        applyZoneFilterToSvg(this._selectedFloorZone || "all");
+      };
+    });
 
     root.querySelectorAll(".zone-pill").forEach((pill) => {
       pill.onclick = (e) => {

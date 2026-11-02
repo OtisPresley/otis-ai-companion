@@ -4233,6 +4233,8 @@ class DiscoveryEngine:
                 "exists": has_floorplan,
                 "walkthrough_completed": has_walkthrough,
                 "url": "/local/otis_floorplan.svg" if has_floorplan else None,
+                "url_3d": "/local/otis_floorplan_3d.svg" if has_floorplan else None,
+                "has_3d_view": has_floorplan,
                 "lovelace_yaml": self.floorplan_parser.get_lovelace_yaml() if has_floorplan else None,
                 "custom_layout": getattr(self.floorplan_parser, "_metadata", {}).get("custom_layout", {}),
             },

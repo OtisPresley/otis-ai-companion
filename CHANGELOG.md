@@ -7,6 +7,19 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.19] - 2026-11-01
+
+### Added
+- **Multi-Floor 3D Isometric View & Architectural Layering (Roadmap Phase 1)**:
+  - **Pseudo-3D Isometric Layout Projection**: Computes 2.5D axonometric projection ($30^\circ$ pitch) mapping orthogonal room boundaries into isometric screen coordinates in `FloorplanParser`.
+  - **Multi-Floor Vertical Stacking & Structural Risers**: Renders Ground Floor & Outdoor slab at baseline ($z = 0$) and Upper Level suspended directly above ($z = +320\text{px}$), visually linked by vertical structural corner guide pillars and an isometric staircase riser between Mudroom and Gym.
+  - **3D Depth Facets & Slabs**: Renders South-facing and East-facing extruded slab depth facets ($T = 12\text{px}$) for physical architectural slab thickness, ambient drop shadows, and glowing accent wall strokes.
+  - **Dual-Layer & Standalone SVG Synthesis**: Automatically compiles dual-mode `otis_floorplan.svg` (embedding `<g id="view-mode-2d">` and `<g id="view-mode-3d">`) and standalone `otis_floorplan_3d.svg` (viewBox `0 0 1300 1080`, 3D active by default) during floorplan generation.
+  - **Lovelace Companion Card 2D / 3D Switcher**: Added `📐 2D` and `🧊 3D` view mode pills to the floorplan toolbar with instant toggle and `localStorage` persistence.
+  - **Real-Time 3D Pin Projection**: Projecting entity pins and status badges onto isometric room coordinates using SVG coordinate transform matrices (`createSVGPoint().matrixTransform(ctm)`).
+  - **Zone & Floor Filtering in 3D**: Full support for "All Floors" (stacked cutaway), "Ground & Outdoor", "Upper Level", and "Outdoor Only" with adaptive isometric viewBox framing.
+- Bumped Lovelace Companion Card to `v0.1.19`.
+
 ## [0.1.18] - 2026-11-01
 
 ### Added
