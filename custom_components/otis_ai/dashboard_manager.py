@@ -199,13 +199,18 @@ class DashboardManager:
     def _convert_cards_to_sections(self, cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Convert a list of Lovelace cards into modern responsive section objects."""
         sections: list[dict[str, Any]] = []
-        for card in cards:
+        i = 0
+        n = len(cards)
+        while i < n:
+            card = cards[i]
             if not isinstance(card, dict):
+                i += 1
                 continue
             c_type = card.get("type", "")
             title = card.get("title")
 
-            if c_type == "grid":
+            # Check if this is a navigation card immediately followed by a descriptive markdown card
+            if i == 0 and c_type == "grid" and any(k in (title or "").lower() for k in ("nav", "studio", "navigation")):
                 sec_cards: list[dict[str, Any]] = []
                 if title:
                     sec_cards.append({
@@ -214,11 +219,17 @@ class DashboardManager:
                         "heading_style": "title",
                     })
                 sec_cards.extend(card.get("cards", []))
+                if i + 1 < n and isinstance(cards[i + 1], dict) and cards[i + 1].get("type") == "markdown":
+                    sec_cards.append(cards[i + 1])
+                    i += 1
                 sections.append({
                     "type": "grid",
                     "cards": sec_cards,
                 })
-            elif c_type in ("entities", "media-control", "alarm-panel", "thermostat", "picture-elements", "picture-entity"):
+                i += 1
+                continue
+
+            if c_type == "grid":
                 sec_cards = []
                 if title:
                     sec_cards.append({
@@ -226,11 +237,33 @@ class DashboardManager:
                         "heading": title,
                         "heading_style": "title",
                     })
-                sec_cards.append(card)
-                sections.append({
+                grid_cards = card.get("cards", [])
+                sec_cards.extend(grid_cards)
+                sec_obj: dict[str, Any] = {
                     "type": "grid",
                     "cards": sec_cards,
-                })
+                }
+                if any(isinstance(c, dict) and c.get("type") in ("picture-entity", "picture-elements") for c in grid_cards):
+                    sec_obj["column_span"] = 2
+                sections.append(sec_obj)
+            elif c_type in ("entities", "media-control", "alarm-panel", "thermostat", "picture-elements", "picture-entity"):
+                sec_cards = []
+                card_copy = dict(card)
+                if title:
+                    sec_cards.append({
+                        "type": "heading",
+                        "heading": title,
+                        "heading_style": "title",
+                    })
+                    card_copy.pop("title", None)
+                sec_cards.append(card_copy)
+                sec_obj = {
+                    "type": "grid",
+                    "cards": sec_cards,
+                }
+                if c_type in ("picture-entity", "picture-elements"):
+                    sec_obj["column_span"] = 2
+                sections.append(sec_obj)
             elif c_type == "markdown":
                 sections.append({
                     "type": "grid",
@@ -241,6 +274,7 @@ class DashboardManager:
                     "type": "grid",
                     "cards": [card],
                 })
+            i += 1
         return sections
 
     def _build_studio_view(
@@ -561,7 +595,7 @@ class DashboardManager:
             capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, nav_style=nav_style
         )
         clim_cards = self._build_climate_view_cards(
-            capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, nav_style=nav_style
+            capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, nav_style=nav_style, layout_style=layout_style
         )
         energy_cards = self._build_energy_view_cards(
             capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, nav_style=nav_style
@@ -685,7 +719,7 @@ class DashboardManager:
 
         # 3. Climate & Pool Subview
         climate_cards = self._build_climate_view_cards(
-            capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH, nav_style=nav_style
+            capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH, nav_style=nav_style, layout_style=layout_style
         )
         views.append(
             self._build_studio_view(
@@ -2091,12 +2125,33 @@ class DashboardManager:
             )
         ]
         if climates:
+            c_cards: list[dict[str, Any]] = []
             for c_eid in climates:
+                if layout_style == "modern_sections":
+                    c_cards.append({
+                        "type": "tile",
+                        "entity": c_eid,
+                        "features": [
+                            {"type": "target-temperature"},
+                            {"type": "climate-hvac-modes"},
+                        ],
+                    })
+                else:
+                    c_cards.append({
+                        "type": "thermostat",
+                        "entity": c_eid,
+                        "features": [{"type": "climate-hvac-modes"}],
+                    })
+            if layout_style == "modern_sections":
                 room_cards.append({
-                    "type": "thermostat",
-                    "entity": c_eid,
-                    "features": [{"type": "climate-hvac-modes"}],
+                    "type": "grid",
+                    "title": "Climate & Thermostats",
+                    "columns": min(2, len(c_cards)),
+                    "square": False,
+                    "cards": c_cards,
                 })
+            else:
+                room_cards.extend(c_cards)
         if fans:
             room_cards.append({
                 "type": "grid",
@@ -2175,7 +2230,15 @@ class DashboardManager:
                 "columns": min(2, len(deduped_cameras[:4])),
                 "square": False,
                 "cards": [
-                    {"type": "picture-entity", "entity": c_eid, "camera_view": "auto"}
+                    {
+                        "type": "picture-entity",
+                        "entity": c_eid,
+                        "camera_view": "auto",
+                        "layout_options": {
+                            "grid_columns": 2,
+                            "grid_rows": "auto",
+                        },
+                    }
                     for c_eid in deduped_cameras[:4]
                 ],
             })
@@ -2626,7 +2689,15 @@ class DashboardManager:
                 "columns": min(2, len(cameras)),
                 "square": False,
                 "cards": [
-                    {"type": "picture-entity", "entity": cam, "camera_view": "auto"}
+                    {
+                        "type": "picture-entity",
+                        "entity": cam,
+                        "camera_view": "auto",
+                        "layout_options": {
+                            "grid_columns": 2,
+                            "grid_rows": "auto",
+                        },
+                    }
                     for cam in cameras[:6]
                 ],
             })
@@ -2647,10 +2718,13 @@ class DashboardManager:
         capability_map: dict[str, Any] | None,
         dashboard_url_path: str = COMMAND_CENTER_DASHBOARD_URL_PATH,
         nav_style: str | None = None,
+        layout_style: str | None = None,
     ) -> list[dict[str, Any]]:
         """Build cards for Climate & Pool subview or standalone dashboard."""
         if nav_style is None:
             nav_style = self._get_user_rules().get("navigation_style", "sleek_buttons")
+        if layout_style is None:
+            layout_style = self._get_user_rules().get("dashboard_layout", "modern_sections")
         nav_card = self._build_studio_navigation_card(dashboard_url_path=dashboard_url_path, nav_style=nav_style)
 
         if not capability_map:
@@ -2707,19 +2781,60 @@ class DashboardManager:
             }
         ]
 
-        if climates:
+        hvac_climates = [c for c in climates if not any(k in c.lower() for k in ("pool", "spa", "pentair"))]
+        pool_climates = [c for c in climates if any(k in c.lower() for k in ("pool", "spa", "pentair"))]
+
+        if hvac_climates:
+            if layout_style == "modern_sections":
+                cards.append({
+                    "type": "grid",
+                    "title": "HVAC Thermostats & Dual-Setpoints",
+                    "columns": min(2, len(hvac_climates)),
+                    "square": False,
+                    "cards": [
+                        {
+                            "type": "tile",
+                            "entity": c,
+                            "features": [
+                                {"type": "target-temperature"},
+                                {"type": "climate-hvac-modes"},
+                            ],
+                        }
+                        for c in hvac_climates[:6]
+                    ],
+                })
+            else:
+                cards.append({
+                    "type": "grid",
+                    "title": "HVAC Thermostats",
+                    "columns": min(2, len(hvac_climates)),
+                    "square": False,
+                    "cards": [
+                        {
+                            "type": "thermostat",
+                            "entity": c,
+                            "features": [{"type": "climate-hvac-modes"}],
+                        }
+                        for c in hvac_climates[:4]
+                    ],
+                })
+
+        if pool_climates:
             cards.append({
                 "type": "grid",
-                "title": "HVAC Thermostats & Pool Heat",
-                "columns": min(2, len(climates)),
+                "title": "Pool & Spa Water Temperature",
+                "columns": min(2, len(pool_climates)),
                 "square": False,
                 "cards": [
                     {
-                        "type": "thermostat",
+                        "type": "tile" if layout_style == "modern_sections" else "thermostat",
                         "entity": c,
-                        "features": [{"type": "climate-hvac-modes"}],
+                        "features": [
+                            {"type": "target-temperature"},
+                            {"type": "climate-hvac-modes"},
+                        ] if layout_style == "modern_sections" else [{"type": "climate-hvac-modes"}],
                     }
-                    for c in climates[:4]
+                    for c in pool_climates[:4]
                 ],
             })
 

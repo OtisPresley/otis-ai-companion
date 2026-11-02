@@ -2285,9 +2285,11 @@ class TestFloorplanParser(unittest.TestCase):
 
         mb_subview = room_subviews["area_master_bedroom"]
         self.assertTrue(mb_subview.get("subview"))
-        mb_card_types = [c.get("type") for c in mb_subview["cards"] if isinstance(c, dict)]
-        self.assertIn("thermostat", mb_card_types)
         mb_card_titles = [c.get("title") for c in mb_subview["cards"] if isinstance(c, dict)]
+        self.assertTrue(
+            "Climate & Thermostats" in mb_card_titles
+            or any(c.get("type") == "thermostat" for c in mb_subview["cards"] if isinstance(c, dict))
+        )
         self.assertIn("Access & Covers", mb_card_titles)
 
         # 2. Test Dashboard Gap Analysis proposing Whole Home (before creation)
@@ -4818,6 +4820,77 @@ action:
         self.assertIn("Command Center & Studios Regenerated", speech)
         dm.async_ensure_user_command_center_dashboard.assert_called_once()
         dm.async_ensure_admin_companion_dashboard.assert_called_once()
+
+    def test_modern_sections_tile_groupings_and_ergonomics(self):
+        """Verify modern sections tile ergonomics: HVAC dual setpoints, 2-column cameras, and header grouping."""
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+        from custom_components.otis_ai.rules_manager import BehavioralRulesManager
+
+        rm = BehavioralRulesManager(self.hass)
+        dm = DashboardManager(self.hass, rules_manager=rm)
+
+        cap_map = {
+            "areas": {
+                "living_room": {"name": "Living Room", "entities": ["light.living_room_light", "climate.living_room_ac", "camera.living_room_cam"]},
+            },
+            "entities": [
+                {"entity_id": "light.living_room_light", "name": "Living Room Light", "area_id": "living_room", "state": "on", "domain": "light"},
+                {"entity_id": "climate.living_room_ac", "name": "Living Room AC", "area_id": "living_room", "state": "cool", "domain": "climate"},
+                {"entity_id": "climate.pool_heat", "name": "Pool Heater", "state": "heat", "domain": "climate"},
+                {"entity_id": "camera.living_room_cam", "name": "Living Room Cam", "area_id": "living_room", "state": "idle", "domain": "camera"},
+                {"entity_id": "camera.driveway_cam", "name": "Driveway Cam", "state": "idle", "domain": "camera"},
+            ],
+            "security_topology": {
+                "cameras": ["camera.living_room_cam", "camera.driveway_cam"],
+            },
+        }
+
+        asyncio.run(rm.async_save({"dashboard_layout": "modern_sections"}))
+        cfg = dm._build_user_command_center_dashboard_config(cap_map)
+        views = {v["path"]: v for v in cfg["views"]}
+
+        # 1. Climate Studio: Dual Setpoints & Separate Pool Heat
+        clim_view = views["climate"]
+        self.assertEqual(clim_view["type"], "sections")
+        clim_sections = clim_view["sections"]
+        # Find HVAC section and Pool section
+        hvac_cards = []
+        pool_cards = []
+        for s in clim_sections:
+            for c in s.get("cards", []):
+                if c.get("heading") == "HVAC Thermostats & Dual-Setpoints":
+                    hvac_cards = s["cards"]
+                elif c.get("heading") == "Pool & Spa Water Temperature":
+                    pool_cards = s["cards"]
+
+        self.assertTrue(len(hvac_cards) > 0, "Expected HVAC Thermostats & Dual-Setpoints section")
+        # Verify dual-setpoint target-temperature and climate-hvac-modes features on tile
+        hvac_tile = next(c for c in hvac_cards if c.get("type") == "tile" and c.get("entity") == "climate.living_room_ac")
+        feature_types = [f["type"] for f in hvac_tile.get("features", [])]
+        self.assertIn("target-temperature", feature_types)
+        self.assertIn("climate-hvac-modes", feature_types)
+
+        self.assertTrue(len(pool_cards) > 0, "Expected Pool & Spa Water Temperature section")
+        pool_tile = next(c for c in pool_cards if c.get("type") == "tile" and c.get("entity") == "climate.pool_heat")
+        self.assertEqual(pool_tile["entity"], "climate.pool_heat")
+
+        # 2. Security Center: 2-column camera layout options & section column_span
+        sec_view = views["security"]
+        cam_section = next(
+            s for s in sec_view["sections"]
+            if any(c.get("heading") == "Live Perimeter Cameras" for c in s.get("cards", []))
+        )
+        self.assertEqual(cam_section.get("column_span"), 2, "Camera section should have column_span: 2 for wide video wall")
+        cam_card = next(c for c in cam_section["cards"] if c.get("type") == "picture-entity")
+        self.assertEqual(cam_card.get("layout_options", {}).get("grid_columns"), 2)
+
+        # 3. Room Subview: Climate uses compact dual-setpoint tile in modern sections
+        room_view = views["area_living_room"]
+        room_tile = next(
+            c for s in room_view["sections"] for c in s.get("cards", [])
+            if c.get("type") == "tile" and c.get("entity") == "climate.living_room_ac"
+        )
+        self.assertIn("target-temperature", [f["type"] for f in room_tile.get("features", [])])
 
 
 if __name__ == "__main__":

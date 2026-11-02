@@ -7,6 +7,17 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.16] - 2026-11-01
+
+### Added
+- **Modern Sections Studio & Room Ergonomics**:
+  - **HVAC Dual-Setpoints in Climate Studio & Room Views**: Thermostats in Modern Sections render interactive `tile` cards with dual-setpoint `target-temperature` controls (+/- increment steppers for heat & cool thresholds) and `climate-hvac-modes` chips, eliminating bulky stacked circular dials.
+  - **Separation of HVAC & Pool Heating**: Dedicated "HVAC Thermostats & Dual-Setpoints" section and separated "Pool & Spa Water Temperature" section for clean domain-specific organization.
+  - **Balanced 2-Column Perimeter Video Wall**: Live camera feeds in Security Studio and Room views now incorporate `layout_options: { grid_columns: 2, grid_rows: auto }` and `column_span: 2`, displaying a balanced 2x2 or 2x3 grid across desktop and tablet without vertical feed stretching.
+  - **Header Section Consolidation**: Consolidated navigation buttons and descriptive subtitles into a single unified Header section, preventing empty column allocation in 3-column desktop layouts.
+  - **Section Heading Deduplication**: Automatically stripped redundant internal card titles when converted to modern section heading cards to eliminate duplicate headers on entities cards.
+- Bumped Lovelace Companion Card to `v0.1.16`.
+
 ## [0.1.15] - 2026-11-01
 
 ### Fixed & Improved
