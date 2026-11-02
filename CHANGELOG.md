@@ -7,6 +7,21 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.15] - 2026-11-01
+
+### Fixed & Improved
+- 📱 **Immediate Household Rules & Layout Pipeline Execution (`dashboard_manager.py`, `__init__.py`, `const.py`, `services.yaml`)**:
+  - Implemented full pipeline execution for **Select Dashboard Layout** (`modern_sections` vs `classic_grid`), **Navigation Button Style** (`sleek_buttons` vs `standard_grid`), and **Schedule & Calendar Display** (`listDay` vs `month`/`dayGridMonth`) across the Command Center, all Studios (Media, Security, Climate & Pool, Energy, Floor Plan), and Room subviews.
+  - Added native responsive `sections` conversion (`_convert_cards_to_sections`, `_build_studio_view`) for Studios and Rooms when modern sections layout is selected, while cleanly purging `type: "sections"` and `sections` blocks when classic card grid is chosen.
+  - Resolved stale dashboard cache inheritance in `_merge_dashboard_config_preserving_user_views` by supporting `force_regenerate=True` and instantly firing `lovelace_updated` bus events for both `otis-ai` and `command-center`.
+- ⚡ **1-Click Dashboard & Studio Regeneration (`dashboard_manager.py`, `__init__.py`, `otis-companion-card.js`)**:
+  - Registered native `otis_ai.regenerate_dashboards` service and enhanced `otis_ai.sync_dashboards` with `force: true` / `regenerate: true`.
+  - Added dedicated `⚡ Regenerate Now` control in the Companion Card Rules modal under Dashboard & Layout and quick-action `⚡ Regenerate` in the Subview Launchpad.
+  - Added voice/chat intent handling allowing users to say "regenerate dashboards" / "rebuild command center" to trigger clean regeneration of all studios, rooms, and command center views.
+  - Bumped Companion Card version to v0.1.15.
+
+---
+
 ## [0.1.14] - 2026-11-01
 
 ### Fixed & Improved

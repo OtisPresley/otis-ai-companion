@@ -98,7 +98,7 @@ class DashboardManager:
         return os.path.exists(os.path.join(storage_dir, f"lovelace.{dash_id}"))
 
     async def async_ensure_admin_companion_dashboard(
-        self, capability_map: dict[str, Any] | None = None
+        self, capability_map: dict[str, Any] | None = None, force_regenerate: bool = False
     ) -> dict[str, Any]:
         """Automatically create and register the Owner/Admin-only Otis AI Companion dashboard with Hub-and-Spoke subviews."""
         item = {
@@ -111,15 +111,16 @@ class DashboardManager:
             "mode": "storage",
         }
         dashboard_config = self._build_otis_companion_dashboard_config(capability_map)
-        overwrite = True if (capability_map or not self._dashboard_file_exists(OTIS_DASHBOARD_ID)) else False
+        overwrite = True if (force_regenerate or capability_map or not self._dashboard_file_exists(OTIS_DASHBOARD_ID)) else False
         return await self._async_register_and_save_dashboard(
             item=item,
             dashboard_config=dashboard_config,
             overwrite_config=overwrite,
+            force_regenerate=force_regenerate,
         )
 
     async def async_ensure_user_command_center_dashboard(
-        self, capability_map: dict[str, Any] | None = None
+        self, capability_map: dict[str, Any] | None = None, force_regenerate: bool = False
     ) -> dict[str, Any]:
         """Automatically create and register the User role Command Center dashboard accessible to all users."""
         item = {
@@ -132,15 +133,142 @@ class DashboardManager:
             "mode": "storage",
         }
         dashboard_config = self._build_user_command_center_dashboard_config(capability_map)
-        overwrite = True if (capability_map or not self._dashboard_file_exists(COMMAND_CENTER_DASHBOARD_ID)) else False
+        overwrite = True if (force_regenerate or capability_map or not self._dashboard_file_exists(COMMAND_CENTER_DASHBOARD_ID)) else False
         return await self._async_register_and_save_dashboard(
             item=item,
             dashboard_config=dashboard_config,
             overwrite_config=overwrite,
+            force_regenerate=force_regenerate,
         )
 
     # Alias for backward compatibility
     async_ensure_command_center_dashboard = async_ensure_user_command_center_dashboard
+
+    def _build_studio_navigation_card(
+        self, dashboard_url_path: str = COMMAND_CENTER_DASHBOARD_URL_PATH, nav_style: str = "sleek_buttons"
+    ) -> dict[str, Any]:
+        """Build responsive studio navigation buttons matching user's navigation_style."""
+        button_cols = 3 if nav_style == "standard_grid" else 2
+        button_square = (nav_style == "standard_grid")
+        nav_buttons = [
+            {
+                "type": "button",
+                "name": "Overview",
+                "icon": "mdi:view-dashboard",
+                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}"},
+            },
+            {
+                "type": "button",
+                "name": "Floor Plan",
+                "icon": "mdi:floor-plan",
+                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/floorplan"},
+            },
+            {
+                "type": "button",
+                "name": "Energy Studio",
+                "icon": "mdi:lightning-bolt",
+                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/energy"},
+            },
+            {
+                "type": "button",
+                "name": "Media Studio",
+                "icon": "mdi:speaker-multiple",
+                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/media"},
+            },
+            {
+                "type": "button",
+                "name": "Security Center",
+                "icon": "mdi:shield-home",
+                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/security"},
+            },
+            {
+                "type": "button",
+                "name": "Climate & Pool",
+                "icon": "mdi:thermostat-box",
+                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/climate"},
+            },
+        ]
+        return {
+            "type": "grid",
+            "title": "Studio Navigation",
+            "columns": button_cols,
+            "square": button_square,
+            "cards": nav_buttons,
+        }
+
+    def _convert_cards_to_sections(self, cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Convert a list of Lovelace cards into modern responsive section objects."""
+        sections: list[dict[str, Any]] = []
+        for card in cards:
+            if not isinstance(card, dict):
+                continue
+            c_type = card.get("type", "")
+            title = card.get("title")
+
+            if c_type == "grid":
+                sec_cards: list[dict[str, Any]] = []
+                if title:
+                    sec_cards.append({
+                        "type": "heading",
+                        "heading": title,
+                        "heading_style": "title",
+                    })
+                sec_cards.extend(card.get("cards", []))
+                sections.append({
+                    "type": "grid",
+                    "cards": sec_cards,
+                })
+            elif c_type in ("entities", "media-control", "alarm-panel", "thermostat", "picture-elements", "picture-entity"):
+                sec_cards = []
+                if title:
+                    sec_cards.append({
+                        "type": "heading",
+                        "heading": title,
+                        "heading_style": "title",
+                    })
+                sec_cards.append(card)
+                sections.append({
+                    "type": "grid",
+                    "cards": sec_cards,
+                })
+            elif c_type == "markdown":
+                sections.append({
+                    "type": "grid",
+                    "cards": [card],
+                })
+            else:
+                sections.append({
+                    "type": "grid",
+                    "cards": [card],
+                })
+        return sections
+
+    def _build_studio_view(
+        self,
+        title: str,
+        path: str,
+        icon: str,
+        cards: list[dict[str, Any]],
+        layout_style: str = "modern_sections",
+        is_panel: bool = False,
+    ) -> dict[str, Any]:
+        """Wrap studio cards into a structured Lovelace subview adhering to layout_style."""
+        view: dict[str, Any] = {
+            "title": title,
+            "path": path,
+            "icon": icon,
+            "subview": True,
+            "badges": [],
+            "cards": cards,
+        }
+        if is_panel:
+            view["type"] = "panel"
+            view["panel"] = True
+        elif layout_style == "modern_sections":
+            view["type"] = "sections"
+            view["max_columns"] = 3
+            view["sections"] = self._convert_cards_to_sections(cards)
+        return view
 
     def _build_user_command_center_dashboard_config(
         self, capability_map: dict[str, Any] | None = None
@@ -226,6 +354,8 @@ class DashboardManager:
         content_focus = user_rules.get("primary_content_focus", "balanced")
         nav_style = user_rules.get("navigation_style", "sleek_buttons")
         button_cols = 3 if nav_style == "standard_grid" else 2
+        button_square = (nav_style == "standard_grid")
+        initial_cal = "dayGridMonth" if cal_view == "month" else ("listDay" if cal_view == "listDay" else cal_view)
 
         studio_buttons = [
             {
@@ -292,7 +422,7 @@ class DashboardManager:
             glance_cards.append({
                 "type": "calendar",
                 "entities": calendar_eids,
-                "initial_view": cal_view,
+                "initial_view": initial_cal,
             })
 
         room_buttons = [
@@ -318,7 +448,7 @@ class DashboardManager:
                 {
                     "type": "grid",
                     "columns": button_cols,
-                    "square": False,
+                    "square": button_square,
                     "cards": studio_buttons,
                 },
             ],
@@ -349,7 +479,7 @@ class DashboardManager:
                 {
                     "type": "grid",
                     "columns": button_cols,
-                    "square": False,
+                    "square": button_square,
                     "cards": room_buttons,
                 },
             ],
@@ -372,7 +502,7 @@ class DashboardManager:
             "type": "grid",
             "title": "Studios",
             "columns": button_cols,
-            "square": False,
+            "square": button_square,
             "cards": studio_buttons,
         }
         glance_card = {
@@ -386,7 +516,7 @@ class DashboardManager:
             "type": "grid",
             "title": "Rooms",
             "columns": button_cols,
-            "square": False,
+            "square": button_square,
             "cards": room_buttons,
         } if room_buttons else None
 
@@ -424,58 +554,69 @@ class DashboardManager:
         else:
             home_view["cards"] = home_cards
 
+        media_cards = self._build_media_view_cards(
+            capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, nav_style=nav_style
+        )
+        sec_cards = self._build_security_view_cards(
+            capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, nav_style=nav_style
+        )
+        clim_cards = self._build_climate_view_cards(
+            capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, nav_style=nav_style
+        )
+        energy_cards = self._build_energy_view_cards(
+            capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, nav_style=nav_style
+        )
+
         views: list[dict[str, Any]] = [
             home_view,
-            {
-                "title": "Floor Plan",
-                "path": "floorplan",
-                "icon": "mdi:floor-plan",
-                "subview": True,
-                "type": "panel",
-                "panel": True,
-                "badges": [],
-                "cards": self._build_floorplan_view_cards(
-                    capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH
-                ),
-            },
-            {
-                "title": "Energy Studio",
-                "path": "energy",
-                "icon": "mdi:lightning-bolt",
-                "subview": True,
-                "badges": [],
-                "cards": self._build_energy_view_cards(
-                    capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH
-                ),
-            },
-            {
-                "title": "Media Studio",
-                "path": "media",
-                "icon": "mdi:speaker-multiple",
-                "subview": True,
-                "badges": [],
-                "cards": self._build_media_view_cards(capability_map),
-            },
-            {
-                "title": "Security Center",
-                "path": "security",
-                "icon": "mdi:shield-home",
-                "subview": True,
-                "badges": [],
-                "cards": self._build_security_view_cards(capability_map),
-            },
-            {
-                "title": "Climate & Pool",
-                "path": "climate",
-                "icon": "mdi:thermostat-box",
-                "subview": True,
-                "badges": [],
-                "cards": self._build_climate_view_cards(capability_map),
-            },
+            self._build_studio_view(
+                "Floor Plan",
+                "floorplan",
+                "mdi:floor-plan",
+                self._build_floorplan_view_cards(capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH),
+                layout_style=layout_style,
+                is_panel=True,
+            ),
+            self._build_studio_view(
+                "Energy Studio",
+                "energy",
+                "mdi:lightning-bolt",
+                energy_cards,
+                layout_style=layout_style,
+            ),
+            self._build_studio_view(
+                "Media Studio",
+                "media",
+                "mdi:speaker-multiple",
+                media_cards,
+                layout_style=layout_style,
+            ),
+            self._build_studio_view(
+                "Security Center",
+                "security",
+                "mdi:shield-home",
+                sec_cards,
+                layout_style=layout_style,
+            ),
+            self._build_studio_view(
+                "Climate & Pool",
+                "climate",
+                "mdi:thermostat-box",
+                clim_cards,
+                layout_style=layout_style,
+            ),
         ]
 
         for area in active_areas:
-            rview = self._build_room_subview(area["id"], {"name": area["name"]}, area["entities"], valid_eids)
+            rview = self._build_room_subview(
+                area["id"],
+                {"name": area["name"]},
+                area["entities"],
+                valid_eids,
+                layout_style=layout_style,
+                nav_style=nav_style,
+                dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH,
+            )
             if rview:
                 views.append(rview)
 
@@ -488,6 +629,10 @@ class DashboardManager:
         self, capability_map: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """Build the Lovelace config for the Admin-only Otis AI Companion Command Center with Hub-and-Spoke subviews."""
+        user_rules = self._get_user_rules()
+        layout_style = user_rules.get("dashboard_layout", "modern_sections")
+        nav_style = user_rules.get("navigation_style", "sleek_buttons")
+
         views: list[dict[str, Any]] = [
             {
                 "title": "AI Command Center",
@@ -510,68 +655,78 @@ class DashboardManager:
             }
         ]
 
-        # 1. Media Studio Subview (subview: true keeps top tabs clean while giving HA native back navigation)
-        media_cards = self._build_media_view_cards(capability_map)
-        views.append({
-            "title": "Media Studio",
-            "path": "media",
-            "icon": "mdi:speaker-multiple",
-            "subview": True,
-            "badges": [],
-            "cards": media_cards,
-        })
+        # 1. Media Studio Subview
+        media_cards = self._build_media_view_cards(
+            capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH, nav_style=nav_style
+        )
+        views.append(
+            self._build_studio_view(
+                "Media Studio",
+                "media",
+                "mdi:speaker-multiple",
+                media_cards,
+                layout_style=layout_style,
+            )
+        )
 
         # 2. Security Center Subview
-        security_cards = self._build_security_view_cards(capability_map)
-        views.append({
-            "title": "Security Center",
-            "path": "security",
-            "icon": "mdi:shield-home",
-            "subview": True,
-            "badges": [],
-            "cards": security_cards,
-        })
+        security_cards = self._build_security_view_cards(
+            capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH, nav_style=nav_style
+        )
+        views.append(
+            self._build_studio_view(
+                "Security Center",
+                "security",
+                "mdi:shield-home",
+                security_cards,
+                layout_style=layout_style,
+            )
+        )
 
         # 3. Climate & Pool Subview
-        climate_cards = self._build_climate_view_cards(capability_map)
-        views.append({
-            "title": "Climate & Pool",
-            "path": "climate",
-            "icon": "mdi:thermostat-box",
-            "subview": True,
-            "badges": [],
-            "cards": climate_cards,
-        })
+        climate_cards = self._build_climate_view_cards(
+            capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH, nav_style=nav_style
+        )
+        views.append(
+            self._build_studio_view(
+                "Climate & Pool",
+                "climate",
+                "mdi:thermostat-box",
+                climate_cards,
+                layout_style=layout_style,
+            )
+        )
 
-        # 4. Floor Plan Subview (Full-width Interactive User Control Surface with picture-elements)
+        # 4. Floor Plan Subview
         floorplan_cards = self._build_floorplan_view_cards(
             capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH
         )
-        views.append({
-            "title": "Floor Plan",
-            "path": "floorplan",
-            "icon": "mdi:floor-plan",
-            "subview": True,
-            "type": "panel",
-            "panel": True,
-            "badges": [],
-            "cards": floorplan_cards,
-        })
+        views.append(
+            self._build_studio_view(
+                "Floor Plan",
+                "floorplan",
+                "mdi:floor-plan",
+                floorplan_cards,
+                layout_style=layout_style,
+                is_panel=True,
+            )
+        )
 
         # 5. Energy Studio Subview
         energy_cards = self._build_energy_view_cards(
-            capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH
+            capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH, nav_style=nav_style
         )
-        views.append({
-            "title": "Energy Studio",
-            "path": "energy",
-            "icon": "mdi:lightning-bolt",
-            "subview": True,
-            "badges": [],
-            "cards": energy_cards,
-        })
+        views.append(
+            self._build_studio_view(
+                "Energy Studio",
+                "energy",
+                "mdi:lightning-bolt",
+                energy_cards,
+                layout_style=layout_style,
+            )
+        )
 
-        # 5. Dynamic Area / Room Subviews (/otis-ai/area_<slug>)
+        # 6. Dynamic Area / Room Subviews (/otis-ai/area_<slug>)
         areas_map = capability_map.get("areas", {}) if capability_map else {}
         entities_list = capability_map.get("entities", []) if capability_map else []
         if not areas_map and not entities_list and hasattr(self, "hass") and self.hass:
@@ -632,7 +787,15 @@ class DashboardManager:
                         if eid in entities_by_id:
                             room_entities.append(entities_by_id[eid])
 
-                room_view = self._build_room_subview(aid, ainfo, room_entities, valid_eids)
+                room_view = self._build_room_subview(
+                    aid,
+                    ainfo,
+                    room_entities,
+                    valid_eids,
+                    layout_style=layout_style,
+                    nav_style=nav_style,
+                    dashboard_url_path=OTIS_DASHBOARD_URL_PATH,
+                )
                 if room_view:
                     views.append(room_view)
 
@@ -642,13 +805,73 @@ class DashboardManager:
         }
 
     def _merge_dashboard_config_preserving_user_views(
-        self, storage_dir: str | None, dash_id: str, new_config: dict[str, Any]
+        self,
+        storage_dir: str | None,
+        dash_id: str,
+        new_config: dict[str, Any],
+        force_regenerate: bool = False,
     ) -> dict[str, Any]:
         """Preserve user-customized Home view (view 0) and custom user subviews across updates, while syncing studios and rooms."""
         if not storage_dir:
             return new_config
 
-        # 1. When updating Command Center, sync customized Studio and Room subviews from the Admin (lovelace.otis_ai) dashboard
+        generated_paths = {"default_view", "home", "floorplan", "media", "security", "climate", "energy"}
+
+        config_file = os.path.join(storage_dir, f"lovelace.{dash_id}")
+        existing_views: list[dict[str, Any]] = []
+        if os.path.exists(config_file):
+            try:
+                with open(config_file, "r", encoding="utf-8") as f:
+                    content = f.read().strip()
+                if content:
+                    existing_data = json.loads(content)
+                    if isinstance(existing_data, dict):
+                        existing_cfg = existing_data.get("data", {}).get("config")
+                        if isinstance(existing_cfg, dict):
+                            existing_views = list(existing_cfg.get("views", []))
+            except Exception as err:
+                _LOGGER.debug("Could not read existing config for %s: %s", dash_id, err)
+
+        # When force_regenerate is requested, cleanly regenerate with latest layout, navigation, and device topologies
+        if force_regenerate:
+            new_views = list(new_config.get("views", []))
+            if existing_views:
+                if dash_id == OTIS_DASHBOARD_ID and len(new_views) > 0 and len(existing_views) > 0:
+                    # Preserve Otis AI Companion card options in view 0
+                    new_views[0] = existing_views[0]
+                elif dash_id == COMMAND_CENTER_DASHBOARD_ID and len(new_views) > 0 and len(existing_views) > 0:
+                    # Preserve any non-core custom cards the user manually added to the Home view
+                    core_titles = {"Studios", "Glance & Schedule", "Rooms"}
+                    ex_home = existing_views[0]
+                    custom_cards = [
+                        c for c in ex_home.get("cards", [])
+                        if isinstance(c, dict)
+                        and c.get("title") not in core_titles
+                        and not (c.get("type") == "markdown" and "Home Command Center" in str(c.get("content", "")))
+                        and not (c.get("type") == "grid" and any(b.get("name") == "Floor Plan" for b in c.get("cards", [])))
+                    ]
+                    if custom_cards:
+                        new_views[0]["cards"].extend(custom_cards)
+                        if new_views[0].get("type") == "sections" and "sections" in new_views[0]:
+                            new_views[0]["sections"].append({
+                                "type": "grid",
+                                "cards": custom_cards,
+                            })
+
+                # Preserve any user-created custom subviews not generated by Otis
+                for ex_v in existing_views[1:]:
+                    v_path = str(ex_v.get("path", ""))
+                    if not v_path or v_path in generated_paths or v_path.startswith("area_"):
+                        continue
+                    if not any(nv.get("path") == v_path for nv in new_views):
+                        new_views.append(ex_v)
+
+            merged = dict(new_config)
+            merged["views"] = new_views
+            return merged
+
+        # Normal preservation merge (non-force)
+        # 1. When updating Command Center, sync customized Studio and Room subviews from the Admin (lovelace.otis_ai) dashboard if present
         if dash_id == COMMAND_CENTER_DASHBOARD_ID:
             admin_file = os.path.join(storage_dir, f"lovelace.{OTIS_DASHBOARD_ID}")
             if os.path.exists(admin_file):
@@ -695,24 +918,10 @@ class DashboardManager:
                         sync_err,
                     )
 
-        config_file = os.path.join(storage_dir, f"lovelace.{dash_id}")
-        if not os.path.exists(config_file):
+        if not existing_views:
             return new_config
 
         try:
-            with open(config_file, "r", encoding="utf-8") as f:
-                content = f.read().strip()
-            if not content:
-                return new_config
-            existing_data = json.loads(content)
-            existing_cfg = existing_data.get("data", {}).get("config") if isinstance(existing_data, dict) else None
-            if not isinstance(existing_cfg, dict):
-                return new_config
-
-            existing_views = existing_cfg.get("views", [])
-            if not existing_views or not isinstance(existing_views, list):
-                return new_config
-
             new_views = list(new_config.get("views", []))
             existing_home_view = existing_views[0] if existing_views else None
 
@@ -739,6 +948,10 @@ class DashboardManager:
                         merged_home["type"] = "sections"
                         merged_home["max_columns"] = new_views[0].get("max_columns", 3)
                         merged_home["sections"] = new_views[0]["sections"]
+                    else:
+                        merged_home.pop("type", None)
+                        merged_home.pop("sections", None)
+                        merged_home.pop("max_columns", None)
                     merged_home["cards"] = merged_home_cards
                     new_views[0] = merged_home
                 else:
@@ -748,7 +961,6 @@ class DashboardManager:
                 new_views = [existing_home_view]
 
             # Preserve any custom user-created subviews not generated by Otis AI
-            generated_paths = {"default_view", "home", "floorplan", "media", "security", "climate"}
             has_new_area_subviews = any(
                 str(nv.get("path", "")).startswith("area_") for nv in new_views
             )
@@ -774,6 +986,7 @@ class DashboardManager:
         item: dict[str, Any],
         dashboard_config: dict[str, Any],
         overwrite_config: bool = True,
+        force_regenerate: bool = False,
     ) -> dict[str, Any]:
         """Persist dashboard metadata in lovelace_dashboards, write lovelace.<id>, and register live HA panel."""
         storage_dir = self._storage_dir()
@@ -789,6 +1002,7 @@ class DashboardManager:
                     storage_dir,
                     dash_id,
                     dashboard_config,
+                    force_regenerate,
                 )
                 if hasattr(res, "__await__"):
                     merged_dashboard_config = await res
@@ -796,11 +1010,11 @@ class DashboardManager:
                     merged_dashboard_config = res
                 else:
                     merged_dashboard_config = self._merge_dashboard_config_preserving_user_views(
-                        storage_dir, dash_id, dashboard_config
+                        storage_dir, dash_id, dashboard_config, force_regenerate
                     )
             else:
                 merged_dashboard_config = self._merge_dashboard_config_preserving_user_views(
-                    storage_dir, dash_id, dashboard_config
+                    storage_dir, dash_id, dashboard_config, force_regenerate
                 )
 
         if storage_dir:
@@ -1643,6 +1857,9 @@ class DashboardManager:
         area_info: dict[str, Any],
         room_entities: list[dict[str, Any]],
         valid_eids: set[str] | None = None,
+        layout_style: str | None = None,
+        nav_style: str | None = None,
+        dashboard_url_path: str = COMMAND_CENTER_DASHBOARD_URL_PATH,
     ) -> dict[str, Any] | None:
         """Build a categorized Room Subview for an area containing active entities."""
         active_entities = [
@@ -1658,7 +1875,62 @@ class DashboardManager:
         area_name = area_info.get("name") or area_id.replace("_", " ").title()
         slug = self._slugify(area_id)
 
+        user_rules = self._get_user_rules() if (layout_style is None or nav_style is None) else {}
+        if layout_style is None:
+            layout_style = user_rules.get("dashboard_layout", "modern_sections")
+        if nav_style is None:
+            nav_style = user_rules.get("navigation_style", "sleek_buttons")
+
+        button_cols = 3 if nav_style == "standard_grid" else 2
+        button_square = (nav_style == "standard_grid")
+        room_nav_buttons = [
+            {
+                "type": "button",
+                "name": "Overview",
+                "icon": "mdi:view-dashboard",
+                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}"},
+            },
+            {
+                "type": "button",
+                "name": "Floor Plan",
+                "icon": "mdi:floor-plan",
+                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/floorplan"},
+            },
+            {
+                "type": "button",
+                "name": "Energy",
+                "icon": "mdi:lightning-bolt",
+                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/energy"},
+            },
+            {
+                "type": "button",
+                "name": "Media",
+                "icon": "mdi:speaker-multiple",
+                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/media"},
+            },
+            {
+                "type": "button",
+                "name": "Security",
+                "icon": "mdi:shield-home",
+                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/security"},
+            },
+            {
+                "type": "button",
+                "name": "Climate",
+                "icon": "mdi:thermostat-box",
+                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/climate"},
+            },
+        ]
+        nav_grid_card = {
+            "type": "grid",
+            "title": "Navigation",
+            "columns": button_cols,
+            "square": button_square,
+            "cards": room_nav_buttons,
+        }
+
         room_cards: list[dict[str, Any]] = [
+            nav_grid_card,
             {
                 "type": "markdown",
                 "content": f"## 📍 {area_name}\nRoom controls and live telemetry for {area_name}.",
@@ -1954,7 +2226,7 @@ class DashboardManager:
             })
 
         room_icon = self._get_room_icon(area_name, area_id)
-        return {
+        room_view: dict[str, Any] = {
             "title": area_name,
             "path": f"area_{slug}",
             "icon": room_icon,
@@ -1962,11 +2234,26 @@ class DashboardManager:
             "badges": [],
             "cards": room_cards,
         }
+        if layout_style == "modern_sections":
+            room_view["type"] = "sections"
+            room_view["max_columns"] = 3
+            room_view["sections"] = self._convert_cards_to_sections(room_cards)
+        return room_view
 
-    def _build_media_view_cards(self, capability_map: dict[str, Any] | None) -> list[dict[str, Any]]:
+    def _build_media_view_cards(
+        self,
+        capability_map: dict[str, Any] | None,
+        dashboard_url_path: str = COMMAND_CENTER_DASHBOARD_URL_PATH,
+        nav_style: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Build cards for Media Studio subview or standalone dashboard."""
+        if nav_style is None:
+            nav_style = self._get_user_rules().get("navigation_style", "sleek_buttons")
+        nav_card = self._build_studio_navigation_card(dashboard_url_path=dashboard_url_path, nav_style=nav_style)
+
         if not capability_map:
             return [
+                nav_card,
                 {
                     "type": "markdown",
                     "content": (
@@ -2012,6 +2299,7 @@ class DashboardManager:
             matrix_zones = [m for m in all_mps if m not in tvs and m not in streamers]
 
         cards: list[dict[str, Any]] = [
+            nav_card,
             {
                 "type": "markdown",
                 "content": (
@@ -2076,11 +2364,19 @@ class DashboardManager:
         return cards
 
     def _build_energy_view_cards(
-        self, capability_map: dict[str, Any] | None, dashboard_url_path: str = COMMAND_CENTER_DASHBOARD_URL_PATH
+        self,
+        capability_map: dict[str, Any] | None,
+        dashboard_url_path: str = COMMAND_CENTER_DASHBOARD_URL_PATH,
+        nav_style: str | None = None,
     ) -> list[dict[str, Any]]:
         """Build cards for Energy Studio subview."""
+        if nav_style is None:
+            nav_style = self._get_user_rules().get("navigation_style", "sleek_buttons")
+        nav_card = self._build_studio_navigation_card(dashboard_url_path=dashboard_url_path, nav_style=nav_style)
+
         if not capability_map:
             return [
+                nav_card,
                 {
                     "type": "markdown",
                     "content": "⚡ **Energy Studio**: Live telemetry and power sensors will populate when Home Assistant finishes discovery.",
@@ -2115,47 +2411,7 @@ class DashboardManager:
         ]
 
         cards: list[dict[str, Any]] = [
-            {
-                "type": "horizontal-stack",
-                "cards": [
-                    {
-                        "type": "button",
-                        "name": "Overview",
-                        "icon": "mdi:view-dashboard",
-                        "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}"},
-                    },
-                    {
-                        "type": "button",
-                        "name": "Energy Studio",
-                        "icon": "mdi:lightning-bolt",
-                        "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/energy"},
-                    },
-                    {
-                        "type": "button",
-                        "name": "Media Studio",
-                        "icon": "mdi:speaker-multiple",
-                        "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/media"},
-                    },
-                    {
-                        "type": "button",
-                        "name": "Security Center",
-                        "icon": "mdi:shield-home",
-                        "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/security"},
-                    },
-                    {
-                        "type": "button",
-                        "name": "Climate & Pool",
-                        "icon": "mdi:thermostat-box",
-                        "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/climate"},
-                    },
-                    {
-                        "type": "button",
-                        "name": "Floor Plan",
-                        "icon": "mdi:floor-plan",
-                        "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/floorplan"},
-                    },
-                ],
-            },
+            nav_card,
             {
                 "type": "markdown",
                 "content": (
@@ -2229,10 +2485,20 @@ class DashboardManager:
 
         return cards
 
-    def _build_security_view_cards(self, capability_map: dict[str, Any] | None) -> list[dict[str, Any]]:
+    def _build_security_view_cards(
+        self,
+        capability_map: dict[str, Any] | None,
+        dashboard_url_path: str = COMMAND_CENTER_DASHBOARD_URL_PATH,
+        nav_style: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Build cards for Security Center subview or standalone dashboard."""
+        if nav_style is None:
+            nav_style = self._get_user_rules().get("navigation_style", "sleek_buttons")
+        nav_card = self._build_studio_navigation_card(dashboard_url_path=dashboard_url_path, nav_style=nav_style)
+
         if not capability_map:
             return [
+                nav_card,
                 {
                     "type": "markdown",
                     "content": (
@@ -2285,6 +2551,7 @@ class DashboardManager:
         cameras = deduped_sec_cameras
 
         cards: list[dict[str, Any]] = [
+            nav_card,
             {
                 "type": "markdown",
                 "content": (
@@ -2375,10 +2642,20 @@ class DashboardManager:
 
         return cards
 
-    def _build_climate_view_cards(self, capability_map: dict[str, Any] | None) -> list[dict[str, Any]]:
+    def _build_climate_view_cards(
+        self,
+        capability_map: dict[str, Any] | None,
+        dashboard_url_path: str = COMMAND_CENTER_DASHBOARD_URL_PATH,
+        nav_style: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Build cards for Climate & Pool subview or standalone dashboard."""
+        if nav_style is None:
+            nav_style = self._get_user_rules().get("navigation_style", "sleek_buttons")
+        nav_card = self._build_studio_navigation_card(dashboard_url_path=dashboard_url_path, nav_style=nav_style)
+
         if not capability_map:
             return [
+                nav_card,
                 {
                     "type": "markdown",
                     "content": (
@@ -2420,6 +2697,7 @@ class DashboardManager:
         ])
 
         cards: list[dict[str, Any]] = [
+            nav_card,
             {
                 "type": "markdown",
                 "content": (
@@ -2493,6 +2771,9 @@ class DashboardManager:
             url_path = f"otis-{template.replace('_', '-')}"
 
         dash_url = url_path.strip("/")
+        user_rules = self._get_user_rules()
+        layout_style = user_rules.get("dashboard_layout", "modern_sections")
+        nav_style = user_rules.get("navigation_style", "sleek_buttons")
 
         if template == "whole_home":
             areas_map = capability_map.get("areas", {})
@@ -2526,7 +2807,15 @@ class DashboardManager:
                         if eid in entities_by_id:
                             room_entities.append(entities_by_id[eid])
 
-                room_view = self._build_room_subview(aid, ainfo, room_entities, valid_eids)
+                room_view = self._build_room_subview(
+                    aid,
+                    ainfo,
+                    room_entities,
+                    valid_eids,
+                    layout_style=layout_style,
+                    nav_style=nav_style,
+                    dashboard_url_path=dash_url,
+                )
                 if room_view:
                     room_views.append(room_view)
                     aname = ainfo.get("name") or aid.replace("_", " ").title()

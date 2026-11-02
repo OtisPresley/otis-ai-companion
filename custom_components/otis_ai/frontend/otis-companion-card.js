@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.14";
+const CARD_VERSION = "0.1.15";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -4970,7 +4970,10 @@ class OtisCompanionCard extends HTMLElement {
               <button type="button" class="subview-chip" data-subview="${dashPrefix}/climate">🌡️ Climate & Pool</button>
               <button type="button" class="subview-chip" data-subview="${dashPrefix}/energy">⚡ Energy Studio</button>
               <button type="button" class="subview-chip" data-subview="${dashPrefix}/floorplan">🗺️ Floor Plan</button>
-              ${isAdmin ? `<button type="button" class="subview-chip" id="btn-sync-dashboards" title="Sync all Studios & Rooms to Command Center" style="margin-left: auto;">🔄 Sync Command Center</button>` : ""}
+              ${isAdmin ? `
+                <button type="button" class="subview-chip" id="btn-sync-dashboards" title="Sync all Studios & Rooms to Command Center" style="margin-left: auto;">🔄 Sync</button>
+                <button type="button" class="subview-chip" id="btn-regenerate-dashboards" title="Regenerate Command Center, all Studios & Rooms from scratch" style="margin-left: 6px; background: rgba(14, 165, 233, 0.15); border-color: rgba(14, 165, 233, 0.4); color: var(--otis-primary);">⚡ Regenerate</button>
+              ` : ""}
             </div>
             ${
               activeAreas.length > 0
@@ -6985,6 +6988,18 @@ class OtisCompanionCard extends HTMLElement {
             ↺ Reset All Ignored
           </button>
         </div>
+
+        <div style="margin-top: 6px; padding: 12px; background: rgba(14, 165, 233, 0.08); border: 1px solid rgba(14, 165, 233, 0.25); border-radius: 8px; display: flex; align-items: center; justify-content: space-between;">
+          <div>
+            <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">Regenerate All Dashboards</div>
+            <div style="font-size: 0.74rem; color: var(--otis-text-muted); margin-top: 2px;">
+              Rebuild Command Center, all Studios, and Room subviews from scratch using active layout preferences.
+            </div>
+          </div>
+          <button type="button" class="subview-chip" id="rules-btn-regenerate-dashboards" style="background: var(--otis-primary); color: #fff; font-weight: 600; padding: 7px 14px; border: none; white-space: nowrap; cursor: pointer;">
+            ⚡ Regenerate Now
+          </button>
+        </div>
       </div>
     `;
   }
@@ -8082,6 +8097,21 @@ class OtisCompanionCard extends HTMLElement {
         };
         return;
       }
+      if (chip.id === "btn-regenerate-dashboards") {
+        chip.onclick = async (e) => {
+          e.stopPropagation();
+          try {
+            this._showToast("⚡ Regenerating Command Center, Studios & Rooms...");
+            await this._hass.callService("otis_ai", "regenerate_dashboards", {});
+            this._showToast("✨ Command Center, Studios & Rooms regenerated successfully!");
+            await this._fetchData();
+          } catch (err) {
+            console.error("Failed to regenerate dashboards:", err);
+            this._showToast(`Failed to regenerate dashboards: ${err.message || err}`, true);
+          }
+        };
+        return;
+      }
       chip.onclick = () => {
         const path = chip.getAttribute("data-subview");
         if (path) {
@@ -8280,7 +8310,7 @@ class OtisCompanionCard extends HTMLElement {
             this._rulesModalOpen = false;
 
             try {
-              await this._hass.callService("otis_ai", "sync_dashboards", {});
+              await this._hass.callService("otis_ai", "regenerate_dashboards", {});
             } catch (syncErr) {
               console.debug("Dashboard auto-sync notice:", syncErr);
             }
@@ -8443,6 +8473,21 @@ class OtisCompanionCard extends HTMLElement {
         };
       }
 
+      const rulesRegenBtn = root.querySelector("#rules-btn-regenerate-dashboards");
+      if (rulesRegenBtn) {
+        rulesRegenBtn.onclick = async () => {
+          try {
+            this._showToast("⚡ Regenerating Command Center, Studios & Rooms...");
+            await this._hass.callService("otis_ai", "regenerate_dashboards", {});
+            this._showToast("✨ Command Center, Studios & Rooms regenerated successfully!");
+            await this._fetchData();
+          } catch (err) {
+            console.error("Failed to regenerate dashboards:", err);
+            this._showToast(`Failed to regenerate dashboards: ${err.message || err}`, true);
+          }
+        };
+      }
+
       // Save Rules Button
       const saveBtn = root.querySelector("#rules-btn-save");
       if (saveBtn) {
@@ -8490,7 +8535,7 @@ class OtisCompanionCard extends HTMLElement {
 
             // Automatically sync and regenerate Command Center dashboard matching preferences
             try {
-              await this._hass.callService("otis_ai", "sync_dashboards", {});
+              await this._hass.callService("otis_ai", "regenerate_dashboards", {});
             } catch (syncErr) {
               console.debug("Dashboard auto-sync notice:", syncErr);
             }

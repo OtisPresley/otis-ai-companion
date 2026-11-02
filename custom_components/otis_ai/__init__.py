@@ -52,6 +52,7 @@ from .const import (
     SERVICE_IGNORE_SENTINEL_ALERT,
     SERVICE_CREATE_COMMAND_CENTER,
     SERVICE_SYNC_DASHBOARDS,
+    SERVICE_REGENERATE_DASHBOARDS,
     SERVICE_EXECUTE_MACRO,
     SERVICE_ROLLBACK_MACRO,
     SERVICE_LIST_MACROS,
@@ -499,6 +500,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         federation_manager=federation_manager,
         rules_manager=rules_manager,
         local_llm_manager=local_llm_manager,
+        dashboard_manager=dashboard_manager,
     )
 
     if hasattr(conversation, "async_register_agent"):
@@ -1188,7 +1190,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def handle_sync_dashboards(call) -> ServiceResponse:
         """Handle service call to synchronize Studios and Rooms across Otis AI and Command Center."""
-        _LOGGER.debug("Service 'sync_dashboards' triggered")
+        call_data = getattr(call, "data", {}) or {}
+        force = bool(call_data.get("force") or call_data.get("regenerate") or call_data.get("force_regenerate"))
+        _LOGGER.debug("Service 'sync_dashboards' triggered (force_regenerate=%s)", force)
         eng = _get_engine()
         dm = _get_dashboard_manager()
         cap_map = (
@@ -1196,16 +1200,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if hasattr(eng, "async_build_capability_map")
             else None
         )
-        admin_res = await dm.async_ensure_admin_companion_dashboard(cap_map)
-        user_res = await dm.async_ensure_user_command_center_dashboard(cap_map)
+        admin_res = await dm.async_ensure_admin_companion_dashboard(cap_map, force_regenerate=force)
+        user_res = await dm.async_ensure_user_command_center_dashboard(cap_map, force_regenerate=force)
         hass.bus.async_fire("lovelace_updated", {"url_path": "otis-ai"})
         hass.bus.async_fire("lovelace_updated", {"url_path": "command-center"})
+        action_msg = "Regenerated and synchronized" if force else "Synchronized"
         return {
             "success": True,
-            "message": "Synchronized Studios, Glance cards, and Rooms across Otis AI and Command Center dashboards",
+            "message": f"{action_msg} Studios, Glance cards, and Rooms across Otis AI and Command Center dashboards",
             "admin_dashboard": admin_res,
             "command_center": user_res,
         }
+
+    async def handle_regenerate_dashboards(call) -> ServiceResponse:
+        """Handle service call to cleanly regenerate Command Center, Studios, and Rooms."""
+        _LOGGER.debug("Service 'regenerate_dashboards' triggered")
+        from homeassistant.core import ServiceCall
+        sc = ServiceCall(DOMAIN, SERVICE_SYNC_DASHBOARDS, {"force": True})
+        return await handle_sync_dashboards(sc)
 
     async def handle_generate_theme(call) -> ServiceResponse:
         """Handle service call to generate and persist a custom theme."""
@@ -1661,10 +1673,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 pass
         if dm and hasattr(dm, "async_ensure_user_command_center_dashboard"):
             try:
-                cap_map = await eng.async_build_capability_map() if hasattr(eng, "async_build_capability_map") else None
-                await dm.async_ensure_user_command_center_dashboard(cap_map)
-                await dm.async_ensure_admin_companion_dashboard(cap_map)
-                _LOGGER.info("Otis AI: Automatically synced dashboards following behavioral rules update")
+                cap_map = await eng.async_build_capability_map(force_refresh=True) if hasattr(eng, "async_build_capability_map") else None
+                await dm.async_ensure_user_command_center_dashboard(cap_map, force_regenerate=True)
+                await dm.async_ensure_admin_companion_dashboard(cap_map, force_regenerate=True)
+                hass.bus.async_fire("lovelace_updated", {"url_path": "otis-ai"})
+                hass.bus.async_fire("lovelace_updated", {"url_path": "command-center"})
+                _LOGGER.info("Otis AI: Automatically regenerated dashboards following behavioral rules update")
             except Exception as sync_err:
                 _LOGGER.debug("Dashboard auto-sync on set_user_rules notice: %s", sync_err)
         return {"success": True, "rules": updated}
@@ -1866,6 +1880,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         SERVICE_SYNC_DASHBOARDS,
         handle_sync_dashboards,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REGENERATE_DASHBOARDS,
+        handle_regenerate_dashboards,
         supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
@@ -2144,6 +2164,7 @@ class OtisAIConversationAgent(AbstractAgent):
         federation_manager: FederationManager | None = None,
         rules_manager: BehavioralRulesManager | None = None,
         local_llm_manager: LocalLLMManager | None = None,
+        dashboard_manager: DashboardManager | None = None,
     ) -> None:
         """Initialize the agent."""
         self.hass = hass
@@ -2162,6 +2183,7 @@ class OtisAIConversationAgent(AbstractAgent):
         self.federation_manager = federation_manager or FederationManager(hass)
         self.rules_manager = rules_manager or BehavioralRulesManager(hass)
         self.local_llm_manager = local_llm_manager
+        self.dashboard_manager = dashboard_manager or getattr(hass.data.get(DOMAIN, {}), "get", lambda k: None)("dashboard_manager") or DashboardManager(hass)
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -2656,6 +2678,41 @@ class OtisAIConversationAgent(AbstractAgent):
                     ok = await self.theme_manager.async_apply_theme(target)
                 speech = f"🎨 Switched active theme to **{target}** across Home Assistant." if ok else f"⚠️ Could not apply theme '{target}'."
                 return self._create_response(user_input, speech)
+
+        # Check for dashboard regeneration commands
+        if (
+            any(w in user_text for w in (
+                "regenerate dashboard", "regenerate dashboards", "regenerate command center",
+                "rebuild command center", "rebuild dashboard", "rebuild dashboards",
+                "regenerate studios", "rebuild studios", "regenerate rooms", "rebuild rooms",
+            ))
+            or (
+                any(verb in user_text for verb in ("regenerate", "rebuild"))
+                and any(target in user_text for target in ("dashboard", "dashboards", "command center", "studio", "studios", "room", "rooms"))
+            )
+        ):
+            if self.dashboard_manager:
+                try:
+                    cap_map = (
+                        await self.engine.async_build_capability_map(force_refresh=True)
+                        if hasattr(self.engine, "async_build_capability_map")
+                        else None
+                    )
+                    await self.dashboard_manager.async_ensure_admin_companion_dashboard(cap_map, force_regenerate=True)
+                    await self.dashboard_manager.async_ensure_user_command_center_dashboard(cap_map, force_regenerate=True)
+                    self.hass.bus.async_fire("lovelace_updated", {"url_path": "otis-ai"})
+                    self.hass.bus.async_fire("lovelace_updated", {"url_path": "command-center"})
+                    speech = (
+                        "✨ **Command Center & Studios Regenerated!**\n\n"
+                        "I have regenerated the Home Command Center (`/command-center`), all Studios (Media, Security, Climate & Pool, Energy, Floor Plan), and all Room subviews matching your current layout, navigation styles, and active devices."
+                    )
+                    self._record_turn(session_data, user_input.text, speech)
+                    return self._create_response(user_input, speech)
+                except Exception as err:
+                    _LOGGER.error("Dashboard regeneration error: %s", err)
+                    err_speech = f"Encountered an issue regenerating dashboards: {err}"
+                    self._record_turn(session_data, user_input.text, err_speech)
+                    return self._create_response(user_input, err_speech)
 
         # Check for Otis Sentinel Watchdog commands
         if any(w in user_text for w in ("run sentinel", "sentinel audit", "sentinel scan", "check anomalies", "watchdog scan", "watchdog audit")):

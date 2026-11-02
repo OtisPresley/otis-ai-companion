@@ -4619,6 +4619,206 @@ action:
         self.assertEqual(items[0]["path"], "lighting/light_by_sun_elevation.yaml")
         self.assertIn("Would you like me to update and deploy this blueprint", cleaned)
 
+    def test_dashboard_layout_pipeline_sections_vs_classic_grid(self):
+        """Verify modern sections vs classic grid layouts across command center, studios, and room subviews."""
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+        from custom_components.otis_ai.rules_manager import BehavioralRulesManager
+
+        rm = BehavioralRulesManager(self.hass)
+        dm = DashboardManager(self.hass, rules_manager=rm)
+
+        cap_map = {
+            "areas": {
+                "living_room": {"name": "Living Room", "entities": ["light.living_room_light", "media_player.living_room_tv"]},
+            },
+            "entities": [
+                {"entity_id": "light.living_room_light", "name": "Living Room Light", "area_id": "living_room", "state": "on"},
+                {"entity_id": "media_player.living_room_tv", "name": "Living Room TV", "area_id": "living_room", "state": "playing"},
+                {"entity_id": "climate.living_room_ac", "name": "Living Room AC", "area_id": "living_room", "state": "cool", "domain": "climate"},
+                {"entity_id": "lock.front_door", "name": "Front Door", "area_id": "living_room", "state": "locked", "domain": "lock"},
+                {"entity_id": "sensor.living_room_power", "name": "Power", "area_id": "living_room", "state": "120", "domain": "sensor", "attributes": {"unit_of_measurement": "W"}},
+                {"entity_id": "weather.home", "name": "Home Weather", "state": "sunny"},
+                {"entity_id": "calendar.family", "name": "Family Calendar", "state": "on"},
+            ],
+            "media_topology": {"matrix_zones": [{"entity_id": "media_player.living_room_tv"}]},
+            "security_topology": {"locks": ["lock.front_door"]},
+        }
+
+        # 1. Test Modern Responsive Sections
+        asyncio.run(rm.async_save({"dashboard_layout": "modern_sections"}))
+        cfg_sections = dm._build_user_command_center_dashboard_config(cap_map)
+        views_sec = {v.get("path"): v for v in cfg_sections["views"]}
+
+        # Check Home view
+        self.assertEqual(views_sec["home"]["type"], "sections")
+        self.assertIn("sections", views_sec["home"])
+
+        # Check Studios (Energy, Media, Security, Climate)
+        for s_path in ("energy", "media", "security", "climate"):
+            self.assertEqual(views_sec[s_path].get("type"), "sections", f"Studio {s_path} should have type: sections")
+            self.assertIn("sections", views_sec[s_path], f"Studio {s_path} should have sections property")
+            self.assertGreater(len(views_sec[s_path]["sections"]), 0)
+
+        # Check Room subview
+        self.assertEqual(views_sec["area_living_room"].get("type"), "sections")
+        self.assertIn("sections", views_sec["area_living_room"])
+
+        # 2. Test Classic Card Grid
+        asyncio.run(rm.async_save({"dashboard_layout": "classic_grid"}))
+        cfg_classic = dm._build_user_command_center_dashboard_config(cap_map)
+        views_cls = {v.get("path"): v for v in cfg_classic["views"]}
+
+        # Check Home view
+        self.assertNotEqual(views_cls["home"].get("type"), "sections")
+        self.assertNotIn("sections", views_cls["home"])
+        self.assertIn("cards", views_cls["home"])
+
+        # Check Studios
+        for s_path in ("energy", "media", "security", "climate"):
+            self.assertNotEqual(views_cls[s_path].get("type"), "sections")
+            self.assertNotIn("sections", views_cls[s_path])
+            self.assertIn("cards", views_cls[s_path])
+
+        # Check Room subview
+        self.assertNotEqual(views_cls["area_living_room"].get("type"), "sections")
+        self.assertNotIn("sections", views_cls["area_living_room"])
+        self.assertIn("cards", views_cls["area_living_room"])
+
+    def test_navigation_style_and_calendar_view_pipeline(self):
+        """Verify navigation button styles and calendar views apply across dashboards."""
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+        from custom_components.otis_ai.rules_manager import BehavioralRulesManager
+
+        rm = BehavioralRulesManager(self.hass)
+        dm = DashboardManager(self.hass, rules_manager=rm)
+
+        cap_map = {
+            "areas": {
+                "living_room": {"name": "Living Room", "entities": ["light.living_room_light"]},
+            },
+            "entities": [
+                {"entity_id": "light.living_room_light", "name": "Living Room Light", "area_id": "living_room", "state": "on"},
+                {"entity_id": "weather.home", "name": "Home Weather", "state": "sunny"},
+                {"entity_id": "calendar.family", "name": "Family Calendar", "state": "on"},
+            ],
+        }
+
+        # 1. Standard Grid (3 columns, square: True) + Full Month Grid (dayGridMonth)
+        asyncio.run(rm.async_save({
+            "navigation_style": "standard_grid",
+            "calendar_view": "month",
+        }))
+        cfg_grid = dm._build_user_command_center_dashboard_config(cap_map)
+        home_grid = cfg_grid["views"][0]
+        studios_card = next(c for c in home_grid["cards"] if c.get("title") == "Studios")
+        self.assertEqual(studios_card["columns"], 3)
+        self.assertTrue(studios_card["square"])
+
+        # Calendar card should have initial_view: "dayGridMonth"
+        glance_card = next(c for c in home_grid["cards"] if c.get("title") == "Glance & Schedule")
+        cal_card = next(c for c in glance_card["cards"] if c.get("type") == "calendar")
+        self.assertEqual(cal_card["initial_view"], "dayGridMonth")
+
+        # 2. Sleek Touch Buttons (2 columns, square: False) + Agenda List (listDay)
+        asyncio.run(rm.async_save({
+            "navigation_style": "sleek_buttons",
+            "calendar_view": "listDay",
+        }))
+        cfg_sleek = dm._build_user_command_center_dashboard_config(cap_map)
+        home_sleek = cfg_sleek["views"][0]
+        studios_card_sleek = next(c for c in home_sleek["cards"] if c.get("title") == "Studios")
+        self.assertEqual(studios_card_sleek["columns"], 2)
+        self.assertFalse(studios_card_sleek["square"])
+
+        glance_card_sleek = next(c for c in home_sleek["cards"] if c.get("title") == "Glance & Schedule")
+        cal_card_sleek = next(c for c in glance_card_sleek["cards"] if c.get("type") == "calendar")
+        self.assertEqual(cal_card_sleek["initial_view"], "listDay")
+
+    def test_force_regenerate_dashboard_merging(self):
+        """Verify force_regenerate cleanly purges stale sections when switching to classic grid."""
+        import tempfile
+        import json
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+        from custom_components.otis_ai.rules_manager import BehavioralRulesManager
+
+        rm = BehavioralRulesManager(self.hass)
+        dm = DashboardManager(self.hass, rules_manager=rm)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dash_file = os.path.join(tmp_dir, "lovelace.command-center")
+            # Existing dashboard was in modern sections mode
+            existing_data = {
+                "version": 1,
+                "key": "lovelace.command-center",
+                "data": {
+                    "config": {
+                        "views": [
+                            {
+                                "title": "Home",
+                                "path": "home",
+                                "type": "sections",
+                                "max_columns": 3,
+                                "sections": [{"type": "grid", "cards": []}],
+                                "cards": [{"type": "markdown", "content": "custom"}],
+                            }
+                        ]
+                    }
+                }
+            }
+            with open(dash_file, "w", encoding="utf-8") as f:
+                json.dump(existing_data, f)
+
+            # New config is in classic grid mode
+            new_cfg = {
+                "title": "Command Center",
+                "views": [
+                    {
+                        "title": "Home",
+                        "path": "home",
+                        "cards": [{"type": "markdown", "content": "fresh"}],
+                    }
+                ]
+            }
+
+            # 1. Non-force merge should cleanse type: sections
+            merged = dm._merge_dashboard_config_preserving_user_views(tmp_dir, "command-center", new_cfg, force_regenerate=False)
+            self.assertNotEqual(merged["views"][0].get("type"), "sections")
+            self.assertNotIn("sections", merged["views"][0])
+
+            # 2. Force regenerate should cleanly adopt new views
+            force_merged = dm._merge_dashboard_config_preserving_user_views(tmp_dir, "command-center", new_cfg, force_regenerate=True)
+            self.assertNotEqual(force_merged["views"][0].get("type"), "sections")
+            self.assertEqual(force_merged["views"][0]["cards"][0]["content"], "fresh")
+
+    def test_conversation_agent_regenerate_dashboards_command(self):
+        """Verify Otis conversational assistant regenerates dashboards on user trigger phrase."""
+        from homeassistant.components.conversation import ConversationInput
+        from custom_components.otis_ai import OtisAIConversationAgent
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+
+        dm = DashboardManager(self.hass)
+        dm.async_ensure_user_command_center_dashboard = AsyncMock(return_value={"success": True})
+        dm.async_ensure_admin_companion_dashboard = AsyncMock(return_value={"success": True})
+
+        engine = MagicMock()
+        engine.async_build_capability_map = AsyncMock(return_value={})
+
+        entry = MagicMock()
+        manager = MagicMock()
+        agent = OtisAIConversationAgent(self.hass, entry, engine, manager)
+        agent.dashboard_manager = dm
+
+        u_input = MagicMock()
+        u_input.text = "Please regenerate my dashboards and command center"
+        u_input.conversation_id = "test_conv_regen"
+        u_input.create_response = MagicMock(side_effect=lambda speech, **kwargs: MagicMock(speech={"plain": {"speech": speech}}))
+
+        res = asyncio.run(agent.async_process(u_input))
+        speech = res.response.speech.get("plain", {}).get("speech", "")
+        self.assertIn("Command Center & Studios Regenerated", speech)
+        dm.async_ensure_user_command_center_dashboard.assert_called_once()
+        dm.async_ensure_admin_companion_dashboard.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
