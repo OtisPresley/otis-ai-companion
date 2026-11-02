@@ -48,9 +48,12 @@ It replaces fragile Jinja2 templates, hardcoded entity mappings, and rigid autom
 - 👁️ **Multi-Modal Vision & Presence Intelligence (Phase 8)**: Multi-sensor room occupancy fusion combining mmWave radar, PIR, media playback, and micro-BLE beacons; RTSP camera stream deduplication and Gemini Vision anomaly detection.
 - 🔄 **Self-Supervised Habit Learning & Behavioral Modeling (Phase 9)**: Non-blocking SQLite recorder habit sequence mining, habit deviation guards (e.g. missed bedtime routine), and dynamic circadian lighting & seasonal temperature curves.
 - 🌐 **Autonomous Home Commissioning & Multi-Node Federation (Phase 10)**: Zero-config heuristic spatial assignment for unassigned entities and multi-instance Home Assistant edge node synchronization with remote service orchestration.
-- ⚙️ **User Behavioral Rules & Interactive Onboarding (Roadmap Item 7)**: Persistent persona engine (`rules_manager.py`) governing assistant personality (Concierge, Butler, Minimalist, Custom), conversational tone, response verbosity, autonomy safeguards (explicit deadbolt/alarm confirmations), quiet hours volume limiting, and custom household rules. Dynamic prompt injection into Assist conversation turns and an interactive 4-tab onboarding modal.
+- ⚙️ **User Behavioral Rules & Interactive Onboarding (Roadmap Item 7)**: Persistent persona engine (`rules_manager.py`) governing assistant personality (Concierge, Butler, Minimalist, Custom), conversational tone, response verbosity, autonomy safeguards (explicit deadbolt/alarm confirmations), quiet hours volume limiting, and custom household rules. Dynamic prompt injection into Assist conversation turns and an interactive 5-tab onboarding modal.
+- 📱 **Modern Sections & Adaptive Dashboard Layout Pipeline (v0.1.15)**: Full pipeline support for user layout preferences across the Home Command Center (`/command-center`), all 5 Studios (Media, Security, Climate & Pool, Energy, Floor Plan), and all Room subviews. Toggle between mobile-first **Modern Responsive Sections** (`type: "sections"` with title headings) and traditional **Classic Grid** masonry columns. Choose between **Sleek Touch Buttons** (balanced 2-column touch buttons) and **Standard Grid Cards** (compact 3-column square cards) for studio and room navigation, alongside **Agenda Daily List** (`listDay`) vs. **Full Month Grid** (`dayGridMonth`) schedule views.
+- ⚡ **1-Click Clean Dashboard Regeneration & Conversational Intent**: Cleanly regenerate Command Center, Studios, and Rooms on demand via dedicated service (`otis_ai.regenerate_dashboards`), 1-click `⚡ Regenerate` UI buttons in the Companion Card launchpad and Rules tab, or spoken Assist commands (*"regenerate dashboards"*, *"rebuild command center"*), preserving user-added custom cards and custom subviews without stale view inheritance.
+- 🚀 **Direct Blueprint Management & Deployment**: Inspect, edit, and deploy blueprints directly to `/config/blueprints/automation/<path>` with 1-click `🚀 Deploy & Update Blueprint` UI cards in Assist chat across all model tiers.
 - ⛅ **Command Center Home View Resilience**: Weather forecast (`weather.home`) and calendar agenda glance strip seamlessly integrated between Studios and Rooms. Automatic direct registry fallback and storage overwrite guards for all 16 room and area subviews.
-- 💬 **Assist AI Co-Pilot with Real-Time Audio Streaming & Failover**: Interactive multi-turn chat co-pilot (`otis_ai.chat`) with direct Web Speech microphone input, 5-bar animated audio waveform visualizer, instant Markdown live preview, compacted entity representations resolving Groq HTTP 413, and automated failover cascade across Google Generative AI / Gemini.
+- 💬 **Assist AI Co-Pilot with Real-Time Audio Streaming, Clipboard Pasting & Failover**: Interactive multi-turn chat co-pilot (`otis_ai.chat`) with direct Web Speech microphone input, 5-bar animated audio waveform visualizer, instant Markdown live preview, clipboard image pasting (`Ctrl+V`), 1-click turn retry (`🔄 Retry`), compacted entity representations resolving Groq HTTP 413, and automated failover cascade across Google Generative AI / Gemini.
 
 <div align="center">
   <img width="1141" height="1189" alt="image" src="https://github.com/user-attachments/assets/d436b1ab-42eb-4452-bab0-29603fafd105" />
@@ -162,7 +165,7 @@ data:
 
 ## 🏷️ Services Reference
 
-Otis AI Companion provides **46 registered services** structured by architectural subsystem:
+Otis AI Companion provides **53 registered services** structured by architectural subsystem:
 
 ### 1. AI Co-Pilot & Suggestion Engine
 | Service Name | Description | Example Target |
@@ -188,7 +191,8 @@ Otis AI Companion provides **46 registered services** structured by architectura
 | `otis_ai.list_themes` | List all available built-in presets and user-created themes. | `response_variable: themes` |
 | `otis_ai.delete_theme` | Remove a previously saved custom theme. | `data: { theme_name: "custom_theme" }` |
 | `otis_ai.create_command_center`| Provision user Command Center and admin Otis AI dashboards. | `data: { mode: "command_center" }` |
-| `otis_ai.sync_dashboards` | Resynchronize dashboard views and subviews with Home Assistant. | `data: { force_overwrite: false }` |
+| `otis_ai.sync_dashboards` | Resynchronize dashboard views and subviews with Home Assistant. | `data: { force: true }` |
+| `otis_ai.regenerate_dashboards` | Cleanly rebuild Command Center, all Studios, and Room subviews. | `action: otis_ai.regenerate_dashboards` |
 
 ### 4. Otis Sentinel Watchdog & Self-Healing
 | Service Name | Description | Example Target |
@@ -262,6 +266,7 @@ Otis AI Companion provides **46 registered services** structured by architectura
 | :--- | :--- | :--- |
 | `otis_ai.test_local_llm` | Test local Ollama or OpenAI-compatible server connectivity, model readiness, and round-trip ping. | `data: { url: "http://10.0.12.228:11434" }` |
 | `otis_ai.benchmark_local_llm` | Benchmark local LLM inference throughput (tokens/sec), generation latency, and output tokens. | `data: { model: "qwen2.5:1.5b" }` |
+| `otis_ai.pull_local_llm_model` | Pull and download an LLM model onto the local Ollama instance and set as active model. | `data: { model: "qwen2.5:3b" }` |
 
 ---
 
@@ -291,7 +296,10 @@ show_chat: true
 </p>
 
 ### Features:
-* **Interactive Rules Launchpad & Onboarding Wizard**: `⚙️ Rules` chip launches a 4-tab modal for persona selection (Concierge, Butler, Minimalist, Custom), response verbosity, autonomy safeguards (deadbolt & alarm confirmation), quiet hours volume limiting, and custom household rules with first-run onboarding banner.
+* **Interactive Rules Launchpad & Onboarding Wizard**: `⚙️ Rules` chip launches a 5-tab modal for dashboard & layout preferences, persona selection (Concierge, Butler, Minimalist, Custom), response verbosity, autonomy safeguards (deadbolt & alarm confirmation), quiet hours volume limiting, and custom household rules with first-run onboarding banner.
+* **1-Click Dashboard Regeneration**: Dedicated `⚡ Regenerate` launchpad button and `⚡ Regenerate Now` under the Rules Dashboard tab to cleanly rebuild Command Center, Studios, and Rooms to match active layouts without stomping manual customizations.
+* **Direct Blueprint Management & Deployment**: 1-click `🚀 Deploy & Update Blueprint` action cards generated directly in Assist chat for rapid blueprint editing and deployment into `/config/blueprints/automation/<path>`.
+* **Clipboard Image Pasting & Turn Retry**: Direct clipboard image pasting (`Ctrl+V`) into Assist chat for multimodal visual diagnostics, accompanied by instant 1-click turn retry (`🔄 Retry`).
 <p align="center">
   <img width="900" alt="image" src="https://github.com/user-attachments/assets/f80d88bd-a68f-4681-8c7f-2538568eb0af" />
 </p>
