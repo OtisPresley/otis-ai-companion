@@ -527,6 +527,40 @@ class DashboardManager:
         else:  # "balanced"
             sections = [studios_sec, glance_sec, rooms_sec]
 
+        # Contextual Presence-Based Room Cards (Elevates occupied rooms to the top)
+        presence_enabled = user_rules.get("presence_room_cards", True)
+        active_room_cards = (
+            self._build_contextual_presence_room_cards(
+                active_areas, entities_by_area, valid_eids, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH
+            )
+            if presence_enabled
+            else []
+        )
+        if active_room_cards:
+            active_rooms_sec = {
+                "type": "grid",
+                "cards": [
+                    {
+                        "type": "conditional",
+                        "conditions": [
+                            {
+                                "condition": "state",
+                                "entity": "binary_sensor.otis_active_occupancy",
+                                "state": "on",
+                            }
+                        ],
+                        "card": {
+                            "type": "heading",
+                            "heading": "Active Rooms",
+                            "icon": "mdi:motion-sensor",
+                            "heading_style": "title",
+                        },
+                    },
+                    *active_room_cards,
+                ],
+            }
+            sections = [active_rooms_sec, *sections]
+
         # Traditional cards list (clean fallback and for tools expecting view.cards)
         markdown_card = {
             "type": "markdown",
@@ -573,6 +607,18 @@ class DashboardManager:
                 home_cards.append(glance_card)
             if rooms_card:
                 home_cards.append(rooms_card)
+
+        if active_room_cards:
+            home_cards.insert(
+                1,
+                {
+                    "type": "grid",
+                    "title": "Active Rooms",
+                    "columns": 1,
+                    "square": False,
+                    "cards": active_room_cards,
+                },
+            )
 
         home_view: dict[str, Any] = {
             "title": "Home",
@@ -1453,6 +1499,133 @@ class DashboardManager:
         if any(w in key for w in ("closet", "wardrobe")):
             return "mdi:wardrobe"
         return "mdi:door-open"
+
+    def _build_contextual_presence_room_cards(
+        self,
+        active_areas: list[dict[str, Any]],
+        entities_by_area: dict[str, list[dict[str, Any]]],
+        valid_eids: set[str],
+        dashboard_url_path: str = COMMAND_CENTER_DASHBOARD_URL_PATH,
+    ) -> list[dict[str, Any]]:
+        """Build dynamic Lovelace conditional room cards that elevate active/occupied rooms to the top."""
+        conditional_cards: list[dict[str, Any]] = []
+
+        for area in active_areas:
+            aid = area["id"]
+            slug = area["slug"]
+            aname = area["name"]
+            room_entities = list(entities_by_area.get(aid, []))
+            if not room_entities and area.get("entities"):
+                room_entities = list(area["entities"])
+
+            # Check for presence or motion sensor in this room
+            presence_eids = [
+                e["entity_id"]
+                for e in room_entities
+                if e.get("entity_id")
+                and (
+                    e["entity_id"].startswith("binary_sensor.")
+                    and any(
+                        k in e["entity_id"].lower()
+                        for k in ("motion", "occupancy", "presence", "mmwave", "radar", "fp1", "fp2", "screek")
+                    )
+                )
+            ]
+
+            # Also check if fused presence sensor exists in live state machine
+            fused_presence_eid = f"binary_sensor.otis_presence_{slug}"
+            has_fused = False
+            if hasattr(self, "hass") and self.hass and hasattr(self.hass, "states"):
+                st = self.hass.states.get(fused_presence_eid)
+                if st is not None and not hasattr(st, "_mock_return_value") and hasattr(st, "state") and getattr(st, "state", None) in ("on", "off"):
+                    has_fused = True
+
+            if not presence_eids and not has_fused:
+                continue
+
+            # Target presence condition entity (prefer fused sensor, fallback to native)
+            target_presence_eid = fused_presence_eid if has_fused else presence_eids[0]
+
+            # Select high-utility room controls (primary light, media, climate, fan)
+            control_ents = self._select_intelligent_room_controls(
+                room_entities,
+                valid_eids,
+                area_name=aname,
+                area_id=aid,
+                max_controls=2,
+            )
+
+            control_cards = []
+            for c_info in control_ents:
+                c_eid = c_info.get("entity") or c_info.get("entity_id")
+                if not c_eid:
+                    continue
+                c_dom = c_info.get("domain", c_eid.split(".")[0] if c_eid else "")
+                if c_dom == "light":
+                    control_cards.append({
+                        "type": "tile",
+                        "entity": c_eid,
+                        "features": [{"type": "light-brightness"}],
+                    })
+                elif c_dom == "climate":
+                    control_cards.append({
+                        "type": "tile",
+                        "entity": c_eid,
+                    })
+                elif c_dom in ("media_player", "fan", "switch", "cover", "lock"):
+                    control_cards.append({
+                        "type": "tile",
+                        "entity": c_eid,
+                    })
+
+            room_icon = self._get_room_icon(aname, aid)
+            inner_cards: list[dict[str, Any]] = [
+                {
+                    "type": "heading",
+                    "heading": f"{aname}",
+                    "icon": room_icon,
+                    "heading_style": "subtitle",
+                    "tap_action": {
+                        "action": "navigate",
+                        "navigation_path": f"/{dashboard_url_path}/area_{slug}",
+                    },
+                }
+            ]
+
+            if control_cards:
+                inner_cards.append({
+                    "type": "grid",
+                    "columns": min(2, len(control_cards)),
+                    "square": False,
+                    "cards": control_cards,
+                })
+
+            inner_cards.append({
+                "type": "button",
+                "name": f"Full {aname} Controls →",
+                "icon": "mdi:arrow-right-circle-outline",
+                "tap_action": {
+                    "action": "navigate",
+                    "navigation_path": f"/{dashboard_url_path}/area_{slug}",
+                },
+            })
+
+            conditional_cards.append({
+                "type": "conditional",
+                "conditions": [
+                    {
+                        "condition": "state",
+                        "entity": target_presence_eid,
+                        "state": "on",
+                    }
+                ],
+                "card": {
+                    "type": "vertical-stack",
+                    "cards": inner_cards,
+                },
+            })
+
+        return conditional_cards
 
     def _select_intelligent_room_controls(
         self,

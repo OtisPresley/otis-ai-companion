@@ -38,6 +38,7 @@ DEFAULT_RULES: dict[str, Any] = {
     "navigation_style": "sleek_buttons",
     "calendar_view": "listDay",
     "primary_content_focus": "balanced",
+    "presence_room_cards": True,
     "dismissed_recommendation_ids": [],
     "show_ignored_recommendations": False,
 }

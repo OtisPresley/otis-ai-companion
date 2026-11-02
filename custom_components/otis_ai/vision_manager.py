@@ -828,3 +828,103 @@ class VisionPresenceManager:
     def get_audit_history(self) -> list[dict[str, Any]]:
         """Return the recent camera visual audit history."""
         return list(self._camera_audit_history)
+
+    async def async_publish_fused_presence_states(self) -> dict[str, Any]:
+        """Compute presence states and publish binary_sensor.otis_presence_<slug> to Home Assistant states."""
+        res = await self.async_get_presence_states(use_cache=False)
+        rooms = res.get("rooms", {})
+        any_occupied = False
+
+        for a_id, r_info in rooms.items():
+            slug = re.sub(r"[^a-z0-9_]+", "_", a_id.lower()).strip("_") or "room"
+            eid = f"binary_sensor.otis_presence_{slug}"
+            prob = r_info.get("probability", 0.0)
+            status = r_info.get("status", "vacant")
+            is_active = (prob >= 0.50) or (status in ("occupied", "likely_occupied"))
+            if is_active:
+                any_occupied = True
+            state_val = "on" if is_active else "off"
+            attrs = {
+                "friendly_name": f"{r_info.get('area_name', a_id)} Presence",
+                "device_class": "occupancy",
+                "probability": prob,
+                "confidence_percent": r_info.get("confidence_percent", 0),
+                "status": status,
+                "area_id": a_id,
+                "area_name": r_info.get("area_name", a_id),
+                "sensors": r_info.get("sensors", {}),
+            }
+            if hasattr(self.hass, "states") and hasattr(self.hass.states, "async_set"):
+                self.hass.states.async_set(eid, state_val, attrs)
+
+        # Publish global active household occupancy sensor
+        if hasattr(self.hass, "states") and hasattr(self.hass.states, "async_set"):
+            self.hass.states.async_set(
+                "binary_sensor.otis_active_occupancy",
+                "on" if any_occupied else "off",
+                {
+                    "friendly_name": "Active Household Occupancy",
+                    "device_class": "occupancy",
+                    "occupied_count": res.get("occupied_count", 0),
+                    "likely_count": res.get("likely_count", 0),
+                    "occupied_areas": res.get("occupied_areas", []),
+                    "likely_areas": res.get("likely_areas", []),
+                },
+            )
+        return res
+
+    def async_start_presence_tracking(self) -> None:
+        """Start listening to state changes on presence, motion, and media entities to auto-publish presence states."""
+        if getattr(self, "_tracking_unsub", None):
+            return
+
+        import asyncio
+
+        _debounce_task: asyncio.Task | None = None
+
+        async def _debounced_publish():
+            await asyncio.sleep(0.5)
+            try:
+                await self.async_publish_fused_presence_states()
+            except Exception as e:
+                _LOGGER.debug("Error in auto-publishing fused presence: %s", e)
+
+        def _schedule_publish():
+            nonlocal _debounce_task
+            if _debounce_task and not _debounce_task.done():
+                _debounce_task.cancel()
+            if hasattr(self.hass, "async_create_task"):
+                _debounce_task = self.hass.async_create_task(_debounced_publish())
+
+        def _on_state_changed(event):
+            eid = getattr(event, "data", {}).get("entity_id", "")
+            if (
+                eid.startswith("binary_sensor.")
+                or eid.startswith("media_player.")
+                or eid.startswith("person.")
+                or eid.startswith("device_tracker.")
+            ):
+                if eid.startswith("binary_sensor.otis_"):
+                    return
+                if hasattr(self.hass, "loop") and self.hass.loop:
+                    try:
+                        import asyncio
+
+                        if asyncio.get_running_loop() is self.hass.loop:
+                            _schedule_publish()
+                        else:
+                            self.hass.loop.call_soon_threadsafe(_schedule_publish)
+                    except RuntimeError:
+                        self.hass.loop.call_soon_threadsafe(_schedule_publish)
+                else:
+                    _schedule_publish()
+
+        if hasattr(self.hass, "bus") and hasattr(self.hass.bus, "async_listen"):
+            try:
+                from homeassistant.const import EVENT_STATE_CHANGED
+            except ImportError:
+                EVENT_STATE_CHANGED = "state_changed"
+
+            self._tracking_unsub = self.hass.bus.async_listen(
+                EVENT_STATE_CHANGED, _on_state_changed
+            )

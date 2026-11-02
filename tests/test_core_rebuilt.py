@@ -4273,6 +4273,81 @@ class TestModernSectionsDashboardGeneration(unittest.TestCase):
         self.assertLess(studios_card_titles.index("Studios"), studios_card_titles.index("Rooms"))
         self.assertLess(studios_card_titles.index("Rooms"), studios_card_titles.index("Glance & Schedule"))
 
+    def test_contextual_presence_room_cards_elevation(self):
+        """Verify dynamic Lovelace conditional room cards elevating occupied rooms to top of Command Center."""
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+        from custom_components.otis_ai.rules_manager import BehavioralRulesManager
+
+        rm = BehavioralRulesManager(self.hass)
+        dm = DashboardManager(self.hass, rules_manager=rm)
+
+        cap_map = {
+            "areas": {
+                "living_room": {"name": "Living Room", "entities": ["light.living_room_light", "binary_sensor.living_room_motion"]},
+                "office": {"name": "Office", "entities": ["light.office_desk", "climate.office_ac", "binary_sensor.office_presence"]},
+                "kitchen": {"name": "Kitchen", "entities": ["light.kitchen_lights"]},
+            },
+            "entities": [
+                {"entity_id": "light.living_room_light", "name": "Living Room Light", "area_id": "living_room", "state": "on", "domain": "light"},
+                {"entity_id": "binary_sensor.living_room_motion", "name": "Living Room Motion", "area_id": "living_room", "state": "on", "domain": "binary_sensor"},
+                {"entity_id": "light.office_desk", "name": "Office Desk Lamp", "area_id": "office", "state": "on", "domain": "light"},
+                {"entity_id": "climate.office_ac", "name": "Office AC", "area_id": "office", "state": "cool", "domain": "climate"},
+                {"entity_id": "binary_sensor.office_presence", "name": "Office Presence", "area_id": "office", "state": "on", "domain": "binary_sensor"},
+                {"entity_id": "light.kitchen_lights", "name": "Kitchen Lights", "area_id": "kitchen", "state": "off", "domain": "light"},
+                {"entity_id": "weather.home", "name": "Home Weather", "state": "sunny"},
+                {"entity_id": "calendar.family", "name": "Family Calendar", "state": "on"},
+            ],
+        }
+
+        # 1. Active Presence Room Cards Enabled (Default)
+        user_cfg = dm._build_user_command_center_dashboard_config(cap_map)
+        home_view = user_cfg["views"][0]
+        sections = home_view["sections"]
+
+        # Should have 4 sections: Active Rooms (Elevated), Studios, Glance & Schedule, Rooms
+        self.assertEqual(len(sections), 4)
+
+        # Section 0: Active Rooms
+        active_sec = sections[0]
+        self.assertEqual(active_sec["type"], "grid")
+
+        # Heading is conditionally shown based on otis_active_occupancy
+        sec_heading_cond = active_sec["cards"][0]
+        self.assertEqual(sec_heading_cond["type"], "conditional")
+        self.assertEqual(sec_heading_cond["conditions"][0]["entity"], "binary_sensor.otis_active_occupancy")
+        self.assertEqual(sec_heading_cond["card"]["heading"], "Active Rooms")
+
+        # Two active room conditional cards: Living Room and Office (Kitchen omitted as it has no motion/presence sensor)
+        active_room_cards = active_sec["cards"][1:]
+        self.assertEqual(len(active_room_cards), 2)
+
+        # Living Room conditional card
+        lr_cond = active_room_cards[0]
+        self.assertEqual(lr_cond["type"], "conditional")
+        self.assertEqual(lr_cond["conditions"][0]["entity"], "binary_sensor.living_room_motion")
+        self.assertEqual(lr_cond["conditions"][0]["state"], "on")
+        lr_stack = lr_cond["card"]["cards"]
+        self.assertEqual(lr_stack[0]["heading"], "Living Room")
+        self.assertEqual(lr_stack[1]["cards"][0]["entity"], "light.living_room_light")
+        self.assertIn("/command-center/area_living_room", lr_stack[2]["tap_action"]["navigation_path"])
+
+        # Office conditional card (light + climate tiles)
+        off_cond = active_room_cards[1]
+        self.assertEqual(off_cond["type"], "conditional")
+        self.assertEqual(off_cond["conditions"][0]["entity"], "binary_sensor.office_presence")
+        off_stack = off_cond["card"]["cards"]
+        self.assertEqual(off_stack[0]["heading"], "Office")
+        off_tile_eids = [c["entity"] for c in off_stack[1]["cards"]]
+        self.assertIn("light.office_desk", off_tile_eids)
+        self.assertIn("climate.office_ac", off_tile_eids)
+
+        # 2. Test disabling presence room cards in user rules
+        asyncio.run(rm.async_save({"presence_room_cards": False}))
+        cfg_disabled = dm._build_user_command_center_dashboard_config(cap_map)
+        sections_disabled = cfg_disabled["views"][0]["sections"]
+        self.assertEqual(len(sections_disabled), 3)
+        self.assertEqual(sections_disabled[0]["cards"][0]["heading"], "Studios")
+
     def test_dismiss_and_restore_recommendations(self):
         """Verify dismissing, restoring, and resetting proactive recommendations in rules manager."""
         from custom_components.otis_ai.rules_manager import BehavioralRulesManager

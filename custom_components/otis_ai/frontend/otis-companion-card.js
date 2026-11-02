@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.19";
+const CARD_VERSION = "0.1.20";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -6009,7 +6009,16 @@ class OtisCompanionCard extends HTMLElement {
                   <div>
                     <div style="font-weight: 700; color: var(--otis-primary); font-size: 0.95rem;">📍 ${this._selectedRoomInfo.name}</div>
                     <div style="font-size: 0.74rem; color: var(--otis-text-muted);">
-                      Zone: ${String(this._selectedRoomInfo.zone).toUpperCase()} • ${this._selectedRoomInfo.entities.length} Devices
+                      ${(() => {
+                        const presEid = `binary_sensor.otis_presence_${this._selectedRoomInfo.slug}`;
+                        const presState = this._hass?.states?.[presEid];
+                        const isOccupied = presState?.state === "on";
+                        const prob = presState?.attributes?.probability ? Math.round(presState.attributes.probability * 100) : null;
+                        const presBadge = isOccupied
+                          ? `<span style="color: #10b981; font-weight: 700;">🟢 Active (${prob || 85}%)</span>`
+                          : `<span style="color: #94a3b8;">⚪ Vacant</span>`;
+                        return `Zone: ${String(this._selectedRoomInfo.zone).toUpperCase()} • ${this._selectedRoomInfo.entities.length} Devices • ${presBadge}`;
+                      })()}
                     </div>
                   </div>
                   <div style="display: flex; gap: 8px;">

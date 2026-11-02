@@ -329,6 +329,66 @@ class TestVisionPresenceManager(unittest.TestCase):
         cams_legacy = asyncio.run(mgr_legacy.async_get_cameras())
         self.assertEqual(cams_legacy[0]["entity_id"], "camera.kitchen_gateway")
 
+    @patch("custom_components.otis_ai.vision_manager.ar.async_get")
+    @patch("custom_components.otis_ai.vision_manager.er.async_get")
+    def test_publish_fused_presence_and_tracking(self, mock_er, mock_ar):
+        """Test publishing fused binary_sensor.otis_presence_<slug> entities and event listener tracking."""
+        area_reg = MagicMock()
+        area_reg.async_list_areas.return_value = [
+            MockArea("living_room", "Living Room"),
+            MockArea("kitchen", "Kitchen"),
+        ]
+        mock_ar.return_value = area_reg
+
+        ent_reg = MagicMock()
+        ent_reg.entities = {
+            "binary_sensor.living_room_motion": MockEntityEntry("binary_sensor.living_room_motion", "living_room"),
+            "light.kitchen_lights": MockEntityEntry("light.kitchen_lights", "kitchen"),
+        }
+        mock_er.return_value = ent_reg
+
+        states = [
+            MockEntityState("binary_sensor.living_room_motion", "on", {"device_class": "motion", "friendly_name": "LR Motion"}),
+            MockEntityState("light.kitchen_lights", "off", {"friendly_name": "Kitchen Lights"}),
+        ]
+        self.hass.states.async_all.return_value = states
+        published_states = {}
+
+        def mock_async_set(entity_id, state, attributes=None):
+            published_states[entity_id] = {"state": state, "attributes": attributes or {}}
+
+        self.hass.states.async_set = mock_async_set
+
+        mgr = VisionPresenceManager(self.hass)
+
+        # 1. Test publishing fused presence states
+        res = asyncio.run(mgr.async_publish_fused_presence_states())
+        self.assertTrue(res["occupied_count"] >= 1)
+
+        # Verify living room is published as "on"
+        self.assertIn("binary_sensor.otis_presence_living_room", published_states)
+        lr_state = published_states["binary_sensor.otis_presence_living_room"]
+        self.assertEqual(lr_state["state"], "on")
+        self.assertEqual(lr_state["attributes"]["device_class"], "occupancy")
+        self.assertEqual(lr_state["attributes"]["area_id"], "living_room")
+
+        # Verify kitchen is published as "off"
+        self.assertIn("binary_sensor.otis_presence_kitchen", published_states)
+        k_state = published_states["binary_sensor.otis_presence_kitchen"]
+        self.assertEqual(k_state["state"], "off")
+
+        # Verify global active household occupancy sensor
+        self.assertIn("binary_sensor.otis_active_occupancy", published_states)
+        self.assertEqual(published_states["binary_sensor.otis_active_occupancy"]["state"], "on")
+
+        # 2. Test event tracking initialization
+        mgr.async_start_presence_tracking()
+        self.hass.bus.async_listen.assert_called_once()
+
+        # Idempotent re-initialization
+        mgr.async_start_presence_tracking()
+        self.assertEqual(self.hass.bus.async_listen.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

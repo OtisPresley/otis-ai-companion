@@ -422,6 +422,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     audio_manager = AudioHandoffManager(hass, spatial_manager=spatial_manager, rules_manager=rules_manager)
     energy_manager = EnergyManager(hass, spatial_manager=spatial_manager)
     vision_manager = VisionPresenceManager(hass, spatial_manager=spatial_manager, energy_manager=energy_manager)
+    # Start real-time presence tracking and publish initial fused presence states
+    vision_manager.async_start_presence_tracking()
+    pres_coro = vision_manager.async_publish_fused_presence_states()
+    if hasattr(hass, "async_create_task"):
+        pres_task = hass.async_create_task(pres_coro)
+        if not isinstance(pres_task, asyncio.Task) and asyncio.iscoroutine(pres_coro):
+            pres_coro.close()
     habit_manager = BehavioralHabitManager(hass, spatial_manager=spatial_manager, energy_manager=energy_manager, vision_manager=vision_manager)
     commissioning_manager = AutonomousCommissioningManager(hass, spatial_manager=spatial_manager)
     federation_manager = FederationManager(hass)

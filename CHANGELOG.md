@@ -7,6 +7,20 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.20] - 2026-11-02
+
+### Added
+- **Contextual Presence-Based Room Cards & Dynamic Elevation (Roadmap Phase 2)**:
+  - **Dynamic "Active Rooms" Section in Command Center**: Elevates active, occupied rooms to the top of the Command Center dashboard (`/command-center`) in Modern Sections and Classic Grid views.
+  - **Fused Presence Entity Publishing**: `VisionPresenceManager` automatically computes Bayesian multi-sensor occupancy fusion (mmWave radar, PIR motion decay, media playback, BLE room beacons, and person entities) and publishes native Home Assistant entities:
+    - `binary_sensor.otis_presence_<slug>`: Real-time room occupancy (device class `occupancy`, probability, confidence percentage, and active sensor breakdown).
+    - `binary_sensor.otis_active_occupancy`: Whole-home active occupancy indicator.
+  - **Real-Time State Change Tracking**: Event listener on `EVENT_STATE_CHANGED` for motion, presence, and media player entities automatically recalculates and publishes room presence with intelligent debouncing.
+  - **Intelligent Conditional Room Cards**: Renders high-utility quick-control tiles (primary lights with brightness sliders, climate setpoints, media players, fans) and direct navigation buttons within `type: conditional` cards.
+  - **Zero-Clutter Collapsing**: The Active Rooms section and its conditional heading automatically collapse to 0 height when rooms are vacant, cleanly keeping the dashboard focused and uncluttered.
+  - **Floor Plan Live Presence Badges**: The Companion Card room inspector displays real-time occupancy status (`🟢 Active (N%)` vs `⚪ Vacant`) based on fused presence.
+- Bumped Lovelace Companion Card to `v0.1.20`.
+
 ## [0.1.19] - 2026-11-01
 
 ### Added
