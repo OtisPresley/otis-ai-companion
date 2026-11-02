@@ -1363,13 +1363,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def handle_run_sentinel_watchdog(call) -> ServiceResponse:
         """Handle service call to run Sentinel watchdog audit."""
-        _LOGGER.debug("Service 'run_sentinel_watchdog' triggered")
+        _LOGGER.debug("Service 'run_sentinel_watchdog' triggered with data: %s", call.data)
+        auto_remediate = call.data.get("auto_remediate", False)
         eng = _get_engine()
         sm = _get_sentinel_manager()
-        anomalies = await sm.async_scan_all_anomalies()
+        anomalies = await sm.async_scan_all_anomalies(auto_remediate=auto_remediate)
         if hasattr(eng, "invalidate_cache"):
             eng.invalidate_cache()
-        return {"success": True, "anomalies": anomalies, "count": len(anomalies)}
+        remediated_count = getattr(sm, "last_remediated_count", 0) if auto_remediate else 0
+        return {
+            "success": True,
+            "anomalies": anomalies,
+            "count": len(anomalies),
+            "auto_remediated_count": remediated_count,
+        }
 
     async def handle_remediate_anomaly(call) -> ServiceResponse:
         """Handle service call to remediate a detected anomaly."""
@@ -2935,18 +2942,45 @@ class OtisAIConversationAgent(AbstractAgent):
                     return self._create_response(user_input, speech)
 
         # Check for Otis Sentinel Watchdog commands
-        if any(w in user_text for w in ("run sentinel", "sentinel audit", "sentinel scan", "check anomalies", "watchdog scan", "watchdog audit")):
-            if self.sentinel_manager:
-                anomalies = await self.sentinel_manager.async_scan_all_anomalies()
-                if not anomalies:
-                    speech = "🛡️ **Otis Sentinel Watchdog: All Systems Nominal**\n\nNo anomalies detected across HVAC, battery health, security perimeter, or integration nodes."
-                else:
-                    lines = [f"🛡️ **Otis Sentinel Audit: {len(anomalies)} Anomaly Alert(s) Detected**\n"]
-                    for a in anomalies[:5]:
-                        lines.append(f"• **{a['title']}** [{a.get('severity', 'high').upper()}]: {a['description']}")
-                    lines.append("\nUse the **Proactive Feed** in the Companion Card to trigger 1-click self-healing remediation.")
-                    speech = "\n".join(lines)
-                return self._create_response(user_input, speech)
+        user_lower = user_text.lower()
+        if self.sentinel_manager and any(w in user_lower for w in (
+            "remediate anomalies", "fix anomalies", "heal network", "auto heal", "auto-heal",
+            "sentinel auto heal", "sentinel auto-heal", "fix sentinel alerts", "remediate all alerts",
+            "self heal", "self-heal", "heal smart home"
+        )):
+            anomalies = await self.sentinel_manager.async_scan_all_anomalies(auto_remediate=True)
+            remediated_count = getattr(self.sentinel_manager, "last_remediated_count", 0)
+            if remediated_count > 0:
+                speech = (
+                    f"🛡️ **Otis Sentinel Auto-Healing Complete**\n\n"
+                    f"Successfully executed self-healing remediations on **{remediated_count}** detected anomaly/anomalies! "
+                    f"Remaining unresolved alerts: {len(anomalies)}."
+                )
+            elif not anomalies:
+                speech = "🛡️ **Otis Sentinel Watchdog: All Systems Nominal**\n\nNo active anomalies detected across HVAC, battery health, security perimeter, BLE proxies, or mesh networks."
+            else:
+                speech = (
+                    f"🛡️ **Otis Sentinel Scan**: Found **{len(anomalies)}** anomaly alert(s). "
+                    "Manual confirmation may be required (e.g. perimeter door locks or extreme temperature offsets) in the Proactive Feed."
+                )
+            self._record_turn(session_data, user_input.text, speech)
+            return self._create_response(user_input, speech)
+
+        if self.sentinel_manager and any(w in user_lower for w in (
+            "run sentinel", "sentinel audit", "sentinel scan", "check anomalies",
+            "watchdog scan", "watchdog audit", "audit system anomalies", "check smart home health"
+        )):
+            anomalies = await self.sentinel_manager.async_scan_all_anomalies()
+            if not anomalies:
+                speech = "🛡️ **Otis Sentinel Watchdog: All Systems Nominal**\n\nNo anomalies detected across HVAC, battery health, security perimeter, BLE proxies, runaway switches, or mesh network nodes."
+            else:
+                lines = [f"🛡️ **Otis Sentinel Audit: {len(anomalies)} Anomaly Alert(s) Detected**\n"]
+                for a in anomalies[:5]:
+                    lines.append(f"• **{a['title']}** [{a.get('severity', 'high').upper()}]: {a['description']}")
+                lines.append("\nUse the **Proactive Feed** in the Companion Card or say *'Remediate anomalies'* to trigger self-healing.")
+                speech = "\n".join(lines)
+            self._record_turn(session_data, user_input.text, speech)
+            return self._create_response(user_input, speech)
 
         # Check for Phase 6 Audio Handoff / Follow-Me commands
         user_lower = user_text.lower()

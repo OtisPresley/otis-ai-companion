@@ -7,6 +7,18 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.18] - 2026-11-01
+
+### Added
+- **Advanced Sentinel Watchdog Actions & Proactive Self-Healing (Roadmap Item 3)**:
+  - **Unresponsive BLE Proxies & Bluetooth Adapters**: Detects offline or disconnected ESPHome BLE proxies, Shelly Bluetooth gateways, and Bluetooth dongles. Automatically identifies matching hardware restart buttons (`button.<node>_restart`) or config entries and executes 1-click self-healing restart (`restart_ble_proxy`).
+  - **Runaway & Stuck Actuators**: Detects runaway lights, bathroom exhaust fans, and non-critical switches left ON continuously for excessive durations (> 90m for fans, > 120m for lights) while strictly excluding critical infrastructure (servers, UPS, refrigerators, PoE switches, network hardware). Offers 1-click `turn_off_stuck_actuator` auto-off remediation.
+  - **Zigbee & Z-Wave Mesh Routing Health**: Audits mesh health for dead or unresponsive Zigbee and Z-Wave routing nodes (`is_failed`, `node_status: dead`, offline mains routers) with 1-click self-healing ping/heal actions (`heal_mesh_node`).
+  - **Enhanced Low Battery Notifications**: Proactive reminders with persistent notifications detailing device name, area, and battery level (`notify_battery_replacement`).
+  - **Auto-Remediate Scan Pipeline**: Added `auto_remediate: boolean` parameter to `otis_ai.run_sentinel_watchdog` (`async_scan_all_anomalies(auto_remediate=True)`) to automatically self-heal safe anomalies (runaway lights/fans, failed integrations, dead mesh nodes, unresponsive BLE proxies) during scheduled watchdog audits.
+  - **Conversational Assist Intents**: Intercepts natural language voice/text requests (*"Remediate anomalies"*, *"Heal network"*, *"Auto heal system"*, *"Audit system anomalies"*, *"Check smart home health"*) to trigger watchdog audits and auto-remediations with conversational summaries.
+- Bumped Lovelace Companion Card to `v0.1.18`.
+
 ## [0.1.17] - 2026-11-01
 
 ### Added

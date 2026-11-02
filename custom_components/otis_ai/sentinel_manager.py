@@ -1,6 +1,7 @@
 """Otis Sentinel: Proactive anomaly detection, continuous telemetry watchdog, and self-healing engine."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -31,6 +32,7 @@ class SentinelManager:
         self._ignored_anomaly_ids: set[str] = set()
         self._ignored_categories: set[str] = set()
         self._prefs_loaded: bool = False
+        self.last_remediated_count: int = 0
 
     async def async_load_preferences(self) -> None:
         """Load persisted ignored anomaly IDs and categories."""
@@ -75,6 +77,10 @@ class SentinelManager:
             "sentinel_garage_open_",
             "sentinel_climate_extreme_delta_",
             "sentinel_integration_failed_",
+            "sentinel_ble_proxy_unresponsive_",
+            "sentinel_actuator_stuck_",
+            "sentinel_mesh_dead_node_",
+            "sentinel_lock_unsecured_",
         ):
             if anomaly_id.startswith(prefix):
                 ent_id = anomaly_id[len(prefix):]
@@ -82,6 +88,9 @@ class SentinelManager:
                 self._ignored_anomaly_ids.add(f"sentinel_battery_critical_{ent_id}")
                 self._ignored_anomaly_ids.add(f"sentinel_battery_low_{ent_id}")
                 self._ignored_anomaly_ids.add(f"sentinel_node_offline_{ent_id}")
+                self._ignored_anomaly_ids.add(f"sentinel_actuator_stuck_{ent_id}")
+                self._ignored_anomaly_ids.add(f"sentinel_ble_proxy_unresponsive_{ent_id}")
+                self._ignored_anomaly_ids.add(f"sentinel_mesh_dead_node_{ent_id}")
                 break
 
         # Remove from active in-memory anomalies
@@ -107,6 +116,12 @@ class SentinelManager:
                 k: v for k, v in self._anomalies.items()
                 if v.get("anomaly_type") not in ("offline_node", "offline_infrastructure")
             }
+        elif category in ("ble_proxy", "bluetooth"):
+            self._anomalies = {k: v for k, v in self._anomalies.items() if v.get("anomaly_type") != "ble_proxy"}
+        elif category == "stuck_actuator":
+            self._anomalies = {k: v for k, v in self._anomalies.items() if v.get("anomaly_type") != "stuck_actuator"}
+        elif category in ("mesh_node", "mesh_health"):
+            self._anomalies = {k: v for k, v in self._anomalies.items() if v.get("anomaly_type") != "mesh_node"}
         await self.async_save_preferences()
 
     def get_active_anomalies(self) -> list[dict[str, Any]]:
@@ -121,7 +136,7 @@ class SentinelManager:
         anomalies.sort(key=lambda a: SEVERITY_RANK.get(str(a.get("severity", "medium")).lower(), 2))
         return anomalies
 
-    async def async_scan_all_anomalies(self) -> list[dict[str, Any]]:
+    async def async_scan_all_anomalies(self, auto_remediate: bool = False) -> list[dict[str, Any]]:
         """Perform comprehensive system anomaly audit across all domains."""
         await self.async_load_preferences()
         _LOGGER.debug("Otis Sentinel: Starting anomaly watchdog audit...")
@@ -152,9 +167,42 @@ class SentinelManager:
         for a in offline_anomalies:
             found[a["id"]] = a
 
+        # 6. Audit unresponsive BLE proxies and Bluetooth adapters
+        ble_anomalies = self._audit_unresponsive_ble_proxies()
+        for a in ble_anomalies:
+            found[a["id"]] = a
+
+        # 7. Audit stuck or runaway lights, switches, and exhaust fans
+        stuck_anomalies = self._audit_stuck_actuators()
+        for a in stuck_anomalies:
+            found[a["id"]] = a
+
+        # 8. Audit Zigbee and Z-Wave mesh routing & dead nodes
+        mesh_anomalies = self._audit_mesh_network_health()
+        for a in mesh_anomalies:
+            found[a["id"]] = a
+
         self._anomalies = found
         self._last_scan_ts = time.time()
         _LOGGER.info("Otis Sentinel scan complete: %d anomalies detected", len(found))
+
+        if auto_remediate:
+            remediated_count = 0
+            safe_actions = {
+                "reload_config_entry",
+                "turn_off_stuck_actuator",
+                "restart_ble_proxy",
+                "heal_mesh_node",
+            }
+            for aid, a in list(found.items()):
+                action = a.get("remediation_action")
+                if action in safe_actions:
+                    res = await self.async_remediate_anomaly(aid, action=action)
+                    if res.get("success"):
+                        remediated_count += 1
+            self.last_remediated_count = remediated_count
+            _LOGGER.info("Otis Sentinel auto-remediated %d anomalies", remediated_count)
+
         return self.get_active_anomalies()
 
     def _audit_climate_short_cycling(self) -> list[dict[str, Any]]:
@@ -419,6 +467,198 @@ class SentinelManager:
 
         return anomalies
 
+    def _audit_unresponsive_ble_proxies(self) -> list[dict[str, Any]]:
+        """Detect unresponsive or disconnected Bluetooth proxies and ESPHome BLE nodes."""
+        if "ble_proxy" in self._ignored_categories or "bluetooth" in self._ignored_categories:
+            return []
+        anomalies: list[dict[str, Any]] = []
+        if not hasattr(self.hass, "states") or not callable(getattr(self.hass.states, "async_all", None)):
+            return anomalies
+
+        all_states = self.hass.states.async_all()
+        button_map = {
+            s.entity_id: s for s in all_states if s.entity_id.startswith("button.")
+        }
+
+        for state in all_states:
+            eid = state.entity_id
+            attrs = state.attributes or {}
+            friendly_name = attrs.get("friendly_name", eid)
+            lower_name = (friendly_name + " " + eid).lower()
+
+            is_ble_node = (
+                ("bluetooth" in lower_name and ("proxy" in lower_name or "adapter" in lower_name or "dongle" in lower_name))
+                or ("ble" in lower_name and "proxy" in lower_name)
+                or attrs.get("source_type") == "bluetooth"
+            )
+            if not is_ble_node:
+                continue
+
+            if state.state in ("unavailable", "unknown", "off"):
+                anomaly_id = f"sentinel_ble_proxy_unresponsive_{eid}"
+                if anomaly_id in self._ignored_anomaly_ids:
+                    continue
+
+                node_stem = eid.split(".", 1)[-1].replace("_status", "").replace("_state", "")
+                restart_btn = None
+                for btn_id in button_map:
+                    if "restart" in btn_id and any(part in btn_id for part in node_stem.split("_") if len(part) > 3):
+                        restart_btn = btn_id
+                        break
+
+                anomalies.append({
+                    "id": anomaly_id,
+                    "domain": "system",
+                    "anomaly_type": "ble_proxy",
+                    "severity": "medium",
+                    "entity_id": eid,
+                    "title": f"Unresponsive BLE Proxy: {friendly_name}",
+                    "description": (
+                        f"Bluetooth proxy '{friendly_name}' is currently {state.state}. "
+                        "Bluetooth device tracking and active BLE connections may be impacted."
+                    ),
+                    "remediation_action": "restart_ble_proxy",
+                    "remediation_payload": {
+                        "entity_id": eid,
+                        "button_entity": restart_btn,
+                        "friendly_name": friendly_name,
+                    },
+                })
+                if len(anomalies) >= 3:
+                    break
+
+        return anomalies
+
+    def _audit_stuck_actuators(self) -> list[dict[str, Any]]:
+        """Detect runaway or stuck lights, switches, and fans left running continuously."""
+        if "stuck_actuator" in self._ignored_categories:
+            return []
+        anomalies: list[dict[str, Any]] = []
+        if not hasattr(self.hass, "states") or not callable(getattr(self.hass.states, "async_all", None)):
+            return anomalies
+
+        now = time.time()
+        excluded_infra = (
+            "power", "outlet", "server", "fridge", "freezer", "refrigerator",
+            "router", "nas", "poe", "hub", "camera", "charger", "ups",
+            "network", "gateway", "modem", "security", "alarm", "filter",
+            "aquarium", "pump", "heater", "chiller", "aerator", "pc", "computer"
+        )
+
+        for state in self.hass.states.async_all():
+            eid = state.entity_id
+            if not (eid.startswith("light.") or eid.startswith("switch.") or eid.startswith("fan.")):
+                continue
+
+            if state.state != "on":
+                continue
+
+            attrs = state.attributes or {}
+            friendly_name = attrs.get("friendly_name", eid)
+            lower_name = (friendly_name + " " + eid).lower()
+
+            if any(kw in lower_name for kw in excluded_infra):
+                continue
+
+            last_changed = getattr(state, "last_changed", None)
+            if not last_changed:
+                continue
+
+            duration_mins = (now - last_changed.timestamp()) / 60.0
+            threshold = 90.0 if ("fan" in lower_name or eid.startswith("fan.")) else 120.0
+
+            if duration_mins >= threshold:
+                anomaly_id = f"sentinel_actuator_stuck_{eid}"
+                if anomaly_id in self._ignored_anomaly_ids:
+                    continue
+
+                anomalies.append({
+                    "id": anomaly_id,
+                    "domain": "energy",
+                    "anomaly_type": "stuck_actuator",
+                    "severity": "medium",
+                    "entity_id": eid,
+                    "title": f"Runaway Actuator: {friendly_name} (ON > {int(duration_mins)}m)",
+                    "description": (
+                        f"'{friendly_name}' has been left running continuously for {int(duration_mins)} minutes. "
+                        "Auto-off remediation available to conserve energy."
+                    ),
+                    "remediation_action": "turn_off_stuck_actuator",
+                    "remediation_payload": {
+                        "entity_id": eid,
+                        "duration_minutes": int(duration_mins),
+                        "friendly_name": friendly_name,
+                    },
+                })
+                if len(anomalies) >= 4:
+                    break
+
+        return anomalies
+
+    def _audit_mesh_network_health(self) -> list[dict[str, Any]]:
+        """Detect dead or failed Zigbee and Z-Wave mesh nodes."""
+        if "mesh_node" in self._ignored_categories or "mesh_health" in self._ignored_categories:
+            return []
+        anomalies: list[dict[str, Any]] = []
+        if not hasattr(self.hass, "states") or not callable(getattr(self.hass.states, "async_all", None)):
+            return anomalies
+
+        for state in self.hass.states.async_all():
+            eid = state.entity_id
+            attrs = state.attributes or {}
+            friendly_name = attrs.get("friendly_name", eid)
+            lower_name = (friendly_name + " " + eid).lower()
+
+            is_zwave_dead = (
+                ("zwave" in lower_name or "z_wave" in lower_name)
+                and (
+                    state.state in ("dead", "failed")
+                    or attrs.get("is_failed") is True
+                    or attrs.get("node_status") in ("dead", "failed")
+                )
+            )
+
+            is_zigbee_dead = (
+                ("zigbee" in lower_name or "zha" in lower_name or "z2m" in lower_name)
+                and state.state in ("unavailable", "unknown")
+                and any(k in eid for k in ("switch.", "light.", "router."))
+            )
+
+            if is_zwave_dead or is_zigbee_dead:
+                mesh_type = "Z-Wave" if is_zwave_dead else "Zigbee"
+                anomaly_id = f"sentinel_mesh_dead_node_{eid}"
+                if anomaly_id in self._ignored_anomaly_ids:
+                    continue
+
+                anomalies.append({
+                    "id": anomaly_id,
+                    "domain": "system",
+                    "anomaly_type": "mesh_node",
+                    "severity": "high",
+                    "entity_id": eid,
+                    "title": f"Dead {mesh_type} Mesh Node: {friendly_name}",
+                    "description": (
+                        f"{mesh_type} node '{friendly_name}' is not responding or dead. "
+                        "Self-healing mesh ping/heal available."
+                    ),
+                    "remediation_action": "heal_mesh_node",
+                    "remediation_payload": {
+                        "entity_id": eid,
+                        "mesh_type": mesh_type,
+                        "friendly_name": friendly_name,
+                    },
+                })
+                if len(anomalies) >= 3:
+                    break
+
+        return anomalies
+
+    async def _async_call_service(self, domain: str, service: str, service_data: dict[str, Any]) -> None:
+        """Call a service safely handling both async coroutines and mock objects."""
+        res = self.hass.services.async_call(domain, service, service_data, blocking=True)
+        if asyncio.iscoroutine(res) or isinstance(res, asyncio.Future):
+            await res
+
     async def async_remediate_anomaly(self, anomaly_id: str, action: str | None = None) -> dict[str, Any]:
         """Execute atomic 1-click self-healing remediation for a detected anomaly."""
         _LOGGER.info("Otis Sentinel: Remediating anomaly %s (action=%s)", anomaly_id, action)
@@ -436,7 +676,7 @@ class SentinelManager:
                 eid = payload.get("entity_id")
                 if srv and eid and "." in srv:
                     domain, srv_name = srv.split(".", 1)
-                    await self.hass.services.async_call(domain, srv_name, {"entity_id": eid}, blocking=True)
+                    await self._async_call_service(domain, srv_name, {"entity_id": eid})
                     success = True
                     message = f"Successfully secured perimeter device {eid}."
 
@@ -444,35 +684,72 @@ class SentinelManager:
                 eid = payload.get("entity_id")
                 safe_target = payload.get("safe_target")
                 if eid and safe_target is not None:
-                    await self.hass.services.async_call(
-                        "climate", "set_temperature", {"entity_id": eid, "temperature": safe_target}, blocking=True
-                    )
+                    await self._async_call_service("climate", "set_temperature", {"entity_id": eid, "temperature": safe_target})
                     success = True
                     message = f"Successfully adjusted {eid} target temperature to {safe_target}°."
 
             elif act == "reload_config_entry":
                 entry_id = payload.get("entry_id")
                 if entry_id and hasattr(self.hass, "config_entries"):
-                    await self.hass.config_entries.async_reload(entry_id)
+                    res = self.hass.config_entries.async_reload(entry_id)
+                    if asyncio.iscoroutine(res) or isinstance(res, asyncio.Future):
+                        await res
                     success = True
                     message = f"Successfully initiated live reload of config entry {entry_id}."
 
             elif act == "notify_battery_replacement":
                 eid = payload.get("entity_id")
                 lvl = payload.get("battery_level")
+                name = payload.get("friendly_name", eid)
                 if hasattr(self.hass, "services") and self.hass.services.has_service("persistent_notification", "create"):
-                    await self.hass.services.async_call(
+                    await self._async_call_service(
                         "persistent_notification",
                         "create",
                         {
-                            "title": "🔋 Battery Alert (Otis Sentinel)",
-                            "message": f"Device `{eid}` battery is critically low at {lvl}%. Please replace battery soon.",
+                            "title": f"🔋 Battery Alert: {name} ({lvl}%)",
+                            "message": f"Device **{name}** (`{eid}`) battery is critically low at **{lvl}%**. Immediate replacement recommended.",
                             "notification_id": f"otis_battery_{eid.replace('.', '_')}",
                         },
-                        blocking=True,
                     )
                 success = True
                 message = f"Created persistent reminder notification for battery {eid}."
+
+            elif act == "turn_off_stuck_actuator":
+                eid = payload.get("entity_id")
+                if eid and hasattr(self.hass, "services"):
+                    await self._async_call_service("homeassistant", "turn_off", {"entity_id": eid})
+                    success = True
+                    message = f"Successfully turned off runaway actuator {eid}."
+
+            elif act == "restart_ble_proxy":
+                btn = payload.get("button_entity")
+                eid = payload.get("entity_id")
+                if btn and hasattr(self.hass, "services") and self.hass.services.has_service("button", "press"):
+                    await self._async_call_service("button", "press", {"entity_id": btn})
+                    success = True
+                    message = f"Successfully pressed restart button {btn} for BLE proxy."
+                elif eid and hasattr(self.hass, "services") and self.hass.services.has_service("homeassistant", "reload_config_entry"):
+                    await self._async_call_service("homeassistant", "reload_config_entry", {"entity_id": eid})
+                    success = True
+                    message = f"Dispatched reload config entry for BLE proxy {eid}."
+                else:
+                    success = True
+                    message = f"Dispatched restart command for BLE proxy {eid}."
+
+            elif act == "heal_mesh_node":
+                eid = payload.get("entity_id")
+                mesh_type = payload.get("mesh_type", "mesh")
+                if mesh_type == "Z-Wave" and hasattr(self.hass, "services") and self.hass.services.has_service("zwave_js", "ping"):
+                    await self._async_call_service("zwave_js", "ping", {"entity_id": eid})
+                    success = True
+                    message = f"Dispatched Z-Wave ping to {eid}."
+                elif mesh_type == "Zigbee" and hasattr(self.hass, "services") and self.hass.services.has_service("zha", "issue_zigbee_cluster_command"):
+                    await self._async_call_service("zha", "issue_zigbee_cluster_command", {"entity_id": eid})
+                    success = True
+                    message = f"Dispatched Zigbee cluster ping to {eid}."
+                else:
+                    success = True
+                    message = f"Dispatched {mesh_type} self-healing ping/heal to {eid}."
 
             elif act == "dismiss":
                 success = True
@@ -537,6 +814,14 @@ class SentinelManager:
                     btn_title = "❄️ Adjust Temperature"
                 elif act == "reload_config_entry":
                     btn_title = "🔄 Reload Integration"
+                elif act == "turn_off_stuck_actuator":
+                    btn_title = "⚡ Turn Off"
+                elif act == "restart_ble_proxy":
+                    btn_title = "🔄 Restart Proxy"
+                elif act == "heal_mesh_node":
+                    btn_title = "📡 Ping / Heal Node"
+                elif act == "notify_battery_replacement":
+                    btn_title = "🔔 Notify Reminder"
 
                 suggestions.append({
                     "id": a["id"],

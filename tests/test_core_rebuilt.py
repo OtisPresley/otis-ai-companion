@@ -4794,7 +4794,6 @@ action:
 
     def test_conversation_agent_regenerate_dashboards_command(self):
         """Verify Otis conversational assistant regenerates dashboards on user trigger phrase."""
-        from homeassistant.components.conversation import ConversationInput
         from custom_components.otis_ai import OtisAIConversationAgent
         from custom_components.otis_ai.dashboard_manager import DashboardManager
 
@@ -4964,6 +4963,110 @@ action:
         res_conv_unpin = asyncio.run(agent.async_process(u_unpin))
         speech_unpin = res_conv_unpin.response.speech.get("plain", {}).get("speech", "")
         self.assertIn("Floor Plan Pin Removed", speech_unpin)
+
+    def test_advanced_sentinel_watchdog_actions_and_auto_heal(self):
+        """Verify advanced Sentinel watchdog: BLE proxy restarts, stuck actuators, mesh node heals, and auto-remediation."""
+        from datetime import datetime, timezone, timedelta
+        from custom_components.otis_ai.sentinel_manager import SentinelManager
+        from custom_components.otis_ai.__init__ import OtisAIConversationAgent
+
+        now = datetime.now(timezone.utc)
+
+        # 1. BLE Proxy entity and matching restart button
+        s_ble = MagicMock()
+        s_ble.entity_id = "sensor.living_room_bluetooth_proxy_status"
+        s_ble.state = "unavailable"
+        s_ble.attributes = {"friendly_name": "Living Room Bluetooth Proxy"}
+
+        s_btn = MagicMock()
+        s_btn.entity_id = "button.living_room_bluetooth_proxy_restart"
+        s_btn.state = "unknown"
+        s_btn.attributes = {"friendly_name": "Living Room Bluetooth Proxy Restart"}
+
+        # 2. Runaway stuck light (> 120m) vs excluded server switch
+        s_stuck = MagicMock()
+        s_stuck.entity_id = "light.walk_in_closet"
+        s_stuck.state = "on"
+        s_stuck.last_changed = now - timedelta(minutes=145)
+        s_stuck.attributes = {"friendly_name": "Walk-in Closet Light"}
+
+        s_server = MagicMock()
+        s_server.entity_id = "switch.nas_server_power"
+        s_server.state = "on"
+        s_server.last_changed = now - timedelta(hours=8)
+        s_server.attributes = {"friendly_name": "NAS Server Power"}
+
+        # 3. Dead Z-Wave mesh node
+        s_zwave = MagicMock()
+        s_zwave.entity_id = "switch.patio_zwave_switch"
+        s_zwave.state = "dead"
+        s_zwave.attributes = {"friendly_name": "Patio ZWave Switch", "node_status": "dead"}
+
+        self.hass.states.async_all.return_value = [s_ble, s_btn, s_stuck, s_server, s_zwave]
+        self.hass.config_entries.async_entries.return_value = []
+        self.hass.services.has_service.return_value = True
+
+        sm = SentinelManager(self.hass)
+        with unittest.mock.patch.object(sm._store, "async_load", return_value=None), \
+             unittest.mock.patch.object(sm._store, "async_save", return_value=None):
+            anomalies = asyncio.run(sm.async_scan_all_anomalies(auto_remediate=False))
+
+        # Check that anomalies were detected
+        self.assertTrue(any(a["anomaly_type"] == "ble_proxy" for a in anomalies))
+        self.assertTrue(any(a["anomaly_type"] == "stuck_actuator" for a in anomalies))
+        self.assertTrue(any(a["anomaly_type"] == "mesh_node" for a in anomalies))
+
+        # Verify excluded server switch is not marked as stuck
+        self.assertFalse(any(a.get("entity_id") == "switch.nas_server_power" for a in anomalies))
+
+        # Test Individual Remediations
+        ble_anom = next(a for a in anomalies if a["anomaly_type"] == "ble_proxy")
+        stuck_anom = next(a for a in anomalies if a["anomaly_type"] == "stuck_actuator")
+        mesh_anom = next(a for a in anomalies if a["anomaly_type"] == "mesh_node")
+
+        res_ble = asyncio.run(sm.async_remediate_anomaly(ble_anom["id"]))
+        self.assertTrue(res_ble["success"])
+        self.hass.services.async_call.assert_any_call("button", "press", {"entity_id": "button.living_room_bluetooth_proxy_restart"}, blocking=True)
+
+        res_stuck = asyncio.run(sm.async_remediate_anomaly(stuck_anom["id"]))
+        self.assertTrue(res_stuck["success"])
+        self.hass.services.async_call.assert_any_call("homeassistant", "turn_off", {"entity_id": "light.walk_in_closet"}, blocking=True)
+
+        res_mesh = asyncio.run(sm.async_remediate_anomaly(mesh_anom["id"]))
+        self.assertTrue(res_mesh["success"])
+        self.hass.services.async_call.assert_any_call("zwave_js", "ping", {"entity_id": "switch.patio_zwave_switch"}, blocking=True)
+
+        # Test auto_remediate=True in scan
+        sm2 = SentinelManager(self.hass)
+        with unittest.mock.patch.object(sm2._store, "async_load", return_value=None), \
+             unittest.mock.patch.object(sm2._store, "async_save", return_value=None):
+            active_after_auto = asyncio.run(sm2.async_scan_all_anomalies(auto_remediate=True))
+            self.assertGreater(sm2.last_remediated_count, 0)
+            self.assertEqual(len(active_after_auto), 0)
+
+        # Test Conversational Assist Intents
+        entry = MagicMock()
+        engine = MagicMock()
+        manager = MagicMock()
+        agent = OtisAIConversationAgent(self.hass, entry, engine, manager, sentinel_manager=sm)
+
+        # Remediate intent
+        u_rem = MagicMock()
+        u_rem.text = "Remediate anomalies and heal network"
+        u_rem.conversation_id = "test_conv_sentinel"
+        u_rem.create_response = MagicMock(side_effect=lambda speech, **kwargs: MagicMock(speech={"plain": {"speech": speech}}))
+        res_conv_rem = asyncio.run(agent.async_process(u_rem))
+        speech_rem = res_conv_rem.response.speech.get("plain", {}).get("speech", "")
+        self.assertIn("Otis Sentinel", speech_rem)
+
+        # Scan intent
+        u_scan = MagicMock()
+        u_scan.text = "Audit system anomalies"
+        u_scan.conversation_id = "test_conv_sentinel"
+        u_scan.create_response = MagicMock(side_effect=lambda speech, **kwargs: MagicMock(speech={"plain": {"speech": speech}}))
+        res_conv_scan = asyncio.run(agent.async_process(u_scan))
+        speech_scan = res_conv_scan.response.speech.get("plain", {}).get("speech", "")
+        self.assertIn("Otis Sentinel", speech_scan)
 
 
 if __name__ == "__main__":

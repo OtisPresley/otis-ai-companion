@@ -277,7 +277,14 @@ delete_theme:
 
 run_sentinel_watchdog:
   name: Run Sentinel Watchdog Audit
-  description: Run comprehensive Otis Sentinel telemetry scan across climate short-cycling, battery drain, stuck security perimeter access, and failed integration nodes.
+  description: Run comprehensive Otis Sentinel telemetry scan across climate short-cycling, battery drain, stuck security perimeter access, unresponsive BLE proxies, stuck switches, and mesh routing health.
+  fields:
+    auto_remediate:
+      name: Auto-Remediate
+      description: Automatically execute self-healing remediations for safe detected anomalies (e.g. Turn off runaway lights/fans, reload failed integrations, restart BLE proxies, ping dead mesh nodes).
+      default: false
+      selector:
+        boolean:
 
 remediate_anomaly:
   name: Remediate Sentinel Anomaly
@@ -291,7 +298,7 @@ remediate_anomaly:
         text:
     action:
       name: Action Override
-      description: Optional remediation action override (e.g., 'secure_perimeter_entity', 'adjust_climate_target', 'reload_config_entry', 'dismiss').
+      description: Optional remediation action override (e.g., 'secure_perimeter_entity', 'adjust_climate_target', 'reload_config_entry', 'turn_off_stuck_actuator', 'restart_ble_proxy', 'heal_mesh_node', 'notify_battery_replacement', 'dismiss').
       required: false
       selector:
         text:
