@@ -6,7 +6,9 @@ Compatible with Ollama, vLLM, LocalAI, and OpenAI-compatible inference servers.
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -19,6 +21,348 @@ _LOGGER = logging.getLogger(__name__)
 DEFAULT_LOCAL_LLM_URL = "http://10.0.12.228:11434"
 DEFAULT_LOCAL_LLM_MODEL = "qwen2.5:3b"
 DEFAULT_TIMEOUT_SECONDS = 60.0
+
+DEFAULT_OTIS_TOOLS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "pin_floorplan_entity",
+            "description": "Pin or update an entity badge on the 2D or 3D floorplan in a specified room or at explicit coordinates.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "entity_id": {
+                        "type": "string",
+                        "description": "Home Assistant entity ID to pin (e.g., 'light.living_room_ceiling').",
+                    },
+                    "room": {
+                        "type": "string",
+                        "description": "Target room or area name (e.g., 'living_room', 'gym', 'kitchen').",
+                    },
+                    "view_mode": {
+                        "type": "string",
+                        "enum": ["2d", "3d"],
+                        "description": "Target floorplan view layer: '2d' (orthogonal blueprint) or '3d' (isometric).",
+                    },
+                    "x": {
+                        "type": "number",
+                        "description": "Optional explicit X coordinate.",
+                    },
+                    "y": {
+                        "type": "number",
+                        "description": "Optional explicit Y coordinate.",
+                    },
+                },
+                "required": ["entity_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "unpin_floorplan_entity",
+            "description": "Remove an entity badge from the interactive floorplan.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "entity_id": {
+                        "type": "string",
+                        "description": "Home Assistant entity ID to unpin.",
+                    },
+                },
+                "required": ["entity_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_sentinel_watchdog",
+            "description": "Audit Home Assistant for stuck actuators, offline BLE proxies, mesh anomalies, and failing batteries.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "auto_remediate": {
+                        "type": "boolean",
+                        "description": "Whether to automatically remediate detected anomalies (e.g. shut off stuck switches, heal mesh).",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "turn_off_stuck_actuator",
+            "description": "Turn off an actuator or device that has been running abnormally or left unattended.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "entity_id": {
+                        "type": "string",
+                        "description": "Entity ID of the stuck device.",
+                    },
+                },
+                "required": ["entity_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "restart_ble_proxy",
+            "description": "Restart a stalled or disconnected Bluetooth / ESPHome proxy.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "device_id": {
+                        "type": "string",
+                        "description": "Target BLE proxy device ID.",
+                    },
+                    "entity_id": {
+                        "type": "string",
+                        "description": "Optional proxy entity ID.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "heal_mesh_node",
+            "description": "Heal, re-interview, or ping a lagging or offline Z-Wave or Zigbee mesh node.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "entity_id": {
+                        "type": "string",
+                        "description": "Entity ID of the mesh node to heal.",
+                    },
+                    "node_id": {
+                        "type": "string",
+                        "description": "Optional physical hardware node ID.",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "regenerate_dashboards",
+            "description": "Regenerate Otis AI Lovelace dashboards (Command Center, Studio views, Room subviews) with current layout settings.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "layout_type": {
+                        "type": "string",
+                        "enum": ["sections", "grid"],
+                        "description": "Dashboard layout type: 'sections' (Modern Sections) or 'grid' (Classic Grid).",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_camera",
+            "description": "Analyze a camera image or security snapshot using computer vision intelligence.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "camera_entity_id": {
+                        "type": "string",
+                        "description": "Target camera entity ID (e.g. 'camera.front_doorbell').",
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Question or analysis query (e.g., 'Is there a package on the porch?').",
+                    },
+                },
+                "required": ["camera_entity_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "execute_macro",
+            "description": "Execute a predefined Otis AI smart home macro or preset routine.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "macro_id": {
+                        "type": "string",
+                        "description": "Macro ID to execute.",
+                    },
+                },
+                "required": ["macro_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "call_ha_service",
+            "description": "Execute any Home Assistant service (e.g., light.turn_on, switch.turn_off, climate.set_temperature).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "domain": {
+                        "type": "string",
+                        "description": "Home Assistant service domain (e.g., 'light', 'climate', 'media_player').",
+                    },
+                    "service": {
+                        "type": "string",
+                        "description": "Service name to call (e.g., 'turn_on', 'set_temperature').",
+                    },
+                    "service_data": {
+                        "type": "object",
+                        "description": "Payload/parameters dictionary for the service call.",
+                    },
+                },
+                "required": ["domain", "service"],
+            },
+        },
+    },
+]
+
+
+def extract_tool_calls(
+    text: str = "", raw_tool_calls: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """Extract and normalize tool calls from native API responses or text fallbacks."""
+    calls: list[dict[str, Any]] = []
+
+    # 1. Native API tool calls (Ollama / OpenAI)
+    if raw_tool_calls:
+        for item in raw_tool_calls:
+            if not isinstance(item, dict):
+                continue
+            if "function" in item and isinstance(item["function"], dict):
+                fn = item["function"]
+                name = fn.get("name", "")
+                args = fn.get("arguments", {})
+            else:
+                name = item.get("name") or item.get("tool") or item.get("action", "")
+                args = item.get("parameters") or item.get("arguments") or item.get("args", {})
+
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {}
+            if name:
+                calls.append({"name": str(name).strip(), "parameters": args if isinstance(args, dict) else {}})
+
+    if calls:
+        return calls
+
+    if not text or not isinstance(text, str):
+        return []
+
+    # 2. XML tag format: <tool_call>...</tool_call>
+    xml_matches = re.findall(r"<tool_call>(.*?)</tool_call>", text, flags=re.DOTALL | re.IGNORECASE)
+    for match in xml_matches:
+        try:
+            parsed = json.loads(match.strip())
+            if isinstance(parsed, dict):
+                name = parsed.get("name") or parsed.get("tool") or parsed.get("action")
+                params = parsed.get("parameters") or parsed.get("arguments") or parsed.get("args") or {}
+                if isinstance(params, str):
+                    try:
+                        params = json.loads(params)
+                    except Exception:
+                        params = {}
+                if name:
+                    calls.append({"name": str(name).strip(), "parameters": params if isinstance(params, dict) else {}})
+        except Exception:
+            pass
+
+    if calls:
+        return calls
+
+    # 3. Code fence JSON format: ```json ... ``` or bare JSON containing tool indicators
+    code_blocks = re.findall(r"```(?:json)?\s*([\{\[].*?[\}\]])\s*```", text, flags=re.DOTALL)
+    candidate_json = code_blocks or re.findall(
+        r"(\{(?:[^{}]|(?:\{[^{}]*\}))*\"(?:tool|action|function|calls|plan)\"[^{}]*\})",
+        text,
+        flags=re.DOTALL,
+    )
+
+    for block in candidate_json:
+        try:
+            parsed = json.loads(block.strip())
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, dict):
+                        name = item.get("name") or item.get("tool") or item.get("action") or item.get("function")
+                        params = item.get("parameters") or item.get("arguments") or item.get("args") or {}
+                        if isinstance(params, str):
+                            try:
+                                params = json.loads(params)
+                            except Exception:
+                                params = {}
+                        if name:
+                            calls.append({"name": str(name).strip(), "parameters": params if isinstance(params, dict) else {}})
+            elif isinstance(parsed, dict):
+                if "plan" in parsed and isinstance(parsed["plan"], list):
+                    for item in parsed["plan"]:
+                        if isinstance(item, dict):
+                            name = item.get("name") or item.get("tool") or item.get("action")
+                            params = item.get("parameters") or item.get("arguments") or item.get("args") or {}
+                            if name:
+                                calls.append({"name": str(name).strip(), "parameters": params if isinstance(params, dict) else {}})
+                elif "calls" in parsed and isinstance(parsed["calls"], list):
+                    for item in parsed["calls"]:
+                        if isinstance(item, dict):
+                            name = item.get("name") or item.get("tool")
+                            params = item.get("parameters") or item.get("arguments") or {}
+                            if name:
+                                calls.append({"name": str(name).strip(), "parameters": params if isinstance(params, dict) else {}})
+                else:
+                    name = parsed.get("name") or parsed.get("tool") or parsed.get("action") or parsed.get("function")
+                    params = parsed.get("parameters") or parsed.get("arguments") or parsed.get("args") or {}
+                    if isinstance(params, str):
+                        try:
+                            params = json.loads(params)
+                        except Exception:
+                            params = {}
+                    if name:
+                        calls.append({"name": str(name).strip(), "parameters": params if isinstance(params, dict) else {}})
+        except Exception:
+            pass
+
+    if calls:
+        return calls
+
+    # 4. Inline syntax: [TOOL_CALL: name(args)]
+    inline_matches = re.findall(r"\[TOOL_CALL:\s*([a-zA-Z0-9_\.]+)\s*\((.*?)\)\]", text)
+    for in_name, in_args in inline_matches:
+        try:
+            parsed_args = json.loads(in_args.strip()) if in_args.strip().startswith("{") else {}
+        except Exception:
+            parsed_args = {}
+        calls.append({"name": in_name.strip(), "parameters": parsed_args})
+
+    return calls
+
+
+def validate_tool_call(call: dict[str, Any], allowed_tools: list[str] | None = None) -> tuple[bool, str | None]:
+    """Validate a parsed tool call structure and its parameters."""
+    if not isinstance(call, dict):
+        return False, "Tool call must be a dictionary"
+    name = call.get("name")
+    if not name or not isinstance(name, str):
+        return False, "Missing or invalid tool name"
+    if allowed_tools is not None and name not in allowed_tools:
+        return False, f"Tool '{name}' is not in allowed tools list"
+    params = call.get("parameters")
+    if params is not None and not isinstance(params, dict):
+        return False, "Tool parameters must be a dictionary"
+    return True, None
 
 
 class LocalLLMManager:
@@ -204,30 +548,37 @@ class LocalLLMManager:
 
     async def async_generate(
         self,
-        prompt: str,
+        prompt: str = "",
         system_prompt: str | None = None,
+        messages: list[dict[str, Any]] | None = None,
         model: str | None = None,
         temperature: float = 0.3,
         max_tokens: int = 1024,
         timeout: float | None = None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Send a prompt to the local LLM and return structured output and metrics."""
+        """Send a prompt or message list to the local LLM and return structured output, tool calls, and metrics."""
         chosen_model = model or self.model
         req_timeout = timeout or self.timeout
         session = self._get_session()
         headers = self._get_headers()
         t0 = time.perf_counter()
 
-        # Try Ollama /api/chat or /api/generate
-        ollama_endpoint = f"{self.url}/api/chat"
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        messages.append({"role": "user", "content": prompt})
+        # Build message history
+        if messages is not None:
+            msg_list = list(messages)
+        else:
+            msg_list = []
+            if system_prompt:
+                msg_list.append({"role": "system", "content": system_prompt})
+            if prompt:
+                msg_list.append({"role": "user", "content": prompt})
 
-        payload = {
+        # Try Ollama /api/chat
+        ollama_endpoint = f"{self.url}/api/chat"
+        payload: dict[str, Any] = {
             "model": chosen_model,
-            "messages": messages,
+            "messages": msg_list,
             "stream": False,
             "keep_alive": "15m",
             "options": {
@@ -237,6 +588,8 @@ class LocalLLMManager:
                 "stop": ["<|im_end|>", "<|endoftext|>", "Observation:", "User:"],
             },
         }
+        if tools:
+            payload["tools"] = tools
 
         try:
             async with session.post(
@@ -248,7 +601,11 @@ class LocalLLMManager:
                 if resp.status == 200:
                     data = await resp.json()
                     total_time = max(0.001, time.perf_counter() - t0)
-                    msg = data.get("message", {}).get("content", "")
+                    msg_obj = data.get("message", {})
+                    msg = msg_obj.get("content", "") or ""
+                    raw_tools = msg_obj.get("tool_calls", [])
+                    extracted_tools = extract_tool_calls(msg, raw_tools)
+
                     eval_count = data.get("eval_count", 0)
                     prompt_eval_count = data.get("prompt_eval_count", 0)
                     eval_duration = data.get("eval_duration", 0) / 1e9  # nanoseconds to seconds
@@ -259,6 +616,8 @@ class LocalLLMManager:
                     return {
                         "success": True,
                         "response": msg,
+                        "tool_calls": extracted_tools,
+                        "raw_tool_calls": raw_tools,
                         "model": chosen_model,
                         "tokens_generated": eval_count,
                         "tokens_evaluated": prompt_eval_count,
@@ -272,13 +631,16 @@ class LocalLLMManager:
         # Fallback to OpenAI-compatible /v1/chat/completions
         try:
             v1_endpoint = f"{self.url}/v1/chat/completions"
-            v1_payload = {
+            v1_payload: dict[str, Any] = {
                 "model": chosen_model,
-                "messages": messages,
+                "messages": msg_list,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
                 "stream": False,
             }
+            if tools:
+                v1_payload["tools"] = tools
+
             async with session.post(
                 v1_endpoint,
                 json=v1_payload,
@@ -289,7 +651,11 @@ class LocalLLMManager:
                     data = await resp.json()
                     total_time = max(0.001, time.perf_counter() - t0)
                     choices = data.get("choices", [])
-                    content = choices[0].get("message", {}).get("content", "") if choices else ""
+                    choice_msg = choices[0].get("message", {}) if choices else {}
+                    content = choice_msg.get("content", "") or ""
+                    raw_tools = choice_msg.get("tool_calls", [])
+                    extracted_tools = extract_tool_calls(content, raw_tools)
+
                     usage = data.get("usage", {})
                     completion_tokens = usage.get("completion_tokens", len(content.split()) * 1.3)
                     tokens_per_sec = round(completion_tokens / total_time, 1)
@@ -297,6 +663,8 @@ class LocalLLMManager:
                     return {
                         "success": True,
                         "response": content,
+                        "tool_calls": extracted_tools,
+                        "raw_tool_calls": raw_tools,
                         "model": chosen_model,
                         "tokens_generated": int(completion_tokens),
                         "tokens_evaluated": usage.get("prompt_tokens", 0),
@@ -318,6 +686,169 @@ class LocalLLMManager:
                 "model": chosen_model,
                 "total_duration_s": round(time.perf_counter() - t0, 2),
             }
+
+    async def async_execute_tool_plan(
+        self, tool_calls: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Execute a structured autonomous tool plan against Home Assistant services."""
+        if not self.hass:
+            return [{"success": False, "error": "Home Assistant instance not available"}]
+
+        execution_results: list[dict[str, Any]] = []
+        for call in tool_calls:
+            valid, err_msg = validate_tool_call(call)
+            if not valid:
+                execution_results.append({
+                    "tool": call.get("name", "unknown") if isinstance(call, dict) else "unknown",
+                    "success": False,
+                    "error": err_msg,
+                })
+                continue
+
+            name = str(call["name"]).strip()
+            params = dict(call.get("parameters") or {})
+            t_start = time.perf_counter()
+
+            try:
+                if name == "call_ha_service":
+                    domain = params.pop("domain", "")
+                    service = params.pop("service", "")
+                    sdata = params.pop("service_data", {}) or params
+                    await self.hass.services.async_call(domain, service, sdata, blocking=True)
+                    res_data = {"service": f"{domain}.{service}", "data": sdata}
+                elif "." in name:
+                    domain, service = name.split(".", 1)
+                    await self.hass.services.async_call(domain, service, params, blocking=True)
+                    res_data = {"service": name, "data": params}
+                else:
+                    await self.hass.services.async_call("otis_ai", name, params, blocking=True)
+                    res_data = {"service": f"otis_ai.{name}", "data": params}
+
+                elapsed = round(time.perf_counter() - t_start, 3)
+                execution_results.append({
+                    "tool": name,
+                    "parameters": params,
+                    "success": True,
+                    "result": res_data,
+                    "duration_s": elapsed,
+                })
+            except Exception as err:
+                elapsed = round(time.perf_counter() - t_start, 3)
+                _LOGGER.warning("Tool execution error for '%s': %s", name, err)
+                execution_results.append({
+                    "tool": name,
+                    "parameters": params,
+                    "success": False,
+                    "error": str(err),
+                    "duration_s": elapsed,
+                })
+
+        return execution_results
+
+    async def async_chat_with_tools(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        model: str | None = None,
+        temperature: float = 0.2,
+        max_tokens: int = 1024,
+        max_iterations: int = 3,
+        auto_execute: bool = True,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Autonomous multi-turn tool-calling loop using local LLMs."""
+        chosen_tools = tools if tools is not None else DEFAULT_OTIS_TOOLS
+        default_sys = (
+            "You are Otis AI, the ultimate smart home butler and co-pilot. "
+            "You have direct access to smart home tools to inspect cameras, heal network nodes, "
+            "pin or unpin devices on the floorplan, run sentinel audits, and control devices. "
+            "When a user request requires action, call the appropriate tool. "
+            "When answering, be concise, direct, and actionable."
+        )
+        sys_prompt = system_prompt or default_sys
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": prompt},
+        ]
+
+        all_executed_tools: list[dict[str, Any]] = []
+        total_tokens = 0
+        t0 = time.perf_counter()
+        gen_res: dict[str, Any] = {}
+
+        for iteration in range(1, max_iterations + 1):
+            gen_res = await self.async_generate(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                tools=chosen_tools,
+            )
+            if not gen_res.get("success"):
+                return {
+                    "success": False,
+                    "error": gen_res.get("error", "Local LLM generation failed"),
+                    "iterations": iteration,
+                    "executed_tools": all_executed_tools,
+                    "total_duration_s": round(time.perf_counter() - t0, 2),
+                }
+
+            total_tokens += gen_res.get("tokens_generated", 0)
+            tool_calls = gen_res.get("tool_calls", [])
+
+            if not tool_calls:
+                # No tool calls needed; assistant provided final answer
+                return {
+                    "success": True,
+                    "response": gen_res.get("response", ""),
+                    "iterations": iteration,
+                    "executed_tools": all_executed_tools,
+                    "model": gen_res.get("model", model or self.model),
+                    "provider": gen_res.get("provider"),
+                    "total_tokens": total_tokens,
+                    "total_duration_s": round(time.perf_counter() - t0, 2),
+                }
+
+            # Tool calls detected
+            if not auto_execute:
+                return {
+                    "success": True,
+                    "response": gen_res.get("response", ""),
+                    "tool_calls": tool_calls,
+                    "iterations": iteration,
+                    "executed_tools": [],
+                    "auto_execute": False,
+                    "model": gen_res.get("model", model or self.model),
+                    "total_duration_s": round(time.perf_counter() - t0, 2),
+                }
+
+            # Execute tool plan
+            exec_results = await self.async_execute_tool_plan(tool_calls)
+            all_executed_tools.extend(exec_results)
+
+            # Append assistant turn and tool execution result to message history for subsequent reasoning
+            messages.append({
+                "role": "assistant",
+                "content": gen_res.get("response", "") or f"Invoked {len(tool_calls)} tool(s).",
+            })
+            messages.append({
+                "role": "user",
+                "content": f"Observation / Tool Output: {json.dumps(exec_results)}",
+            })
+
+        # Completed max iterations
+        return {
+            "success": True,
+            "response": gen_res.get("response", "") or f"Executed {len(all_executed_tools)} tool action(s).",
+            "iterations": max_iterations,
+            "executed_tools": all_executed_tools,
+            "model": gen_res.get("model", model or self.model),
+            "provider": gen_res.get("provider"),
+            "total_tokens": total_tokens,
+            "total_duration_s": round(time.perf_counter() - t0, 2),
+        }
 
     async def async_benchmark(self, prompt: str | None = None, model: str | None = None) -> dict[str, Any]:
         """Run a standardized smart home reasoning benchmark against the local LLM."""

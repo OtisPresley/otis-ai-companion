@@ -7,6 +7,31 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.21] - 2026-11-02
+
+### Added
+- **Advanced Local LLM Structured Tool Calling & Autonomous Planning (Roadmap Phase 3)**:
+  - **Standard JSON Schema Tool Suite**: Defined native JSON schema definitions in `local_llm.py` for core Otis AI services:
+    - `pin_floorplan_entity`: Pin entity badges to 2D blueprint or 3D isometric layers.
+    - `unpin_floorplan_entity`: Remove badges from the floorplan.
+    - `run_sentinel_watchdog`: Run proactive anomaly auditing and self-healing.
+    - `turn_off_stuck_actuator`: Shut down stuck or runaway devices.
+    - `restart_ble_proxy`: Self-heal stalled Bluetooth / ESPHome proxies.
+    - `heal_mesh_node`: Ping and refresh unresponsive Zigbee/Z-Wave nodes.
+    - `regenerate_dashboards`: Trigger dynamic Modern Sections or Classic Grid updates.
+    - `analyze_camera`: Perform vision inspection on camera streams.
+    - `execute_macro`: Execute predefined smart home routines.
+    - `call_ha_service`: Generic dispatch for any Home Assistant service call.
+  - **Ollama v0.3+ & OpenAI Function Calling Support**: Native integration with Ollama `/api/chat` `tools` parameter and OpenAI-compatible `/v1/chat/completions` `tools` spec.
+  - **Resilient Multi-Format Fallback Extraction**: Robust parsing for smaller local models (e.g. `qwen2.5:1.5b`, `llama3.2:1b`, `phi-3`) supporting:
+    - `<tool_call>{"name": ..., "arguments": ...}</tool_call>` XML tags.
+    - Markdown ````json { "tool": ..., "parameters": ... } ```` blocks.
+    - Inline invocation syntax `[TOOL_CALL: name(args)]`.
+  - **Multi-Step Offline Autonomous Planning Engine (`async_chat_with_tools`)**: Multi-turn reasoning loop executing planned tools against Home Assistant services and re-prompting the LLM with execution observations.
+  - **New Registered Service `otis_ai.execute_tool_plan`**: Execute explicit tool plans or natural language autonomous tool calling requests directly from automations, Lovelace, or scripts.
+  - **Assist Co-Pilot Failover Integration**: Transparently invokes `async_chat_with_tools` during offline/local LLM failover, empowering local models to take physical actions autonomously.
+- Bumped Lovelace Companion Card to `v0.1.21`.
+
 ## [0.1.20] - 2026-11-02
 
 ### Added

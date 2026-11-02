@@ -97,6 +97,7 @@ from .const import (
     SERVICE_TEST_LOCAL_LLM,
     SERVICE_BENCHMARK_LOCAL_LLM,
     SERVICE_PULL_LOCAL_LLM_MODEL,
+    SERVICE_EXECUTE_TOOL_PLAN,
 )
 from .local_llm import LocalLLMManager
 from .audio_manager import AudioHandoffManager
@@ -1864,6 +1865,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         return pull_res
 
+    async def handle_execute_tool_plan(call) -> ServiceResponse:
+        """Handle service call to run structured tool execution via Local LLM."""
+        _LOGGER.debug("Service 'execute_tool_plan' triggered with: %s", call.data)
+        entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        llm_mgr = entry_store.get("local_llm_manager", local_llm_manager)
+        prompt = call.data.get("prompt")
+        plan = call.data.get("plan")
+        auto_execute = call.data.get("auto_execute", True)
+        model = call.data.get("model")
+
+        if plan and isinstance(plan, list):
+            results = await llm_mgr.async_execute_tool_plan(plan)
+            return {"success": True, "executed_tools": results, "mode": "direct_plan"}
+        elif prompt:
+            return await llm_mgr.async_chat_with_tools(
+                prompt=prompt,
+                model=model,
+                auto_execute=auto_execute,
+            )
+        return {"success": False, "error": "Neither 'plan' list nor 'prompt' string was provided."}
+
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
         DOMAIN,
@@ -2193,6 +2215,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         SERVICE_PULL_LOCAL_LLM_MODEL,
         handle_pull_local_llm,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_EXECUTE_TOOL_PLAN,
+        handle_execute_tool_plan,
         supports_response=SupportsResponse.OPTIONAL,
     )
 
@@ -3738,31 +3766,38 @@ User: {user_input.text}
                             "Local Edge AI Failover",
                             f"Reasoning locally via {health.get('provider')} ({self.local_llm_manager.model})",
                         )
-                        local_res = await self.local_llm_manager.async_generate(
+                        local_res = await self.local_llm_manager.async_chat_with_tools(
                             prompt=prompt,
                             system_prompt=(
                                 "You are Otis AI, the ultimate proactive smart home companion and butler. "
                                 "Analyze the home's active state and respond concisely and actionably. "
+                                "You have access to smart home tools to pin devices on the floorplan, run sentinel audits, "
+                                "heal network nodes, and control entities. When asked to take action, call the appropriate tool. "
                                 "Provide automations strictly in Home Assistant GUI YAML format (clean top-level dict starting with alias:, description:, triggers:, conditions:, actions:, mode: without - id: or leading dashes). "
                                 "Never tell the user to edit automations.yaml themselves; always offer to deploy and enable it for them."
                             ),
                             timeout=reasoning_timeout,
                         )
-                        if local_res.get("success") and local_res.get("response"):
+                        if local_res.get("success") and (local_res.get("response") or local_res.get("executed_tools")):
+                            resp_text = local_res.get("response", "")
+                            if not resp_text and local_res.get("executed_tools"):
+                                executed_tools = [t.get("tool", "") for t in local_res["executed_tools"]]
+                                resp_text = f"Otis AI executed the following actions: {', '.join(executed_tools)}."
                             resolved_agent_id = f"local_llm:{self.local_llm_manager.model}"
                             resolved_agent_name = f"Local Edge ({self.local_llm_manager.model})"
+                            tool_count = len(local_res.get("executed_tools", []))
                             _LOGGER.info(
-                                "Local Edge AI (%s) failover responded in %ss (%s t/s)",
+                                "Local Edge AI (%s) failover responded in %ss (%s tool(s) executed)",
                                 self.local_llm_manager.model,
                                 local_res.get("total_duration_s"),
-                                local_res.get("tokens_per_sec"),
+                                tool_count,
                             )
                             fire_progress(
                                 "agent_resolution",
                                 f"Resolved by Local Edge ({self.local_llm_manager.model})",
-                                f"Cloud unavailable / offline failover: executed by {self.local_llm_manager.model} via Ollama in {local_res.get('total_duration_s')}s ({local_res.get('tokens_per_sec')} t/s)",
+                                f"Cloud unavailable / offline failover: executed by {self.local_llm_manager.model} via Ollama in {local_res.get('total_duration_s')}s with {tool_count} tool(s)",
                             )
-                            result = self._create_response(user_input, local_res["response"])
+                            result = self._create_response(user_input, resp_text)
                         else:
                             _LOGGER.warning(
                                 "Local LLM failover returned error: %s",

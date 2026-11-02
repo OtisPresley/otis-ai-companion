@@ -905,6 +905,38 @@ pull_local_llm_model:
       selector:
         boolean:
 
+execute_tool_plan:
+  name: Execute Local LLM Structured Tool Plan
+  description: Autonomous multi-step function calling execution using local Ollama or vLLM models with tool schema validation and fallback parsing.
+  fields:
+    prompt:
+      name: Prompt
+      description: Natural language prompt or request for the local LLM to reason and execute actions autonomously.
+      required: false
+      example: "Audit the house with sentinel and pin any unpinned living room lights to the floorplan."
+      selector:
+        text:
+    plan:
+      name: Tool Plan
+      description: Optional explicit list of tool call objects to execute against Home Assistant.
+      required: false
+      selector:
+        object:
+    auto_execute:
+      name: Auto Execute
+      description: Automatically execute discovered or planned tool calls against Home Assistant services.
+      required: false
+      default: true
+      selector:
+        boolean:
+    model:
+      name: Model Override
+      description: Optional local LLM model name override.
+      required: false
+      selector:
+        text:
+
+
 
 
 
