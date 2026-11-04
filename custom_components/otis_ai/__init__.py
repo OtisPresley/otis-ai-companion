@@ -3396,11 +3396,23 @@ class OtisAIConversationAgent(AbstractAgent):
             )
             return self._create_response(user_input, speech)
 
-        # Check for Habit Mining and Behavioral queries (Phase 9)
+        # Check for Habit Mining and Behavioral queries (Phase 9 & Phase 4 Step 4)
         if getattr(self, "habit_manager", None) and any(w in user_lower for w in (
-            "habits", "learned habits", "habit routines", "behavioral", "circadian curve", "circadian lighting"
+            "habits", "learned habits", "habit routines", "behavioral", "circadian curve", "circadian lighting", "spatial habit", "migration habit", "room migration"
         )):
-            if "circadian" in user_lower:
+            if any(w in user_lower for w in ("spatial", "migration", "corridor", "transition")):
+                fire_progress("domain", "Mining Spatial Habits", "Synthesizing physical room transition corridors")
+                sh_habits = await self.habit_manager.async_mine_spatial_habits(min_confidence=0.65, min_occurrences=1)
+                if not sh_habits:
+                    return self._create_response(
+                        user_input,
+                        "Otis is actively monitoring room transition patterns. No recurrent spatial migration corridors have met the threshold yet."
+                    )
+                lines = [f"🚶 **Observed Spatial Migration Corridors ({len(sh_habits)} discovered):**\n"]
+                for h in sh_habits[:4]:
+                    lines.append(f"• **{h['title']}** ({h['occurrences']}x, {int(h['confidence']*100)}% confidence):\n  {h['description']}")
+                return self._create_response(user_input, "\n".join(lines))
+            elif "circadian" in user_lower:
                 curve = self.habit_manager.calculate_circadian_curves()
                 light = curve["lighting_curve"]
                 clim = curve["climate_curve"]
@@ -6851,6 +6863,11 @@ class DiscoveryEngine:
                 mined_habits = await self.habit_manager.async_mine_habits(days=14, min_occurrences=3)
                 for routine in mined_habits[:2]:
                     suggestions.append(routine)
+
+                # Phase 4 Step 4: Spatial migration habits
+                spatial_habits = await self.habit_manager.async_mine_spatial_habits(min_confidence=0.70, min_occurrences=2)
+                for sh in spatial_habits:
+                    suggestions.append(sh)
             except Exception as err:
                 _LOGGER.debug("Error evaluating habit routine suggestions: %s", err)
 

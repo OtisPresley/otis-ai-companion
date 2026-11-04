@@ -150,3 +150,62 @@ class TestBehavioralHabitManager(unittest.TestCase):
         speech = user_input.create_response.call_args[1]["speech"]
         self.assertIn("Circadian Phase", speech)
         self.assertIn("Seasonal Comfort Setpoints", speech)
+
+    def test_mine_spatial_habits_clustering(self):
+        """Test mining recurrent physical migration transitions into spatial habits (Phase 4 Step 4)."""
+        mock_vision = MagicMock()
+        mock_vision.get_transition_history.return_value = [
+            {"from_area": "kitchen", "to_area": "theater", "timestamp": 1000.0, "confidence": 0.85},
+            {"from_area": "kitchen", "to_area": "theater", "timestamp": 2000.0, "confidence": 0.85},
+            {"from_area": "living_room", "to_area": "master_bedroom", "timestamp": 3000.0, "confidence": 0.90},
+            {"from_area": "living_room", "to_area": "master_bedroom", "timestamp": 4000.0, "confidence": 0.90},
+        ]
+        mgr = BehavioralHabitManager(self.hass, vision_manager=mock_vision)
+
+        habits = asyncio.run(mgr.async_mine_spatial_habits(min_confidence=0.70, min_occurrences=2))
+        self.assertEqual(len(habits), 2)
+
+        theater_habit = next((h for h in habits if h["to_area"] == "theater"), None)
+        self.assertIsNotNone(theater_habit)
+        self.assertIn("Evening Entertainment Flow", theater_habit["title"])
+        self.assertEqual(theater_habit["occurrences"], 2)
+        self.assertEqual(theater_habit["macro_intent"], "movie_night")
+
+        bed_habit = next((h for h in habits if h["to_area"] == "master_bedroom"), None)
+        self.assertIsNotNone(bed_habit)
+        self.assertIn("Nighttime Bedroom Migration", bed_habit["title"])
+        self.assertEqual(bed_habit["macro_intent"], "sleep_bedtime")
+
+    def test_conversational_spatial_habits_query(self):
+        """Test conversational agent responding to spatial migration habit inquiries."""
+        from custom_components.otis_ai import OtisAIConversationAgent
+
+        entry = MagicMock()
+        entry.options = {}
+        entry.data = {}
+
+        mock_vision = MagicMock()
+        mock_vision.get_transition_history.return_value = [
+            {"from_area": "kitchen", "to_area": "theater", "timestamp": 1000.0},
+            {"from_area": "kitchen", "to_area": "theater", "timestamp": 2000.0},
+        ]
+        mgr = BehavioralHabitManager(self.hass, vision_manager=mock_vision)
+        agent = OtisAIConversationAgent(
+            self.hass,
+            entry,
+            MagicMock(),
+            MagicMock(),
+            habit_manager=mgr,
+        )
+
+        user_input = MagicMock()
+        user_input.text = "What spatial habits have you observed?"
+        user_input.conversation_id = "test_spatial_conv"
+        user_input.create_response = MagicMock(return_value="spatial_response_mock")
+
+        res = asyncio.run(agent.async_process(user_input))
+        self.assertIsNotNone(res)
+        user_input.create_response.assert_called_once()
+        speech = user_input.create_response.call_args[1]["speech"]
+        self.assertIn("Observed Spatial Migration Corridors", speech)
+        self.assertIn("Kitchen → Theater", speech)

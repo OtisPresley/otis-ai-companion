@@ -550,3 +550,96 @@ class BehavioralHabitManager:
                 "seasonal_recommendation": eco_note,
             },
         }
+
+    async def async_mine_spatial_habits(
+        self,
+        min_confidence: float = 0.70,
+        min_occurrences: int = 2,
+    ) -> list[dict[str, Any]]:
+        """Mine spatial presence transitions and synthesize high-confidence recurrent migrations into habits."""
+        if not self.vision_manager:
+            return []
+
+        history = self.vision_manager.get_transition_history(limit=50)
+        if not history or len(history) < min_occurrences:
+            return []
+
+        # Group transitions by (from_area, to_area)
+        corridor_counts: dict[tuple[str, str], list[float]] = {}
+        for trans in history:
+            fa = str(trans.get("from_area") or "").strip().lower().replace(" ", "_")
+            ta = str(trans.get("to_area") or "").strip().lower().replace(" ", "_")
+            if not fa or not ta or fa == ta:
+                continue
+            ts = float(trans.get("timestamp") or time.time())
+            corridor_counts.setdefault((fa, ta), []).append(ts)
+
+        proposals: list[dict[str, Any]] = []
+        for (from_area, to_area), timestamps in corridor_counts.items():
+            if len(timestamps) < min_occurrences:
+                continue
+
+            # Calculate confidence based on frequency
+            freq_score = min(0.95, 0.70 + (len(timestamps) * 0.05))
+            if freq_score < min_confidence:
+                continue
+
+            from_title = from_area.replace("_", " ").title()
+            to_title = to_area.replace("_", " ").title()
+
+            # Determine intent profile
+            intent_label = "Lifestyle Migration"
+            macro_intent = "spatial_migration"
+            icon = "mdi:transit-connection-variant"
+            if "theater" in to_area:
+                intent_label = "🎬 Evening Entertainment Flow"
+                macro_intent = "movie_night"
+                icon = "mdi:movie-open"
+            elif "master" in to_area or "bed" in to_area:
+                intent_label = "🌙 Nighttime Bedroom Migration"
+                macro_intent = "sleep_bedtime"
+                icon = "mdi:bed-clock"
+            elif "office" in to_area or "study" in to_area:
+                intent_label = "💼 Workday Focus Corridor"
+                macro_intent = "work_from_home"
+                icon = "mdi:briefcase-check"
+
+            proposals.append({
+                "id": f"spatial_habit_{from_area}_{to_area}",
+                "category": "habits",
+                "title": f"{intent_label}: {from_title} → {to_title}",
+                "description": (
+                    f"Otis identified a recurrent migration corridor from {from_title} to {to_title} "
+                    f"({len(timestamps)} recorded transitions). Automate soft pre-conditioning & follow-me audio?"
+                ),
+                "confidence": round(freq_score, 2),
+                "icon": icon,
+                "suggested_action": "Automate Spatial Pre-Conditioning",
+                "occurrences": len(timestamps),
+                "from_area": from_area,
+                "to_area": to_area,
+                "macro_intent": macro_intent,
+                "action_payload": {
+                    "alias": f"Spatial Migration: {from_title} to {to_title}",
+                    "description": f"Automated spatial migration routine mined by Otis AI Companion ({len(timestamps)} occurrences)",
+                    "trigger": [
+                        {
+                            "platform": "state",
+                            "entity_id": "sensor.otis_spatial_migration",
+                            "to": macro_intent,
+                        }
+                    ],
+                    "action": [
+                        {
+                            "service": "otis_ai.execute_macro",
+                            "data": {
+                                "target_area": to_area,
+                                "intent": macro_intent,
+                            },
+                        }
+                    ],
+                    "mode": "single",
+                },
+            })
+
+        return proposals

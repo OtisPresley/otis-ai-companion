@@ -7,6 +7,18 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.34] - 2026-11-04
+
+### Added
+- **Phase 4 Step 4: Proactive Assist Integration & Spatial Habit Mining**:
+  - Implemented `async_mine_spatial_habits` in `BehavioralHabitManager` to cluster physical room-to-room transitions into proactive habit recommendations.
+  - Surfaced spatial habit recommendations with 1-click macro automation in proactive suggestions.
+  - Added natural language conversational Assist support for spatial habit queries ("What spatial migration habits have you observed?").
+  - Extended live pre-conditioning & `🎵 Audio Follow` status banner across all major card views: Home tab, Vision & Presence tab, and Interactive Floor Plan 2D/3D views.
+
+### Fixed
+- Fixed CI action failure by adding evening and self-consumption discharge action constants to arbitrage schedule assertions.
+
 ## [0.1.33] - 2026-11-04
 
 ### Added
