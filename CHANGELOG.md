@@ -7,6 +7,17 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.31] - 2026-11-04
+
+### Fixed
+- **Interactive Floor Plan View Streamlining (`mode: floorplan_control`)**:
+  - Completely stripped studio header (Back button, Interactive Floor Plan title/subtitle, Edit Blueprint, Themes, Rules, and Refresh buttons) from the Interactive Floor Plan view.
+  - Hidden "Edit Floor Plan" (`btn-toggle-editor`) button from the toolbar in `floorplan_control` mode, confining blueprint editing strictly to the Floor Plan tab of the Otis AI Companion card.
+  - Cleaned toolbar to present exclusively the view mode pills (2D, 3D), zone pills (All Floors, Ground & Outdoor, Upper Level, Outdoor Only), and floating 3D Orbit & Pitch Controls HUD.
+- **3D Raised Glass Wall Alignment & Letterbox Scaling**:
+  - Locked `#floorplan-canvas` aspect-ratio dynamically to the active zone's SVG viewBox (`1300 / 713` for main, `1300 / 488` for upper, `1300 / 1250` for all).
+  - Stripped hardcoded `width` and `height` attributes from loaded SVG markup and eliminated `max-height` letterbox clamping, guaranteeing a 1:1 pixel match between the 3D walls overlay and the underlying 2D floorplan.
+
 ## [0.1.30] - 2026-11-04
 
 ### Fixed

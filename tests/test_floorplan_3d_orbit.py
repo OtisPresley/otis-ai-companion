@@ -17,19 +17,19 @@ class TestFloorplan3DOrbitAndControls(unittest.TestCase):
         )
         self.changelog_path = os.path.join(self.root_dir, "CHANGELOG.md")
 
-    def test_version_synchronization_v0_1_30(self) -> None:
-        """Verify manifest.json, otis-companion-card.js, and CHANGELOG.md are synced to v0.1.30."""
+    def test_version_synchronization_v0_1_31(self) -> None:
+        """Verify manifest.json, otis-companion-card.js, and CHANGELOG.md are synced to v0.1.31."""
         with open(self.manifest_path, "r", encoding="utf-8") as f:
             manifest = json.load(f)
-        self.assertEqual(manifest["version"], "0.1.30")
+        self.assertEqual(manifest["version"], "0.1.31")
 
         with open(self.card_path, "r", encoding="utf-8") as f:
             card_content = f.read()
-        self.assertIn('const CARD_VERSION = "0.1.30";', card_content)
+        self.assertIn('const CARD_VERSION = "0.1.31";', card_content)
 
         with open(self.changelog_path, "r", encoding="utf-8") as f:
             changelog_content = f.read()
-        self.assertIn("## [0.1.30] - 2026-11-04", changelog_content)
+        self.assertIn("## [0.1.31] - 2026-11-04", changelog_content)
 
     def test_card_3d_orbit_and_pitch_elements(self) -> None:
         """Verify that otis-companion-card.js contains Phase 3 3D orbit, pitch, and raised glass wall components."""
@@ -118,6 +118,21 @@ class TestFloorplan3DOrbitAndControls(unittest.TestCase):
 
             self.assertAlmostEqual(bx, calc_bx, places=4)
             self.assertAlmostEqual(by, calc_by, places=4)
+
+    def test_floorplan_control_mode_clean_toolbar_and_aspect_ratio(self) -> None:
+        """Verify that floorplan_control mode strips studio header and editor buttons, keeping only pills and HUD."""
+        with open(self.card_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # 1. Studio header must be guarded so isControlMode hides it
+        self.assertIn("!isControlMode", content)
+
+        # 2. Edit Floor Plan button must be hidden in control mode
+        self.assertIn("isAdmin && !isControlOnly", content)
+
+        # 3. Canvas must bind aspect-ratio to match viewBox and eliminate letterbox drift
+        self.assertIn("aspect-ratio:", content)
+        self.assertIn("floorplanCanvas.style.aspectRatio", content)
 
 
 if __name__ == "__main__":

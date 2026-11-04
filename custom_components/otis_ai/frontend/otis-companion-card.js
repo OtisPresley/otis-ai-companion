@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.30";
+const CARD_VERSION = "0.1.31";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -589,6 +589,9 @@ class OtisCompanionCard extends HTMLElement {
         );
         // Strip any legacy burnt-in entity-badge circles/emojis from SVG so only clean HA icons show
         rawSvg = rawSvg.replace(/<g\b[^>]*class="[^"]*entity-badge[^"]*"[^>]*>[\s\S]*?<\/g>\s*/gi, "");
+        // Strip hardcoded width and height attributes from the root <svg> tag so it sizes strictly by viewBox aspect ratio
+        rawSvg = rawSvg.replace(/(<svg\b[^>]*)\bwidth="[0-9.]+"\s*/i, "$1 ");
+        rawSvg = rawSvg.replace(/(<svg\b[^>]*)\bheight="[0-9.]+"\s*/i, "$1 ");
         this._floorplanSvg = rawSvg;
       }
     } catch (err) {
@@ -1875,7 +1878,6 @@ class OtisCompanionCard extends HTMLElement {
         }
 
         ha-card.card-container.mode-floorplan-studio .floorplan-svg-viewport svg {
-          max-height: calc(100vh - 200px) !important;
           height: 100% !important;
           width: 100% !important;
         }
@@ -4301,6 +4303,7 @@ class OtisCompanionCard extends HTMLElement {
           position: relative;
           display: inline-block;
           max-width: 100%;
+          max-height: 100%;
           transform-style: preserve-3d;
           transform-origin: 50% 50%;
           will-change: transform;
@@ -4457,9 +4460,7 @@ class OtisCompanionCard extends HTMLElement {
 
         .floorplan-svg-viewport svg {
           width: 100%;
-          height: auto;
-          max-height: 500px;
-          object-fit: contain;
+          height: 100%;
           filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4));
           display: block;
         }
@@ -5277,6 +5278,9 @@ class OtisCompanionCard extends HTMLElement {
         ${
           isStudioMode
             ? `
+          ${
+            !isControlMode
+              ? `
           <!-- Studio Header (Full Width Blueprint Workspace) -->
           <div class="studio-header">
             <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
@@ -5284,10 +5288,10 @@ class OtisCompanionCard extends HTMLElement {
                 ← Back
               </button>
               <div class="title-group">
-                <span class="main-title">🗺️ ${isControlMode ? "Interactive Floor Plan" : "Architectural Floor Plan Studio"}</span>
+                <span class="main-title">🗺️ Architectural Floor Plan Studio</span>
                 <span class="sub-title">
                   <span class="status-dot"></span>
-                  ${this._editorActive ? "Canvas Editor Mode Active • Drag pins & resize rooms" : (isControlMode ? "Live Home Control Surface • Tap devices to control" : "Interactive Blueprint Viewer")}
+                  ${this._editorActive ? "Canvas Editor Mode Active • Drag pins & resize rooms" : "Interactive Blueprint Viewer"}
                 </span>
               </div>
             </div>
@@ -5312,6 +5316,9 @@ class OtisCompanionCard extends HTMLElement {
               </button>
             </div>
           </div>
+          `
+              : ""
+          }
           ${this._renderFloorplanTab()}
         `
             : `
@@ -6411,7 +6418,7 @@ class OtisCompanionCard extends HTMLElement {
                 : ""
             }
             ${
-              isAdmin
+              isAdmin && !isControlOnly
                 ? `
               <button type="button" 
                 class="btn-toolbar ${this._editorActive ? 'active' : ''}" 
@@ -6428,7 +6435,7 @@ class OtisCompanionCard extends HTMLElement {
         </div>
 
         ${
-          this._editorActive && isAdmin
+          this._editorActive && isAdmin && !isControlOnly
             ? `
           <div class="editor-toolbar-strip">
             <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
@@ -6470,11 +6477,11 @@ class OtisCompanionCard extends HTMLElement {
             ? `<div class="empty-state"><div class="spinner" style="margin: 0 auto 8px auto; width: 24px; height: 24px;"></div>Rendering vector floor plan...</div>`
             : this._floorplanSvg
             ? `
-            <div class="floorplan-svg-viewport ${this._editorActive && isAdmin ? 'editor-mode' : ''} ${this._floorplanViewMode === '3d' ? 'view-3d-active' : ''}" id="floorplan-viewport">
-              ${this._editorActive && isAdmin ? `<div class="editor-hud" id="editor-hud">📐 Pointer: --, --</div>` : ''}
-              ${this._floorplanViewMode === '3d' && !this._editorActive ? this._renderFloorplan3dControls() : ''}
+            <div class="floorplan-svg-viewport ${this._editorActive && isAdmin && !isControlOnly ? 'editor-mode' : ''} ${this._floorplanViewMode === '3d' ? 'view-3d-active' : ''}" id="floorplan-viewport">
+              ${this._editorActive && isAdmin && !isControlOnly ? `<div class="editor-hud" id="editor-hud">📐 Pointer: --, --</div>` : ''}
+              ${this._floorplanViewMode === '3d' && (!this._editorActive || isControlOnly) ? this._renderFloorplan3dControls() : ''}
               <div class="floorplan-3d-stage" id="floorplan-3d-stage">
-                <div class="floorplan-3d-canvas" id="floorplan-canvas" style="--floorplan-azimuth: ${this._floorplanAzimuth}deg; --floorplan-pitch: ${this._floorplanPitch}deg; --wall-height: ${this._floorplanWallHeight || 28}px;">
+                <div class="floorplan-3d-canvas" id="floorplan-canvas" style="--floorplan-azimuth: ${this._floorplanAzimuth}deg; --floorplan-pitch: ${this._floorplanPitch}deg; --wall-height: ${this._floorplanWallHeight || 28}px; aspect-ratio: ${this._selectedFloorZone === 'main' ? '1300 / 713' : (this._selectedFloorZone === 'upper' ? '1300 / 488' : '1300 / 1250')};">
                   ${this._floorplanSvg}
                   <div class="floorplan-walls-overlay" id="floorplan-walls-overlay" style="${this._floorplanViewMode === '3d' && this._floorplanWallsEnabled !== false ? '' : 'display: none;'}">
                     ${this._renderFloorplan3dWalls()}
@@ -6482,7 +6489,7 @@ class OtisCompanionCard extends HTMLElement {
                   ${this._renderFloorplanPins()}
                 </div>
               </div>
-              ${this._editorActive && isAdmin && this._selectedEditorRoomId ? this._renderRoomInspector() : ""}
+              ${this._editorActive && isAdmin && !isControlOnly && this._selectedEditorRoomId ? this._renderRoomInspector() : ""}
             </div>
             ${
               !this._editorActive && this._selectedRoomInfo
@@ -10110,6 +10117,13 @@ class OtisCompanionCard extends HTMLElement {
           el.style.opacity = "1";
           el.style.filter = "none";
         });
+      }
+
+      const activeVb = svgEl.getAttribute("viewBox") || fullVb;
+      const vbParts = activeVb.split(/[\s,]+/).map(Number);
+      if (floorplanCanvas && vbParts.length === 4 && vbParts[2] > 0 && vbParts[3] > 0) {
+        floorplanCanvas.style.aspectRatio = `${vbParts[2]} / ${vbParts[3]}`;
+        floorplanCanvas.style.width = "100%";
       }
 
       applyCanvas3dTransform();
