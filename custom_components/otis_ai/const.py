@@ -1,7 +1,7 @@
 """Constants for the Otis AI Companion integration."""
 
 DOMAIN = "otis_ai"
-INTEGRATION_VERSION = "0.1.42"
+INTEGRATION_VERSION = "0.1.43"
 
 # Configuration Keys
 CONF_CONVERSATION_AGENT = "conversation_agent"
@@ -141,6 +141,11 @@ ATTR_AUDIO_FOLLOW_SOURCE = "audio_follow_source"
 ATTR_AUDIO_FOLLOW_TARGET = "audio_follow_target"
 ATTR_AUDIO_FOLLOW_PLAYER = "audio_follow_player"
 ATTR_AUDIO_FOLLOW_STATUS = "audio_follow_status"
+
+# Multi-Agent Conversational Orchestration & Voice Satellites (Phase 9)
+SERVICE_ORCHESTRATE_MULTI_AGENT = "orchestrate_multi_agent"
+SERVICE_CONFIGURE_VOICE_SATELLITE = "configure_voice_satellite"
+SERVICE_ARBITRATE_SATELLITE_AUDIO = "arbitrate_satellite_audio"
 
 # Dashboard Constants
 COMMAND_CENTER_DASHBOARD_ID = "command-center"

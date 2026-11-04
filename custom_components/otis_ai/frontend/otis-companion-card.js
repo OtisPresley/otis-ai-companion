@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.42";
+const CARD_VERSION = "0.1.43";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -8032,6 +8032,24 @@ class OtisCompanionCard extends HTMLElement {
           <div class="rules-setting-label">Preferred Spoken Speaker / Room:</div>
           <div class="rules-setting-desc">Primary speaker used for proactive vocal alerts (e.g., media_player.great_room or Great Room). Leave blank for auto.</div>
           <input type="text" id="rules-input-speaker" value="${this._escapeHtml(preferredSpeaker)}" placeholder="e.g. media_player.great_room or Study" style="width: 100%; padding: 6px 8px; margin-top: 6px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+        </div>
+
+        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 10px;">Multi-Agent Specialists & Voice Satellites (Phase 9):</div>
+        <div style="background: rgba(14,165,233,0.06); border: 1px solid rgba(14,165,233,0.2); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.78rem;">
+            <span style="font-weight: 600;">Active Specialists:</span>
+            <span style="color: var(--otis-primary); font-weight: bold;">5 Coordinated Personas</span>
+          </div>
+          <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+            <span class="badge" style="background: rgba(14,165,233,0.15); color: var(--otis-primary); padding: 2px 8px; border-radius: 4px; font-size: 0.72rem;">👑 Executive Butler</span>
+            <span class="badge" style="background: rgba(239,68,68,0.15); color: #ef4444; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem;">🛡️ Sentinel Security</span>
+            <span class="badge" style="background: rgba(34,197,94,0.15); color: #22c55e; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem;">⚡ Energy Architect</span>
+            <span class="badge" style="background: rgba(168,85,247,0.15); color: #a855f7; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem;">🎵 Spatial Media</span>
+            <span class="badge" style="background: rgba(245,158,11,0.15); color: #f59e0b; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem;">⚙️ Automation Engineer</span>
+          </div>
+          <div style="font-size: 0.74rem; color: var(--otis-text-secondary); margin-top: 4px;">
+            Acoustic presence-fused arbitration deduplicates simultaneous voice triggers across satellites using BLE, mmWave, and RSSI metrics.
+          </div>
         </div>
       </div>
     `;

@@ -120,6 +120,13 @@ from .const import (
     SERVICE_GET_ENERGY_ARBITRAGE_PLAN,
     SERVICE_SCHEDULE_EV_CHARGING,
     SERVICE_EXECUTE_ENERGY_ARBITRAGE,
+    SERVICE_ORCHESTRATE_MULTI_AGENT,
+    SERVICE_CONFIGURE_VOICE_SATELLITE,
+    SERVICE_ARBITRATE_SATELLITE_AUDIO,
+)
+from .agent_orchestrator import (
+    ALL_AGENTS,
+    MultiAgentOrchestrator,
 )
 from .local_llm import LocalLLMManager
 from .rag_manager import RAGKnowledgeManager
@@ -474,6 +481,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     federation_manager = FederationManager(hass)
     mesh_manager = MeshManager(hass)
     presence_fusion_manager = PresenceFusionManager(hass)
+    agent_orchestrator = MultiAgentOrchestrator(
+        hass,
+        local_llm_manager=local_llm_manager,
+        spatial_manager=spatial_manager,
+        presence_fusion_manager=presence_fusion_manager,
+        audio_manager=audio_manager,
+        sentinel_manager=sentinel_manager,
+        energy_manager=energy_manager,
+        habit_manager=habit_manager,
+    )
     await asyncio.gather(
         spatial_manager.async_load(),
         floorplan_parser.async_load(),
@@ -483,6 +500,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         federation_manager.async_load(),
         rules_manager.async_load(),
         rag_manager.async_load(),
+        agent_orchestrator.async_load(),
     )
     engine = DiscoveryEngine(
         hass,
@@ -501,6 +519,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         rag_manager=rag_manager,
         mesh_manager=mesh_manager,
         presence_fusion_manager=presence_fusion_manager,
+        agent_orchestrator=agent_orchestrator,
     )
 
     async def _async_sync_dashboards_on_startup() -> None:
@@ -559,6 +578,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         floorplan_parser=floorplan_parser,
         rag_manager=rag_manager,
         presence_fusion_manager=presence_fusion_manager,
+        agent_orchestrator=agent_orchestrator,
     )
 
     if hasattr(conversation, "async_register_agent"):
@@ -597,6 +617,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "rag_manager": rag_manager,
         "mesh_manager": mesh_manager,
         "presence_fusion_manager": presence_fusion_manager,
+        "agent_orchestrator": agent_orchestrator,
     }
 
     async def _async_update_listener(hass_inst: HomeAssistant, updated_entry: ConfigEntry) -> None:
@@ -680,6 +701,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     def _get_presence_fusion_manager() -> PresenceFusionManager:
         return _get_entry_data().get("presence_fusion_manager", presence_fusion_manager)
 
+    def _get_agent_orchestrator() -> MultiAgentOrchestrator:
+        return _get_entry_data().get("agent_orchestrator", agent_orchestrator)
+
     def _get_active_managers():
         return (
             _get_engine(),
@@ -697,6 +721,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _get_commissioning_manager(),
             _get_federation_manager(),
             _get_presence_fusion_manager(),
+            _get_agent_orchestrator(),
         )
 
     async def handle_get_capability_map(call) -> ServiceResponse:
@@ -2279,6 +2304,61 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             force_rebuild=force_rebuild,
         )
 
+    async def handle_orchestrate_multi_agent(call) -> ServiceResponse:
+        """Handle service call to orchestrate multi-agent conversation and collaborative synthesis."""
+        _LOGGER.debug("Service 'orchestrate_multi_agent' triggered with: %s", call.data)
+        om = _get_agent_orchestrator()
+        prompt = call.data.get("prompt")
+        if not prompt:
+            return {"success": False, "error": "Missing 'prompt' parameter"}
+        conv_id = call.data.get("conversation_id")
+        agent_ids = call.data.get("agent_ids")
+        if isinstance(agent_ids, str):
+            agent_ids = [a.strip() for a in agent_ids.split(",") if a.strip()]
+        mode = call.data.get("collaboration_mode", "auto")
+        timeout = float(call.data.get("timeout", 30.0))
+        return await om.async_orchestrate(
+            prompt=prompt,
+            conversation_id=conv_id,
+            requested_agents=agent_ids,
+            mode=mode,
+            timeout=timeout,
+        )
+
+    async def handle_configure_voice_satellite(call) -> ServiceResponse:
+        """Handle service call to configure voice satellite persona, area, wake-word, and speaker."""
+        _LOGGER.debug("Service 'configure_voice_satellite' triggered with: %s", call.data)
+        om = _get_agent_orchestrator()
+        satellite_id = call.data.get("satellite_id")
+        if not satellite_id:
+            return {"success": False, "error": "Missing 'satellite_id' parameter"}
+        area_id = call.data.get("area_id")
+        assigned_agent = call.data.get("assigned_agent")
+        wake_word = call.data.get("wake_word")
+        wake_word_engine = call.data.get("wake_word_engine")
+        preferred_speaker = call.data.get("preferred_speaker")
+        custom_pipeline = call.data.get("custom_pipeline")
+        return await om.async_configure_satellite(
+            satellite_id=satellite_id,
+            area_id=area_id,
+            assigned_agent=assigned_agent,
+            wake_word=wake_word,
+            wake_word_engine=wake_word_engine,
+            preferred_speaker=preferred_speaker,
+            custom_pipeline=custom_pipeline,
+        )
+
+    async def handle_arbitrate_satellite_audio(call) -> ServiceResponse:
+        """Handle service call to acoustically arbitrate multiple concurrent satellite triggers."""
+        _LOGGER.debug("Service 'arbitrate_satellite_audio' triggered with: %s", call.data)
+        om = _get_agent_orchestrator()
+        candidates = call.data.get("candidate_satellites") or []
+        utterance = call.data.get("utterance")
+        return om.arbitrate_satellite_audio(
+            candidate_satellites=candidates,
+            utterance=utterance,
+        )
+
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
         DOMAIN,
@@ -2742,6 +2822,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_heal_mesh_node,
         supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_ORCHESTRATE_MULTI_AGENT,
+        handle_orchestrate_multi_agent,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CONFIGURE_VOICE_SATELLITE,
+        handle_configure_voice_satellite,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_ARBITRATE_SATELLITE_AUDIO,
+        handle_arbitrate_satellite_audio,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
 
     # Listen for service calls targeting switch.otis_audio_follow and switch.otis_voice_announcements
     async def _on_service_call_switches(event):
@@ -2844,6 +2942,7 @@ class OtisAIConversationAgent(AbstractAgent):
         floorplan_parser: FloorplanParser | None = None,
         rag_manager: RAGKnowledgeManager | None = None,
         presence_fusion_manager: PresenceFusionManager | None = None,
+        agent_orchestrator: MultiAgentOrchestrator | None = None,
     ) -> None:
         """Initialize the agent."""
         self.hass = hass
@@ -2864,6 +2963,7 @@ class OtisAIConversationAgent(AbstractAgent):
         self.local_llm_manager = local_llm_manager
         self.rag_manager = rag_manager
         self.presence_fusion_manager = presence_fusion_manager
+        self.agent_orchestrator = agent_orchestrator
         self.dashboard_manager = dashboard_manager or getattr(hass.data.get(DOMAIN, {}), "get", lambda k: None)("dashboard_manager") or DashboardManager(hass)
         self.floorplan_parser = floorplan_parser or getattr(hass.data.get(DOMAIN, {}), "get", lambda k: None)("floorplan_parser") or FloorplanParser(hass)
 
@@ -3621,6 +3721,26 @@ class OtisAIConversationAgent(AbstractAgent):
                 f"• **Quiet Hours**: {quiet_state}\n"
                 f"• **Active Audio Ducking Sessions**: {st.get('active_ducking_sessions', 0)}"
             )
+            return self._create_response(user_input, speech)
+
+        # Check for Phase 9 Multi-Agent Orchestration & Voice Satellite status queries
+        if self.agent_orchestrator and any(w in user_lower for w in (
+            "multi-agent status", "multi agent status", "agent orchestrator", "orchestrator status",
+            "specialist status", "voice satellite status",
+        )):
+            sats = self.agent_orchestrator.get_discovered_satellites()
+            metrics = self.agent_orchestrator._metrics
+            speech = (
+                f"🤖 **Otis Multi-Agent Orchestration & Voice Satellites**\n\n"
+                f"• **Active Specialists**: Executive Butler, Sentinel Security, Energy Architect, Spatial Media, Automation Engineer\n"
+                f"• **Total Inquiries Routed**: {metrics.get('total_requests', 0)} ({metrics.get('multi_agent_collaborations', 0)} collaborative syntheses, {metrics.get('single_agent_routes', 0)} direct routes)\n"
+                f"• **Average Reasoning Latency**: {metrics.get('average_latency_ms', 0.0)}ms\n"
+                f"• **Configured Voice Satellites**: {len(sats)} active (acoustic presence-fused arbitration enabled)"
+            )
+            if sats:
+                speech += "\n"
+                for sat in sats[:4]:
+                    speech += f"\n• `{sat['entity_id']}` ({sat['area_id']}): Wake-word '{sat['wake_word']}' → {sat['assigned_agent'].title()} persona"
             return self._create_response(user_input, speech)
 
         if self.audio_manager and any(w in user_lower for w in (
@@ -4705,6 +4825,7 @@ class DiscoveryEngine:
         rag_manager: RAGKnowledgeManager | None = None,
         mesh_manager: MeshManager | None = None,
         presence_fusion_manager: PresenceFusionManager | None = None,
+        agent_orchestrator: MultiAgentOrchestrator | None = None,
     ) -> None:
         """Initialize the discovery engine."""
         self.hass = hass
@@ -4722,6 +4843,7 @@ class DiscoveryEngine:
         self.rag_manager = rag_manager
         self.mesh_manager = mesh_manager or MeshManager(hass)
         self.presence_fusion_manager = presence_fusion_manager or PresenceFusionManager(hass)
+        self.agent_orchestrator = agent_orchestrator
         self.dashboard_manager = dashboard_manager or DashboardManager(
             hass, floorplan_parser=self.floorplan_parser, rules_manager=self.rules_manager
         )
@@ -5066,6 +5188,13 @@ class DiscoveryEngine:
                 elif not uid and ent.get("entity_id") not in existing_uids:
                     discovered_users.append({"id": ent.get("entity_id"), "name": p_name})
         cap_map["users"] = discovered_users
+
+        if getattr(self, "agent_orchestrator", None):
+            cap_map["multi_agent"] = {
+                "active_agents": ALL_AGENTS,
+                "metrics": self.agent_orchestrator._metrics,
+            }
+            cap_map["voice_satellites"] = self.agent_orchestrator.get_discovered_satellites()
 
         cap_map["proactive_suggestions"] = await self.async_generate_proactive_suggestions(cap_map)
         self._cached_cap_map = dict(cap_map)

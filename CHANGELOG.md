@@ -7,6 +7,34 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.43] - 2026-11-04
+
+### Added
+- **Phase 9: Multi-Agent Conversational Orchestration & Custom Localized Wake-Word Voice Satellites**:
+  - Implemented `MultiAgentOrchestrator` in `agent_orchestrator.py` orchestrating 5 specialized sub-agent personas:
+    - **Executive Butler (`executive`)**: Holistic butler, conversational coordinator, system oversight, and cross-domain collaborative synthesis.
+    - **Sentinel Security (`sentinel`)**: Perimeter defense, intrusion kinematic tracking, camera vision analysis, deadbolt safety gates, and security audit enforcement.
+    - **Energy Architect (`energy`)**: Solar PV forecasting, wholesale TOU tariff tracking, negative pricing co-optimization, EV charge scheduling, and peak load shedding.
+    - **Spatial Media (`media_spatial`)**: Multi-zone audio matrix routing, spatial audio follow-me, dynamic volume ducking, and Bayesian presence fusion.
+    - **Automation Engineer (`automator`)**: GUI-ready Home Assistant YAML generation (alias, description, triggers, conditions, actions, mode), routine sequencing, and habit validation.
+  - **Dynamic Intent Classification & Multi-Agent Collaborative Synthesis**:
+    - Automatic domain taxonomy classification mapping natural language queries to specialized agent personas.
+    - Parallel multi-agent execution via `asyncio.gather` with cohesive executive synthesis and cross-domain action coordination.
+  - **Custom Localized Wake-Word Voice Satellites**:
+    - Discovery and mapping of `assist_satellite` and `wake_word` entities across spatial rooms and multi-room matrix audio zones.
+    - Persistent per-satellite configuration of localized wake-words ("Hey Otis", "Computer", "Jarvis"), wake-word engines (`openwakeword`, `wyoming`, `micro_wake_word`), assigned agent personas, and preferred playback speakers.
+    - **Spatial Acoustic Arbitration (Deduplication)**: Multi-satellite acoustic arbitration using RSSI, SNR, and presence fusion to select the authoritative satellite and suppress competing satellites during simultaneous wake triggers.
+  - **Home Assistant Services**:
+    - `otis_ai.orchestrate_multi_agent`: Route or collaboratively synthesize queries across agent personas.
+    - `otis_ai.configure_voice_satellite`: Configure localized wake-word, area, persona, and speaker for an Assist satellite.
+    - `otis_ai.arbitrate_satellite_audio`: Acoustically arbitrate multiple concurrent satellite triggers.
+  - **Real-Time Telemetry Sensors**:
+    - `sensor.otis_multi_agent_orchestrator`: Tracks active agent personas, routing metrics, and collaborative synthesis latency.
+    - `sensor.otis_voice_satellites`: Tracks registered satellites, localized wake-words, and arbitration history.
+  - Updated Lovelace `otis-companion-card.js` with Multi-Agent Specialists badges and Voice Satellite management view.
+  - Fixed syntax error in `services.yaml` line 584 where unquoted YAML mapping characters caused loader failure.
+  - Bumped integration and card version to v0.1.43.
+
 ## [0.1.42] - 2026-11-04
 
 ### Added

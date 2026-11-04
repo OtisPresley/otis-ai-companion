@@ -581,7 +581,7 @@ trilaterate_ble:
         text:
     observations:
       name: Anchor Observations
-      description: List of receiver observations with anchor_id and rssi values (e.g. [{"anchor_id": "proxy_1", "rssi": -65.0}]).
+      description: "List of receiver observations with anchor_id and rssi values (e.g. [{\"anchor_id\": \"proxy_1\", \"rssi\": -65.0}])."
       required: true
       selector:
         object:
@@ -1528,6 +1528,127 @@ heal_mesh_node:
       default: false
       selector:
         boolean:
+
+orchestrate_multi_agent:
+  name: Orchestrate Multi-Agent Conversation
+  description: Route or collaboratively synthesize natural language smart home prompts across specialized agent personas (Executive, Sentinel, Energy, Media/Spatial, Automator).
+  fields:
+    prompt:
+      name: Prompt
+      description: The user request or instruction to orchestrate across agents.
+      required: true
+      selector:
+        text:
+    conversation_id:
+      name: Conversation ID
+      description: Optional conversation thread ID for session continuity.
+      required: false
+      selector:
+        text:
+    agent_ids:
+      name: Specialist Agents
+      description: Optional list or comma-separated agent IDs (executive, sentinel, energy, media_spatial, automator) to specifically target.
+      required: false
+      selector:
+        object:
+    collaboration_mode:
+      name: Collaboration Mode
+      description: Orchestration strategy (auto, single, collaborative_synthesis, debate).
+      required: false
+      default: auto
+      selector:
+        select:
+          options:
+            - auto
+            - single
+            - collaborative_synthesis
+            - debate
+    timeout:
+      name: Timeout (seconds)
+      description: Maximum reasoning timeout across specialists.
+      required: false
+      default: 30.0
+      selector:
+        number:
+          min: 5
+          max: 120
+          step: 1
+          unit_of_measurement: s
+
+configure_voice_satellite:
+  name: Configure Voice Satellite
+  description: Configure localized wake word, room area, specialist persona, and playback speaker for an Assist voice satellite.
+  fields:
+    satellite_id:
+      name: Satellite Entity ID
+      description: Entity ID of the assist satellite (e.g. assist_satellite.kitchen_satellite).
+      required: true
+      selector:
+        entity:
+          domain: assist_satellite
+    area_id:
+      name: Room / Area
+      description: Spatial area or room where the satellite is located.
+      required: false
+      selector:
+        area:
+    assigned_agent:
+      name: Assigned Persona
+      description: Specialist agent persona assigned to queries from this satellite.
+      required: false
+      default: executive
+      selector:
+        select:
+          options:
+            - executive
+            - sentinel
+            - energy
+            - media_spatial
+            - automator
+    wake_word:
+      name: Wake Word
+      description: Localized wake word model name (e.g. Hey Otis, Computer, Jarvis).
+      required: false
+      default: "Hey Otis"
+      selector:
+        text:
+    wake_word_engine:
+      name: Wake Word Engine
+      description: Local wake word detection engine.
+      required: false
+      default: openwakeword
+      selector:
+        select:
+          options:
+            - openwakeword
+            - wyoming
+            - micro_wake_word
+            - porcupine
+    preferred_speaker:
+      name: Preferred Speaker
+      description: Media player entity ID to route acoustic vocal responses to.
+      required: false
+      selector:
+        entity:
+          domain: media_player
+
+arbitrate_satellite_audio:
+  name: Arbitrate Satellite Audio
+  description: Acoustically arbitrate multiple concurrent voice satellite wake events using RSSI, SNR, and presence fusion to eliminate duplicate speech triggers.
+  fields:
+    candidate_satellites:
+      name: Candidate Satellites
+      description: "List of satellite acoustic observations (e.g. [{\"satellite_id\": \"assist_satellite.kitchen\", \"rssi\": -55.0, \"snr\": 18.0}])."
+      required: true
+      selector:
+        object:
+    utterance:
+      name: Utterance
+      description: Spoken sentence or transcript heard by the satellites.
+      required: false
+      selector:
+        text:
+
 
 
 
