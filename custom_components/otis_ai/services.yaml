@@ -1360,6 +1360,40 @@ confirm_person_identity:
       selector:
         boolean:
 
+audit_mesh_health:
+  name: Audit Mesh Health
+  description: Non-blocking comprehensive health audit across Zigbee (ZHA / Zigbee2MQTT), Z-Wave JS, and Thread mesh networks.
+
+heal_mesh_node:
+  name: Heal Mesh Node
+  description: Autonomously remediate dead or degraded mesh nodes via protocol-tailored pinging, route repairs, and self-healing.
+  fields:
+    node_id:
+      name: Node / Device ID
+      description: Identifier of the mesh device or node to heal.
+      required: true
+      selector:
+        text:
+    protocol:
+      name: Protocol
+      description: Optional mesh protocol override (zwave_js, zha, zigbee2mqtt, thread).
+      required: false
+      selector:
+        select:
+          options:
+            - zwave_js
+            - zha
+            - zigbee2mqtt
+            - thread
+    force_rebuild:
+      name: Force Rebuild Routes
+      description: Whether to force network-wide route rebuilding.
+      required: false
+      default: false
+      selector:
+        boolean:
+
+
 
 
 

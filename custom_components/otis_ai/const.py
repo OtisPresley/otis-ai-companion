@@ -87,6 +87,10 @@ SERVICE_MINE_HABITS = "mine_habits"
 SERVICE_GET_CIRCADIAN_CURVES = "get_circadian_curves"
 SERVICE_AUDIT_HABIT_DEVIATIONS = "audit_habit_deviations"
 
+# Autonomous Self-Healing Mesh Networking Services (Phase 6)
+SERVICE_AUDIT_MESH_HEALTH = "audit_mesh_health"
+SERVICE_HEAL_MESH_NODE = "heal_mesh_node"
+
 # Autonomous Home Commissioning & Multi-Node Federation Services (Phase 10)
 SERVICE_AUDIT_UNASSIGNED_ENTITIES = "audit_unassigned_entities"
 SERVICE_AUTO_COMMISSION_ENTITIES = "auto_commission_entities"

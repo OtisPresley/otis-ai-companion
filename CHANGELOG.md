@@ -7,6 +7,17 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.40] - 2026-11-04
+
+### Added
+- **Phase 6: Autonomous Self-Healing Mesh Networking & Zigbee/Z-Wave Routing Optimizations**:
+  - Implemented `MeshManager` in `mesh_manager.py` to audit mesh topology graphs across Z-Wave JS, Zigbee (ZHA & Zigbee2MQTT), and Thread/Matter ecosystems.
+  - Added continuous neighbor table auditing, calculating Link Quality (LQI), signal strength (RSSI), round-trip time (RTT), and unified Mesh Health Score (0-100%).
+  - Implemented `sensor.otis_mesh_health` reporting real-time mesh health status, dead node counts, marginal links, and healing telemetry.
+  - Implemented `otis_ai.audit_mesh_health` service for on-demand non-blocking mesh audits.
+  - Implemented `otis_ai.heal_mesh_node` service with protocol-tailored remediation (Z-Wave ping/heal_node/rebuild_routes, ZHA reconfigure, Zigbee2MQTT heal requests).
+  - Added proactive mesh healing cards in Lovelace with quick-action `📡 Heal Mesh Node` chips.
+
 ## [0.1.39] - 2026-11-04
 
 ### Added

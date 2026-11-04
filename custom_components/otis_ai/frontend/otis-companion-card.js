@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.39";
+const CARD_VERSION = "0.1.40";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -1716,6 +1716,8 @@ class OtisCompanionCard extends HTMLElement {
         return "🏠 Auto-Commission Rooms";
       case "confirm_person_identity":
         return "👤 Confirm Identity Profile";
+      case "heal_mesh_node":
+        return "📡 Heal Mesh Node";
       case "sync_federated_nodes":
         return "🌐 Resync Edge Nodes";
       case "improve_automation":

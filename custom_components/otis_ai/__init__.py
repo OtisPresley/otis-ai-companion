@@ -112,6 +112,8 @@ from .const import (
     SERVICE_TOGGLE_AUDIO_FOLLOW,
     SERVICE_TOGGLE_VOICE_ANNOUNCEMENTS,
     SERVICE_CONFIRM_PERSON_IDENTITY,
+    SERVICE_AUDIT_MESH_HEALTH,
+    SERVICE_HEAL_MESH_NODE,
     SERVICE_OPTIMIZE_BATTERY_SCHEDULE,
     SERVICE_GET_ENERGY_ARBITRAGE_PLAN,
 )
@@ -122,6 +124,7 @@ from .automation_manager import AutomationManager
 from .dashboard_manager import DashboardManager
 from .energy_manager import EnergyManager
 from .macro_manager import MacroManager
+from .mesh_manager import MeshManager
 from .matrix_presets import (
     get_matrix_presets_list,
     identify_matrix_preset,
@@ -464,6 +467,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     habit_manager = BehavioralHabitManager(hass, spatial_manager=spatial_manager, energy_manager=energy_manager, vision_manager=vision_manager)
     commissioning_manager = AutonomousCommissioningManager(hass, spatial_manager=spatial_manager)
     federation_manager = FederationManager(hass)
+    mesh_manager = MeshManager(hass)
     await asyncio.gather(
         spatial_manager.async_load(),
         floorplan_parser.async_load(),
@@ -489,6 +493,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         rules_manager=rules_manager,
         local_llm_manager=local_llm_manager,
         rag_manager=rag_manager,
+        mesh_manager=mesh_manager,
     )
 
     async def _async_sync_dashboards_on_startup() -> None:
@@ -582,6 +587,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "rules_manager": rules_manager,
         "local_llm_manager": local_llm_manager,
         "rag_manager": rag_manager,
+        "mesh_manager": mesh_manager,
     }
 
     async def _async_update_listener(hass_inst: HomeAssistant, updated_entry: ConfigEntry) -> None:
@@ -658,6 +664,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     def _get_rules_manager() -> BehavioralRulesManager:
         return _get_entry_data().get("rules_manager", rules_manager)
+
+    def _get_mesh_manager() -> MeshManager:
+        return _get_entry_data().get("mesh_manager", mesh_manager)
 
     def _get_active_managers():
         return (
@@ -1044,6 +1053,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return {
                 "success": True,
                 "message": f"Successfully verified identity for {payload.get('label') or payload.get('person_id')}",
+                "result": res,
+            }
+        elif action_type == "heal_mesh_node":
+            mm = _get_mesh_manager()
+            res = await mm.async_heal_mesh_node(
+                node_id=payload.get("node_id", suggestion_id),
+                protocol=payload.get("protocol"),
+                force_rebuild=bool(payload.get("force_rebuild", False)),
+            )
+            _invalidate()
+            return {
+                "success": res.get("success", True),
+                "message": f"Autonomous healing dispatched to mesh node {payload.get('node_id')}",
                 "result": res,
             }
 
@@ -2171,6 +2193,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             visual_features=features,
         )
 
+    async def handle_audit_mesh_health(call) -> ServiceResponse:
+        """Handle service call to audit Zigbee/Z-Wave/Thread mesh topology and health."""
+        _LOGGER.debug("Service 'audit_mesh_health' triggered")
+        mm = _get_mesh_manager()
+        return await mm.async_audit_mesh_topology()
+
+    async def handle_heal_mesh_node(call) -> ServiceResponse:
+        """Handle service call to heal a dead or degraded mesh node."""
+        _LOGGER.debug("Service 'heal_mesh_node' triggered with: %s", call.data)
+        mm = _get_mesh_manager()
+        node_id = call.data.get("node_id")
+        protocol = call.data.get("protocol")
+        force_rebuild = bool(call.data.get("force_rebuild", False))
+        if not node_id:
+            return {"success": False, "error": "node_id is required"}
+        return await mm.async_heal_mesh_node(
+            node_id=node_id,
+            protocol=protocol,
+            force_rebuild=force_rebuild,
+        )
+
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
         DOMAIN,
@@ -2596,6 +2639,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         SERVICE_CONFIRM_PERSON_IDENTITY,
         handle_confirm_person_identity,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_AUDIT_MESH_HEALTH,
+        handle_audit_mesh_health,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_HEAL_MESH_NODE,
+        handle_heal_mesh_node,
         supports_response=SupportsResponse.OPTIONAL,
     )
 
@@ -4485,6 +4540,7 @@ class DiscoveryEngine:
         rules_manager: BehavioralRulesManager | None = None,
         local_llm_manager: LocalLLMManager | None = None,
         rag_manager: RAGKnowledgeManager | None = None,
+        mesh_manager: MeshManager | None = None,
     ) -> None:
         """Initialize the discovery engine."""
         self.hass = hass
@@ -4500,6 +4556,7 @@ class DiscoveryEngine:
         self.rules_manager = rules_manager or BehavioralRulesManager(hass)
         self.local_llm_manager = local_llm_manager
         self.rag_manager = rag_manager
+        self.mesh_manager = mesh_manager or MeshManager(hass)
         self.dashboard_manager = dashboard_manager or DashboardManager(
             hass, floorplan_parser=self.floorplan_parser, rules_manager=self.rules_manager
         )
@@ -7298,6 +7355,36 @@ class DiscoveryEngine:
                         })
             except Exception as err:
                 _LOGGER.debug("Error generating person identification suggestions: %s", err)
+
+        # 17. Autonomous Self-Healing Mesh Network (Phase 6)
+        if getattr(self, "mesh_manager", None):
+            try:
+                mesh_audit = await self.mesh_manager.async_audit_mesh_topology()
+                dead_nodes = mesh_audit.get("dead_nodes", [])
+                for dn in dead_nodes[:3]:
+                    nid = dn.get("id") or dn.get("node_id")
+                    dname = dn.get("name") or nid
+                    proto = dn.get("protocol", "mesh").upper()
+                    clean_slug = re.sub(r"[^a-z0-9_]+", "_", str(nid).lower()).strip("_")
+                    suggestions.append({
+                        "id": f"heal_mesh_node_{clean_slug}",
+                        "title": f"Self-Healing Mesh: Remediate Dead Node ({dname})",
+                        "category": "system",
+                        "priority": "high",
+                        "icon": "mdi:router-wireless-settings",
+                        "description": (
+                            f"Otis detected an unresponsive {proto} mesh node '{dname}' (ID: {dn.get('node_id')}). "
+                            "Trigger autonomous self-healing to ping node, repair routing neighbors, and recover connectivity."
+                        ),
+                        "action_type": "heal_mesh_node",
+                        "action_payload": {
+                            "node_id": nid,
+                            "protocol": dn.get("protocol"),
+                            "force_rebuild": False,
+                        },
+                    })
+            except Exception as err:
+                _LOGGER.debug("Error generating mesh self-healing suggestions: %s", err)
 
         # Surface Official Home Assistant News & Announcements
         try:
