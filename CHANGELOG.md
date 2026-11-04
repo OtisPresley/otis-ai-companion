@@ -7,6 +7,25 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.44] - 2026-11-04
+
+### Added
+- **Phase 10: Multi-Node Federation and Distributed Cross-Instance Home Assistant Clustering**:
+  - Implemented advanced multi-node clustering and edge state synchronization in `federation_manager.py`:
+    - **Clustering & Node Roles**: Flexible node topology (`primary`, `satellite`, `outbuilding`, `mobile_marine`) connecting detached workshops, guest houses, RVs, and marine vessels.
+    - **Automated Health Scoring & Latency Monitoring**: Continuous round-trip latency tracking, dynamic health scoring (0–100%), and status classification (`healthy`, `degraded`, `offline`, `idle`).
+    - **Domain-Specific Filtering & Namespacing**: Granular entity synchronization with `allowed_domains` and `excluded_domains`, exposing remote entities as `federated.<node_id>.<domain>.<object_id>`.
+    - **Transparent Remote Service Routing**: `otis_ai.forward_remote_command` transparently extracts node targets from namespaced entities and executes remote services.
+    - **Cluster-Wide Emergency & Event Broadcasting**: `otis_ai.broadcast_cluster_message` dispatches urgent notifications and alerts across all active edge instances concurrently.
+    - **Background Non-Blocking Sync Engine**: Periodic automated synchronization loop with graceful lifecycle start/stop in `__init__.py`.
+  - **Real-Time Telemetry Sensors**:
+    - `sensor.otis_federation_cluster`: Publishes cluster health score, online/offline edge node counts, average latency, and recent remote service call execution history.
+    - `sensor.otis_federated_nodes`: Mirrors real-time cluster state and federated node catalog.
+  - **Conversational Assist Capabilities**:
+    - Expanded Otis AI conversation agent to process cluster health inquiries, edge node synchronization commands, and remote device execution.
+  - Updated Lovelace `otis-companion-card.js` with Cluster Health scoring pill, latency indicators, and edge node synchronization controls.
+  - Bumped integration and card version to v0.1.44.
+
 ## [0.1.43] - 2026-11-04
 
 ### Added

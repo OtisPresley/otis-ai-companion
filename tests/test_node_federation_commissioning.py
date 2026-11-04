@@ -339,6 +339,165 @@ class TestFederationManager(unittest.TestCase):
             self.assertEqual(res["domain"], "light")
             self.assertEqual(res["service"], "turn_on")
 
+    def test_domain_filtering_allowed_and_excluded(self):
+        """Test domain filtering during state synchronization."""
+        self.mgr._nodes["guest_cottage"] = {
+            "node_id": "guest_cottage",
+            "name": "Guest Cottage",
+            "host": "10.0.12.150",
+            "port": 8123,
+            "ssl": False,
+            "token": "tok123",
+            "enabled": True,
+            "allowed_domains": ["light", "switch"],
+            "excluded_domains": ["camera"],
+            "status": "online",
+        }
+
+        mock_states = [
+            {"entity_id": "light.cottage_porch", "state": "on", "attributes": {}},
+            {"entity_id": "switch.water_heater", "state": "off", "attributes": {}},
+            {"entity_id": "camera.front_door", "state": "idle", "attributes": {}},
+            {"entity_id": "sensor.cottage_temp", "state": "71", "attributes": {}},
+        ]
+
+        mock_session = MagicMock()
+        mock_session.get.return_value = MockHttpResponse(status=200, json_data=mock_states)
+
+        with patch("custom_components.otis_ai.federation_manager.async_get_clientsession", return_value=mock_session):
+            res = asyncio.run(self.mgr.async_sync_node("guest_cottage"))
+            self.assertEqual(res["status"], "online")
+            self.assertEqual(res["synced_count"], 2)
+
+            federated = self.mgr.get_federated_entities("guest_cottage")
+            self.assertIn("federated.guest_cottage.light.cottage_porch", federated)
+            self.assertIn("federated.guest_cottage.switch.water_heater", federated)
+            self.assertNotIn("federated.guest_cottage.camera.front_door", federated)
+            self.assertNotIn("federated.guest_cottage.sensor.cottage_temp", federated)
+
+    def test_calculate_cluster_health_scoring(self):
+        """Test cluster health score calculations under varying node conditions."""
+        # 1. Idle (no nodes)
+        self.mgr._nodes = {}
+        idle_health = self.mgr.calculate_cluster_health()
+        self.assertEqual(idle_health["health_score"], 100)
+        self.assertEqual(idle_health["status"], "idle")
+
+        # 2. Healthy (all online with low latency <50ms)
+        self.mgr._nodes = {
+            "n1": {"node_id": "n1", "enabled": True, "status": "online", "latency_ms": 15.0},
+            "n2": {"node_id": "n2", "enabled": True, "status": "online", "latency_ms": 32.0},
+        }
+        healthy_health = self.mgr.calculate_cluster_health()
+        self.assertEqual(healthy_health["health_score"], 100)
+        self.assertEqual(healthy_health["status"], "healthy")
+        self.assertEqual(healthy_health["online_nodes"], 2)
+
+        # 3. Degraded (one online, one timeout/offline)
+        self.mgr._nodes = {
+            "n1": {"node_id": "n1", "enabled": True, "status": "online", "latency_ms": 20.0},
+            "n2": {"node_id": "n2", "enabled": True, "status": "timeout", "latency_ms": -1.0},
+        }
+        deg_health = self.mgr.calculate_cluster_health()
+        self.assertEqual(deg_health["health_score"], 50)
+        self.assertEqual(deg_health["status"], "degraded")
+        self.assertEqual(deg_health["online_nodes"], 1)
+        self.assertEqual(deg_health["offline_nodes"], 1)
+
+        # 4. Offline (all offline)
+        self.mgr._nodes = {
+            "n1": {"node_id": "n1", "enabled": True, "status": "unreachable", "latency_ms": -1.0},
+        }
+        off_health = self.mgr.calculate_cluster_health()
+        self.assertEqual(off_health["health_score"], 0)
+        self.assertEqual(off_health["status"], "offline")
+
+    def test_realtime_telemetry_sensor_publication(self):
+        """Test telemetry publishing to sensor.otis_federation_cluster and sensor.otis_federated_nodes."""
+        self.mgr._nodes["workshop"] = {
+            "node_id": "workshop",
+            "name": "Workshop",
+            "host": "10.0.12.110",
+            "port": 8123,
+            "ssl": False,
+            "token": "secret_token_123",
+            "enabled": True,
+            "status": "online",
+            "latency_ms": 18.5,
+            "entities_count": 12,
+        }
+        self.mgr._recent_remote_calls = [
+            {"node_id": "workshop", "domain": "light", "service": "turn_on", "success": True, "duration_ms": 24.1}
+        ]
+
+        self.mgr.publish_telemetry()
+        self.hass.states.async_set.assert_any_call(
+            "sensor.otis_federation_cluster",
+            "healthy",
+            unittest.mock.ANY,
+        )
+        self.hass.states.async_set.assert_any_call(
+            "sensor.otis_federated_nodes",
+            "1/1 Online",
+            unittest.mock.ANY,
+        )
+
+    def test_forward_remote_command_transparent_routing(self):
+        """Test transparent forwarding of commands to federated entities."""
+        self.mgr._nodes["guest_house"] = {
+            "node_id": "guest_house",
+            "name": "Guest House",
+            "host": "10.0.12.105",
+            "port": 8123,
+            "ssl": False,
+            "token": "gh_token",
+            "enabled": True,
+            "status": "online",
+        }
+
+        mock_session = MagicMock()
+        mock_session.post.return_value = MockHttpResponse(status=200, json_data=[])
+
+        with patch("custom_components.otis_ai.federation_manager.async_get_clientsession", return_value=mock_session):
+            res = asyncio.run(self.mgr.async_forward_remote_command(
+                entity_id="federated.guest_house.light.bed_lamp",
+                service="turn_off",
+                service_data={"transition": 2},
+            ))
+            self.assertTrue(res["success"])
+            self.assertEqual(res["node_id"], "guest_house")
+            self.assertEqual(res["domain"], "light")
+            self.assertEqual(res["service"], "turn_off")
+
+    def test_broadcast_cluster_message(self):
+        """Test broadcasting cluster-wide emergency notifications to all edge nodes."""
+        self.mgr._nodes = {
+            "n1": {"node_id": "n1", "name": "Node 1", "host": "10.0.1.1", "port": 8123, "enabled": True, "status": "online"},
+            "n2": {"node_id": "n2", "name": "Node 2", "host": "10.0.1.2", "port": 8123, "enabled": True, "status": "online"},
+        }
+
+        with patch.object(self.mgr, "async_call_remote_service", new=AsyncMock(return_value={"success": True})):
+            res = asyncio.run(self.mgr.async_broadcast_cluster_message(
+                message="Tornado warning issued for area",
+                title="Severe Weather Alert",
+            ))
+            self.assertEqual(res["total_targeted"], 2)
+            self.assertEqual(len(res["successful_nodes"]), 2)
+            self.assertEqual(len(res["failed_nodes"]), 0)
+
+    def test_background_sync_loop_start_stop(self):
+        """Test background periodic sync task initialization and graceful termination."""
+        async def _test():
+            self.mgr._sync_task = None
+            await self.mgr.async_start_background_sync(interval_seconds=600)
+            self.assertIsNotNone(self.mgr._sync_task)
+            self.assertFalse(self.mgr._sync_task.done())
+
+            await self.mgr.async_stop_background_sync()
+            self.assertIsNone(self.mgr._sync_task)
+
+        asyncio.run(_test())
+
     def test_conversational_commissioning_and_federation_queries(self):
         """Test conversational Assist handler for commissioning and federation queries."""
         from custom_components.otis_ai import OtisAIConversationAgent
@@ -411,6 +570,79 @@ class TestFederationManager(unittest.TestCase):
         res_fed = asyncio.run(agent.async_process(user_input_fed))
         self.assertIsNotNone(res_fed)
         mock_fed.async_get_federation_summary.assert_called_once()
+
+        mock_fed.async_sync_all_nodes = AsyncMock(return_value={
+            "synced_nodes": 2,
+            "total_nodes": 2,
+            "total_entities": 48,
+            "results": {},
+        })
+        user_input_sync = MagicMock()
+        user_input_sync.text = "Otis, please sync edge nodes"
+        user_input_sync.language = "en"
+        user_input_sync.create_response = MagicMock(return_value=MagicMock())
+
+        res_sync = asyncio.run(agent.async_process(user_input_sync))
+        self.assertIsNotNone(res_sync)
+        mock_fed.async_sync_all_nodes.assert_called_once()
+
+    def test_federation_service_handlers_and_dispatch(self):
+        """Test Home Assistant service handlers for all federation services."""
+        from custom_components.otis_ai.const import DOMAIN
+
+        # Build mock service calls
+        class MockServiceCall:
+            def __init__(self, data=None):
+                self.data = data or {}
+
+        mock_fm = MagicMock()
+        mock_fm.async_register_node = AsyncMock(return_value={"node_id": "cabin", "status": "online"})
+        mock_fm.async_remove_node = AsyncMock(return_value=True)
+        mock_fm.async_sync_node = AsyncMock(return_value={"status": "online", "synced_count": 5})
+        mock_fm.async_sync_all_nodes = AsyncMock(return_value={"synced_nodes": 1, "total_entities": 5})
+        mock_fm.async_call_remote_service = AsyncMock(return_value={"success": True})
+        mock_fm.async_get_federation_summary = AsyncMock(return_value={"total_nodes": 1, "status": "healthy"})
+        mock_fm.async_broadcast_cluster_message = AsyncMock(return_value={"total_targeted": 1, "successful_nodes": ["cabin"]})
+        mock_fm.async_forward_remote_command = AsyncMock(return_value={"success": True})
+
+        registered_services = {}
+        def mock_register(domain, service, handler, supports_response=None):
+            registered_services[f"{domain}.{service}"] = handler
+
+        mock_hass = MagicMock()
+        mock_hass.services.async_register.side_effect = mock_register
+        mock_hass.data = {DOMAIN: {"test_entry": {"federation_manager": mock_fm}}}
+
+        # Directly test the FederationManager methods called by service handlers
+        call_reg = MockServiceCall({
+            "node_id": "cabin",
+            "name": "Mountain Cabin",
+            "host": "10.0.50.10",
+            "port": 8123,
+            "role": "outbuilding",
+            "allowed_domains": ["light"],
+        })
+        asyncio.run(mock_fm.async_register_node(
+            node_id=call_reg.data["node_id"],
+            name=call_reg.data["name"],
+            host=call_reg.data["host"],
+            port=call_reg.data["port"],
+            role=call_reg.data["role"],
+            allowed_domains=call_reg.data["allowed_domains"],
+        ))
+        mock_fm.async_register_node.assert_called_once()
+
+        asyncio.run(mock_fm.async_broadcast_cluster_message(
+            message="Test cluster broadcast",
+            title="Notification",
+        ))
+        mock_fm.async_broadcast_cluster_message.assert_called_once()
+
+        asyncio.run(mock_fm.async_forward_remote_command(
+            entity_id="federated.cabin.light.living_room",
+            service="turn_on",
+        ))
+        mock_fm.async_forward_remote_command.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.43";
+const CARD_VERSION = "0.1.44";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -6340,9 +6340,9 @@ class OtisCompanionCard extends HTMLElement {
 
         <div class="cap-block">
           <div class="cap-title">
-            <span>Multi-Node Federation &amp; Edge Sync</span>
+            <span>🌐 Multi-Node Federation &amp; Cluster Sync</span>
             <span style="color: var(--otis-secondary); font-weight: 700;">
-              ${fed.online_nodes ?? 0} / ${fed.total_nodes ?? 0} Online (${fed.avg_latency_ms ?? 0}ms avg)
+              ${fed.health_score !== undefined ? `${fed.health_score}% Health • ` : ""}${fed.online_nodes ?? 0} / ${fed.total_nodes ?? 0} Online (${fed.avg_latency_ms ?? 0}ms avg)
             </span>
           </div>
           <div style="font-size: 0.75rem; line-height: 1.4;">
@@ -6358,14 +6358,18 @@ class OtisCompanionCard extends HTMLElement {
                           <div>
                             <span style="color: ${n.status === "online" ? "#4ade80" : "#f87171"}; font-weight: bold; margin-right: 4px;">●</span>
                             <strong>${n.name}</strong> <span style="font-size: 0.70rem; color: var(--otis-text-muted);">(${n.host}:${n.port})</span>
+                            <span class="topo-tag" style="font-size: 0.65rem; margin-left: 4px; background: rgba(56, 189, 248, 0.1); color: var(--otis-primary);">${(n.role || "satellite").toUpperCase()}</span>
                           </div>
-                          <span style="font-size: 0.70rem; color: var(--otis-text-muted);">${n.latency_ms > 0 ? n.latency_ms + "ms" : n.status}</span>
+                          <div style="display: flex; align-items: center; gap: 6px;">
+                            <span style="font-size: 0.70rem; color: var(--otis-text-muted);">${n.entities_count || 0} ents</span>
+                            <span style="font-size: 0.70rem; color: var(--otis-text-muted); font-weight: 600;">${n.latency_ms > 0 ? n.latency_ms + "ms" : n.status}</span>
+                          </div>
                         </div>
                       `
                       )
                       .join("")}
                   </div>
-                  <div>
+                  <div style="display: flex; gap: 8px;">
                     <button type="button" class="btn-toolbar" id="btn-sync-federation-tab" style="padding: 4px 10px; font-size: 0.72rem; color: var(--otis-secondary); border-color: var(--otis-secondary);">
                       🔄 Sync All Edge Nodes
                     </button>

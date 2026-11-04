@@ -1,8 +1,8 @@
 """Multi-Node Federation & Edge Synchronization Manager for Otis AI Companion (Phase 10).
 
 Enables cross-instance Home Assistant state synchronization, edge node orchestration,
-latency monitoring, and remote service execution across satellite nodes (e.g. Guest House,
-Workshop, Camper / Marine, Remote Outbuilding).
+latency monitoring, cluster health scoring, and remote service execution across satellite
+nodes (e.g. Guest House, Workshop, Camper / Marine, Remote Outbuilding).
 """
 
 from __future__ import annotations
@@ -25,7 +25,16 @@ except ImportError:  # pragma: no cover
 
 from homeassistant.helpers.storage import Store
 
-from .const import INTEGRATION_VERSION
+from .const import (
+    CLUSTER_STATUS_DEGRADED,
+    CLUSTER_STATUS_HEALTHY,
+    CLUSTER_STATUS_IDLE,
+    CLUSTER_STATUS_OFFLINE,
+    FEDERATION_ROLE_SATELLITE,
+    INTEGRATION_VERSION,
+    SENSOR_FEDERATED_NODES,
+    SENSOR_FEDERATION_CLUSTER,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -42,6 +51,10 @@ class FederationManager:
         self._store = Store(hass, STORAGE_VERSION, storage_key)
         self._nodes: dict[str, dict[str, Any]] = {}
         self._cached_node_states: dict[str, dict[str, Any]] = {}
+        self._recent_remote_calls: list[dict[str, Any]] = []
+        self._sync_task: asyncio.Task | None = None
+        self._sync_interval_seconds: int = 300
+        self._last_sync_timestamp: str | None = None
         self._loaded: bool = False
 
     async def async_load(self) -> None:
@@ -60,7 +73,6 @@ class FederationManager:
 
     async def async_save(self) -> None:
         """Save federated node configurations to persistent store."""
-        # Sanitize sensitive data or large states if needed, but keep core config
         storable_nodes: dict[str, Any] = {}
         for nid, node in self._nodes.items():
             storable_nodes[nid] = {
@@ -71,9 +83,13 @@ class FederationManager:
                 "ssl": bool(node.get("ssl", False)),
                 "token": node.get("token", ""),
                 "enabled": bool(node.get("enabled", True)),
+                "role": node.get("role", FEDERATION_ROLE_SATELLITE),
+                "allowed_domains": node.get("allowed_domains"),
+                "excluded_domains": node.get("excluded_domains"),
                 "status": node.get("status", "offline"),
                 "latency_ms": node.get("latency_ms", 0.0),
                 "remote_version": node.get("remote_version", "unknown"),
+                "location_name": node.get("location_name", node.get("name", nid)),
                 "last_synced": node.get("last_synced"),
                 "entities_count": node.get("entities_count", 0),
             }
@@ -107,6 +123,9 @@ class FederationManager:
         token: str = "",
         ssl: bool = False,
         enabled: bool = True,
+        role: str = FEDERATION_ROLE_SATELLITE,
+        allowed_domains: list[str] | None = None,
+        excluded_domains: list[str] | None = None,
     ) -> dict[str, Any]:
         """Register or update a remote Home Assistant instance node."""
         if not self._loaded:
@@ -123,9 +142,13 @@ class FederationManager:
             "ssl": bool(ssl),
             "token": token,
             "enabled": bool(enabled),
+            "role": role or FEDERATION_ROLE_SATELLITE,
+            "allowed_domains": allowed_domains,
+            "excluded_domains": excluded_domains,
             "status": "configured",
             "latency_ms": 0.0,
             "remote_version": "unknown",
+            "location_name": name or node_id,
             "last_synced": None,
             "entities_count": 0,
         }
@@ -139,6 +162,7 @@ class FederationManager:
             _LOGGER.debug("Immediate ping to newly registered node '%s' failed: %s", node_id, err)
 
         await self.async_save()
+        self.publish_telemetry()
         return self._nodes[node_id]
 
     async def async_remove_node(self, node_id: str) -> bool:
@@ -150,6 +174,7 @@ class FederationManager:
             del self._nodes[node_id]
             self._cached_node_states.pop(node_id, None)
             await self.async_save()
+            self.publish_telemetry()
             _LOGGER.info("Deregistered federated node '%s'", node_id)
             return True
         return False
@@ -198,6 +223,7 @@ class FederationManager:
             node["status"] = "unreachable"
             node["latency_ms"] = -1.0
 
+        self.publish_telemetry()
         return {
             "node_id": node_id,
             "status": node["status"],
@@ -206,7 +232,7 @@ class FederationManager:
         }
 
     async def async_sync_node(self, node_id: str) -> dict[str, Any]:
-        """Synchronize all entity states from a remote federated node."""
+        """Synchronize all entity states from a remote federated node with domain filtering."""
         if not self._loaded:
             await self.async_load()
 
@@ -226,6 +252,9 @@ class FederationManager:
         headers = self._build_headers(node)
         session = async_get_clientsession(self.hass)
 
+        allowed_domains = set(node.get("allowed_domains") or [])
+        excluded_domains = set(node.get("excluded_domains") or [])
+
         t_start = time.perf_counter()
         try:
             async with asyncio.timeout(10.0):
@@ -236,20 +265,29 @@ class FederationManager:
                         entity_states: dict[str, dict[str, Any]] = {}
                         for s in raw_states:
                             eid = s.get("entity_id")
-                            if eid:
-                                entity_states[eid] = {
-                                    "state": s.get("state"),
-                                    "attributes": s.get("attributes", {}),
-                                    "last_updated": s.get("last_updated"),
-                                    "last_changed": s.get("last_changed"),
-                                }
+                            if not eid:
+                                continue
+                            domain = eid.split(".", 1)[0]
+                            if allowed_domains and domain not in allowed_domains:
+                                continue
+                            if excluded_domains and domain in excluded_domains:
+                                continue
+
+                            entity_states[eid] = {
+                                "state": s.get("state"),
+                                "attributes": s.get("attributes", {}),
+                                "last_updated": s.get("last_updated"),
+                                "last_changed": s.get("last_changed"),
+                            }
 
                         self._cached_node_states[node_id] = entity_states
                         node["status"] = "online"
                         node["latency_ms"] = latency
                         node["last_synced"] = datetime.now(timezone.utc).isoformat()
                         node["entities_count"] = len(entity_states)
+                        self._last_sync_timestamp = node["last_synced"]
                         await self.async_save()
+                        self.publish_telemetry()
 
                         return {
                             "node_id": node_id,
@@ -260,6 +298,7 @@ class FederationManager:
                         }
                     else:
                         node["status"] = f"http_{resp.status}"
+                        self.publish_telemetry()
                         return {
                             "node_id": node_id,
                             "status": node["status"],
@@ -268,10 +307,12 @@ class FederationManager:
                         }
         except asyncio.TimeoutError:
             node["status"] = "timeout"
+            self.publish_telemetry()
             return {"node_id": node_id, "status": "timeout", "synced_count": 0, "error": "Request timed out"}
         except Exception as err:
             _LOGGER.debug("Sync failed for node '%s': %s", node_id, err)
             node["status"] = "unreachable"
+            self.publish_telemetry()
             return {"node_id": node_id, "status": "unreachable", "synced_count": 0, "error": str(err)}
 
     async def async_sync_all_nodes(self) -> dict[str, Any]:
@@ -281,6 +322,7 @@ class FederationManager:
 
         enabled_nodes = [nid for nid, n in self._nodes.items() if n.get("enabled", True)]
         if not enabled_nodes:
+            self.publish_telemetry()
             return {"synced_nodes": 0, "total_entities": 0, "results": {}}
 
         results = await asyncio.gather(
@@ -300,6 +342,9 @@ class FederationManager:
                 if res.get("status") == "online":
                     successful_nodes += 1
                     total_ents += res.get("synced_count", 0)
+
+        self._last_sync_timestamp = datetime.now(timezone.utc).isoformat()
+        self.publish_telemetry()
 
         return {
             "synced_nodes": successful_nodes,
@@ -328,15 +373,19 @@ class FederationManager:
         session = async_get_clientsession(self.hass)
         payload = service_data or {}
 
+        t_start = time.perf_counter()
         try:
             async with asyncio.timeout(10.0):
                 async with session.post(url, headers=headers, json=payload) as resp:
+                    duration_ms = round((time.perf_counter() - t_start) * 1000, 1)
                     if resp.status == 200:
                         data = await resp.json()
                         _LOGGER.info(
-                            "Executed remote service '%s.%s' on node '%s'",
-                            domain, service, node_id
+                            "Executed remote service '%s.%s' on node '%s' (in %0.1fms)",
+                            domain, service, node_id, duration_ms
                         )
+                        self._record_call(node_id, domain, service, success=True, duration_ms=duration_ms)
+                        self.publish_telemetry()
                         return {
                             "success": True,
                             "node_id": node_id,
@@ -346,15 +395,248 @@ class FederationManager:
                         }
                     else:
                         text = await resp.text()
+                        err_msg = f"Remote node returned HTTP {resp.status}: {text}"
+                        self._record_call(node_id, domain, service, success=False, duration_ms=duration_ms, error=err_msg)
+                        self.publish_telemetry()
                         return {
                             "success": False,
                             "node_id": node_id,
                             "status": resp.status,
-                            "error": f"Remote node returned HTTP {resp.status}: {text}",
+                            "error": err_msg,
                         }
         except Exception as err:
+            duration_ms = round((time.perf_counter() - t_start) * 1000, 1)
             _LOGGER.error("Failed to execute remote service on node '%s': %s", node_id, err)
+            self._record_call(node_id, domain, service, success=False, duration_ms=duration_ms, error=str(err))
+            self.publish_telemetry()
             return {"success": False, "node_id": node_id, "error": str(err)}
+
+    async def async_forward_remote_command(
+        self,
+        entity_id: str,
+        service: str,
+        node_id: str | None = None,
+        service_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Transparently forward a command to a remote federated entity.
+
+        Accepts namespaced entities (federated.<node_id>.<domain>.<obj>) or standard
+        domain.obj entities with explicit node_id parameter.
+        """
+        target_node = node_id
+        target_entity = entity_id
+        target_domain = ""
+
+        if entity_id.startswith("federated."):
+            parts = entity_id.split(".", 3)
+            # federated.<node_id>.<domain>.<obj>
+            if len(parts) >= 4:
+                target_node = parts[1]
+                target_domain = parts[2]
+                target_entity = f"{parts[2]}.{parts[3]}"
+            elif len(parts) == 3:
+                target_node = parts[1]
+                target_domain = parts[2].split(".", 1)[0]
+                target_entity = parts[2]
+        elif "." in entity_id:
+            target_domain = entity_id.split(".", 1)[0]
+
+        if not target_node:
+            raise ValueError(f"Could not determine target federated node for entity '{entity_id}'")
+
+        if not target_domain:
+            target_domain = "homeassistant"
+
+        payload = dict(service_data or {})
+        if target_entity and "entity_id" not in payload:
+            payload["entity_id"] = target_entity
+
+        return await self.async_call_remote_service(
+            node_id=target_node,
+            domain=target_domain,
+            service=service,
+            service_data=payload,
+        )
+
+    async def async_broadcast_cluster_message(
+        self,
+        message: str,
+        title: str = "Otis Cluster Notification",
+        target_nodes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Broadcast an alert or notification across all online federated edge nodes."""
+        if not self._loaded:
+            await self.async_load()
+
+        if target_nodes:
+            candidate_ids = [nid for nid in target_nodes if nid in self._nodes]
+        else:
+            candidate_ids = [nid for nid, n in self._nodes.items() if n.get("enabled", True)]
+
+        if not candidate_ids:
+            return {"total_targeted": 0, "successful_nodes": [], "failed_nodes": []}
+
+        notification_payload = {
+            "title": title,
+            "message": message,
+        }
+
+        async def _send_to_node(nid: str) -> tuple[str, bool, str]:
+            res = await self.async_call_remote_service(
+                node_id=nid,
+                domain="persistent_notification",
+                service="create",
+                service_data=notification_payload,
+            )
+            return nid, res.get("success", False), res.get("error", "")
+
+        results = await asyncio.gather(*(_send_to_node(nid) for nid in candidate_ids))
+
+        successful = [nid for nid, success, _ in results if success]
+        failed = [nid for nid, success, _ in results if not success]
+
+        _LOGGER.info(
+            "Broadcasted cluster notification to %d nodes (%d success, %d failed)",
+            len(candidate_ids), len(successful), len(failed)
+        )
+        return {
+            "total_targeted": len(candidate_ids),
+            "successful_nodes": successful,
+            "failed_nodes": failed,
+        }
+
+    def _record_call(
+        self,
+        node_id: str,
+        domain: str,
+        service: str,
+        success: bool,
+        duration_ms: float,
+        error: str | None = None,
+    ) -> None:
+        """Record execution history for auditing and diagnostics."""
+        entry = {
+            "node_id": node_id,
+            "domain": domain,
+            "service": service,
+            "success": success,
+            "duration_ms": duration_ms,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "error": error,
+        }
+        self._recent_remote_calls.insert(0, entry)
+        if len(self._recent_remote_calls) > 20:
+            self._recent_remote_calls = self._recent_remote_calls[:20]
+
+    def calculate_cluster_health(self) -> dict[str, Any]:
+        """Calculate overall multi-node federation cluster health score and status."""
+        node_list = list(self._nodes.values())
+        if not node_list:
+            return {
+                "health_score": 100,
+                "status": CLUSTER_STATUS_IDLE,
+                "total_nodes": 0,
+                "online_nodes": 0,
+                "offline_nodes": 0,
+                "avg_latency_ms": 0.0,
+            }
+
+        enabled_nodes = [n for n in node_list if n.get("enabled", True)]
+        if not enabled_nodes:
+            return {
+                "health_score": 100,
+                "status": CLUSTER_STATUS_IDLE,
+                "total_nodes": len(node_list),
+                "online_nodes": 0,
+                "offline_nodes": 0,
+                "avg_latency_ms": 0.0,
+            }
+
+        node_scores: list[int] = []
+        valid_latencies: list[float] = []
+        online_count = 0
+
+        for n in enabled_nodes:
+            status = n.get("status", "offline")
+            lat = n.get("latency_ms", -1.0)
+            if status == "online" and lat >= 0:
+                online_count += 1
+                valid_latencies.append(lat)
+                if lat < 50.0:
+                    node_scores.append(100)
+                elif lat < 150.0:
+                    node_scores.append(85)
+                elif lat < 300.0:
+                    node_scores.append(70)
+                elif lat < 500.0:
+                    node_scores.append(50)
+                else:
+                    node_scores.append(30)
+            else:
+                node_scores.append(0)
+
+        health_score = int(round(sum(node_scores) / len(node_scores)))
+        avg_latency = round(sum(valid_latencies) / len(valid_latencies), 1) if valid_latencies else 0.0
+
+        if online_count == len(enabled_nodes) and health_score >= 80:
+            cluster_status = CLUSTER_STATUS_HEALTHY
+        elif online_count > 0:
+            cluster_status = CLUSTER_STATUS_DEGRADED
+        else:
+            cluster_status = CLUSTER_STATUS_OFFLINE
+
+        return {
+            "health_score": health_score,
+            "status": cluster_status,
+            "total_nodes": len(node_list),
+            "online_nodes": online_count,
+            "offline_nodes": len(enabled_nodes) - online_count,
+            "avg_latency_ms": avg_latency,
+        }
+
+    def publish_telemetry(self) -> None:
+        """Publish real-time telemetry to sensor.otis_federation_cluster and sensor.otis_federated_nodes."""
+        if not hasattr(self.hass, "states") or not hasattr(self.hass.states, "async_set"):
+            return
+
+        health = self.calculate_cluster_health()
+        cluster_status = health["status"]
+
+        sanitized_nodes = []
+        for n in self._nodes.values():
+            node_copy = dict(n)
+            if "token" in node_copy:
+                node_copy["token"] = "***" if node_copy["token"] else ""
+            sanitized_nodes.append(node_copy)
+
+        total_entities = sum(n.get("entities_count", 0) for n in sanitized_nodes)
+
+        attrs = {
+            "friendly_name": "Otis Multi-Node Federation Cluster",
+            "icon": "mdi:server-network",
+            "health_score": health["health_score"],
+            "total_nodes": health["total_nodes"],
+            "online_nodes": health["online_nodes"],
+            "offline_nodes": health["offline_nodes"],
+            "avg_latency_ms": health["avg_latency_ms"],
+            "total_federated_entities": total_entities,
+            "cluster_mode": "distributed",
+            "nodes": sanitized_nodes,
+            "recent_remote_calls": list(self._recent_remote_calls[:10]),
+            "last_sync_timestamp": self._last_sync_timestamp,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        self.hass.states.async_set(SENSOR_FEDERATION_CLUSTER, cluster_status, attrs)
+        self.hass.states.async_set(
+            SENSOR_FEDERATED_NODES,
+            f"{health['online_nodes']}/{health['total_nodes']} Online",
+            attrs,
+        )
+
+    async def async_publish_telemetry(self) -> None:
+        """Publish real-time telemetry (async interface)."""
+        self.publish_telemetry()
 
     def get_federated_entities(self, node_id: str | None = None) -> dict[str, dict[str, Any]]:
         """Return cached federated entities, optionally namespaced by node_id."""
@@ -375,17 +657,65 @@ class FederationManager:
         if not self._loaded:
             await self.async_load()
 
-        node_list = list(self._nodes.values())
-        online_count = sum(1 for n in node_list if n.get("status") == "online")
-        total_entities = sum(n.get("entities_count", 0) for n in node_list)
-        latencies = [n.get("latency_ms", 0.0) for n in node_list if n.get("latency_ms", -1.0) > 0]
-        avg_latency = round(sum(latencies) / len(latencies), 1) if latencies else 0.0
+        health = self.calculate_cluster_health()
+
+        sanitized_nodes = []
+        for n in self._nodes.values():
+            node_copy = dict(n)
+            if "token" in node_copy:
+                node_copy["token"] = "***" if node_copy["token"] else ""
+            sanitized_nodes.append(node_copy)
+
+        total_entities = sum(n.get("entities_count", 0) for n in sanitized_nodes)
 
         return {
-            "total_nodes": len(node_list),
-            "online_nodes": online_count,
-            "offline_nodes": len(node_list) - online_count,
-            "avg_latency_ms": avg_latency,
+            "total_nodes": health["total_nodes"],
+            "online_nodes": health["online_nodes"],
+            "offline_nodes": health["offline_nodes"],
+            "avg_latency_ms": health["avg_latency_ms"],
+            "health_score": health["health_score"],
+            "status": health["status"],
+            "cluster_mode": "distributed",
             "total_federated_entities": total_entities,
-            "nodes": node_list,
+            "nodes": sanitized_nodes,
+            "recent_remote_calls": list(self._recent_remote_calls[:10]),
+            "last_sync_timestamp": self._last_sync_timestamp,
         }
+
+    async def async_start_background_sync(self, interval_seconds: int = 300) -> None:
+        """Start non-blocking background periodic sync loop for federated edge nodes."""
+        if self._sync_task and not self._sync_task.done():
+            return
+        self._sync_interval_seconds = interval_seconds
+
+        async def _sync_loop() -> None:
+            _LOGGER.info(
+                "Starting Otis multi-node federation background sync loop (every %ds)",
+                self._sync_interval_seconds,
+            )
+            while True:
+                try:
+                    await asyncio.sleep(self._sync_interval_seconds)
+                    await self.async_sync_all_nodes()
+                except asyncio.CancelledError:
+                    _LOGGER.debug("Otis federation background sync loop cancelled")
+                    break
+                except Exception as err:
+                    _LOGGER.warning("Error in Otis federation background sync loop: %s", err)
+
+        try:
+            loop = asyncio.get_running_loop()
+            self._sync_task = loop.create_task(_sync_loop())
+        except RuntimeError:
+            self._sync_task = asyncio.create_task(_sync_loop())
+
+    async def async_stop_background_sync(self) -> None:
+        """Stop background synchronization loop gracefully."""
+        if self._sync_task:
+            self._sync_task.cancel()
+            try:
+                await self._sync_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._sync_task = None
+            _LOGGER.debug("Stopped Otis federation background sync loop")

@@ -1,7 +1,7 @@
 """Constants for the Otis AI Companion integration."""
 
 DOMAIN = "otis_ai"
-INTEGRATION_VERSION = "0.1.43"
+INTEGRATION_VERSION = "0.1.44"
 
 # Configuration Keys
 CONF_CONVERSATION_AGENT = "conversation_agent"
@@ -101,6 +101,18 @@ SERVICE_REMOVE_FEDERATED_NODE = "remove_federated_node"
 SERVICE_SYNC_FEDERATED_NODES = "sync_federated_nodes"
 SERVICE_CALL_REMOTE_SERVICE = "call_remote_service"
 SERVICE_GET_FEDERATION_STATUS = "get_federation_status"
+SERVICE_BROADCAST_CLUSTER_MESSAGE = "broadcast_cluster_message"
+SERVICE_FORWARD_REMOTE_COMMAND = "forward_remote_command"
+SENSOR_FEDERATION_CLUSTER = "sensor.otis_federation_cluster"
+SENSOR_FEDERATED_NODES = "sensor.otis_federated_nodes"
+FEDERATION_ROLE_PRIMARY = "primary"
+FEDERATION_ROLE_SATELLITE = "satellite"
+FEDERATION_ROLE_OUTBUILDING = "outbuilding"
+FEDERATION_ROLE_MOBILE = "mobile_marine"
+CLUSTER_STATUS_HEALTHY = "healthy"
+CLUSTER_STATUS_DEGRADED = "degraded"
+CLUSTER_STATUS_OFFLINE = "offline"
+CLUSTER_STATUS_IDLE = "idle"
 
 # User Behavioral Rules & Onboarding Services (Roadmap Item 7)
 SERVICE_GET_USER_RULES = "get_user_rules"

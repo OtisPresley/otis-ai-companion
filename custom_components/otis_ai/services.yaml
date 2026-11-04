@@ -829,6 +829,34 @@ register_federated_node:
       default: true
       selector:
         boolean:
+    role:
+      name: Node Role
+      description: Architectural role of this instance (primary, satellite, outbuilding, mobile_marine).
+      required: false
+      default: satellite
+      selector:
+        select:
+          options:
+            - label: Primary Hub
+              value: primary
+            - label: Satellite Edge Node
+              value: satellite
+            - label: Outbuilding / Detached Structure
+              value: outbuilding
+            - label: Mobile / Marine Vessel
+              value: mobile_marine
+    allowed_domains:
+      name: Allowed Domains
+      description: List of entity domains to synchronize (leave empty to sync all domains).
+      required: false
+      selector:
+        object:
+    excluded_domains:
+      name: Excluded Domains
+      description: List of entity domains to exclude from sync (e.g. camera, media_player).
+      required: false
+      selector:
+        object:
 
 remove_federated_node:
   name: Remove Federated Edge Node
@@ -884,6 +912,59 @@ call_remote_service:
 get_federation_status:
   name: Get Federation Status
   description: Retrieve live health, latency, online status, and synchronization metrics for all federated edge nodes.
+
+broadcast_cluster_message:
+  name: Broadcast Cluster Message
+  description: Broadcast an alert or persistent notification across all active online federated edge nodes.
+  fields:
+    message:
+      name: Message
+      description: Content of the alert or notification to broadcast.
+      required: true
+      selector:
+        text:
+    title:
+      name: Notification Title
+      description: Title of the notification.
+      required: false
+      default: Otis Cluster Notification
+      selector:
+        text:
+    target_nodes:
+      name: Target Node IDs
+      description: Specific nodes to receive the broadcast (omit for all enabled edge nodes).
+      required: false
+      selector:
+        object:
+
+forward_remote_command:
+  name: Forward Remote Command
+  description: Transparently route a service execution to a remote federated entity or namespaced entity ID.
+  fields:
+    entity_id:
+      name: Entity Identifier
+      description: Target entity ID (e.g. federated.guest_house.light.bed or light.bed).
+      required: true
+      selector:
+        text:
+    service:
+      name: Service Name
+      description: Name of the service to invoke (e.g. turn_on, turn_off, toggle).
+      required: true
+      selector:
+        text:
+    node_id:
+      name: Node Identifier
+      description: Target node ID (optional if entity_id contains federated.<node_id> namespace).
+      required: false
+      selector:
+        text:
+    service_data:
+      name: Service Data
+      description: Key-value parameters passed to the remote service.
+      required: false
+      selector:
+        object:
 
 get_user_rules:
   name: Get User Rules

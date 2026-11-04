@@ -85,6 +85,8 @@ from .const import (
     SERVICE_SYNC_FEDERATED_NODES,
     SERVICE_CALL_REMOTE_SERVICE,
     SERVICE_GET_FEDERATION_STATUS,
+    SERVICE_BROADCAST_CLUSTER_MESSAGE,
+    SERVICE_FORWARD_REMOTE_COMMAND,
     SERVICE_GET_USER_RULES,
     SERVICE_SET_USER_RULES,
     SERVICE_DISMISS_RECOMMENDATION,
@@ -502,6 +504,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         rag_manager.async_load(),
         agent_orchestrator.async_load(),
     )
+    federation_manager.publish_telemetry()
+    fed_coro = federation_manager.async_start_background_sync()
+    if hasattr(hass, "async_create_task"):
+        fed_task = hass.async_create_task(fed_coro)
+        if not isinstance(fed_task, asyncio.Task) and asyncio.iscoroutine(fed_coro):
+            fed_coro.close()
     engine = DiscoveryEngine(
         hass,
         spatial_manager=spatial_manager,
@@ -1958,6 +1966,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         token = call.data.get("token", "")
         ssl = bool(call.data.get("ssl", False))
         enabled = bool(call.data.get("enabled", True))
+        role = call.data.get("role", "satellite")
+        allowed_domains = call.data.get("allowed_domains")
+        excluded_domains = call.data.get("excluded_domains")
         return await fm.async_register_node(
             node_id=node_id,
             name=name,
@@ -1966,6 +1977,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             token=token,
             ssl=ssl,
             enabled=enabled,
+            role=role,
+            allowed_domains=allowed_domains,
+            excluded_domains=excluded_domains,
         )
 
     async def handle_remove_federated_node(call) -> ServiceResponse:
@@ -2005,6 +2019,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug("Service 'get_federation_status' triggered")
         fm = _get_federation_manager()
         return await fm.async_get_federation_summary()
+
+    async def handle_broadcast_cluster_message(call) -> ServiceResponse:
+        """Handle service call to broadcast an alert/notification to federated edge nodes."""
+        _LOGGER.debug("Service 'broadcast_cluster_message' triggered")
+        fm = _get_federation_manager()
+        message = call.data["message"]
+        title = call.data.get("title", "Otis Cluster Notification")
+        target_nodes = call.data.get("target_nodes")
+        return await fm.async_broadcast_cluster_message(
+            message=message,
+            title=title,
+            target_nodes=target_nodes,
+        )
+
+    async def handle_forward_remote_command(call) -> ServiceResponse:
+        """Handle service call to transparently forward a command to a federated remote entity."""
+        _LOGGER.debug("Service 'forward_remote_command' triggered")
+        fm = _get_federation_manager()
+        entity_id = call.data["entity_id"]
+        service = call.data["service"]
+        node_id = call.data.get("node_id")
+        service_data = call.data.get("service_data")
+        return await fm.async_forward_remote_command(
+            entity_id=entity_id,
+            service=service,
+            node_id=node_id,
+            service_data=service_data,
+        )
 
     async def handle_get_user_rules(call) -> ServiceResponse:
         """Handle service call to retrieve user behavioral rules and persona guidelines."""
@@ -2686,6 +2728,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     hass.services.async_register(
         DOMAIN,
+        SERVICE_BROADCAST_CLUSTER_MESSAGE,
+        handle_broadcast_cluster_message,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_FORWARD_REMOTE_COMMAND,
+        handle_forward_remote_command,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
         SERVICE_GET_USER_RULES,
         handle_get_user_rules,
         supports_response=SupportsResponse.OPTIONAL,
@@ -2873,6 +2927,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.debug("Unloading Otis AI Companion entry: %s", entry.entry_id)
     if entry.entry_id in hass.data[DOMAIN]:
         entry_data = hass.data[DOMAIN].pop(entry.entry_id)
+        fm = entry_data.get("federation_manager")
+        if fm and hasattr(fm, "async_stop_background_sync"):
+            await fm.async_stop_background_sync()
         agent = entry_data.get("agent")
         if agent:
             _LOGGER.debug("Unregistering conversation agent")
@@ -4038,7 +4095,21 @@ class OtisAIConversationAgent(AbstractAgent):
                 return self._create_response(user_input, "\n".join(lines))
 
         if getattr(self, "federation_manager", None) and any(w in user_lower for w in (
-            "federation", "edge node", "edge nodes", "remote node", "remote instance", "sync nodes"
+            "sync nodes", "sync edge nodes", "synchronize nodes", "synchronize edge nodes", "sync federated", "synchronize cluster"
+        )):
+            fire_progress("domain", "Federation Sync", "Synchronizing entity states from all active edge nodes")
+            sync_res = await self.federation_manager.async_sync_all_nodes()
+            synced_count = sync_res.get("synced_nodes", 0)
+            total_nodes = sync_res.get("total_nodes", 0)
+            total_ents = sync_res.get("total_entities", 0)
+            return self._create_response(
+                user_input,
+                f"🔄 **Otis Cluster Synchronization Complete!**\n"
+                f"Successfully synchronized {total_ents} entities across {synced_count} of {total_nodes} edge nodes."
+            )
+
+        if getattr(self, "federation_manager", None) and any(w in user_lower for w in (
+            "federation", "edge node", "edge nodes", "remote node", "remote instance", "cluster status", "cluster health"
         )):
             fire_progress("domain", "Federation Inspection", "Querying remote edge nodes and synchronization health")
             fed_summary = await self.federation_manager.async_get_federation_summary()
@@ -4052,8 +4123,10 @@ class OtisAIConversationAgent(AbstractAgent):
             online = fed_summary.get("online_nodes", 0)
             avg_lat = fed_summary.get("avg_latency_ms", 0.0)
             ents = fed_summary.get("total_federated_entities", 0)
+            health_score = fed_summary.get("health_score", 100)
+            status_tag = fed_summary.get("status", "healthy").upper()
             lines = [
-                "🌐 **Otis Multi-Node Federation & Edge Synchronizer**\n",
+                f"🌐 **Otis Multi-Node Federation & Cluster Health [{status_tag} - {health_score}%]**\n",
                 f"• **Active Nodes:** {online} / {total_nodes} Online",
                 f"• **Synchronized Entities:** {ents}",
                 f"• **Average Latency:** {avg_lat} ms\n",
@@ -4061,7 +4134,8 @@ class OtisAIConversationAgent(AbstractAgent):
             ]
             for n in fed_summary.get("nodes", []):
                 stat_icon = "🟢" if n.get("status") == "online" else "🔴"
-                lines.append(f"• {stat_icon} **{n.get('name')}** (`{n.get('node_id')}`): {n.get('status')}, {n.get('latency_ms', 0)}ms, v{n.get('remote_version', 'unknown')}")
+                role_str = f" [{n.get('role', 'satellite').upper()}]" if n.get("role") else ""
+                lines.append(f"• {stat_icon} **{n.get('name')}** (`{n.get('node_id')}`){role_str}: {n.get('status')}, {n.get('latency_ms', 0)}ms, v{n.get('remote_version', 'unknown')}")
             return self._create_response(user_input, "\n".join(lines))
 
         # 1. Resolve prioritized AI agent cascade (Primary + Fallbacks)

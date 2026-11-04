@@ -259,7 +259,9 @@ Otis AI Companion provides **55 registered services** structured by architectura
 | `otis_ai.remove_federated_node` | Unregister a remote federated node. | `data: { node_id: "guest_house" }` |
 | `otis_ai.sync_federated_nodes` | Synchronize state machines from all registered satellite nodes. | `data: { node_id: "all" }` |
 | `otis_ai.call_remote_service` | Execute a Home Assistant service call on a satellite edge node. | `data: { node_id: "guest_house", domain: "light", service: "turn_off" }` |
-| `otis_ai.get_federation_status` | Retrieve connectivity, latency, entity counts, and version across nodes. | `response_variable: status` |
+| `otis_ai.forward_remote_command` | Transparently route a service execution to a remote federated entity or namespaced entity ID. | `data: { entity_id: "federated.guest_house.light.bed", service: "turn_on" }` |
+| `otis_ai.broadcast_cluster_message` | Broadcast an alert or persistent notification across all active online federated edge nodes. | `data: { message: "Severe weather alert", title: "Otis Warning" }` |
+| `otis_ai.get_federation_status` | Retrieve connectivity, latency, entity counts, health score, and version across nodes. | `response_variable: status` |
 
 ### 11. User Behavioral Rules & Persona Management
 | Service Name | Description | Example Target |
