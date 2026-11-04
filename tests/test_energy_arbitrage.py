@@ -7,7 +7,9 @@ import pytest
 
 from custom_components.otis_ai.energy_manager import (
     ACTION_CHARGE_GRID,
+    ACTION_DISCHARGE_EVENING,
     ACTION_DISCHARGE_PEAK,
+    ACTION_DISCHARGE_SELF_CONSUMPTION,
     ACTION_HOLD_RESERVE,
     ACTION_IDLE,
     ACTION_STORE_SOLAR,
@@ -193,6 +195,8 @@ def test_async_get_arbitrage_plan_live_telemetry(mock_hass, energy_manager):
         ACTION_CHARGE_GRID,
         ACTION_STORE_SOLAR,
         ACTION_DISCHARGE_PEAK,
+        ACTION_DISCHARGE_EVENING,
+        ACTION_DISCHARGE_SELF_CONSUMPTION,
         ACTION_HOLD_RESERVE,
         ACTION_IDLE,
     )

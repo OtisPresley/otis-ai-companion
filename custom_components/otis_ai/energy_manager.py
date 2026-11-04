@@ -38,6 +38,8 @@ VALID_ARBITRAGE_MODES = {
 ACTION_CHARGE_GRID = "charge_grid_offpeak"
 ACTION_STORE_SOLAR = "store_solar_surplus"
 ACTION_DISCHARGE_PEAK = "discharge_peak"
+ACTION_DISCHARGE_EVENING = "discharge_evening"
+ACTION_DISCHARGE_SELF_CONSUMPTION = "discharge_self_consumption"
 ACTION_HOLD_RESERVE = "hold_reserve"
 ACTION_IDLE = "idle"
 
@@ -611,7 +613,7 @@ class EnergyManager:
                     reason = "Store daytime solar generation on-site to minimize later grid dependency."
                 elif net_surplus < 0 and available_discharge_kwh > 0.05:
                     discharge = min(abs(net_surplus), max_discharge_kw, available_discharge_kwh)
-                    action = ACTION_DISCHARGE_PEAK if period == "peak" else "discharge_self_consumption"
+                    action = ACTION_DISCHARGE_PEAK if period == "peak" else ACTION_DISCHARGE_SELF_CONSUMPTION
                     battery_flow_kwh = -discharge
                     reason = "Discharge stored solar energy to cover household deficit."
                 else:
@@ -663,7 +665,7 @@ class EnergyManager:
                     elif net_surplus < 0 and sim_hour >= 19 and available_discharge_kwh > 0.05:
                         # Post-peak evening shoulder: gently discharge remaining energy down to reserve
                         discharge = min(abs(net_surplus), max_discharge_kw * 0.6, available_discharge_kwh)
-                        action = "discharge_evening"
+                        action = ACTION_DISCHARGE_EVENING
                         battery_flow_kwh = -discharge
                         reason = "Discharge residual energy to cover evening household consumption."
                     else:
