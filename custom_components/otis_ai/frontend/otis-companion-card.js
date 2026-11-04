@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.41";
+const CARD_VERSION = "0.1.42";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -5039,6 +5039,12 @@ class OtisCompanionCard extends HTMLElement {
           color: #34d399;
         }
 
+        .vision-stat-chip.micro_presence {
+          background: rgba(168, 85, 247, 0.15);
+          border-color: rgba(168, 85, 247, 0.4);
+          color: #c084fc;
+        }
+
         .vision-stat-chip.likely {
           background: rgba(245, 158, 11, 0.15);
           border-color: rgba(245, 158, 11, 0.4);
@@ -5108,6 +5114,13 @@ class OtisCompanionCard extends HTMLElement {
           border: 1px solid rgba(16, 185, 129, 0.4);
         }
 
+        .presence-badge.micro_presence {
+          background: rgba(168, 85, 247, 0.25);
+          color: #c084fc;
+          border: 1px solid rgba(168, 85, 247, 0.5);
+          box-shadow: 0 0 8px rgba(168, 85, 247, 0.3);
+        }
+
         .presence-badge.likely_occupied {
           background: rgba(245, 158, 11, 0.2);
           color: #fbbf24;
@@ -5137,6 +5150,11 @@ class OtisCompanionCard extends HTMLElement {
         .presence-bar-fill.occupied {
           background: linear-gradient(90deg, #10b981, #059669);
           box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
+        }
+
+        .presence-bar-fill.micro_presence {
+          background: linear-gradient(90deg, #a855f7, #7c3aed);
+          box-shadow: 0 0 10px rgba(168, 85, 247, 0.5);
         }
 
         .presence-bar-fill.likely_occupied {
@@ -8639,12 +8657,15 @@ class OtisCompanionCard extends HTMLElement {
   }
 
   _renderVisionTab() {
+    const fusedSensor = this._hass?.states?.["sensor.otis_fused_presence"];
+    const fusedAttrs = fusedSensor?.attributes || {};
     const visionTopo = this._capabilityMap?.vision_topology || {};
-    const pres = visionTopo.presence || {};
+    const pres = fusedAttrs.rooms ? fusedAttrs : (visionTopo.presence || {});
     const rooms = pres.rooms || {};
     const cameras = visionTopo.cameras || [];
     const recentAudits = visionTopo.recent_audits || [];
     const occCount = pres.occupied_count ?? 0;
+    const microCount = pres.micro_presence_count ?? 0;
     const likelyCount = pres.likely_count ?? 0;
     const vacantCount = pres.vacant_count ?? 0;
     const roomEntries = Object.values(rooms);
@@ -8675,20 +8696,21 @@ class OtisCompanionCard extends HTMLElement {
         <div class="vision-overview-card">
           <div class="vision-stats-row">
             <span style="font-weight: 700; font-size: 0.88rem; color: var(--otis-primary);">👁️ Presence Status:</span>
-            <span class="vision-stat-chip ${pres.household_present ? 'occupied' : 'vacant'}">
-              ${pres.household_present ? "🏠 Household Present" : "🚪 Away Mode"}
+            <span class="vision-stat-chip ${pres.household_present !== false ? 'occupied' : 'vacant'}">
+              ${pres.household_present !== false ? "🏠 Household Present" : "🚪 Away Mode"}
             </span>
             <span class="vision-stat-chip occupied">🟢 ${occCount} Occupied</span>
+            ${microCount > 0 ? `<span class="vision-stat-chip micro_presence">🟣 ${microCount} Micro-Presence</span>` : ""}
             ${likelyCount > 0 ? `<span class="vision-stat-chip likely">🟡 ${likelyCount} Likely</span>` : ""}
             <span class="vision-stat-chip vacant">⚪ ${vacantCount} Vacant</span>
           </div>
           <button type="button" class="btn-toolbar" id="btn-refresh-vision" style="font-size: 0.76rem; padding: 4px 10px;">
-            🔄 Refresh Sensors
+            🔄 Fuse Presence
           </button>
         </div>
 
         <div class="vision-section-title">
-          <span>📡 Multi-Sensor Room Occupancy Fusion (mmWave + PIR + Media + BLE)</span>
+          <span>📡 Multimodal Presence Fusion (BLE Trilateration + mmWave Radar + Thermal + Acoustic)</span>
         </div>
 
         <div class="presence-grid">
@@ -8701,37 +8723,61 @@ class OtisCompanionCard extends HTMLElement {
                   .map((r) => {
                     const statusClass = r.status || "vacant";
                     const pct = r.confidence_percent ?? 0;
-                    const s = r.sensors || {};
+                    const s = r.modalities || r.sensors || {};
                     const mmwave = s.mmwave || {};
+                    const thermal = s.thermal || {};
+                    const ble = s.ble || s.ble_beacon || {};
+                    const acoustic = s.acoustic || {};
                     const pir = s.pir || {};
                     const media = s.media || {};
-                    const ble = s.ble_beacon || {};
                     const lightsOn = s.lights_on || 0;
+
+                    let badgeText = "⚪ VACANT";
+                    if (statusClass === "micro_presence") {
+                      badgeText = "🟣 MICRO-PRESENCE";
+                    } else if (statusClass === "occupied") {
+                      badgeText = "🟢 OCCUPIED";
+                    } else if (statusClass === "likely_occupied" || statusClass === "likely") {
+                      badgeText = "🟡 LIKELY";
+                    }
 
                     let pirText = pir.active ? "Motion Active" : pir.seconds_since_motion ? `${Math.round(pir.seconds_since_motion / 60) || 1}m ago` : "Idle";
 
                     return `
                     <div class="presence-card">
                       <div class="presence-card-head">
-                        <span class="presence-room-name">${r.area_name}</span>
+                        <span class="presence-room-name">
+                          ${r.area_name}
+                          ${r.attributed_user ? `<span style="font-size: 0.72rem; color: #38bdf8; margin-left: 6px; font-weight: 600;">👤 ${this._escapeHtml(r.attributed_user)}</span>` : ""}
+                        </span>
                         <span class="presence-badge ${statusClass}">
-                          ${statusClass === "occupied" ? "🟢 OCCUPIED" : statusClass === "likely_occupied" ? "🟡 LIKELY" : "⚪ VACANT"} • ${pct}%
+                          ${badgeText} • ${pct}%
                         </span>
                       </div>
                       <div class="presence-bar-track">
                         <div class="presence-bar-fill ${statusClass}" style="width: ${Math.max(4, pct)}%;"></div>
                       </div>
                       <div class="presence-sensors-row">
-                        <span class="presence-sensor-pill ${mmwave.active ? 'active' : ''}" title="mmWave Micro-movement Radar">
-                          📡 mmWave: ${mmwave.active ? 'Detecting' : 'Idle'}
+                        <span class="presence-sensor-pill ${mmwave.active ? 'active' : ''}" title="mmWave Micro-movement Radar (breathing / stationary / moving targets)">
+                          📡 mmWave: ${mmwave.mode && mmwave.mode !== 'clear' ? mmwave.mode : (mmwave.active ? 'Active' : 'Idle')}
                         </span>
+                        <span class="presence-sensor-pill ${thermal.detected ? 'active' : ''}" title="Thermal Infrared Heat Signature (human body vs pets/appliances)">
+                          🌡️ Thermal: ${thermal.detected ? `Body Heat (${thermal.delta_c ? '+' + thermal.delta_c + '°C' : 'Human'})` : (thermal.target_type === 'pet_or_appliance' ? 'Pet Filtered' : 'None')}
+                        </span>
+                        ${ble.active || r.attributed_user ? `
+                        <span class="presence-sensor-pill active" title="BLE Beacon Proximity &amp; Trilateration">
+                          📍 BLE: ${this._escapeHtml(r.attributed_user || ble.user || (ble.distance_m ? ble.distance_m + 'm' : 'Near'))}
+                        </span>` : ""}
+                        ${acoustic.detected ? `
+                        <span class="presence-sensor-pill active" title="Acoustic Footprinting (speech / footsteps / decibel spike)">
+                          🎙️ Sound: ${this._escapeHtml(acoustic.event_type || 'Active')}
+                        </span>` : ""}
                         <span class="presence-sensor-pill ${pir.active ? 'active' : ''}" title="PIR Motion Sensor">
                           🏃 PIR: ${pirText}
                         </span>
-                        <span class="presence-sensor-pill ${media.playing ? 'active' : ''}" title="Audio/Video Playback Presence">
-                          🎵 Media: ${media.playing ? 'Playing' : 'Off'}
+                        <span class="presence-sensor-pill ${media.playing || media.active ? 'active' : ''}" title="Audio/Video Playback Presence">
+                          🎵 Media: ${media.playing || media.active ? 'Playing' : 'Off'}
                         </span>
-                        ${ble.active ? `<span class="presence-sensor-pill active" title="BLE Beacon Tracker">📍 BLE: Detected</span>` : ""}
                         ${lightsOn > 0 ? `<span class="presence-sensor-pill active" title="Lights On">💡 ${lightsOn} On</span>` : ""}
                       </div>
                     </div>
@@ -9724,9 +9770,16 @@ class OtisCompanionCard extends HTMLElement {
     const refreshVisionBtn = root.querySelector("#btn-refresh-vision");
     if (refreshVisionBtn) {
       refreshVisionBtn.onclick = async () => {
-        this._showToast("🔄 Refreshing presence and camera telemetry...");
+        this._showToast("🔄 Fusing multimodal presence across BLE, mmWave, Thermal & Acoustic sensors...");
+        try {
+          if (this._hass) {
+            await this._hass.callService("otis_ai", "fuse_presence", { force_refresh: true });
+          }
+        } catch (err) {
+          console.debug("Could not trigger fuse_presence:", err);
+        }
         await this._fetchData();
-        this._showToast("✨ Presence telemetry updated!");
+        this._showToast("✨ Multimodal presence fused & telemetry updated!");
       };
     }
 

@@ -1,7 +1,7 @@
 """Constants for the Otis AI Companion integration."""
 
 DOMAIN = "otis_ai"
-INTEGRATION_VERSION = "0.1.36"
+INTEGRATION_VERSION = "0.1.42"
 
 # Configuration Keys
 CONF_CONVERSATION_AGENT = "conversation_agent"
@@ -72,6 +72,8 @@ SERVICE_GET_ENERGY_SUMMARY = "get_energy_summary"
 SERVICE_LOAD_SHED = "load_shed"
 SERVICE_RESTORE_SHED_LOADS = "restore_shed_loads"
 SERVICE_GET_PRESENCE_STATES = "get_presence_states"
+SERVICE_FUSE_PRESENCE = "fuse_presence"
+SERVICE_TRILATERATE_BLE = "trilaterate_ble"
 SERVICE_ANALYZE_CAMERA = "analyze_camera"
 SERVICE_AUDIT_PERIMETER = "audit_perimeter"
 SERVICE_GET_INTRUDER_TRACKS = "get_intruder_tracks"

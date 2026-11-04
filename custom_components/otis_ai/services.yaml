@@ -557,6 +557,56 @@ get_presence_states:
   name: Get Room Presence States
   description: Retrieve live spatial room occupancy probability states fused across mmWave radar, PIR motion, media playback, and BLE tracking.
 
+fuse_presence:
+  name: Multimodal Presence Fusion
+  description: Perform advanced multimodal room occupancy fusion across BLE trilateration, mmWave micro-motion, thermal imaging, acoustic footprinting, and PIR motion with pet/vacuum rejection.
+  fields:
+    force_refresh:
+      name: Force Refresh
+      description: Bypass short cache window to perform immediate re-audit of all sensing modalities.
+      required: false
+      default: false
+      selector:
+        boolean:
+
+trilaterate_ble:
+  name: Trilaterate BLE Target
+  description: Calculate 2D coordinates (x, y) of a BLE beacon using log-distance path loss and multi-anchor receiver RSSI observations.
+  fields:
+    beacon_id:
+      name: Beacon ID
+      description: Identifier or MAC address of the BLE beacon or device tracker.
+      required: false
+      selector:
+        text:
+    observations:
+      name: Anchor Observations
+      description: List of receiver observations with anchor_id and rssi values (e.g. [{"anchor_id": "proxy_1", "rssi": -65.0}]).
+      required: true
+      selector:
+        object:
+    ref_rssi:
+      name: Reference RSSI (1m)
+      description: Calibrated RSSI value at 1 meter distance in dBm (default -59.0).
+      required: false
+      default: -59.0
+      selector:
+        number:
+          min: -100
+          max: 0
+          step: 0.5
+          unit_of_measurement: dBm
+    path_loss_exponent:
+      name: Path Loss Exponent
+      description: Indoor RF environment attenuation exponent (default 2.2).
+      required: false
+      default: 2.2
+      selector:
+        number:
+          min: 1.5
+          max: 4.5
+          step: 0.1
+
 analyze_camera:
   name: Analyze Camera Snapshot
   description: Capture and evaluate a camera snapshot using Local LLM / Ollama multimodal vision or edge sensors for visitor activity, package deliveries, or safety anomalies.

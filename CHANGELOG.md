@@ -7,6 +7,24 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.42] - 2026-11-04
+
+### Added
+- **Phase 8: Advanced Multimodal Presence Fusion (BLE Trilateration, mmWave Micro-Motion, Thermal Imaging, and Acoustic Footprinting)**:
+  - Implemented `PresenceFusionManager` in `presence_manager.py` integrating the 4 advanced spatial sensing pillars:
+    - **BLE RSSI Trilateration & Distance Modeling**: Log-distance path loss propagation ($d = 10^{\frac{RSSI_0 - RSSI}{10 \cdot n}}$) and 2D/3D linearized least-squares trilateration across multi-anchor Bluetooth proxies with weighted centroid fallback and resident persona attribution.
+    - **mmWave Micro-Motion & Static Target Sensing**: Stationary vs. moving target energy discrimination (LD2410, FP1/FP2, Screek), resolving micro-movements (breathing, chest displacement) while sitting still or asleep to permanently eliminate false-negative "vacant" states.
+    - **Thermal Infrared Heat-Signature Discrimination**: Temperature delta evaluation ($\Delta T = T_{\text{target}} - T_{\text{ambient}}$) with human body surface temperature gating ($29.5^\circ\text{C} - 38.5^\circ\text{C}$), automatically discriminating and rejecting domestic pets and cold appliances/vacuums.
+    - **Acoustic Footprinting**: Real-time ambient noise floor tracking, decibel spike evaluation, and voice/speech event detection with speech confidence bonuses.
+  - **Dynamic Bayesian Sensor Fusion**:
+    - Cross-validates modalities and discounts false positives (e.g. robot vacuums triggering PIR without human body heat or BLE, abandoned televisions without biological confirmation).
+    - Introduced `micro_presence` state classification for resting/sleeping residents.
+  - Implemented Home Assistant services `otis_ai.fuse_presence` and `otis_ai.trilaterate_ble`.
+  - Implemented real-time telemetry publishing to `sensor.otis_fused_presence` reporting room-by-room breakdown, active modalities, coordinates, and attributed users.
+  - Enhanced Assist conversational agent to answer spatial queries ("Where is everyone right now?", "Who is in the house?", "Multimodal presence") with rich room occupancy and micro-presence breakdowns.
+  - Updated Lovelace `otis-companion-card.js` with Multimodal Presence Fusion view, `micro_presence` purple glowing badges, active modality pill tags (radar, thermal, BLE, sound), and user attribution.
+  - Bumped integration and card version to v0.1.42.
+
 ## [0.1.41] - 2026-11-04
 
 ### Added

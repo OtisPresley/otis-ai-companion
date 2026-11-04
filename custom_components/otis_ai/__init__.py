@@ -68,6 +68,8 @@ from .const import (
     SERVICE_LOAD_SHED,
     SERVICE_RESTORE_SHED_LOADS,
     SERVICE_GET_PRESENCE_STATES,
+    SERVICE_FUSE_PRESENCE,
+    SERVICE_TRILATERATE_BLE,
     SERVICE_ANALYZE_CAMERA,
     SERVICE_AUDIT_PERIMETER,
     SERVICE_GET_INTRUDER_TRACKS,
@@ -127,6 +129,7 @@ from .dashboard_manager import DashboardManager
 from .energy_manager import EnergyManager
 from .macro_manager import MacroManager
 from .mesh_manager import MeshManager
+from .presence_manager import PresenceFusionManager
 from .matrix_presets import (
     get_matrix_presets_list,
     identify_matrix_preset,
@@ -470,6 +473,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     commissioning_manager = AutonomousCommissioningManager(hass, spatial_manager=spatial_manager)
     federation_manager = FederationManager(hass)
     mesh_manager = MeshManager(hass)
+    presence_fusion_manager = PresenceFusionManager(hass)
     await asyncio.gather(
         spatial_manager.async_load(),
         floorplan_parser.async_load(),
@@ -496,6 +500,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         local_llm_manager=local_llm_manager,
         rag_manager=rag_manager,
         mesh_manager=mesh_manager,
+        presence_fusion_manager=presence_fusion_manager,
     )
 
     async def _async_sync_dashboards_on_startup() -> None:
@@ -553,6 +558,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         dashboard_manager=dashboard_manager,
         floorplan_parser=floorplan_parser,
         rag_manager=rag_manager,
+        presence_fusion_manager=presence_fusion_manager,
     )
 
     if hasattr(conversation, "async_register_agent"):
@@ -590,6 +596,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "local_llm_manager": local_llm_manager,
         "rag_manager": rag_manager,
         "mesh_manager": mesh_manager,
+        "presence_fusion_manager": presence_fusion_manager,
     }
 
     async def _async_update_listener(hass_inst: HomeAssistant, updated_entry: ConfigEntry) -> None:
@@ -670,6 +677,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     def _get_mesh_manager() -> MeshManager:
         return _get_entry_data().get("mesh_manager", mesh_manager)
 
+    def _get_presence_fusion_manager() -> PresenceFusionManager:
+        return _get_entry_data().get("presence_fusion_manager", presence_fusion_manager)
+
     def _get_active_managers():
         return (
             _get_engine(),
@@ -686,6 +696,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _get_habit_manager(),
             _get_commissioning_manager(),
             _get_federation_manager(),
+            _get_presence_fusion_manager(),
         )
 
     async def handle_get_capability_map(call) -> ServiceResponse:
@@ -1786,8 +1797,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def handle_get_presence_states(call) -> ServiceResponse:
         """Handle service call to retrieve fused room occupancy states."""
         _LOGGER.debug("Service 'get_presence_states' triggered")
+        pm = _get_presence_fusion_manager()
+        if pm:
+            return await pm.async_fuse_presence(use_cache=True)
         vm = _get_vision_manager()
         return await vm.async_get_presence_states()
+
+    async def handle_fuse_presence(call) -> ServiceResponse:
+        """Handle service call for advanced multimodal presence fusion."""
+        _LOGGER.debug("Service 'fuse_presence' triggered")
+        force_refresh = bool(call.data.get("force_refresh", False))
+        pm = _get_presence_fusion_manager()
+        return await pm.async_fuse_presence(use_cache=not force_refresh)
+
+    async def handle_trilaterate_ble(call) -> ServiceResponse:
+        """Handle service call to calculate 2D coordinates of a BLE target via trilateration."""
+        _LOGGER.debug("Service 'trilaterate_ble' triggered")
+        obs = call.data.get("observations") or []
+        ref_rssi = float(call.data.get("ref_rssi", -59.0))
+        n = float(call.data.get("path_loss_exponent", 2.2))
+        beacon_id = call.data.get("beacon_id")
+        pm = _get_presence_fusion_manager()
+        res = pm.trilaterate_beacon(obs, ref_rssi=ref_rssi, path_loss_exp=n)
+        if res:
+            if beacon_id:
+                res["beacon_id"] = beacon_id
+                res["attributed_user"] = pm.get_beacon_user(beacon_id)
+            return res
+        return {"success": False, "error": "Insufficient or invalid observations for trilateration"}
 
     async def handle_analyze_camera(call) -> ServiceResponse:
         """Handle service call to analyze camera snapshot."""
@@ -2467,6 +2504,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     hass.services.async_register(
         DOMAIN,
+        SERVICE_FUSE_PRESENCE,
+        handle_fuse_presence,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_TRILATERATE_BLE,
+        handle_trilaterate_ble,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
         SERVICE_ANALYZE_CAMERA,
         handle_analyze_camera,
         supports_response=SupportsResponse.OPTIONAL,
@@ -2794,6 +2843,7 @@ class OtisAIConversationAgent(AbstractAgent):
         dashboard_manager: DashboardManager | None = None,
         floorplan_parser: FloorplanParser | None = None,
         rag_manager: RAGKnowledgeManager | None = None,
+        presence_fusion_manager: PresenceFusionManager | None = None,
     ) -> None:
         """Initialize the agent."""
         self.hass = hass
@@ -2813,6 +2863,7 @@ class OtisAIConversationAgent(AbstractAgent):
         self.rules_manager = rules_manager or BehavioralRulesManager(hass)
         self.local_llm_manager = local_llm_manager
         self.rag_manager = rag_manager
+        self.presence_fusion_manager = presence_fusion_manager
         self.dashboard_manager = dashboard_manager or getattr(hass.data.get(DOMAIN, {}), "get", lambda k: None)("dashboard_manager") or DashboardManager(hass)
         self.floorplan_parser = floorplan_parser or getattr(hass.data.get(DOMAIN, {}), "get", lambda k: None)("floorplan_parser") or FloorplanParser(hass)
 
@@ -3715,26 +3766,61 @@ class OtisAIConversationAgent(AbstractAgent):
             lines.append("\n*(Say 'execute energy arbitrage' to apply active charger & battery dispatch actions)*")
             return self._create_response(user_input, "\n".join(lines))
 
-        # Check for Presence / Occupancy queries (Phase 8)
-        if getattr(self, "vision_manager", None) and any(w in user_lower for w in (
+        # Check for Presence / Occupancy queries (Phase 8 Multimodal Presence Fusion)
+        if any(w in user_lower for w in (
             "who is in the house", "who is home", "is anyone home", "is anybody home",
             "room occupancy", "which rooms are occupied", "presence status",
-            "house occupancy", "who is in"
+            "house occupancy", "who is in", "where is everyone", "where is everybody",
+            "fused presence", "multimodal presence", "micro presence"
         )):
-            fire_progress("domain", "Fusing Presence Sensors", "Calculating multi-sensor room occupancy probabilities")
-            pres = await self.vision_manager.async_get_presence_states()
-            occ = pres.get("occupied_areas", [])
-            likely = pres.get("likely_areas", [])
-            lines = ["👁️ **Otis Multi-Modal Presence Intelligence**\n"]
-            if occ:
-                lines.append(f"• **Occupied Rooms ({len(occ)}):** {', '.join(occ)}")
-            if likely:
-                lines.append(f"• **Likely Occupied ({len(likely)}):** {', '.join(likely)}")
-            if not occ and not likely:
-                lines.append("• **All Rooms Vacant:** No active room motion or mmWave presence detected.")
-            household = "Yes, residents detected" if pres.get("household_present") else "No, all residents away"
-            lines.append(f"• **Household Status:** {household}")
-            return self._create_response(user_input, "\n".join(lines))
+            fire_progress("domain", "Multimodal Presence Fusion", "Fusing mmWave radar, thermal signatures, BLE trilateration, and acoustic footprints")
+            if getattr(self, "presence_fusion_manager", None):
+                fused = await self.presence_fusion_manager.async_fuse_presence()
+                occ = fused.get("occupied_areas", [])
+                micro = fused.get("micro_presence_areas", [])
+                likely = fused.get("likely_areas", [])
+                rooms = fused.get("rooms", {})
+
+                lines = ["👁️ **Otis Multimodal Presence Fusion (Phase 8)**\n"]
+                if occ:
+                    occ_details = []
+                    for r_id, r in rooms.items():
+                        if r.get("status") == "occupied":
+                            usr = f" [{r['attributed_user']}]" if r.get("attributed_user") else ""
+                            mods = ", ".join(r.get("active_modalities", []))
+                            occ_details.append(f"• **{r['area_name']}**{usr}: `{mods}` ({r.get('confidence_percent', 0)}%)")
+                    lines.append("**Occupied Rooms:**\n" + "\n".join(occ_details))
+
+                if micro:
+                    micro_details = []
+                    for r_id, r in rooms.items():
+                        if r.get("status") == "micro_presence":
+                            usr = f" [{r['attributed_user']}]" if r.get("attributed_user") else ""
+                            mods = ", ".join(r.get("active_modalities", []))
+                            micro_details.append(f"• **{r['area_name']}**{usr} *(Micro-Presence: resting/reading/sleeping)*: `{mods}`")
+                    lines.append("\n**Micro-Presence Detected:**\n" + "\n".join(micro_details))
+
+                if likely:
+                    lines.append(f"\n• **Likely Occupied:** {', '.join(likely)}")
+
+                if not occ and not micro and not likely:
+                    lines.append("• **All Rooms Vacant:** No active resident presence detected across mmWave, thermal, BLE, or motion.")
+
+                return self._create_response(user_input, "\n".join(lines))
+            elif getattr(self, "vision_manager", None):
+                pres = await self.vision_manager.async_get_presence_states()
+                occ = pres.get("occupied_areas", [])
+                likely = pres.get("likely_areas", [])
+                lines = ["👁️ **Otis Multi-Modal Presence Intelligence**\n"]
+                if occ:
+                    lines.append(f"• **Occupied Rooms ({len(occ)}):** {', '.join(occ)}")
+                if likely:
+                    lines.append(f"• **Likely Occupied ({len(likely)}):** {', '.join(likely)}")
+                if not occ and not likely:
+                    lines.append("• **All Rooms Vacant:** No active room motion or mmWave presence detected.")
+                household = "Yes, residents detected" if pres.get("household_present") else "No, all residents away"
+                lines.append(f"• **Household Status:** {household}")
+                return self._create_response(user_input, "\n".join(lines))
 
         # Check for Camera / Vision Audit queries (Phase 8)
         if getattr(self, "vision_manager", None) and any(w in user_lower for w in (
@@ -4618,6 +4704,7 @@ class DiscoveryEngine:
         local_llm_manager: LocalLLMManager | None = None,
         rag_manager: RAGKnowledgeManager | None = None,
         mesh_manager: MeshManager | None = None,
+        presence_fusion_manager: PresenceFusionManager | None = None,
     ) -> None:
         """Initialize the discovery engine."""
         self.hass = hass
@@ -4634,6 +4721,7 @@ class DiscoveryEngine:
         self.local_llm_manager = local_llm_manager
         self.rag_manager = rag_manager
         self.mesh_manager = mesh_manager or MeshManager(hass)
+        self.presence_fusion_manager = presence_fusion_manager or PresenceFusionManager(hass)
         self.dashboard_manager = dashboard_manager or DashboardManager(
             hass, floorplan_parser=self.floorplan_parser, rules_manager=self.rules_manager
         )
