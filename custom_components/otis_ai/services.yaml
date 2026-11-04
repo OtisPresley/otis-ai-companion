@@ -598,6 +598,65 @@ get_intruder_tracks:
   name: Get Intruder Tracks
   description: Query active and historical spatial intruder tracks with multi-camera triangulated waypoints, kinematics, and predicted target zones.
 
+announce_visual_alert:
+  name: Announce Visual Alert
+  description: Synthesize and announce a natural conversational voice notification for a visual alert with spatial audio ducking and persona tone.
+  fields:
+    camera_entity_id:
+      name: Camera Entity ID
+      description: Camera entity associated with the detection.
+      required: false
+      selector:
+        entity:
+          domain: camera
+    message:
+      name: Message Override
+      description: Optional explicit text to announce instead of dynamic persona synthesis.
+      required: false
+      selector:
+        text:
+    detected_objects:
+      name: Detected Objects
+      description: List of detected objects (e.g. person, vehicle, package).
+      required: false
+      selector:
+        object:
+    perimeter_zone:
+      name: Perimeter Zone
+      description: Area zone of the detection (e.g. driveway, front_porch, backyard).
+      required: false
+      selector:
+        text:
+    severity:
+      name: Severity Level
+      description: Alert severity (low, medium, high, critical).
+      required: false
+      default: high
+      selector:
+        select:
+          options:
+            - label: "Low (Information)"
+              value: "low"
+            - label: "Medium (Suspicious)"
+              value: "medium"
+            - label: "High (Warning)"
+              value: "high"
+            - label: "Critical (Breach / Intruder)"
+              value: "critical"
+    target_area:
+      name: Target Speaker Area
+      description: Specific room area to announce in. Defaults to occupied rooms or preferred speaker.
+      required: false
+      selector:
+        text:
+    force:
+      name: Force Announcement
+      description: Bypass announcement cooldown timer.
+      required: false
+      default: false
+      selector:
+        boolean:
+
 evaluate_contextual_alerts:
   name: Evaluate Contextual Presence Alerts
   description: Audit home perimeter states (garage doors left open, unlocked doors at night, unattended appliances in vacant rooms) and return actionable alerts.

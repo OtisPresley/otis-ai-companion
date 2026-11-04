@@ -2512,7 +2512,24 @@ class DashboardManager:
                         "## 🎵 Whole-Home Media & Matrix Audio\n"
                         "Control upstream streaming bridges, route audio across Matrix Amp room zones, and manage Theater displays."
                     ),
-                }
+                },
+                {
+                    "type": "entities",
+                    "title": "Autonomous Spatial Audio Follow-Me",
+                    "show_header_toggle": False,
+                    "entities": [
+                        {
+                            "entity": "switch.otis_audio_follow",
+                            "name": "Room-to-Room Audio Follow-Me",
+                            "icon": "mdi:music-note-sync",
+                        },
+                        {
+                            "entity": "sensor.otis_spatial_migration",
+                            "name": "Current Audio Follow State",
+                            "icon": "mdi:transit-connection-variant",
+                        },
+                    ],
+                },
             ]
 
         entities = capability_map.get("entities", [])
@@ -2558,7 +2575,24 @@ class DashboardManager:
                     "## 🎵 Whole-Home Media & Matrix Audio\n"
                     "Control upstream input bridges, route audio across room speaker zones, and manage Theater displays."
                 ),
-            }
+            },
+            {
+                "type": "entities",
+                "title": "Autonomous Spatial Audio Follow-Me",
+                "show_header_toggle": False,
+                "entities": [
+                    {
+                        "entity": "switch.otis_audio_follow",
+                        "name": "Room-to-Room Audio Follow-Me",
+                        "icon": "mdi:music-note-sync",
+                    },
+                    {
+                        "entity": "sensor.otis_spatial_migration",
+                        "name": "Current Audio Follow State",
+                        "icon": "mdi:transit-connection-variant",
+                    },
+                ],
+            },
         ]
 
         if streamers:

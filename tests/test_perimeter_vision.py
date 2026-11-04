@@ -416,3 +416,96 @@ class TestPerimeterVisionAnalysis(unittest.TestCase):
 
         res2 = asyncio.run(audio_mgr.async_process_spatial_audio_migration(intent))
         self.assertIsNone(res2)
+
+    def test_synthesize_visual_alert_summary_personas(self) -> None:
+        """Verify conversational summary generation tailored to household personas and kinematics."""
+        vm = VisionPresenceManager(self.hass)
+        mock_audio = MagicMock()
+        mock_rules = MagicMock()
+        mock_audio.rules_manager = mock_rules
+        vm.audio_manager = mock_audio
+
+        audit_entry = {
+            "camera": "camera.driveway",
+            "camera_name": "Driveway Camera",
+            "perimeter_zone": "driveway",
+            "detected_objects": ["person"],
+            "severity": "critical",
+            "confidence": 0.95,
+            "summary": "Unknown individual walking up the driveway",
+        }
+        track = {
+            "track_id": "trk_test_1",
+            "cardinal_heading": "North-East",
+            "velocity": 1.5,
+            "predicted_next_area": "front_porch",
+            "threat_level": "critical",
+        }
+
+        # Butler persona
+        mock_rules.get_rules.return_value = {"persona": "butler", "tone": "formal"}
+        summary_butler = asyncio.run(vm.async_synthesize_visual_alert_summary(audit_entry, track=track))
+        self.assertIn("Security alert", summary_butler)
+        self.assertIn("driveway", summary_butler.lower())
+        self.assertIn("north-east", summary_butler.lower())
+
+        # Minimalist persona
+        mock_rules.get_rules.return_value = {"persona": "minimalist", "tone": "concise"}
+        summary_mini = asyncio.run(vm.async_synthesize_visual_alert_summary(audit_entry, track=track))
+        self.assertTrue(summary_mini.startswith("Alert:"))
+        self.assertIn("Person", summary_mini)
+
+        # Concierge persona
+        mock_rules.get_rules.return_value = {"persona": "concierge", "tone": "friendly"}
+        summary_concierge = asyncio.run(vm.async_synthesize_visual_alert_summary(audit_entry, track=track))
+        self.assertIn("Otis detected person", summary_concierge)
+
+    def test_dispatch_visual_alert_voice_with_ducking_and_cooldown(self) -> None:
+        """Verify proactive voice dispatch with spatial ducking, occupancy targeting, and anti-spam cooldown."""
+        vm = VisionPresenceManager(self.hass)
+        mock_audio = MagicMock()
+        mock_rules = MagicMock()
+        mock_rules.get_rules.return_value = {"preferred_speaker": "living_room"}
+        mock_audio.rules_manager = mock_rules
+        mock_audio.is_quiet_hours_active.return_value = (False, 25, "living_room")
+        mock_audio.async_notify_voice = AsyncMock(return_value={"success": True})
+        vm.audio_manager = mock_audio
+
+        audit_entry = {
+            "camera": "camera.front_porch",
+            "perimeter_zone": "front_porch",
+            "detected_objects": ["person"],
+            "severity": "high",
+            "confidence": 0.92,
+        }
+
+        # 1. First dispatch succeeds
+        res1 = asyncio.run(vm.async_dispatch_visual_alert_voice(audit_entry))
+        self.assertTrue(res1["dispatched"])
+        mock_audio.async_notify_voice.assert_called_once()
+
+        # 2. Immediate second dispatch is suppressed by 45s cooldown
+        res2 = asyncio.run(vm.async_dispatch_visual_alert_voice(audit_entry))
+        self.assertFalse(res2["dispatched"])
+        self.assertEqual(res2["reason"], "cooldown_active")
+
+        # 3. Force bypasses cooldown
+        res3 = asyncio.run(vm.async_dispatch_visual_alert_voice(audit_entry, force=True))
+        self.assertTrue(res3["dispatched"])
+
+    def test_media_studio_view_contains_audio_follow_switch(self) -> None:
+        """Verify Media Studio view automatically includes Autonomous Spatial Audio Follow-Me switch card."""
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+
+        dm = DashboardManager(self.hass)
+        media_cards = dm._build_media_view_cards(None)
+
+        # Ensure an entities card with switch.otis_audio_follow is generated
+        follow_cards = [
+            c for c in media_cards
+            if c.get("type") == "entities" and any(
+                e.get("entity") == "switch.otis_audio_follow" for e in c.get("entities", [])
+            )
+        ]
+        self.assertEqual(len(follow_cards), 1)
+        self.assertEqual(follow_cards[0]["title"], "Autonomous Spatial Audio Follow-Me")

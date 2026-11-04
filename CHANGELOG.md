@@ -7,6 +7,19 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.38] - 2026-11-04
+
+### Added
+- **Phase 5 Step 4: Proactive Voice Notifications & Conversational Summaries on High-Confidence Visual Alerts**:
+  - Implemented `async_synthesize_visual_alert_summary` in `VisionPresenceManager` to convert camera detections, perimeter zone contexts, and spatial kinematics into persona-tailored conversational summaries (butler, concierge, minimalist, witty).
+  - Integrated local LLM conversational generation with deterministic zero-cloud fallback templates.
+  - Implemented `async_dispatch_visual_alert_voice` with automated spatial audio ducking via `AudioHandoffManager`, 45-second per-target anti-spam cooldown, and quiet-hours-aware volume attenuation / whisper mode.
+  - Automatically triggers proactive voice announcements on high-confidence perimeter detections (`confidence >= 0.70`, security anomalies, or escalating intruder tracks).
+  - Registered Home Assistant service `otis_ai.announce_visual_alert` for manual or external automation triggers (e.g. Frigate, UniFi Protect).
+  - Published alert tracking metrics to `sensor.otis_perimeter_sentinel` (`last_voice_announcement`, `last_voice_announcement_ts`).
+  - Added real-time voice alert status banner and `📢 Re-announce` button to the Lovelace card Vision tab.
+  - Placed dedicated Autonomous Spatial Audio Follow-Me control card (`switch.otis_audio_follow`, `sensor.otis_spatial_migration`) directly on the generated Media Studio view across both Command Center and Admin Companion dashboards.
+
 ## [0.1.37] - 2026-11-04
 
 ### Added

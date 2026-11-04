@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.37";
+const CARD_VERSION = "0.1.38";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -8625,6 +8625,26 @@ class OtisCompanionCard extends HTMLElement {
     return `
       <div class="vision-panel">
         ${this._renderPreconditioningChip()}
+        ${
+          this._hass?.states?.["sensor.otis_perimeter_sentinel"]?.attributes?.last_voice_announcement
+            ? `
+            <div style="margin-bottom: 12px; padding: 10px 14px; border-radius: 10px; background: rgba(14, 165, 233, 0.12); border: 1px solid rgba(14, 165, 233, 0.35); font-size: 0.8rem; display: flex; align-items: center; justify-content: space-between; gap: 10px;">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <span style="font-size: 1.15rem;">🔊</span>
+                <div>
+                  <div style="font-weight: 700; color: var(--otis-primary, #38bdf8);">Latest Proactive Voice Alert:</div>
+                  <div style="color: var(--otis-text); margin-top: 2px;">
+                    "${this._escapeHtml(this._hass.states["sensor.otis_perimeter_sentinel"].attributes.last_voice_announcement)}"
+                  </div>
+                </div>
+              </div>
+              <button type="button" class="subview-chip btn-repeat-alert-voice" title="Re-broadcast announcement across household speakers" style="padding: 4px 10px; font-size: 0.72rem; white-space: nowrap; cursor: pointer; background: rgba(14, 165, 233, 0.25); border: 1px solid rgba(14, 165, 233, 0.45); color: #fff;">
+                📢 Re-announce
+              </button>
+            </div>
+            `
+            : ""
+        }
         <div class="vision-overview-card">
           <div class="vision-stats-row">
             <span style="font-weight: 700; font-size: 0.88rem; color: var(--otis-primary);">👁️ Presence Status:</span>
@@ -8789,6 +8809,23 @@ class OtisCompanionCard extends HTMLElement {
     // Header Action buttons
     root.querySelectorAll("#refresh-btn").forEach((btn) => {
       btn.onclick = () => this._fetchData();
+    });
+    root.querySelectorAll(".btn-repeat-alert-voice").forEach((btn) => {
+      btn.onclick = async () => {
+        try {
+          const msg = this._hass?.states?.["sensor.otis_perimeter_sentinel"]?.attributes?.last_voice_announcement;
+          if (msg) {
+            this._showToast("📢 Re-announcing visual alert...");
+            await this._hass.callService("otis_ai", "announce_visual_alert", {
+              message: msg,
+              force: true,
+            });
+            this._showToast("✨ Voice announcement dispatched!");
+          }
+        } catch (err) {
+          this._showToast("Failed to re-announce: " + (err.message || err), true);
+        }
+      };
     });
     root.querySelectorAll("#btn-open-rules").forEach((btn) => {
       btn.onclick = (e) => {

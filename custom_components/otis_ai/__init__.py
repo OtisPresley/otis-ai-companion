@@ -71,6 +71,7 @@ from .const import (
     SERVICE_ANALYZE_CAMERA,
     SERVICE_AUDIT_PERIMETER,
     SERVICE_GET_INTRUDER_TRACKS,
+    SERVICE_ANNOUNCE_VISUAL_ALERT,
     SERVICE_EVALUATE_CONTEXTUAL_ALERTS,
     SERVICE_MINE_HABITS,
     SERVICE_GET_CIRCADIAN_CURVES,
@@ -1745,6 +1746,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         vm = _get_vision_manager()
         return vm.get_intruder_tracks()
 
+    async def handle_announce_visual_alert(call) -> ServiceResponse:
+        """Handle service call to trigger proactive voice notification on visual alert."""
+        _LOGGER.debug("Service 'announce_visual_alert' triggered with: %s", call.data)
+        vm = _get_vision_manager()
+        camera_id = call.data.get("camera_entity_id") or "camera.perimeter"
+        summary_override = call.data.get("message")
+        detected_objects = call.data.get("detected_objects") or ["person"]
+        perimeter_zone = call.data.get("perimeter_zone") or "perimeter"
+        severity = call.data.get("severity") or "high"
+        force = call.data.get("force", False)
+        target_area = call.data.get("target_area")
+
+        audit_entry = {
+            "camera": camera_id,
+            "camera_name": camera_id,
+            "perimeter_zone": perimeter_zone,
+            "detected_objects": detected_objects,
+            "severity": severity,
+            "confidence": float(call.data.get("confidence", 0.90)),
+            "anomaly_detected": True,
+            "summary": summary_override or f"{', '.join(detected_objects)} detected at {perimeter_zone}",
+            "timestamp": time.time(),
+        }
+        return await vm.async_dispatch_visual_alert_voice(
+            audit_entry,
+            force=force,
+            target_area=target_area,
+        )
+
     async def handle_evaluate_contextual_alerts(call) -> ServiceResponse:
         """Handle service call to evaluate contextual presence alerts."""
         _LOGGER.debug("Service 'evaluate_contextual_alerts' triggered")
@@ -2314,6 +2344,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         SERVICE_GET_INTRUDER_TRACKS,
         handle_get_intruder_tracks,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_ANNOUNCE_VISUAL_ALERT,
+        handle_announce_visual_alert,
         supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(

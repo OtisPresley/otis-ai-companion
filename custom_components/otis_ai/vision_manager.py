@@ -202,6 +202,9 @@ class VisionPresenceManager:
         self._active_migration: dict[str, Any] | None = None
         self._last_active_area: str | None = None
         self._last_active_area_ts: float = 0.0
+        self._last_voice_announcements: dict[str, float] = {}
+        self._last_voice_summary: str | None = None
+        self._last_voice_summary_ts: float = 0.0
 
     def get_camera_stream_strategy(self) -> str:
         """Retrieve configured camera stream strategy from config entry."""
@@ -770,6 +773,22 @@ class VisionPresenceManager:
             audit_entry["predicted_next_area"] = track.get("predicted_next_area")
             audit_entry["velocity"] = track.get("velocity")
 
+        # Proactive voice announcement on high-confidence alerts
+        is_high_conf_alert = (
+            confidence >= 0.70
+            and (
+                anomaly_detected
+                or severity in ("medium", "high", "critical")
+                or (track and track.get("threat_level") in ("suspicious", "intruder", "critical"))
+                or any(o in ("person", "intruder", "vehicle", "package") for o in detected_objects)
+            )
+        )
+        if is_high_conf_alert:
+            try:
+                await self.async_dispatch_visual_alert_voice(audit_entry, track=track)
+            except Exception as v_err:
+                _LOGGER.debug("Error dispatching visual alert voice notification: %s", v_err)
+
         # Update sensor.otis_perimeter_sentinel
         self._update_perimeter_sentinel_sensor(audit_entry)
 
@@ -828,7 +847,200 @@ class VisionPresenceManager:
         if active_tracks:
             attrs["latest_intruder_track"] = active_tracks[-1].get("track_id")
             attrs["predicted_target_zone"] = active_tracks[-1].get("predicted_next_area")
+        if self._last_voice_summary:
+            attrs["last_voice_announcement"] = self._last_voice_summary
+            attrs["last_voice_announcement_ts"] = self._last_voice_summary_ts
         self.hass.states.async_set("sensor.otis_perimeter_sentinel", state_val, attrs)
+
+    async def async_synthesize_visual_alert_summary(
+        self,
+        audit_entry: dict[str, Any],
+        track: dict[str, Any] | None = None,
+    ) -> str:
+        """Synthesize a natural conversational voice alert tailored to active household persona and kinematics."""
+        rules = {}
+        if hasattr(self, "audio_manager") and self.audio_manager and hasattr(self.audio_manager, "rules_manager") and self.audio_manager.rules_manager:
+            rules = self.audio_manager.rules_manager.get_rules()
+
+        persona = rules.get("persona", "concierge")
+        tone = rules.get("tone", "friendly")
+
+        cam_name = audit_entry.get("camera_name") or audit_entry.get("camera") or "Perimeter Camera"
+        if "." in cam_name:
+            cam_name = cam_name.split(".", 1)[1].replace("_", " ").title()
+
+        zone = audit_entry.get("perimeter_zone") or "perimeter"
+        zone_str = zone.replace("_", " ")
+
+        detected = audit_entry.get("detected_objects") or []
+        obj_str = ", ".join(detected) if detected else "motion or activity"
+
+        heading = track.get("cardinal_heading") if track else None
+        speed = track.get("velocity") if track else None
+        next_area = track.get("predicted_next_area") if track else None
+        threat_level = track.get("threat_level") if track else audit_entry.get("severity", "low")
+
+        kinematics_parts = []
+        if heading and heading != "Stationary":
+            kinematics_parts.append(f"moving {heading}")
+        if speed and speed > 0.2:
+            kinematics_parts.append(f"at {speed:.1f} meters per second")
+        if next_area:
+            next_clean = next_area.replace("_", " ")
+            kinematics_parts.append(f"towards the {next_clean}")
+
+        kinematics_str = (" " + ", ".join(kinematics_parts)) if kinematics_parts else ""
+
+        # Attempt high-fidelity LLM synthesis if local LLM is available
+        if self.local_llm_manager and hasattr(self.local_llm_manager, "async_chat"):
+            try:
+                system_prompt = (
+                    f"You are Otis, the household smart home AI companion. Persona: {persona}. Tone: {tone}. "
+                    "Generate a single, natural, urgent spoken sentence for a voice announcement alerting residents "
+                    "of perimeter visual activity. Do not use quotes or markdown. Keep it under 25 words."
+                )
+                user_msg = (
+                    f"Visual Alert: {obj_str} detected at {zone_str} on camera {cam_name}. "
+                    f"Threat level: {threat_level}. Kinematics: {kinematics_str or 'stationary'}. "
+                    f"Details: {audit_entry.get('summary', '')}"
+                )
+                res = await asyncio.wait_for(
+                    self.local_llm_manager.async_chat(
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_msg},
+                        ],
+                        temperature=0.3,
+                        max_tokens=60,
+                    ),
+                    timeout=2.0,
+                )
+                if res and isinstance(res, dict) and res.get("text"):
+                    clean = re.sub(r'["\n*`]', '', res["text"]).strip()
+                    if clean:
+                        return clean
+            except Exception as llm_err:
+                _LOGGER.debug("Local LLM alert synthesis fallback: %s", llm_err)
+
+        # High quality template fallbacks tailored to persona
+        if persona == "butler":
+            if threat_level in ("critical", "intruder"):
+                return f"Security alert: An unrecognized {obj_str} has been detected at the {zone_str}{kinematics_str}."
+            if "package" in detected or "delivery" in str(audit_entry.get("anomaly_type")):
+                return f"Pardon the interruption: A delivery courier or package has arrived at the {zone_str}."
+            return f"Notice: Activity detected by the {cam_name} at the {zone_str}{kinematics_str}."
+
+        elif persona == "minimalist":
+            if threat_level in ("critical", "intruder"):
+                return f"Alert: {obj_str.title()} detected at {zone_str}{kinematics_str}."
+            return f"Update: {obj_str.title()} at {zone_str}{kinematics_str}."
+
+        elif persona == "custom" and tone == "witty":
+            return f"Radar ping! Someone or something is at the {zone_str}{kinematics_str}."
+
+        else:  # Concierge / Friendly (default)
+            if threat_level in ("critical", "intruder"):
+                return f"Security alert: Otis detected {obj_str} at the {zone_str}{kinematics_str}."
+            if "package" in detected or "delivery" in str(audit_entry.get("anomaly_type")):
+                return f"Heads up! A package delivery was just detected at the {zone_str}."
+            if "vehicle" in detected:
+                return f"Heads up! A vehicle has pulled up to the {zone_str}{kinematics_str}."
+            return f"Heads up: {obj_str.title()} spotted near the {zone_str}{kinematics_str}."
+
+    async def async_dispatch_visual_alert_voice(
+        self,
+        audit_entry: dict[str, Any],
+        track: dict[str, Any] | None = None,
+        force: bool = False,
+        target_area: str | None = None,
+    ) -> dict[str, Any]:
+        """Dispatch a proactive conversational voice notification on high-confidence visual alerts."""
+        if not self.audio_manager or not hasattr(self.audio_manager, "async_notify_voice"):
+            return {"dispatched": False, "reason": "audio_manager_unavailable"}
+
+        now = time.time()
+        cam_id = audit_entry.get("camera", "camera.unknown")
+        track_id = track.get("track_id") if track else audit_entry.get("track_id")
+        dedup_key = track_id or cam_id
+
+        # Cooldown check: 45 seconds per track/camera unless force is True
+        last_ts = self._last_voice_announcements.get(dedup_key, 0.0)
+        cooldown = 45.0
+        threat = track.get("threat_level") if track else audit_entry.get("severity", "low")
+
+        if not force and (now - last_ts < cooldown):
+            _LOGGER.debug("Visual alert voice announcement suppressed by cooldown for %s", dedup_key)
+            return {
+                "dispatched": False,
+                "reason": "cooldown_active",
+                "seconds_remaining": round(cooldown - (now - last_ts), 1),
+            }
+
+        # Synthesize conversational summary
+        summary = await self.async_synthesize_visual_alert_summary(audit_entry, track=track)
+        self._last_voice_announcements[dedup_key] = now
+        self._last_voice_summary = summary
+        self._last_voice_summary_ts = now
+
+        # Determine target area / speaker:
+        chosen_area = target_area
+        rules = {}
+        if hasattr(self.audio_manager, "rules_manager") and self.audio_manager.rules_manager:
+            rules = self.audio_manager.rules_manager.get_rules()
+
+        if not chosen_area:
+            pref_speaker = rules.get("preferred_speaker")
+            if pref_speaker:
+                chosen_area = pref_speaker
+            else:
+                pres = self.get_fused_presence_states()
+                occ = pres.get("occupied_areas") or []
+                if occ:
+                    chosen_area = occ[0]
+
+        # Quiet hours evaluation
+        is_quiet, vol_cap, _ = self.audio_manager.is_quiet_hours_active()
+        whisper = is_quiet and threat not in ("critical", "intruder")
+
+        # Dispatch voice notification
+        notify_res = await self.audio_manager.async_notify_voice(
+            message=summary,
+            area_id=chosen_area,
+            announce=True,
+            duck_media=True,
+            whisper_mode=whisper,
+        )
+
+        # Record in sensor attributes and audit entry
+        audit_entry["voice_alert_dispatched"] = True
+        audit_entry["voice_alert_summary"] = summary
+        audit_entry["voice_alert_area"] = chosen_area
+        self._update_perimeter_sentinel_sensor(audit_entry)
+
+        # Fire bus event for automations and Lovelace
+        if hasattr(self.hass, "bus") and hasattr(self.hass.bus, "async_fire"):
+            self.hass.bus.async_fire("otis_ai_visual_alert_announced", {
+                "message": summary,
+                "camera": cam_id,
+                "threat_level": threat,
+                "track_id": track_id,
+                "target_area": chosen_area,
+                "whisper_mode": whisper,
+                "timestamp": now,
+            })
+
+        _LOGGER.info(
+            "Otis AI dispatched visual alert voice notification: '%s' to %s",
+            summary,
+            chosen_area or "whole_home",
+        )
+        return {
+            "dispatched": True,
+            "message": summary,
+            "target_area": chosen_area,
+            "threat_level": threat,
+            "notify_result": notify_res,
+        }
 
     async def async_audit_perimeter(self, camera_entities: list[str] | None = None) -> dict[str, Any]:
         """Audit all perimeter cameras concurrently for security anomalies."""
