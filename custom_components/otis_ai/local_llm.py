@@ -252,6 +252,52 @@ DEFAULT_OTIS_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "optimize_battery_schedule",
+            "description": "Calculate and optimize a 24-hour battery charge/discharge schedule based on solar generation forecasts and TOU peak pricing.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["auto", "peak_arbitrage", "self_consumption", "backup_reserve"],
+                        "description": "Arbitrage strategy: 'auto', 'peak_arbitrage' (shave peak), 'self_consumption' (store solar), or 'backup_reserve' (hold 100% outage reserve).",
+                    },
+                    "battery_entity": {
+                        "type": "string",
+                        "description": "Optional battery sensor entity ID (e.g. 'sensor.powerwall_battery').",
+                    },
+                    "battery_capacity_kwh": {
+                        "type": "number",
+                        "description": "Usable battery capacity in kWh (default: 13.5).",
+                    },
+                    "min_reserve_soc_pct": {
+                        "type": "number",
+                        "description": "Minimum reserve State of Charge percentage preserved for emergencies (default: 20).",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_energy_arbitrage_plan",
+            "description": "Retrieve current battery arbitrage status, active action, tariff window, and 24-hour cost savings plan.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["auto", "peak_arbitrage", "self_consumption", "backup_reserve"],
+                        "description": "Strategy mode override.",
+                    },
+                },
+            },
+        },
+    },
 ]
 
 

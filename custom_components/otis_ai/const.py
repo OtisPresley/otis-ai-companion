@@ -104,6 +104,10 @@ SERVICE_QUERY_KNOWLEDGE = "query_knowledge_base"
 SERVICE_INDEX_ENTITY_HISTORY = "index_entity_history"
 SERVICE_CLEAR_KNOWLEDGE = "clear_knowledge_base"
 
+# Context-Aware Energy Arbitrage & Battery Scheduling (Phase 2)
+SERVICE_OPTIMIZE_BATTERY_SCHEDULE = "optimize_battery_schedule"
+SERVICE_GET_ENERGY_ARBITRAGE_PLAN = "get_energy_arbitrage_plan"
+
 # Dashboard Constants
 COMMAND_CENTER_DASHBOARD_ID = "command-center"
 COMMAND_CENTER_DASHBOARD_URL_PATH = "command-center"

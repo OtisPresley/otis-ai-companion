@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.23";
+const CARD_VERSION = "0.1.24";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -5894,6 +5894,81 @@ class OtisCompanionCard extends HTMLElement {
             }
           </div>
         </div>
+
+        <div class="cap-block">
+          <div class="cap-title">
+            <span>⚡ Context-Aware Energy Arbitrage &amp; Battery Scheduling</span>
+            <span style="color: var(--otis-primary); font-weight: 700;">
+              ${this._capabilityMap?.energy_topology?.arbitrage_plan?.current_soc_pct !== undefined ? `${this._capabilityMap.energy_topology.arbitrage_plan.current_soc_pct}% SoC` : "Ready"} • Mode: ${(this._capabilityMap?.energy_topology?.arbitrage_plan?.mode || "auto").toUpperCase()}
+            </span>
+          </div>
+          <div class="energy-arbitrage-container" style="font-size: 0.75rem; line-height: 1.4;">
+            ${(() => {
+              const energyTopo = this._capabilityMap?.energy_topology || {};
+              const arbitrage = energyTopo.arbitrage_plan || {};
+              const solarInfo = energyTopo.solar || {};
+              return `
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 6px;">
+                  <div>
+                    <strong>Current Action:</strong>
+                    <span class="topo-tag" style="background: rgba(14, 165, 233, 0.15); color: var(--otis-primary); font-weight: bold; margin-left: 4px;">
+                      ${arbitrage.current_action ? arbitrage.current_action.replace(/_/g, " ").toUpperCase() : "OPTIMIZED"}
+                    </span>
+                    <span style="color: var(--otis-text-muted); font-size: 0.70rem; margin-left: 6px;">
+                      (${arbitrage.current_battery_flow_kw > 0 ? `📥 Charging +${arbitrage.current_battery_flow_kw}kW` : (arbitrage.current_battery_flow_kw < 0 ? `📤 Discharging ${Math.abs(arbitrage.current_battery_flow_kw)}kW` : "⏸️ Idle / Holding")})
+                    </span>
+                  </div>
+                  <div style="font-size: 0.72rem; color: #10b981; font-weight: 600;">
+                    💰 Est. Savings: $${(arbitrage.projected_savings_usd || 0).toFixed(2)}/day
+                  </div>
+                </div>
+
+                <!-- Mode Switcher Pills -->
+                <div style="display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap;">
+                  <button type="button" class="btn-toolbar btn-arbitrage-mode ${arbitrage.mode === 'auto' ? 'active' : ''}" data-mode="auto" style="padding: 3px 8px; font-size: 0.70rem;">⚡ Auto</button>
+                  <button type="button" class="btn-toolbar btn-arbitrage-mode ${arbitrage.mode === 'peak_arbitrage' ? 'active' : ''}" data-mode="peak_arbitrage" style="padding: 3px 8px; font-size: 0.70rem;">🔥 Peak Shave</button>
+                  <button type="button" class="btn-toolbar btn-arbitrage-mode ${arbitrage.mode === 'self_consumption' ? 'active' : ''}" data-mode="self_consumption" style="padding: 3px 8px; font-size: 0.70rem;">☀️ Solar Soak</button>
+                  <button type="button" class="btn-toolbar btn-arbitrage-mode ${arbitrage.mode === 'backup_reserve' ? 'active' : ''}" data-mode="backup_reserve" style="padding: 3px 8px; font-size: 0.70rem;">🛡️ Backup (100%)</button>
+                </div>
+
+                <!-- 24-Hour Hourly Timeline Strip -->
+                ${arbitrage.schedule && arbitrage.schedule.length > 0 ? `
+                  <div style="margin-bottom: 6px;">
+                    <div style="font-size: 0.68rem; color: var(--otis-text-muted); margin-bottom: 3px; display: flex; justify-content: space-between;">
+                      <span>24-Hour Horizon Schedule &amp; Tariff Periods</span>
+                      <span>Peak Shaved: ${(arbitrage.projected_peak_shave_kwh || 0).toFixed(1)} kWh</span>
+                    </div>
+                    <div style="display: flex; gap: 2px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin;">
+                      ${arbitrage.schedule.map((step) => {
+                        const isPeak = step.tariff_period === 'peak';
+                        const isShoulder = step.tariff_period === 'shoulder';
+                        const bg = isPeak ? 'rgba(239, 68, 68, 0.25)' : (isShoulder ? 'rgba(245, 158, 11, 0.2)' : 'rgba(16, 185, 129, 0.15)');
+                        const border = isPeak ? '#ef4444' : (isShoulder ? '#f59e0b' : '#10b981');
+                        const flowSymbol = step.battery_flow_kw > 0 ? '📥' : (step.battery_flow_kw < 0 ? '📤' : '•');
+                        return `
+                          <div style="flex: 1; min-width: 32px; background: ${bg}; border: 1px solid ${border}; border-radius: 4px; padding: 3px 2px; text-align: center; font-size: 0.62rem;" title="${step.time_label} [${step.tariff_period.toUpperCase()} @ $${step.rate_per_kwh.toFixed(2)}/kWh]: ${step.action} (${step.battery_flow_kw}kW) - Ending SoC: ${step.ending_soc_pct}%">
+                            <div style="font-weight: 600; color: var(--otis-text);">${step.hour}:00</div>
+                            <div style="font-size: 0.60rem; margin: 1px 0;">${flowSymbol}</div>
+                            <div style="color: var(--otis-text-muted); font-size: 0.58rem;">${Math.round(step.ending_soc_pct)}%</div>
+                          </div>
+                        `;
+                      }).join('')}
+                    </div>
+                  </div>
+                ` : ""}
+
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px; flex-wrap: wrap; gap: 6px;">
+                  <div style="font-size: 0.70rem; color: var(--otis-text-muted);">
+                    Solar Forecast: <strong>${(arbitrage.daily_solar_forecast_kwh || (solarInfo.production_w ? (solarInfo.production_w * 6 / 1000) : 24.0)).toFixed(1)} kWh</strong> • Baseline Load: <strong>${arbitrage.baseline_load_kw || 1.0} kW</strong>
+                  </div>
+                  <button type="button" class="btn-toolbar" id="btn-optimize-arbitrage-tab" style="padding: 4px 10px; font-size: 0.72rem; color: var(--otis-primary); border-color: var(--otis-primary);">
+                    ⚡ Re-Optimize Schedule
+                  </button>
+                </div>
+              `;
+            })()}
+          </div>
+        </div>
       </div>
     `;
   }
@@ -8149,6 +8224,39 @@ class OtisCompanionCard extends HTMLElement {
         } catch (err) {
           console.error("Federation sync failed:", err);
           this._showToast(`Federation sync failed: ${err.message || err}`, true);
+        }
+      };
+    }
+
+    // Energy Arbitrage Mode Buttons
+    root.querySelectorAll(".btn-arbitrage-mode").forEach((btn) => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        const mode = btn.dataset.mode;
+        try {
+          this._showToast(`⚡ Switching battery arbitrage mode to ${mode.toUpperCase()}...`);
+          await this._hass.callService("otis_ai", "optimize_battery_schedule", { mode });
+          this._showToast(`✨ Arbitrage mode updated to ${mode.toUpperCase()}!`);
+          await this._fetchData();
+        } catch (err) {
+          console.error("Arbitrage mode update failed:", err);
+          this._showToast(`Failed to update arbitrage mode: ${err.message || err}`, true);
+        }
+      };
+    });
+
+    const optArbitrageBtn = root.querySelector("#btn-optimize-arbitrage-tab");
+    if (optArbitrageBtn) {
+      optArbitrageBtn.onclick = async (e) => {
+        e.stopPropagation();
+        try {
+          this._showToast("⚡ Optimizing 24-hour battery arbitrage schedule...");
+          await this._hass.callService("otis_ai", "optimize_battery_schedule", {});
+          this._showToast("✨ Battery schedule re-optimized!");
+          await this._fetchData();
+        } catch (err) {
+          console.error("Arbitrage optimization failed:", err);
+          this._showToast(`Arbitrage optimization failed: ${err.message || err}`, true);
         }
       };
     }

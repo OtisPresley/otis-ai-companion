@@ -288,6 +288,9 @@ def test_default_otis_tools_schema():
     assert "regenerate_dashboards" in tool_names
     assert "analyze_camera" in tool_names
     assert "call_ha_service" in tool_names
+    assert "query_knowledge_base" in tool_names
+    assert "optimize_battery_schedule" in tool_names
+    assert "get_energy_arbitrage_plan" in tool_names
 
     # Check pin_floorplan_entity parameters
     pin_tool = next(t for t in DEFAULT_OTIS_TOOLS if t["function"]["name"] == "pin_floorplan_entity")

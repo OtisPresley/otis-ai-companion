@@ -1053,6 +1053,102 @@ clear_knowledge_base:
       selector:
         text:
 
+optimize_battery_schedule:
+  name: Optimize Battery Schedule
+  description: Compute and optimize an hourly 24-hour battery charge/discharge schedule based on solar forecasts, TOU electricity pricing, and home load.
+  fields:
+    mode:
+      name: Operating Mode
+      description: Battery arbitrage operating strategy (auto, peak_arbitrage, self_consumption, backup_reserve).
+      required: false
+      default: auto
+      selector:
+        select:
+          options:
+            - label: "Auto (Intelligent TOU Shaving & Solar Storage)"
+              value: "auto"
+            - label: "Peak Arbitrage (Aggressive 2PM-7PM Peak Discharge)"
+              value: "peak_arbitrage"
+            - label: "Self Consumption (Zero Grid Dependency)"
+              value: "self_consumption"
+            - label: "Backup Reserve (100% Outage Protection)"
+              value: "backup_reserve"
+    battery_entity:
+      name: Battery Entity
+      description: Specific battery state-of-charge sensor entity ID (e.g. sensor.powerwall_battery).
+      required: false
+      selector:
+        entity:
+          domain: sensor
+          device_class: battery
+    battery_capacity_kwh:
+      name: Battery Usable Capacity
+      description: Total usable battery capacity in kilowatt-hours (kWh).
+      required: false
+      default: 13.5
+      selector:
+        number:
+          min: 1.0
+          max: 100.0
+          step: 0.5
+          unit_of_measurement: kWh
+    min_reserve_soc_pct:
+      name: Minimum Reserve Floor
+      description: Minimum battery State of Charge percentage preserved for emergency backup.
+      required: false
+      default: 20
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 5
+          unit_of_measurement: "%"
+    daily_solar_kwh:
+      name: Daily Solar Generation Forecast
+      description: Total expected solar generation for the day in kilowatt-hours (kWh).
+      required: false
+      selector:
+        number:
+          min: 0.0
+          max: 200.0
+          step: 1.0
+          unit_of_measurement: kWh
+    baseline_load_kw:
+      name: Baseline Household Load
+      description: Average baseline residential power draw in kilowatts (kW).
+      required: false
+      selector:
+        number:
+          min: 0.1
+          max: 20.0
+          step: 0.1
+          unit_of_measurement: kW
+
+get_energy_arbitrage_plan:
+  name: Get Energy Arbitrage Plan
+  description: Retrieve the active 24-hour battery schedule, current recommended power flow, tariff window, and projected cost savings.
+  fields:
+    battery_entity:
+      name: Battery Entity
+      description: Optional battery SoC entity to inspect.
+      required: false
+      selector:
+        entity:
+          domain: sensor
+          device_class: battery
+    mode:
+      name: Operating Mode Override
+      description: Strategy override (auto, peak_arbitrage, self_consumption, backup_reserve).
+      required: false
+      selector:
+        select:
+          options:
+            - auto
+            - peak_arbitrage
+            - self_consumption
+            - backup_reserve
+
+
 
 
 

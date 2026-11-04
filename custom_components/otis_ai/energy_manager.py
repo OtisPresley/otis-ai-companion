@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import logging
+import math
 import time
 from typing import Any
 import uuid
@@ -15,6 +16,30 @@ import uuid
 from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
+
+# TOU Rate & Arbitrage Modes (Phase 2 Energy Arbitrage)
+DEFAULT_TOU_RATES: dict[str, float] = {
+    "off_peak": 0.08,  # $0.08 / kWh
+    "shoulder": 0.15,  # $0.15 / kWh
+    "peak": 0.35,      # $0.35 / kWh
+}
+
+MODE_AUTO = "auto"
+MODE_SELF_CONSUMPTION = "self_consumption"
+MODE_PEAK_ARBITRAGE = "peak_arbitrage"
+MODE_BACKUP_RESERVE = "backup_reserve"
+VALID_ARBITRAGE_MODES = {
+    MODE_AUTO,
+    MODE_SELF_CONSUMPTION,
+    MODE_PEAK_ARBITRAGE,
+    MODE_BACKUP_RESERVE,
+}
+
+ACTION_CHARGE_GRID = "charge_grid_offpeak"
+ACTION_STORE_SOLAR = "store_solar_surplus"
+ACTION_DISCHARGE_PEAK = "discharge_peak"
+ACTION_HOLD_RESERVE = "hold_reserve"
+ACTION_IDLE = "idle"
 
 
 class EnergyManager:
@@ -25,6 +50,13 @@ class EnergyManager:
         self.hass = hass
         self.spatial_manager = spatial_manager
         self._shed_history: list[dict[str, Any]] = []
+        self._arbitrage_mode: str = MODE_AUTO
+        self._cached_arbitrage_plan: dict[str, Any] | None = None
+        self._battery_capacity_kwh: float = 13.5
+        self._min_reserve_soc_pct: float = 20.0
+        self._max_charge_kw: float = 5.0
+        self._max_discharge_kw: float = 5.0
+        self._custom_tou_rates: dict[str, float] = dict(DEFAULT_TOU_RATES)
 
     def get_tariff_window(self, dt: datetime | None = None) -> dict[str, Any]:
         """Calculate the current electrical tariff window (Peak, Shoulder, Off-Peak)."""
@@ -427,4 +459,328 @@ class EnergyManager:
     def get_shed_history(self) -> list[dict[str, Any]]:
         """Return the history of load shedding events."""
         return list(self._shed_history)
+
+    def set_arbitrage_mode(self, mode: str) -> bool:
+        """Update active battery arbitrage mode."""
+        if mode in VALID_ARBITRAGE_MODES:
+            self._arbitrage_mode = mode
+            return True
+        return False
+
+    def get_arbitrage_mode(self) -> str:
+        """Get active battery arbitrage mode."""
+        return self._arbitrage_mode
+
+    def set_tou_rates(self, rates: dict[str, float]) -> None:
+        """Update custom TOU rates."""
+        for k in ("off_peak", "shoulder", "peak"):
+            if k in rates and isinstance(rates[k], (int, float)) and rates[k] >= 0:
+                self._custom_tou_rates[k] = float(rates[k])
+
+    def get_tou_rates(self) -> dict[str, float]:
+        """Return configured TOU electricity rates."""
+        return dict(self._custom_tou_rates)
+
+    def estimate_solar_production_profile(
+        self, daily_forecast_kwh: float = 24.0, current_solar_w: float = 0.0
+    ) -> list[float]:
+        """Generate 24 hourly solar generation estimates (kWh) from daily forecast using an astronomical bell curve."""
+        if daily_forecast_kwh <= 0:
+            return [0.0] * 24
+
+        raw_weights = [0.0] * 24
+        # Daytime solar generation curve between 06:00 and 19:00 with peak at 12:30
+        for h in range(6, 20):
+            frac = (h + 0.5 - 6) / 14.0
+            raw_weights[h] = max(0.0, math.sin(frac * math.pi))
+
+        total_weight = sum(raw_weights)
+        if total_weight > 0:
+            profile = [round((w / total_weight) * daily_forecast_kwh, 3) for w in raw_weights]
+        else:
+            profile = [0.0] * 24
+        return profile
+
+    def estimate_household_consumption_profile(
+        self, baseline_kw: float = 0.9
+    ) -> list[float]:
+        """Generate 24 hourly household consumption estimates (kWh) based on empirical residential patterns."""
+        base = max(0.2, baseline_kw)
+        # Residential load shape: morning bump, midday plateau, evening peak (cooking/HVAC/lighting), night drop
+        multipliers = [
+            0.55, 0.50, 0.48, 0.48, 0.52, 0.65,  # 00:00 - 05:00 (Night sleep)
+            1.20, 1.55, 1.45, 1.10, 1.00, 1.00,  # 06:00 - 11:00 (Morning prep & breakfast)
+            1.05, 1.15, 1.25, 1.35, 1.65, 2.05,  # 12:00 - 17:00 (Afternoon into dinner)
+            2.15, 1.95, 1.60, 1.25, 0.90, 0.65,  # 18:00 - 23:00 (Evening peak into bedtime)
+        ]
+        avg_mult = sum(multipliers) / 24.0
+        return [round((m / avg_mult) * base, 3) for m in multipliers]
+
+    def calculate_arbitrage_schedule(
+        self,
+        current_soc_pct: float = 50.0,
+        battery_capacity_kwh: float = 13.5,
+        max_charge_kw: float = 5.0,
+        max_discharge_kw: float = 5.0,
+        min_reserve_soc_pct: float = 20.0,
+        mode: str = MODE_AUTO,
+        custom_rates: dict[str, float] | None = None,
+        daily_solar_kwh: float = 24.0,
+        baseline_load_kw: float = 1.0,
+        start_dt: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Simulate and generate an optimal 24-hour battery charge/discharge schedule."""
+        now = start_dt or datetime.now()
+        start_hour = now.hour
+        is_weekend = now.weekday() >= 5
+        rates = dict(custom_rates or self._custom_tou_rates)
+
+        cap = max(1.0, battery_capacity_kwh)
+        soc = max(0.0, min(100.0, current_soc_pct))
+        reserve = max(0.0, min(100.0, min_reserve_soc_pct))
+        if mode == MODE_BACKUP_RESERVE:
+            reserve = 100.0
+
+        solar_profile = self.estimate_solar_production_profile(daily_solar_kwh)
+        load_profile = self.estimate_household_consumption_profile(baseline_load_kw)
+
+        schedule: list[dict[str, Any]] = []
+        unmanaged_cost_total = 0.0
+        managed_cost_total = 0.0
+        total_peak_shave_kwh = 0.0
+        sim_soc = soc
+
+        for step in range(24):
+            sim_hour = (start_hour + step) % 24
+            # Determine tariff period for sim_hour
+            sim_is_weekend = is_weekend if (start_hour + step) < 24 else ((now.weekday() + 1) % 7 >= 5)
+            if sim_is_weekend:
+                period = "off_peak"
+            else:
+                if 14 <= sim_hour < 19:
+                    period = "peak"
+                elif (7 <= sim_hour < 14) or (19 <= sim_hour < 22):
+                    period = "shoulder"
+                else:
+                    period = "off_peak"
+
+            rate = rates.get(period, 0.15)
+            solar_kwh = solar_profile[sim_hour]
+            load_kwh = load_profile[sim_hour]
+            net_surplus = round(solar_kwh - load_kwh, 3)
+
+            # Baseline unmanaged exchange without battery
+            if net_surplus < 0:
+                unmanaged_cost_total += abs(net_surplus) * rate
+            else:
+                unmanaged_cost_total -= net_surplus * 0.04  # wholesale export credit
+
+            # Battery Arbitrage Decision Engine
+            battery_flow_kwh = 0.0
+            action = ACTION_IDLE
+            reason = ""
+
+            headroom_kwh = max(0.0, ((100.0 - sim_soc) / 100.0) * cap)
+            available_discharge_kwh = max(0.0, ((sim_soc - reserve) / 100.0) * cap)
+
+            if mode == MODE_BACKUP_RESERVE:
+                # Top up battery to 100% and keep it full
+                if headroom_kwh > 0.05:
+                    if net_surplus > 0:
+                        charge = min(net_surplus, max_charge_kw, headroom_kwh)
+                        action = ACTION_STORE_SOLAR
+                        battery_flow_kwh = charge
+                        reason = "Absorb solar generation to reach full emergency backup reserve."
+                    elif period == "off_peak":
+                        charge = min(max_charge_kw, headroom_kwh)
+                        action = ACTION_CHARGE_GRID
+                        battery_flow_kwh = charge
+                        reason = "Top up battery from low-cost grid to achieve 100% outage protection."
+                    else:
+                        action = ACTION_HOLD_RESERVE
+                        reason = "Preserve maximum stored energy for emergency grid resilience."
+                else:
+                    action = ACTION_HOLD_RESERVE
+                    reason = "Battery is 100% full; holding reserve for potential grid outage."
+
+            elif mode == MODE_SELF_CONSUMPTION:
+                if net_surplus > 0 and headroom_kwh > 0.05:
+                    charge = min(net_surplus, max_charge_kw, headroom_kwh)
+                    action = ACTION_STORE_SOLAR
+                    battery_flow_kwh = charge
+                    reason = "Store daytime solar generation on-site to minimize later grid dependency."
+                elif net_surplus < 0 and available_discharge_kwh > 0.05:
+                    discharge = min(abs(net_surplus), max_discharge_kw, available_discharge_kwh)
+                    action = ACTION_DISCHARGE_PEAK if period == "peak" else "discharge_self_consumption"
+                    battery_flow_kwh = -discharge
+                    reason = "Discharge stored solar energy to cover household deficit."
+                else:
+                    action = ACTION_HOLD_RESERVE if sim_soc <= reserve else ACTION_IDLE
+                    reason = "No surplus solar available and reserve floor reached."
+
+            else:  # MODE_AUTO or MODE_PEAK_ARBITRAGE
+                if period == "peak":
+                    # In peak hours, discharge battery to eliminate high-rate grid purchases
+                    if net_surplus < 0 and available_discharge_kwh > 0.05:
+                        discharge = min(abs(net_surplus), max_discharge_kw, available_discharge_kwh)
+                        action = ACTION_DISCHARGE_PEAK
+                        battery_flow_kwh = -discharge
+                        total_peak_shave_kwh += discharge
+                        reason = f"Discharge at peak rate (${rate:.2f}/kWh) to eliminate expensive grid import."
+                    elif net_surplus > 0 and headroom_kwh > 0.05:
+                        charge = min(net_surplus, max_charge_kw, headroom_kwh)
+                        action = ACTION_STORE_SOLAR
+                        battery_flow_kwh = charge
+                        reason = "Absorb surplus solar during peak rate window."
+                    else:
+                        action = ACTION_HOLD_RESERVE
+                        reason = "Holding reserve floor during peak rate window."
+
+                elif period == "off_peak":
+                    # Pre-charge battery during cheap off-peak hours if tomorrow's solar is insufficient or SoC is low
+                    precharge_target_soc = 85.0 if daily_solar_kwh < 20.0 else 65.0
+                    target_headroom = max(0.0, ((precharge_target_soc - sim_soc) / 100.0) * cap)
+                    if net_surplus > 0 and headroom_kwh > 0.05:
+                        charge = min(net_surplus, max_charge_kw, headroom_kwh)
+                        action = ACTION_STORE_SOLAR
+                        battery_flow_kwh = charge
+                        reason = "Capture off-peak solar generation."
+                    elif sim_soc < precharge_target_soc and target_headroom > 0.05:
+                        charge = min(max_charge_kw, target_headroom)
+                        action = ACTION_CHARGE_GRID
+                        battery_flow_kwh = charge
+                        reason = f"Pre-charge from cheap grid (${rate:.2f}/kWh) before peak rates start."
+                    else:
+                        action = ACTION_IDLE
+                        reason = f"SoC ({sim_soc:.0f}%) is optimized for upcoming peak tariff."
+
+                else:  # shoulder
+                    if net_surplus > 0 and headroom_kwh > 0.05:
+                        charge = min(net_surplus, max_charge_kw, headroom_kwh)
+                        action = ACTION_STORE_SOLAR
+                        battery_flow_kwh = charge
+                        reason = "Store surplus solar during shoulder window in anticipation of 2PM peak."
+                    elif net_surplus < 0 and sim_hour >= 19 and available_discharge_kwh > 0.05:
+                        # Post-peak evening shoulder: gently discharge remaining energy down to reserve
+                        discharge = min(abs(net_surplus), max_discharge_kw * 0.6, available_discharge_kwh)
+                        action = "discharge_evening"
+                        battery_flow_kwh = -discharge
+                        reason = "Discharge residual energy to cover evening household consumption."
+                    else:
+                        action = ACTION_HOLD_RESERVE if sim_hour < 14 else ACTION_IDLE
+                        reason = "Hold stored battery capacity for the high-cost peak period."
+
+            # Update battery SoC for next hour
+            delta_pct = (battery_flow_kwh / cap) * 100.0
+            sim_soc = max(0.0, min(100.0, round(sim_soc + delta_pct, 1)))
+
+            # Managed financial calculation
+            net_grid_flow = load_kwh - solar_kwh + battery_flow_kwh
+            if net_grid_flow > 0:
+                managed_cost_total += net_grid_flow * rate
+            else:
+                managed_cost_total -= abs(net_grid_flow) * 0.04
+
+            schedule.append({
+                "step": step,
+                "hour": sim_hour,
+                "time_label": f"{sim_hour:02d}:00",
+                "tariff_period": period,
+                "rate_per_kwh": rate,
+                "solar_kwh": solar_kwh,
+                "load_kwh": load_kwh,
+                "net_surplus_kwh": net_surplus,
+                "action": action,
+                "battery_flow_kw": round(battery_flow_kwh, 2),
+                "ending_soc_pct": sim_soc,
+                "reason": reason,
+            })
+
+        projected_savings = max(0.0, round(unmanaged_cost_total - managed_cost_total, 2))
+        current_step = schedule[0]
+
+        return {
+            "mode": mode,
+            "current_soc_pct": round(soc, 1),
+            "battery_capacity_kwh": cap,
+            "min_reserve_soc_pct": reserve,
+            "daily_solar_forecast_kwh": round(daily_solar_kwh, 1),
+            "baseline_load_kw": baseline_load_kw,
+            "projected_savings_usd": projected_savings,
+            "projected_peak_shave_kwh": round(total_peak_shave_kwh, 2),
+            "unmanaged_cost_usd": round(max(0.0, unmanaged_cost_total), 2),
+            "managed_cost_usd": round(max(0.0, managed_cost_total), 2),
+            "current_action": current_step["action"],
+            "current_reason": current_step["reason"],
+            "current_battery_flow_kw": current_step["battery_flow_kw"],
+            "schedule": schedule,
+            "timestamp": now.isoformat(),
+        }
+
+    async def async_get_arbitrage_plan(
+        self,
+        battery_entity: str | None = None,
+        mode: str | None = None,
+        battery_capacity_kwh: float | None = None,
+        min_reserve_soc_pct: float | None = None,
+        custom_rates: dict[str, float] | None = None,
+    ) -> dict[str, Any]:
+        """Discover live battery state, solar forecasts, and household load to produce a real-time arbitrage plan."""
+        topo = await self.async_discover_energy_topology()
+        chosen_mode = mode or self._arbitrage_mode
+
+        # 1. Resolve current battery State of Charge
+        soc = 50.0
+        if battery_entity:
+            st = self.hass.states.get(battery_entity)
+            if st and st.state not in ("unavailable", "unknown"):
+                try:
+                    soc = float(st.state)
+                except (ValueError, TypeError):
+                    pass
+        else:
+            # Check topology battery sensors
+            for b in topo.get("battery_sensors", []):
+                eid = b["entity_id"]
+                if any(k in eid for k in ("powerwall", "enphase", "solar_battery", "home_battery", "ups")):
+                    try:
+                        soc = float(b["state"])
+                        break
+                    except (ValueError, TypeError):
+                        pass
+
+        # 2. Resolve daily solar forecast
+        solar_forecast_kwh = 24.0
+        for s_eid in (
+            "sensor.energy_production_today",
+            "sensor.solar_forecast_today",
+            "sensor.forecast_solar_energy_today",
+            "sensor.solcast_pv_forecast_today",
+        ):
+            st = self.hass.states.get(s_eid)
+            if st and st.state not in ("unavailable", "unknown"):
+                try:
+                    solar_forecast_kwh = float(st.state)
+                    break
+                except (ValueError, TypeError):
+                    pass
+
+        # 3. Resolve baseline household load in kW
+        summary = await self.async_get_energy_summary()
+        baseline_kw = round(max(0.5, summary["total_power_w"] / 1000.0), 2)
+
+        plan = self.calculate_arbitrage_schedule(
+            current_soc_pct=soc,
+            battery_capacity_kwh=battery_capacity_kwh or self._battery_capacity_kwh,
+            max_charge_kw=self._max_charge_kw,
+            max_discharge_kw=self._max_discharge_kw,
+            min_reserve_soc_pct=min_reserve_soc_pct or self._min_reserve_soc_pct,
+            mode=chosen_mode,
+            custom_rates=custom_rates,
+            daily_solar_kwh=solar_forecast_kwh,
+            baseline_load_kw=baseline_kw,
+        )
+
+        self._cached_arbitrage_plan = plan
+        return plan
 

@@ -103,6 +103,8 @@ from .const import (
     SERVICE_QUERY_KNOWLEDGE,
     SERVICE_INDEX_ENTITY_HISTORY,
     SERVICE_CLEAR_KNOWLEDGE,
+    SERVICE_OPTIMIZE_BATTERY_SCHEDULE,
+    SERVICE_GET_ENERGY_ARBITRAGE_PLAN,
 )
 from .local_llm import LocalLLMManager
 from .rag_manager import RAGKnowledgeManager
@@ -1638,6 +1640,56 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         record_id = call.data.get("record_id")
         return await em.async_restore_shed_loads(record_id=record_id)
 
+    async def handle_optimize_battery_schedule(call) -> ServiceResponse:
+        """Handle service call to optimize 24-hour battery charge/discharge schedule."""
+        _LOGGER.debug("Service 'optimize_battery_schedule' triggered: %s", call.data)
+        em = _get_energy_manager()
+        battery_entity = call.data.get("battery_entity")
+        mode = call.data.get("mode")
+        battery_capacity_kwh = call.data.get("battery_capacity_kwh")
+        min_reserve_soc_pct = call.data.get("min_reserve_soc_pct")
+        daily_solar_kwh = call.data.get("daily_solar_kwh")
+        baseline_load_kw = call.data.get("baseline_load_kw")
+
+        if mode:
+            em.set_arbitrage_mode(mode)
+
+        if any(k is not None for k in (daily_solar_kwh, baseline_load_kw)):
+            soc = 50.0
+            if battery_entity:
+                st = hass.states.get(battery_entity)
+                if st and st.state not in ("unavailable", "unknown"):
+                    try:
+                        soc = float(st.state)
+                    except (ValueError, TypeError):
+                        pass
+            return em.calculate_arbitrage_schedule(
+                current_soc_pct=soc,
+                battery_capacity_kwh=battery_capacity_kwh or 13.5,
+                min_reserve_soc_pct=min_reserve_soc_pct or 20.0,
+                mode=mode or em.get_arbitrage_mode(),
+                daily_solar_kwh=daily_solar_kwh if daily_solar_kwh is not None else 24.0,
+                baseline_load_kw=baseline_load_kw or 1.0,
+            )
+
+        return await em.async_get_arbitrage_plan(
+            battery_entity=battery_entity,
+            mode=mode,
+            battery_capacity_kwh=battery_capacity_kwh,
+            min_reserve_soc_pct=min_reserve_soc_pct,
+        )
+
+    async def handle_get_energy_arbitrage_plan(call) -> ServiceResponse:
+        """Handle service call to retrieve the active battery energy arbitrage plan."""
+        _LOGGER.debug("Service 'get_energy_arbitrage_plan' triggered: %s", call.data)
+        em = _get_energy_manager()
+        battery_entity = call.data.get("battery_entity")
+        mode = call.data.get("mode")
+        return await em.async_get_arbitrage_plan(
+            battery_entity=battery_entity,
+            mode=mode,
+        )
+
     async def handle_get_presence_states(call) -> ServiceResponse:
         """Handle service call to retrieve fused room occupancy states."""
         _LOGGER.debug("Service 'get_presence_states' triggered")
@@ -2128,6 +2180,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         SERVICE_RESTORE_SHED_LOADS,
         handle_restore_shed_loads,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_OPTIMIZE_BATTERY_SCHEDULE,
+        handle_optimize_battery_schedule,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_ENERGY_ARBITRAGE_PLAN,
+        handle_get_energy_arbitrage_plan,
         supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
@@ -3229,6 +3293,41 @@ class OtisAIConversationAgent(AbstractAgent):
             fire_progress("macro", "Restoring Loads", "Restoring shedded loads to prior snapshot states")
             res = await self.energy_manager.async_restore_shed_loads()
             return self._create_response(user_input, res.get("message", res.get("error", "")))
+
+        # Check for Battery Arbitrage & Scheduling commands (Phase 2)
+        if self.energy_manager and any(w in user_lower for w in (
+            "battery arbitrage", "battery schedule", "energy arbitrage",
+            "optimize battery", "optimize battery schedule", "battery plan",
+            "arbitrage plan", "arbitrage schedule"
+        )):
+            fire_progress("domain", "Battery Arbitrage", "Calculating 24-hour battery schedule & TOU savings")
+            req_mode = None
+            if "backup" in user_lower or "storm" in user_lower or "outage" in user_lower or "reserve" in user_lower:
+                req_mode = "backup_reserve"
+            elif "self consumption" in user_lower or "solar only" in user_lower:
+                req_mode = "self_consumption"
+            elif "peak" in user_lower or "arbitrage" in user_lower:
+                req_mode = "peak_arbitrage"
+
+            plan = await self.energy_manager.async_get_arbitrage_plan(mode=req_mode)
+            lines = [
+                f"🔋 **24-Hour Energy Arbitrage & Battery Plan** (Mode: `{plan.get('mode', 'auto').upper()}`)\n",
+                f"• **Current Battery State of Charge**: {plan.get('current_soc_pct', 0)}% (Reserve Floor: {plan.get('min_reserve_soc_pct', 20)}%)",
+                f"• **Daily Solar Forecast**: {plan.get('daily_solar_forecast_kwh', 0)} kWh",
+                f"• **Projected Peak Shaved**: {plan.get('projected_peak_shave_kwh', 0)} kWh during 2:00 PM – 7:00 PM",
+                f"• **Estimated Daily Savings**: **${plan.get('projected_savings_usd', 0.0):.2f}** (Grid Cost: ${plan.get('managed_cost_usd', 0.0):.2f} vs ${plan.get('unmanaged_cost_usd', 0.0):.2f} without arbitrage)",
+                f"• **Current Action**: `{plan.get('current_action', 'idle')}` — *{plan.get('current_reason', 'Monitoring grid rates and solar generation.')}*\n",
+                "**Upcoming Schedule Summary**:"
+            ]
+            for step in plan.get("schedule", [])[:6]:
+                arrow = "📥" if step["battery_flow_kw"] > 0 else ("📤" if step["battery_flow_kw"] < 0 else "⏸️")
+                flow_desc = f"{arrow} {abs(step['battery_flow_kw']):.1f} kW" if step["battery_flow_kw"] != 0 else "0 kW"
+                lines.append(
+                    f"- `{step['time_label']}` [{step['tariff_period'].upper()} @ ${step['rate_per_kwh']:.2f}]: "
+                    f"`{step['action']}` ({flow_desc}) ➔ Ending SoC: {step['ending_soc_pct']:.0f}%"
+                )
+            lines.append("\n*(Say 'optimize battery for backup' to preserve full emergency reserves, or 'optimize battery for peak arbitrage')*")
+            return self._create_response(user_input, "\n".join(lines))
 
         # Check for Presence / Occupancy queries (Phase 8)
         if getattr(self, "vision_manager", None) and any(w in user_lower for w in (
@@ -4394,6 +4493,7 @@ class DiscoveryEngine:
         if self.energy_manager:
             try:
                 energy_data = await self.energy_manager.async_get_energy_summary()
+                energy_data["arbitrage_plan"] = await self.energy_manager.async_get_arbitrage_plan()
             except Exception as err:
                 _LOGGER.debug("Error running Energy summary during discovery scan: %s", err)
         cap_map["energy_topology"] = energy_data

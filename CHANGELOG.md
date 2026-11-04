@@ -7,6 +7,25 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.24] - 2026-11-04
+
+### Added
+- **Context-Aware Energy Arbitrage & Battery Scheduling (Roadmap Phase 2)**:
+  - **Dynamic 24-Hour Battery Arbitrage Simulation Engine (`EnergyManager`)**:
+    - Generates hourly battery charge/discharge target schedules based on solar forecast curves, residential diurnal consumption profiles, and grid TOU (Time-Of-Use) electricity rates.
+    - Four operating strategies: `auto` (adaptive TOU shave & solar absorption), `peak_arbitrage` (aggressive peak discharge during 2:00 PM – 7:00 PM), `self_consumption` (zero grid dependency), and `backup_reserve` (100% emergency outage preservation).
+    - Simulates battery State of Charge (SoC %), net solar surplus/deficit, grid power flow, and computes exact projected daily cost savings ($) and peak kW shaved.
+  - **New Registered Services**:
+    - `otis_ai.optimize_battery_schedule`: Configure mode, battery capacity, reserve floor, and custom forecast/load parameters to generate and set active arbitrage schedules.
+    - `otis_ai.get_energy_arbitrage_plan`: Query live battery SoC, solar forecasts, and household load to return active recommendations and 24-hour timeline.
+  - **Autonomous Local LLM Tool Calling (`DEFAULT_OTIS_TOOLS`)**:
+    - Exposed JSON Schema specifications for `optimize_battery_schedule` and `get_energy_arbitrage_plan` allowing local Ollama and OpenAI-compatible models to optimize energy storage autonomously during multi-step reasoning.
+  - **Conversational Assist Intent Routing**:
+    - Added natural language intent recognition (*"What is my energy arbitrage plan?"*, *"Optimize battery for storm outage backup"*, *"Show battery schedule"*) returning structured summaries with current power flow and 6-hour upcoming previews.
+  - **Lovelace Companion Card Energy Arbitrage Widget & Timeline Strip**:
+    - Added real-time battery status tile to the Capabilities & Architecture tab in `otis-companion-card.js` with live SoC %, flow direction indicators (📥 Charging / 📤 Discharging / ⏸️ Holding), mode switcher pills (`Auto`, `Peak Shave`, `Solar Soak`, `Backup`), interactive 24-hour hourly tariff/schedule strip, and 1-click re-optimization trigger.
+  - Bumped Lovelace Companion Card to `v0.1.24`.
+
 ## [0.1.23] - 2026-11-03
 
 ### Fixed
