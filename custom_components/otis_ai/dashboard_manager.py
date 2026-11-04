@@ -2050,14 +2050,19 @@ class DashboardManager:
 
         user_rules = self._get_user_rules() if hasattr(self, "_get_user_rules") else {}
         if user_rules.get("floorplan_3d") or user_rules.get("floorplan_view_mode") == "3d":
-            return [
-                {
-                    "type": "custom:otis-companion-card",
-                    "mode": "floorplan_studio",
-                    "view_mode": "3d",
-                    "title": "Interactive Floor Plan",
-                }
-            ]
+            card_cfg: dict[str, Any] = {
+                "type": "custom:otis-companion-card",
+                "mode": "floorplan_control",
+                "view_mode": "3d",
+                "title": "Interactive Floor Plan",
+            }
+            if "floorplan_azimuth" in user_rules:
+                card_cfg["floorplan_azimuth"] = user_rules["floorplan_azimuth"]
+            if "floorplan_pitch" in user_rules:
+                card_cfg["floorplan_pitch"] = user_rules["floorplan_pitch"]
+            if "floorplan_wall_height" in user_rules:
+                card_cfg["floorplan_wall_height"] = user_rules["floorplan_wall_height"]
+            return [card_cfg]
 
         image_url = f"/local/otis_floorplan.svg?v={svg_mtime}" if svg_mtime else "/local/otis_floorplan.svg"
         return [

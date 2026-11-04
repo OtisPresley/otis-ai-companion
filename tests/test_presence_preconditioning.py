@@ -144,7 +144,7 @@ class TestPresencePreconditioning(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(cards), 1)
         self.assertEqual(cards[0]["type"], "custom:otis-companion-card")
-        self.assertEqual(cards[0]["mode"], "floorplan_studio")
+        self.assertEqual(cards[0]["mode"], "floorplan_control")
         self.assertEqual(cards[0]["view_mode"], "3d")
 
 

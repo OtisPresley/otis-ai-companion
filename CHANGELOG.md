@@ -7,6 +7,17 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.30] - 2026-11-04
+
+### Fixed
+- **Illuminated 3D Glass Walls Visibility & Styling**:
+  - Upgraded 3D raised room walls to high-visibility architectural illuminated glass with vibrant 3px neon top rails (`#38bdf8`, `box-shadow: 0 0 14px #38bdf8`), 2px solid vertical corner posts, and frosted cyan gradient facets that pop distinctly in isometric 3D space.
+  - Excluded outdoor perimeters (`frontyard`, `backyard`, `pool`) from raised room wall generation so vast exterior yards no longer mask indoor rooms.
+  - Fixed floor zone switching bug in Companion Card: clicking "Ground & Outdoor", "Upper Level", or "Outdoor Only" now immediately recalculates SVG viewBox coordinates and calls `updateWallPositions()` and `updatePinPositions()`.
+- **Save 3D to Dashboard Service Execution**:
+  - Fixed `handle_regenerate_dashboards` in `__init__.py` which previously passed invalid `ServiceCall` arguments causing `force=False` and skipping dashboard regeneration. Implemented internal helper `_async_sync_dashboards_internal(force=True)`.
+  - Added support in Companion Card `setConfig` for `mode: "floorplan_control"` and initialized `floorplan_azimuth`, `floorplan_pitch`, `floorplan_wall_height`, and `floorplan_walls_enabled` directly from card configuration and persisted behavioral rules.
+
 ## [0.1.29] - 2026-11-04
 
 ### Fixed

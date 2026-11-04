@@ -1289,11 +1289,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.debug("Could not refresh dashboards after floorplan unpin: %s", d_err)
         return res
 
-    async def handle_sync_dashboards(call) -> ServiceResponse:
-        """Handle service call to synchronize Studios and Rooms across Otis AI and Command Center."""
-        call_data = getattr(call, "data", {}) or {}
-        force = bool(call_data.get("force") or call_data.get("regenerate") or call_data.get("force_regenerate"))
-        _LOGGER.debug("Service 'sync_dashboards' triggered (force_regenerate=%s)", force)
+    async def _async_sync_dashboards_internal(force: bool = False) -> ServiceResponse:
+        """Internal helper to regenerate or sync Otis AI and Command Center dashboards."""
+        _LOGGER.debug("Service 'sync_dashboards' internal triggered (force_regenerate=%s)", force)
         eng = _get_engine()
         dm = _get_dashboard_manager()
         cap_map = (
@@ -1313,12 +1311,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "command_center": user_res,
         }
 
+    async def handle_sync_dashboards(call) -> ServiceResponse:
+        """Handle service call to synchronize Studios and Rooms across Otis AI and Command Center."""
+        call_data = getattr(call, "data", {}) or {}
+        force = bool(call_data.get("force") or call_data.get("regenerate") or call_data.get("force_regenerate"))
+        return await _async_sync_dashboards_internal(force=force)
+
     async def handle_regenerate_dashboards(call) -> ServiceResponse:
         """Handle service call to cleanly regenerate Command Center, Studios, and Rooms."""
         _LOGGER.debug("Service 'regenerate_dashboards' triggered")
-        from homeassistant.core import ServiceCall
-        sc = ServiceCall(DOMAIN, SERVICE_SYNC_DASHBOARDS, {"force": True})
-        return await handle_sync_dashboards(sc)
+        return await _async_sync_dashboards_internal(force=True)
 
     async def handle_generate_theme(call) -> ServiceResponse:
         """Handle service call to generate and persist a custom theme."""
