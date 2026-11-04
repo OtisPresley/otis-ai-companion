@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.32";
+const CARD_VERSION = "0.1.33";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -5608,6 +5608,8 @@ class OtisCompanionCard extends HTMLElement {
     const nowSec = Date.now() / 1000;
     const minsLeft = expiresAt > nowSec ? Math.max(1, Math.round((expiresAt - nowSec) / 60)) : 10;
     const actionSummary = sensor.attributes?.action_summary || "";
+    const audioActive = Boolean(sensor.attributes?.audio_follow_active);
+    const audioTarget = sensor.attributes?.audio_follow_target ? String(sensor.attributes.audio_follow_target).replace(/_/g, " ") : "";
 
     return `
       <div class="preconditioning-banner" id="preconditioning-banner" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; margin-bottom: 12px; background: linear-gradient(135deg, rgba(14, 165, 233, 0.22), rgba(56, 189, 248, 0.08)); border: 1px solid rgba(56, 189, 248, 0.45); border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.25);">
@@ -5617,9 +5619,10 @@ class OtisCompanionCard extends HTMLElement {
             <div style="font-weight: 700; font-size: 0.85rem; color: #38bdf8; display: flex; align-items: center; gap: 6px;">
               <span>${this._escapeHtml(label)}</span>
               <span style="font-size: 0.65rem; padding: 1px 6px; border-radius: 4px; background: rgba(56,189,248,0.25); color: #e0f2fe; text-transform: uppercase;">Active</span>
+              ${audioActive ? `<span style="font-size: 0.65rem; padding: 1px 6px; border-radius: 4px; background: rgba(168,85,247,0.25); border: 1px solid rgba(168,85,247,0.45); color: #f3e8ff; text-transform: uppercase;">🎵 Audio Follow</span>` : ""}
             </div>
             <div style="font-size: 0.73rem; color: var(--otis-text-muted, #94a3b8); margin-top: 2px;">
-              ${actionSummary ? `${this._escapeHtml(actionSummary)} • ` : ""}Auto-rollback in ${minsLeft}m if vacant.
+              ${actionSummary ? `${this._escapeHtml(actionSummary)} • ` : ""}${audioActive ? `🎵 Audio following to ${this._escapeHtml(audioTarget)} • ` : ""}Auto-rollback in ${minsLeft}m if vacant.
             </div>
           </div>
         </div>

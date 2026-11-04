@@ -7,6 +7,17 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.33] - 2026-11-04
+
+### Added
+- **Phase 4 Step 3: Multi-Zone Audio Migration & Seamless Hand-Off**:
+  - Wired `sensor.otis_spatial_migration` into `AudioHandoffManager` to autonomously trigger media follow-me routing across multi-zone matrix amplifiers and smart speakers during room-to-room transitions.
+  - Added quiet hours integration to cap target room audio volumes to configured threshold when migrations occur during overnight periods.
+  - Linked audio migration lifecycle with `MacroManager` watchdog and `cancel_preconditioning` service to turn off target players if migrations are aborted.
+  - Finalized departed zone power-down upon confirmed physical occupancy in target destination.
+  - Added live `🎵 Audio Follow` badge to pre-conditioning chip in `otis-companion-card.js`.
+  - Refactored area matching into shared global utilities (`zone_matches_area`, `filter_zones_by_area`), eliminating code repetition and zeroing hard-coded identifiers.
+
 ## [0.1.32] - 2026-11-04
 
 ### Added

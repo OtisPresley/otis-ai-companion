@@ -15,9 +15,51 @@ import uuid
 
 from homeassistant.core import HomeAssistant
 
+from .const import (
+    ATTR_AUDIO_FOLLOW_ACTIVE,
+    ATTR_AUDIO_FOLLOW_PLAYER,
+    ATTR_AUDIO_FOLLOW_SOURCE,
+    ATTR_AUDIO_FOLLOW_STATUS,
+    ATTR_AUDIO_FOLLOW_TARGET,
+    DEFAULT_AUDIO_MIGRATION_CONFIDENCE,
+)
 from .matrix_presets import is_matrix_entity, is_tv_cinema_player
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def normalize_area_slug(area_name: str | None) -> str:
+    """Normalize area name to lower snake_case."""
+    return str(area_name or "").strip().lower().replace(" ", "_").replace("-", "_")
+
+
+def zone_matches_area(zone: dict[str, Any], area_name: str) -> bool:
+    """Check if a media zone matches a given area name dynamically."""
+    norm_area = normalize_area_slug(area_name)
+    if not norm_area:
+        return False
+
+    za = normalize_area_slug(zone.get("area_id"))
+    ze = str(zone.get("entity_id") or "").lower()
+    zn = str(zone.get("name") or "").lower()
+    t_compressed = norm_area.replace("_", "")
+
+    return (
+        za == norm_area
+        or norm_area in ze
+        or t_compressed in ze.replace("_", "")
+        or norm_area in zn
+        or norm_area in zn.replace(" ", "_")
+        or t_compressed in zn.replace(" ", "")
+    )
+
+
+def filter_zones_by_area(zones: list[dict[str, Any]], area_name: str) -> list[dict[str, Any]]:
+    """Filter list of zones to those matching the specified area name."""
+    norm_area = normalize_area_slug(area_name)
+    if not norm_area:
+        return []
+    return [z for z in zones if zone_matches_area(z, norm_area)]
 
 
 class AudioHandoffManager:
@@ -29,6 +71,8 @@ class AudioHandoffManager:
         self.spatial_manager = spatial_manager
         self.rules_manager = rules_manager
         self._ducked_sessions: dict[str, dict[str, Any]] = {}
+        self._active_audio_migration: dict[str, Any] | None = None
+        self._migration_unsub: Any = None
 
     def set_rules_manager(self, rules_manager: Any) -> None:
         """Set the user behavioral rules manager."""
@@ -149,6 +193,7 @@ class AudioHandoffManager:
         mode: str = "handoff",
         player_entity_id: str | None = None,
         idle_power_guard: bool = True,
+        target_volume: float | None = None,
     ) -> dict[str, Any]:
         """Transfer or follow audio from a source room to a target room.
 
@@ -193,20 +238,6 @@ class AudioHandoffManager:
         zones_data = await self.async_get_active_media_zones()
         all_zones = zones_data["matrix_zones"] + zones_data["other_players"] + zones_data["tv_cinema_players"]
 
-        def area_matches(zone: dict[str, Any], target_a: str) -> bool:
-            za = str(zone.get("area_id") or "").lower()
-            ze = str(zone.get("entity_id") or "").lower()
-            zn = str(zone.get("name") or "").lower()
-            t_norm = target_a.replace("_", "")
-            return (
-                za == target_a
-                or target_a in ze
-                or t_norm in ze.replace("_", "")
-                or target_a in zn
-                or target_a in zn.replace(" ", "_")
-                or t_norm in zn.replace(" ", "")
-            )
-
         # Locate source player
         source_player: dict[str, Any] | None = None
         if player_entity_id:
@@ -217,7 +248,7 @@ class AudioHandoffManager:
 
         if not source_player:
             # Find active/playing zone in source_area
-            source_candidates = [z for z in all_zones if area_matches(z, source_area_clean)]
+            source_candidates = filter_zones_by_area(all_zones, source_area_clean)
             playing_candidates = [z for z in source_candidates if z["state"] in ("playing", "on")]
             source_player = playing_candidates[0] if playing_candidates else (source_candidates[0] if source_candidates else None)
 
@@ -230,7 +261,7 @@ class AudioHandoffManager:
             }
 
         # Locate target player
-        target_candidates = [z for z in all_zones if area_matches(z, target_area_clean)]
+        target_candidates = filter_zones_by_area(all_zones, target_area_clean)
         if not target_candidates:
             return {
                 "success": False,
@@ -253,7 +284,7 @@ class AudioHandoffManager:
 
         # 3. Perform routing actions
         current_source = source_player.get("source")
-        current_volume = source_player.get("volume_level") or 0.25
+        current_volume = target_volume if target_volume is not None else (source_player.get("volume_level") or 0.25)
         target_entity = target_player["entity_id"]
         source_entity = source_player["entity_id"]
 
@@ -349,6 +380,227 @@ class AudioHandoffManager:
                 "error": f"Failed during audio routing execution: {exec_err}",
                 "actions_attempted": actions_taken,
             }
+
+    async def async_process_spatial_audio_migration(
+        self,
+        migration_intent: dict[str, Any] | None,
+        occupied_areas: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Process spatial migration intent and route follow-me audio if media is actively playing."""
+        if not migration_intent or not isinstance(migration_intent, dict):
+            return None
+
+        # Check confidence against centralized threshold
+        confidence = float(migration_intent.get("confidence") or 0.0)
+        if confidence < DEFAULT_AUDIO_MIGRATION_CONFIDENCE:
+            _LOGGER.debug(
+                "Audio migration ignored: confidence %.2f below threshold %.2f",
+                confidence,
+                DEFAULT_AUDIO_MIGRATION_CONFIDENCE,
+            )
+            return None
+
+        source_area = normalize_area_slug(migration_intent.get("source_area"))
+        target_area = normalize_area_slug(migration_intent.get("target_area"))
+
+        if not source_area or not target_area or source_area == target_area:
+            return None
+
+        # Check behavioral rules
+        if self.rules_manager:
+            rules = self.rules_manager.get_rules()
+            if not rules.get("audio_follow_enabled", True):
+                _LOGGER.debug("Audio follow-me disabled by user behavioral rules")
+                return None
+
+        # Check if target area is already occupied
+        if occupied_areas and any(target_area == normalize_area_slug(a) for a in occupied_areas):
+            if self._active_audio_migration and self._active_audio_migration.get("status") == "following":
+                return await self.async_finalize_audio_handoff()
+            return None
+
+        # Discover active players
+        zones_data = await self.async_get_active_media_zones()
+        all_zones = zones_data["matrix_zones"] + zones_data["other_players"] + zones_data["tv_cinema_players"]
+
+        source_candidates = filter_zones_by_area(all_zones, source_area)
+        playing_sources = [z for z in source_candidates if z["state"] in ("playing", "on")]
+
+        if not playing_sources:
+            _LOGGER.debug("No active audio playing in source area '%s'; no audio follow required", source_area)
+            return {
+                "migrated": False,
+                "reason": "no_active_audio",
+                "source_area": source_area,
+                "target_area": target_area,
+            }
+
+        source_player = playing_sources[0]
+
+        # Target candidate
+        target_candidates = filter_zones_by_area(all_zones, target_area)
+        if not target_candidates:
+            _LOGGER.debug("No media player available in target area '%s' for audio follow", target_area)
+            return {
+                "migrated": False,
+                "reason": "no_target_player",
+                "source_area": source_area,
+                "target_area": target_area,
+            }
+
+        # Check quiet hours & volume cap
+        is_quiet, quiet_vol, _ = self.is_quiet_hours_active()
+        src_vol = source_player.get("volume_level") or 0.25
+        target_vol = (quiet_vol / 100.0) if is_quiet else src_vol
+
+        # Perform follow-me routing
+        handoff_res = await self.async_audio_handoff(
+            source_area=source_area,
+            target_area=target_area,
+            mode="follow",
+            player_entity_id=source_player["entity_id"],
+            idle_power_guard=False,
+            target_volume=target_vol,
+        )
+
+        if not handoff_res.get("success"):
+            return handoff_res
+
+        self._active_audio_migration = {
+            "source_area": source_area,
+            "target_area": target_area,
+            "source_player": source_player["entity_id"],
+            "target_player": handoff_res.get("target_player"),
+            "source_streamer": source_player.get("source"),
+            "volume_level": target_vol,
+            "quiet_hours_applied": is_quiet,
+            "status": "following",
+        }
+
+        self._update_spatial_migration_sensor(status="following")
+        _LOGGER.info(
+            "Otis Audio Follow-Me active: %s -> %s (target=%s, vol=%.2f, quiet=%s)",
+            source_area,
+            target_area,
+            handoff_res.get("target_player"),
+            target_vol,
+            is_quiet,
+        )
+        return {
+            "success": True,
+            "migrated": True,
+            "source_area": source_area,
+            "target_area": target_area,
+            "source_player": source_player["entity_id"],
+            "target_player": handoff_res.get("target_player"),
+            "status": "following",
+            "quiet_hours_applied": is_quiet,
+        }
+
+    async def async_finalize_audio_handoff(self) -> dict[str, Any]:
+        """Finalize follow-me audio handoff once occupancy reaches target area, powering down departed zone."""
+        if not self._active_audio_migration or self._active_audio_migration.get("status") != "following":
+            return {"success": False, "reason": "no_active_follow"}
+
+        source_player = self._active_audio_migration.get("source_player")
+        target_player = self._active_audio_migration.get("target_player")
+
+        try:
+            if source_player:
+                await self.hass.services.async_call(
+                    "media_player",
+                    "turn_off",
+                    {"entity_id": source_player},
+                    blocking=True,
+                )
+                _LOGGER.info("Finalized audio handoff: powered off departed source player %s", source_player)
+
+            self._active_audio_migration["status"] = "completed"
+            self._update_spatial_migration_sensor(status="completed")
+
+            # Clean idle sources across matrix
+            await self.async_release_idle_sources()
+
+            return {
+                "success": True,
+                "status": "completed",
+                "source_player": source_player,
+                "target_player": target_player,
+            }
+        except Exception as fin_err:
+            _LOGGER.debug("Error finalizing audio handoff: %s", fin_err)
+            return {"success": False, "error": str(fin_err)}
+
+    async def async_cancel_audio_migration(self) -> dict[str, Any]:
+        """Cancel active follow-me audio migration and power off target zone if user turned back."""
+        if not self._active_audio_migration:
+            return {"cancelled": False, "reason": "no_active_migration"}
+
+        target_player = self._active_audio_migration.get("target_player")
+        try:
+            if target_player and self._active_audio_migration.get("status") == "following":
+                await self.hass.services.async_call(
+                    "media_player",
+                    "turn_off",
+                    {"entity_id": target_player},
+                    blocking=True,
+                )
+                _LOGGER.info("Cancelled audio migration: turned off target player %s", target_player)
+
+            self._active_audio_migration["status"] = "cancelled"
+            self._update_spatial_migration_sensor(status="cancelled")
+            mig = self._active_audio_migration
+            self._active_audio_migration = None
+            return {"cancelled": True, "details": mig}
+        except Exception as c_err:
+            _LOGGER.debug("Error cancelling audio migration: %s", c_err)
+            return {"cancelled": False, "error": str(c_err)}
+
+    def _update_spatial_migration_sensor(self, status: str) -> None:
+        """Update sensor.otis_spatial_migration with audio follow-me attributes."""
+        if hasattr(self.hass, "states") and hasattr(self.hass.states, "get") and hasattr(self.hass.states, "async_set"):
+            st = self.hass.states.get("sensor.otis_spatial_migration")
+            if st:
+                attrs = dict(st.attributes) if st.attributes else {}
+                attrs[ATTR_AUDIO_FOLLOW_ACTIVE] = (status == "following")
+                attrs[ATTR_AUDIO_FOLLOW_STATUS] = status
+                if self._active_audio_migration:
+                    attrs[ATTR_AUDIO_FOLLOW_SOURCE] = self._active_audio_migration.get("source_area")
+                    attrs[ATTR_AUDIO_FOLLOW_TARGET] = self._active_audio_migration.get("target_area")
+                    attrs[ATTR_AUDIO_FOLLOW_PLAYER] = self._active_audio_migration.get("target_player")
+                self.hass.states.async_set("sensor.otis_spatial_migration", st.state, attrs)
+
+    def async_start_migration_listener(self) -> None:
+        """Listen to state changes on sensor.otis_spatial_migration for autonomous audio migration."""
+        if getattr(self, "_migration_unsub", None):
+            return
+
+        async def _on_sensor_changed(event):
+            data = getattr(event, "data", {})
+            if data.get("entity_id") != "sensor.otis_spatial_migration":
+                return
+            new_state = data.get("new_state")
+            if not new_state:
+                return
+            attrs = new_state.attributes or {}
+            intent_dict = {
+                "intent": new_state.state,
+                "target_area": attrs.get("target_area"),
+                "source_area": attrs.get("source_area"),
+                "confidence": attrs.get("confidence", 0.0),
+                "preconditioning_state": attrs.get("preconditioning_state"),
+            }
+            await self.async_process_spatial_audio_migration(intent_dict)
+
+        if hasattr(self.hass, "bus") and hasattr(self.hass.bus, "async_listen"):
+            try:
+                from homeassistant.const import EVENT_STATE_CHANGED
+            except ImportError:
+                EVENT_STATE_CHANGED = "state_changed"
+
+            self._migration_unsub = self.hass.bus.async_listen(
+                EVENT_STATE_CHANGED, _on_sensor_changed
+            )
 
     async def async_release_idle_sources(self) -> dict[str, Any]:
         """Inspect matrix zones and upstream streamers; pause streamers and release powered-off zones.
@@ -461,17 +713,9 @@ class AudioHandoffManager:
             if state not in ("playing", "on"):
                 continue
 
-            area_id = str(p.get("area_id") or "").lower()
-            name = str(p.get("name") or "").lower()
-
-            # If clean_areas specified, check match
-            if clean_areas:
-                matches_area = (
-                    area_id in clean_areas
-                    or any(ca in entity_id.lower() or ca in name for ca in clean_areas)
-                )
-                if not matches_area:
-                    continue
+            # If clean_areas specified, check match using shared matcher
+            if clean_areas and not any(zone_matches_area(p, ca) for ca in clean_areas):
+                continue
 
             # Capture prior state
             current_vol = p.get("volume_level")

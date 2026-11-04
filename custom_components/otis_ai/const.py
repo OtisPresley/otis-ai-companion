@@ -109,6 +109,14 @@ SERVICE_CLEAR_KNOWLEDGE = "clear_knowledge_base"
 SERVICE_OPTIMIZE_BATTERY_SCHEDULE = "optimize_battery_schedule"
 SERVICE_GET_ENERGY_ARBITRAGE_PLAN = "get_energy_arbitrage_plan"
 
+# Spatial Audio Migration & Follow-Me (Phase 4 Step 3)
+DEFAULT_AUDIO_MIGRATION_CONFIDENCE = 0.70
+ATTR_AUDIO_FOLLOW_ACTIVE = "audio_follow_active"
+ATTR_AUDIO_FOLLOW_SOURCE = "audio_follow_source"
+ATTR_AUDIO_FOLLOW_TARGET = "audio_follow_target"
+ATTR_AUDIO_FOLLOW_PLAYER = "audio_follow_player"
+ATTR_AUDIO_FOLLOW_STATUS = "audio_follow_status"
+
 # Dashboard Constants
 COMMAND_CENTER_DASHBOARD_ID = "command-center"
 COMMAND_CENTER_DASHBOARD_URL_PATH = "command-center"

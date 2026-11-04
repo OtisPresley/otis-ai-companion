@@ -433,14 +433,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     local_llm_manager.rag_manager = rag_manager
     sentinel_manager = SentinelManager(hass, local_llm_manager=local_llm_manager)
     macro_manager = MacroManager(hass)
-    macro_manager.async_start_migration_listener()
     audio_manager = AudioHandoffManager(hass, spatial_manager=spatial_manager, rules_manager=rules_manager)
+    macro_manager.set_audio_manager(audio_manager)
+    macro_manager.async_start_migration_listener()
+    audio_manager.async_start_migration_listener()
     energy_manager = EnergyManager(hass, spatial_manager=spatial_manager)
     vision_manager = VisionPresenceManager(
         hass,
         spatial_manager=spatial_manager,
         energy_manager=energy_manager,
         macro_manager=macro_manager,
+        audio_manager=audio_manager,
     )
     # Start real-time presence tracking and publish initial fused presence states
     vision_manager.async_start_presence_tracking()

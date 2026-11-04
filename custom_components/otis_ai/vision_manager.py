@@ -140,12 +140,20 @@ def stream_priority(
 class VisionPresenceManager:
     """Manages multi-sensor room occupancy fusion, camera vision analysis, and contextual perimeter alerts."""
 
-    def __init__(self, hass: HomeAssistant, spatial_manager=None, energy_manager=None, macro_manager=None) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        spatial_manager=None,
+        energy_manager=None,
+        macro_manager=None,
+        audio_manager=None,
+    ) -> None:
         """Initialize the Vision & Presence Manager."""
         self.hass = hass
         self.spatial_manager = spatial_manager
         self.energy_manager = energy_manager
         self.macro_manager = macro_manager
+        self.audio_manager = audio_manager
         self._camera_audit_history: list[dict[str, Any]] = []
         self._presence_cache: dict[str, Any] = {}
         self._presence_cache_ts: float = 0.0
@@ -1073,6 +1081,15 @@ class VisionPresenceManager:
                 )
             except Exception as mm_err:
                 _LOGGER.debug("Error processing spatial migration in macro_manager: %s", mm_err)
+
+        # Trigger follow-me audio migration in audio_manager
+        if getattr(self, "audio_manager", None):
+            try:
+                await self.audio_manager.async_process_spatial_audio_migration(
+                    intent, occupied_areas=presence_data.get("occupied_areas")
+                )
+            except Exception as am_err:
+                _LOGGER.debug("Error processing spatial audio migration in audio_manager: %s", am_err)
 
         return intent
 

@@ -38,14 +38,19 @@ SAFE_DOMAINS = {
 class MacroManager:
     """Orchestrates multi-step smart home macros with atomic snapshots and rollback."""
 
-    def __init__(self, hass: HomeAssistant) -> None:
+    def __init__(self, hass: HomeAssistant, audio_manager: Any = None) -> None:
         """Initialize the macro manager."""
         self.hass = hass
+        self.audio_manager = audio_manager
         self._history: list[dict[str, Any]] = []
         self._pending_macros: dict[str, dict[str, Any]] = {}
         self._active_preconditioning: dict[str, Any] | None = None
         self._watchdog_task: asyncio.Task | None = None
         self._migration_unsub: Any = None
+
+    def set_audio_manager(self, audio_manager: Any) -> None:
+        """Set the audio handoff manager."""
+        self.audio_manager = audio_manager
 
     def get_history(self, limit: int = 20) -> list[dict[str, Any]]:
         """Return the execution history of macros."""
@@ -518,6 +523,11 @@ class MacroManager:
                             macro_id,
                         )
                         await self.async_rollback_macro(macro_id)
+                        if self.audio_manager:
+                            try:
+                                await self.audio_manager.async_cancel_audio_migration()
+                            except Exception as a_err:
+                                _LOGGER.debug("Watchdog: Could not cancel audio migration: %s", a_err)
                         self._active_preconditioning["status"] = "rolled_back"
                         self._update_spatial_migration_sensor("rolled_back")
             except asyncio.CancelledError:
@@ -543,6 +553,12 @@ class MacroManager:
             self._watchdog_task.cancel()
 
         res = await self.async_rollback_macro(macro_id)
+        if self.audio_manager:
+            try:
+                await self.audio_manager.async_cancel_audio_migration()
+            except Exception as a_err:
+                _LOGGER.debug("Cancel preconditioning: Could not cancel audio migration: %s", a_err)
+
         self._active_preconditioning["status"] = "cancelled"
         self._update_spatial_migration_sensor("cancelled")
         return res
@@ -563,6 +579,11 @@ class MacroManager:
                 _LOGGER.info("Arrival confirmed in target area '%s'. Pre-conditioning validated.", target)
                 if self._watchdog_task and not self._watchdog_task.done():
                     self._watchdog_task.cancel()
+                if self.audio_manager:
+                    try:
+                        await self.audio_manager.async_finalize_audio_handoff()
+                    except Exception as fa_err:
+                        _LOGGER.debug("Could not finalize audio handoff on confirmed arrival: %s", fa_err)
                 self._active_preconditioning["status"] = "confirmed"
                 self._update_spatial_migration_sensor("confirmed")
                 return self._active_preconditioning
