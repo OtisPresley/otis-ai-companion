@@ -105,11 +105,15 @@ SERVICE_BENCHMARK_LOCAL_LLM = "benchmark_local_llm"
 SERVICE_PULL_LOCAL_LLM_MODEL = "pull_local_llm_model"
 SERVICE_EXECUTE_TOOL_PLAN = "execute_tool_plan"
 
-# Local LLM Embedding-Based RAG & Knowledge Store Services (Roadmap Item 1)
+# Local LLM Embedding-Based RAG & Knowledge Store Services (Roadmap Item 1 / Phase 5 Step 3)
 SERVICE_INDEX_DOCUMENT = "index_document"
 SERVICE_QUERY_KNOWLEDGE = "query_knowledge_base"
 SERVICE_INDEX_ENTITY_HISTORY = "index_entity_history"
 SERVICE_CLEAR_KNOWLEDGE = "clear_knowledge_base"
+SERVICE_SYNC_ENTITY_TELEMETRY = "sync_entity_telemetry"
+SERVICE_INDEX_DEVICE_MANUAL = "index_device_manual"
+SERVICE_TOGGLE_AUDIO_FOLLOW = "toggle_audio_follow"
+CONF_AUDIO_FOLLOW_ENABLED = "audio_follow_enabled"
 
 # Context-Aware Energy Arbitrage & Battery Scheduling (Phase 2)
 SERVICE_OPTIMIZE_BATTERY_SCHEDULE = "optimize_battery_schedule"

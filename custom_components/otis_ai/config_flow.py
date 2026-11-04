@@ -22,6 +22,7 @@ from .const import (
     CONF_LOCAL_LLM_URL,
     CONF_LOCAL_LLM_MODEL,
     CONF_CAMERA_STREAM_STRATEGY,
+    CONF_AUDIO_FOLLOW_ENABLED,
     CAMERA_STRATEGY_MANAGED_PROXY,
     CAMERA_STRATEGY_HIGH_EFFICIENCY,
     CAMERA_STRATEGY_HIGH_DEFINITION,
@@ -300,6 +301,10 @@ class OtisAIOptionsFlowHandler(config_entries.OptionsFlow):
                     "mode": "dropdown",
                 }
             }),
+            vol.Optional(
+                CONF_AUDIO_FOLLOW_ENABLED,
+                default=options.get(CONF_AUDIO_FOLLOW_ENABLED, data.get(CONF_AUDIO_FOLLOW_ENABLED, True))
+            ): cv.boolean,
         })
 
         schema = vol.Schema(schema_dict)

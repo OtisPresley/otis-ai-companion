@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.36";
+const CARD_VERSION = "0.1.37";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -5626,9 +5626,16 @@ class OtisCompanionCard extends HTMLElement {
             </div>
           </div>
         </div>
-        <button type="button" class="btn-cancel-preconditioning subview-chip" data-macro-id="${macroId}" style="background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.45); color: #fca5a5; font-weight: 600; padding: 4px 10px; font-size: 0.74rem; cursor: pointer; border-radius: 6px; white-space: nowrap;">
-          ✕ Cancel
-        </button>
+        <div style="display: flex; gap: 6px; align-items: center;">
+          ${audioActive ? `
+            <button type="button" class="btn-disable-audio-follow subview-chip" title="Disable Spatial Audio Follow-Me" style="background: rgba(168, 85, 247, 0.2); border: 1px solid rgba(168, 85, 247, 0.45); color: #f3e8ff; font-weight: 600; padding: 4px 10px; font-size: 0.74rem; cursor: pointer; border-radius: 6px; white-space: nowrap;">
+              🔇 Disable Follow
+            </button>
+          ` : ""}
+          <button type="button" class="btn-cancel-preconditioning subview-chip" data-macro-id="${macroId}" style="background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.45); color: #fca5a5; font-weight: 600; padding: 4px 10px; font-size: 0.74rem; cursor: pointer; border-radius: 6px; white-space: nowrap;">
+            ✕ Cancel
+          </button>
+        </div>
       </div>
     `;
   }
@@ -7931,10 +7938,21 @@ class OtisCompanionCard extends HTMLElement {
     const quietEnd = rules.quiet_hours_end || "07:00";
     const quietVol = rules.quiet_hours_volume !== undefined ? rules.quiet_hours_volume : 25;
     const preferredSpeaker = rules.preferred_speaker || "";
+    const audioFollowEnabled = rules.audio_follow_enabled !== false;
 
     return `
       <div style="display: flex; flex-direction: column; gap: 14px;">
-        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">Quiet Hours Etiquette:</div>
+        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">Spatial Audio Follow-Me:</div>
+
+        <label class="rules-setting-row" style="cursor: pointer;">
+          <div>
+            <div class="rules-setting-label">Enable Audio Follow-Me</div>
+            <div class="rules-setting-desc">Automatically migrates active music playback to whichever room you walk into based on multi-sensor presence tracking.</div>
+          </div>
+          <input type="checkbox" id="rules-input-audio-follow-enabled" ${audioFollowEnabled ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
+        </label>
+
+        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 6px;">Quiet Hours Etiquette:</div>
 
         <label class="rules-setting-row" style="cursor: pointer;">
           <div>
@@ -8971,6 +8989,22 @@ class OtisCompanionCard extends HTMLElement {
       };
     });
 
+    // Disable Audio Follow Button
+    root.querySelectorAll(".btn-disable-audio-follow").forEach((btn) => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        try {
+          this._showToast("🔇 Disabling audio follow-me...");
+          await this._hass.callService("otis_ai", "toggle_audio_follow", { enabled: false });
+          this._showToast("✨ Audio follow-me disabled.");
+          await this._fetchData();
+        } catch (err) {
+          console.error("Disable audio follow failed:", err);
+          this._showToast("⚠️ Could not disable audio follow: " + (err.message || err));
+        }
+      };
+    });
+
     // Rules Modal Controls & Navigation
     if (this._rulesModalOpen) {
       const closeRules = () => {
@@ -9241,6 +9275,14 @@ class OtisCompanionCard extends HTMLElement {
         };
       }
 
+      // Audio Follow Toggle
+      const audioFollowToggle = root.querySelector("#rules-input-audio-follow-enabled");
+      if (audioFollowToggle) {
+        audioFollowToggle.onchange = () => {
+          this._rulesDraft = { ...(this._rulesDraft || {}), audio_follow_enabled: audioFollowToggle.checked };
+        };
+      }
+
       // Quiet Hours Controls
       const quietToggle = root.querySelector("#rules-input-quiet-enabled");
       if (quietToggle) {
@@ -9344,6 +9386,8 @@ class OtisCompanionCard extends HTMLElement {
             if (quietEnd) draft.quiet_hours_end = quietEnd.value;
             if (quietVol) draft.quiet_hours_volume = parseInt(quietVol.value, 10);
             if (speakerInput) draft.preferred_speaker = speakerInput.value.trim();
+            const audioFollowToggle = root.querySelector("#rules-input-audio-follow-enabled");
+            if (audioFollowToggle) draft.audio_follow_enabled = audioFollowToggle.checked;
             if (showIgnoredCheck) draft.show_ignored_recommendations = showIgnoredCheck.checked;
             const timeoutInput = root.querySelector("#rules-input-reasoning-timeout");
             if (timeoutInput && timeoutInput.value) draft.reasoning_timeout = parseInt(timeoutInput.value, 10);

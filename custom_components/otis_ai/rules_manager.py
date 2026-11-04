@@ -83,6 +83,7 @@ class BehavioralRulesManager:
             self._rules = dict(DEFAULT_RULES)
         finally:
             self._loaded = True
+            self._sync_audio_follow_switch()
 
         return dict(self._rules)
 
@@ -97,6 +98,8 @@ class BehavioralRulesManager:
                 merged[key] = value
 
         # Ensure valid types
+        if "audio_follow_enabled" in merged:
+            merged["audio_follow_enabled"] = bool(merged["audio_follow_enabled"])
         if "onboarding_completed" in merged:
             merged["onboarding_completed"] = bool(merged["onboarding_completed"])
         if "require_lock_confirmation" in merged:
@@ -149,6 +152,7 @@ class BehavioralRulesManager:
 
         self._rules = merged
         await self._store.async_save(self._rules)
+        self._sync_audio_follow_switch()
         _LOGGER.info(
             "Otis AI: Saved user behavioral rules (persona: %s, onboarding_completed: %s)",
             self._rules.get("persona"),
@@ -197,6 +201,21 @@ class BehavioralRulesManager:
     def get_rules(self) -> dict[str, Any]:
         """Return the current behavioral rules."""
         return dict(self._rules)
+
+    def _sync_audio_follow_switch(self) -> None:
+        """Publish switch.otis_audio_follow state in Home Assistant."""
+        if hasattr(self.hass, "states") and hasattr(self.hass.states, "async_set"):
+            enabled = bool(self._rules.get("audio_follow_enabled", True))
+            self.hass.states.async_set(
+                "switch.otis_audio_follow",
+                "on" if enabled else "off",
+                {
+                    "friendly_name": "Otis Audio Follow-Me",
+                    "icon": "mdi:music-note-sync",
+                    "assumed_state": False,
+                    "description": "Enables or disables autonomous room-to-room audio migration.",
+                },
+            )
 
     def is_onboarding_completed(self) -> bool:
         """Return whether user has completed initial onboarding."""

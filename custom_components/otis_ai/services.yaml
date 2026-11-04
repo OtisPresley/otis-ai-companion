@@ -1080,6 +1080,90 @@ clear_knowledge_base:
       selector:
         text:
 
+sync_entity_telemetry:
+  name: Sync Entity Telemetry (RAG)
+  description: Scan live Home Assistant states, device attributes, and area assignments to index fresh entity telemetry into the local vector store for real-time semantic retrieval.
+  fields:
+    entity_ids:
+      name: Target Entities
+      description: Optional list or comma-separated entity IDs to index.
+      required: false
+      selector:
+        text:
+    domains:
+      name: Domain Filter
+      description: Optional list or comma-separated domains (e.g. climate, sensor, light, lock).
+      required: false
+      selector:
+        text:
+    include_attributes:
+      name: Include Telemetry Attributes
+      description: Whether to extract and embed detailed operational attributes (temperature, power, battery, etc.).
+      required: false
+      default: true
+      selector:
+        boolean:
+
+index_device_manual:
+  name: Index Device Technical Manual
+  description: Ingest a hardware user guide or setup manual with manufacturer, model, and domain taxonomy tags into the RAG vector store.
+  fields:
+    title:
+      name: Manual Title
+      description: Descriptive title of the equipment manual.
+      required: true
+      example: "Lutron Caseta Dimmer Advanced Setup Guide"
+      selector:
+        text:
+    content:
+      name: Manual Content
+      description: Full text or markdown content of the manual.
+      required: true
+      selector:
+        text:
+          multiline: true
+    manufacturer:
+      name: Manufacturer
+      description: Hardware manufacturer (e.g. Lutron, Shelly, Control4, Ubiquiti, Yale).
+      required: false
+      selector:
+        text:
+    model:
+      name: Model Number
+      description: Specific hardware model (e.g. PD-6WCL, Plus 1PM, C4-AMP108).
+      required: false
+      selector:
+        text:
+    domain:
+      name: Primary Domain
+      description: Associated Home Assistant platform domain (light, switch, media_player, lock).
+      required: false
+      selector:
+        text:
+    document_id:
+      name: Document ID
+      description: Unique identifier for subsequent document updates or deletion.
+      required: false
+      selector:
+        text:
+    metadata:
+      name: Custom Metadata
+      description: Optional key-value metadata object.
+      required: false
+      selector:
+        object:
+
+toggle_audio_follow:
+  name: Toggle Spatial Audio Follow-Me
+  description: Enable, disable, or toggle autonomous spatial audio migration as users move between rooms.
+  fields:
+    enabled:
+      name: Enabled State
+      description: Set explicitly to true or false. Omit to toggle current state.
+      required: false
+      selector:
+        boolean:
+
 optimize_battery_schedule:
   name: Optimize Battery Schedule
   description: Compute and optimize an hourly 24-hour battery charge/discharge schedule based on solar forecasts, TOU electricity pricing, and home load.

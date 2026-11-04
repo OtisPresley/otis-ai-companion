@@ -106,6 +106,9 @@ from .const import (
     SERVICE_QUERY_KNOWLEDGE,
     SERVICE_INDEX_ENTITY_HISTORY,
     SERVICE_CLEAR_KNOWLEDGE,
+    SERVICE_SYNC_ENTITY_TELEMETRY,
+    SERVICE_INDEX_DEVICE_MANUAL,
+    SERVICE_TOGGLE_AUDIO_FOLLOW,
     SERVICE_OPTIMIZE_BATTERY_SCHEDULE,
     SERVICE_GET_ENERGY_ARBITRAGE_PLAN,
 )
@@ -2031,6 +2034,59 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         doc_id = call.data.get("document_id")
         return await rm.async_clear_knowledge(category=category, document_id=doc_id)
 
+    async def handle_sync_entity_telemetry(call) -> ServiceResponse:
+        """Handle service call to index live Home Assistant entity telemetry into RAG store."""
+        _LOGGER.debug("Service 'sync_entity_telemetry' triggered with: %s", call.data)
+        entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        rm = entry_store.get("rag_manager", rag_manager)
+        entity_ids = call.data.get("entity_ids")
+        domains = call.data.get("domains")
+        include_attributes = call.data.get("include_attributes", True)
+        return await rm.async_index_entity_telemetry(
+            entity_ids=entity_ids,
+            domains=domains,
+            include_attributes=include_attributes,
+        )
+
+    async def handle_index_device_manual(call) -> ServiceResponse:
+        """Handle service call to index a device manual with manufacturer/model taxonomy."""
+        _LOGGER.debug("Service 'index_device_manual' triggered with: %s", call.data)
+        entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        rm = entry_store.get("rag_manager", rag_manager)
+        title = call.data.get("title") or "Device Technical Manual"
+        content = call.data.get("content", "")
+        manufacturer = call.data.get("manufacturer")
+        model = call.data.get("model")
+        domain = call.data.get("domain")
+        doc_id = call.data.get("document_id")
+        metadata = call.data.get("metadata", {})
+        return await rm.async_index_device_manual(
+            title=title,
+            content=content,
+            manufacturer=manufacturer,
+            model=model,
+            domain=domain,
+            doc_id=doc_id,
+            metadata=metadata,
+        )
+
+    async def handle_toggle_audio_follow(call) -> ServiceResponse:
+        """Handle service call to toggle or set spatial audio follow-me."""
+        _LOGGER.debug("Service 'toggle_audio_follow' triggered with: %s", call.data)
+        entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        rm_rules = entry_store.get("rules_manager", rules_manager)
+        cur_rules = rm_rules.get_rules()
+        enabled = call.data.get("enabled")
+        if enabled is None:
+            enabled = not cur_rules.get("audio_follow_enabled", True)
+        else:
+            enabled = bool(enabled)
+        updated = await rm_rules.async_save({"audio_follow_enabled": enabled})
+        return {
+            "success": True,
+            "audio_follow_enabled": updated.get("audio_follow_enabled", enabled),
+        }
+
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
         DOMAIN,
@@ -2422,6 +2478,44 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_clear_knowledge_base,
         supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SYNC_ENTITY_TELEMETRY,
+        handle_sync_entity_telemetry,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_INDEX_DEVICE_MANUAL,
+        handle_index_device_manual,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_TOGGLE_AUDIO_FOLLOW,
+        handle_toggle_audio_follow,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
+    # Listen for service calls targeting switch.otis_audio_follow
+    async def _on_service_call_audio_follow(event):
+        data = getattr(event, "data", {})
+        domain = data.get("domain")
+        service = data.get("service")
+        if domain in ("switch", "homeassistant") and service in ("turn_on", "turn_off", "toggle"):
+            s_data = data.get("service_data", {})
+            eids = s_data.get("entity_id")
+            if isinstance(eids, str):
+                eids = [eids]
+            elif not isinstance(eids, list):
+                eids = []
+            if "switch.otis_audio_follow" in eids:
+                cur = rules_manager.get_rules().get("audio_follow_enabled", True)
+                new_val = not cur if service == "toggle" else (service == "turn_on")
+                await rules_manager.async_save({"audio_follow_enabled": new_val})
+
+    if hasattr(hass, "bus") and hasattr(hass.bus, "async_listen"):
+        hass.bus.async_listen("call_service", _on_service_call_audio_follow)
 
     _LOGGER.info("Otis AI Companion entry set up successfully")
     return True

@@ -7,6 +7,22 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.37] - 2026-11-04
+
+### Added
+- **Phase 5 Step 3: Local RAG Vector Memory Integration with Live Telemetry & Device Manual Embeddings**:
+  - Enhanced `RAGKnowledgeManager` (`rag_manager.py`) with hybrid dense vector + lexical keyword retrieval and live Home Assistant telemetry integration.
+  - Implemented `async_index_entity_telemetry` to extract real-time entity states, area assignments, device classes, and telemetry attributes (climate, power, battery, media, switches, locks, cameras, sensors) and generate semantic vector embeddings.
+  - Added `format_entity_telemetry_chunk` with attribute filtering to prioritize key telemetry (`current_temperature`, `power`, `battery`, `hvac_action`, `volume_level`) while pruning internal noise.
+  - Implemented `async_index_device_manual` for ingesting hardware manuals with manufacturer, model, and domain taxonomy tags.
+  - Expanded seeded smart home knowledge base with manuals for Lutron Caseta dimmers, Shelly Plus relays, Control4 audio matrix amplifiers, UniFi PoE access points & switches, and Yale Assure Lock 2 deadbolts.
+  - Added recency boost in `async_query_knowledge` to prioritize fresh entity telemetry alongside hardware guides and manuals.
+  - Published real-time index metrics to `sensor.otis_knowledge_rag` (`total_chunks`, `total_documents`, `categories`).
+  - Registered Home Assistant services: `otis_ai.sync_entity_telemetry`, `otis_ai.index_device_manual`, and `otis_ai.toggle_audio_follow`.
+  - Added options flow toggle for `audio_follow_enabled` in Home Assistant integration configuration.
+  - Surfaced prominent "Spatial Audio Follow-Me" toggle switch in the Lovelace card Settings modal under the Voice & Quiet Hours tab, along with a 1-click `🔇 Disable Follow` button on active preconditioning banners.
+  - Added bidirectional state synchronization and event listeners for `switch.otis_audio_follow`.
+
 ## [0.1.36] - 2026-11-04
 
 ### Added
