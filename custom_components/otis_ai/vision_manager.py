@@ -148,6 +148,10 @@ class VisionPresenceManager:
         self._camera_audit_history: list[dict[str, Any]] = []
         self._presence_cache: dict[str, Any] = {}
         self._presence_cache_ts: float = 0.0
+        self._transition_history: list[dict[str, Any]] = []
+        self._active_migration: dict[str, Any] | None = None
+        self._last_active_area: str | None = None
+        self._last_active_area_ts: float = 0.0
 
     def get_camera_stream_strategy(self) -> str:
         """Retrieve configured camera stream strategy from config entry."""
@@ -871,7 +875,196 @@ class VisionPresenceManager:
                     "likely_areas": res.get("likely_areas", []),
                 },
             )
+
+        # Process spatial presence transitions and migration pre-conditioning
+        try:
+            await self.async_process_presence_transitions(res)
+        except Exception as trans_err:
+            _LOGGER.debug("Error processing presence transitions: %s", trans_err)
+
         return res
+
+    def record_area_transition(
+        self,
+        from_area: str | None,
+        to_area: str,
+        confidence: float = 0.8,
+        timestamp: float | None = None,
+    ) -> dict[str, Any]:
+        """Record an observed or inferred physical presence transition between areas."""
+        ts = timestamp or time.time()
+        record = {
+            "from_area": from_area,
+            "to_area": to_area,
+            "confidence": round(confidence, 2),
+            "timestamp": ts,
+            "iso_time": datetime.fromtimestamp(ts).isoformat(),
+        }
+        self._transition_history.append(record)
+        if len(self._transition_history) > 100:
+            self._transition_history = self._transition_history[-100:]
+        self._last_active_area = to_area
+        self._last_active_area_ts = ts
+        return record
+
+    def get_transition_history(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Return the recent area transition history."""
+        return self._transition_history[-limit:]
+
+    def get_active_migration_intent(self) -> dict[str, Any] | None:
+        """Return current active spatial migration hypothesis if still within validity window."""
+        if not self._active_migration:
+            return None
+        now_ts = time.time()
+        valid_until = self._active_migration.get("valid_until", 0.0)
+        if now_ts > valid_until:
+            self._active_migration = None
+            return None
+        return dict(self._active_migration)
+
+    async def async_detect_migration_intent(
+        self, presence_data: dict[str, Any] | None = None
+    ) -> dict[str, Any] | None:
+        """Analyze recent spatial migration vector and time-of-day to predict intent and pre-conditioning."""
+        if not self._transition_history:
+            return None
+
+        recent = self._transition_history[-1]
+        now_ts = time.time()
+        if now_ts - recent["timestamp"] > 300.0:
+            return None
+
+        now_dt = datetime.now()
+        cur_hour = now_dt.hour + (now_dt.minute / 60.0)
+        cur_to = (recent.get("to_area") or "").lower()
+
+        rooms = (presence_data or {}).get("rooms", {})
+
+        def is_room_occupied(area_keyword: str) -> bool:
+            for rid, rdata in rooms.items():
+                if area_keyword in rid.lower():
+                    return rdata.get("probability", 0.0) >= 0.65
+            return False
+
+        # Pattern 1: Late Evening / Night Bedtime Sleep Migration (21:30 - 02:30)
+        if (21.5 <= cur_hour <= 23.99 or cur_hour < 2.5) and any(
+            k in cur_to for k in ("hallway", "stairs", "master")
+        ):
+            if not is_room_occupied("master"):
+                intent = {
+                    "intent": "sleep_bedtime",
+                    "target_area": "master",
+                    "source_area": cur_to,
+                    "confidence": 0.88 if "master" in cur_to or "hallway" in cur_to else 0.72,
+                    "lifestyle_macro": "bedtime_mode",
+                    "preconditioning_state": "armed",
+                    "suggested_action": "Pre-conditioning bedroom climate, dimming hallway lights, and pre-arming perimeter security",
+                    "detected_at": now_dt.isoformat(),
+                    "valid_until": now_ts + 600.0,
+                }
+                self._active_migration = intent
+                return intent
+
+        # Pattern 2: Evening Movie Migration (17:00 - 21:30)
+        if (17.0 <= cur_hour < 21.5) and any(
+            k in cur_to for k in ("hallway", "living", "theater", "great_room")
+        ):
+            if any(k in cur_to for k in ("hallway", "stairs", "great_room")) and not is_room_occupied("theater"):
+                intent = {
+                    "intent": "movie_night",
+                    "target_area": "theater",
+                    "source_area": cur_to,
+                    "confidence": 0.85 if "hallway" in cur_to else 0.70,
+                    "lifestyle_macro": "movie_night_mode",
+                    "preconditioning_state": "armed",
+                    "suggested_action": "Pre-cooling Theater to 68°F & pre-arming cinema display",
+                    "detected_at": now_dt.isoformat(),
+                    "valid_until": now_ts + 600.0,
+                }
+                self._active_migration = intent
+                return intent
+
+        # Pattern 3: Morning Awakening Migration (05:30 - 10:00)
+        if (5.5 <= cur_hour <= 10.0) and any(
+            k in cur_to for k in ("kitchen", "great_room", "hallway", "dining")
+        ):
+            if not is_room_occupied("kitchen"):
+                intent = {
+                    "intent": "morning_wake",
+                    "target_area": "kitchen",
+                    "source_area": cur_to,
+                    "confidence": 0.80,
+                    "lifestyle_macro": "morning_mode",
+                    "preconditioning_state": "armed",
+                    "suggested_action": "Adjusting morning kitchen temperature, raising motorized shades, and staging coffee appliance",
+                    "detected_at": now_dt.isoformat(),
+                    "valid_until": now_ts + 600.0,
+                }
+                self._active_migration = intent
+                return intent
+
+        # Pattern 4: Workday Focus Migration (07:30 - 18:00)
+        if (7.5 <= cur_hour <= 18.0) and any(
+            k in cur_to for k in ("hallway", "study", "office", "amy_s_office")
+        ):
+            target_slug = "study" if "study" in cur_to else "amy_s_office"
+            if not is_room_occupied(target_slug):
+                intent = {
+                    "intent": "focus_work",
+                    "target_area": target_slug,
+                    "source_area": cur_to,
+                    "confidence": 0.78,
+                    "lifestyle_macro": "focus_work_mode",
+                    "preconditioning_state": "armed",
+                    "suggested_action": f"Adjusting {target_slug.replace('_', ' ').title()} comfort climate and circadian work illumination",
+                    "detected_at": now_dt.isoformat(),
+                    "valid_until": now_ts + 600.0,
+                }
+                self._active_migration = intent
+                return intent
+
+        return None
+
+    async def async_process_presence_transitions(
+        self, presence_data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Process updated presence states, record transition if room changed, and update sensor.otis_spatial_migration."""
+        occupied_areas = presence_data.get("occupied_areas") or []
+        now_ts = time.time()
+
+        if occupied_areas:
+            primary_area = occupied_areas[0].lower().replace(" ", "_")
+            if self._last_active_area != primary_area:
+                if self._last_active_area is not None:
+                    self.record_area_transition(
+                        from_area=self._last_active_area,
+                        to_area=primary_area,
+                        confidence=0.85,
+                        timestamp=now_ts,
+                    )
+                else:
+                    self._last_active_area = primary_area
+                    self._last_active_area_ts = now_ts
+
+        intent = await self.async_detect_migration_intent(presence_data)
+
+        # Publish sensor.otis_spatial_migration
+        if hasattr(self.hass, "states") and hasattr(self.hass.states, "async_set"):
+            state_val = intent["intent"] if intent else "idle"
+            attrs = {
+                "friendly_name": "Otis Spatial Migration & Pre-Conditioning",
+                "icon": "mdi:transit-connection-variant",
+                "target_area": intent.get("target_area") if intent else None,
+                "source_area": intent.get("source_area") if intent else None,
+                "confidence": intent.get("confidence") if intent else 0.0,
+                "lifestyle_macro": intent.get("lifestyle_macro") if intent else None,
+                "preconditioning_state": intent.get("preconditioning_state") if intent else "idle",
+                "suggested_action": intent.get("suggested_action") if intent else "Monitoring room-to-room migration flows",
+                "recent_transitions": self.get_transition_history(5),
+            }
+            self.hass.states.async_set("sensor.otis_spatial_migration", state_val, attrs)
+
+        return intent
 
     def async_start_presence_tracking(self) -> None:
         """Start listening to state changes on presence, motion, and media entities to auto-publish presence states."""

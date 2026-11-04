@@ -7,6 +7,18 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.28] - 2026-11-04
+
+### Added
+- **Phase 4 Step 1: Spatial Migration Flow Engine & Contextual Macro Pre-Conditioning**:
+  - Implemented `record_area_transition`, `get_transition_history`, and `async_detect_migration_intent` in `VisionPresenceManager`.
+  - Added 4 lifestyle migration intent classifiers (Evening Movie Migration to Theater, Night Bedtime Sleep to Master, Morning Awakening to Kitchen, Daytime Focus to Study/Office).
+  - Published real-time spatial migration sensor `sensor.otis_spatial_migration` with pre-conditioning hypotheses (`armed` / `idle`), confidence scores, and suggested macro actions.
+- **3D Raised Transparent Wall Rendering & Dashboard Sync**:
+  - Eliminated CSS 3D context-flattening bug caused by `filter: drop-shadow` on the 3D canvas and `backdrop-filter` on walls.
+  - Enhanced extruded glass walls with rich semi-transparent cyan styling, neon glowing top rims, and bidirectional `backface-visibility`.
+  - Added `💾 Save 3D to Dashboard` button in 3D HUD to persist default camera angles and sync the 3D interactive view to the Home Assistant "Interactive Floor Plan" dashboard view.
+
 ## [0.1.27] - 2026-11-04
 
 ### Fixed

@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.27";
+const CARD_VERSION = "0.1.28";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -466,6 +466,9 @@ class OtisCompanionCard extends HTMLElement {
       this._saveActiveTab("floorplan");
     } else {
       this._activeTab = this._loadActiveTab();
+    }
+    if (config.view_mode === "3d" || config.view_mode === "2d") {
+      this._floorplanViewMode = config.view_mode;
     }
     this._ensureValidActiveTab();
     this._render();
@@ -4274,7 +4277,6 @@ class OtisCompanionCard extends HTMLElement {
           transform-origin: 50% 50%;
           will-change: transform;
           transition: transform 0.08s ease-out;
-          filter: drop-shadow(0 18px 28px rgba(0, 0, 0, 0.65));
         }
 
         /* 3D Raised Transparent Walls */
@@ -4287,6 +4289,8 @@ class OtisCompanionCard extends HTMLElement {
           pointer-events: none;
           z-index: 6;
           transform-style: preserve-3d;
+          backface-visibility: visible;
+          -webkit-backface-visibility: visible;
         }
 
         .floorplan-3d-room-shell {
@@ -4294,94 +4298,96 @@ class OtisCompanionCard extends HTMLElement {
           transform-style: preserve-3d;
           pointer-events: none;
           transition: opacity 0.2s ease;
+          backface-visibility: visible;
+          -webkit-backface-visibility: visible;
         }
 
         .floorplan-3d-wall {
           position: absolute;
           pointer-events: none;
-          background: linear-gradient(to top, rgba(56, 189, 248, 0.16) 0%, rgba(56, 189, 248, 0.04) 65%, rgba(56, 189, 248, 0.35) 100%);
-          border: 1px solid rgba(56, 189, 248, 0.25);
-          box-shadow: inset 0 0 10px rgba(56, 189, 248, 0.12);
-          backdrop-filter: blur(1.5px);
-          -webkit-backdrop-filter: blur(1.5px);
+          background: linear-gradient(to top, rgba(14, 165, 233, 0.42) 0%, rgba(56, 189, 248, 0.22) 60%, rgba(56, 189, 248, 0.85) 100%);
+          border: 1.5px solid rgba(56, 189, 248, 0.75);
+          box-shadow: 0 0 12px rgba(56, 189, 248, 0.5), inset 0 0 8px rgba(56, 189, 248, 0.25);
           transform-style: preserve-3d;
+          backface-visibility: visible !important;
+          -webkit-backface-visibility: visible !important;
         }
 
         .floorplan-3d-wall-north {
           top: 0;
           left: 0;
           width: 100%;
-          height: var(--wall-height, 28px);
+          height: var(--wall-height, 36px);
           transform-origin: top center;
           transform: rotateX(-90deg);
-          border-bottom: 2px solid rgba(56, 189, 248, 0.95);
-          box-shadow: 0 0 8px rgba(56, 189, 248, 0.55);
+          border-bottom: 2.5px solid #38bdf8;
+          box-shadow: 0 0 10px rgba(56, 189, 248, 0.85);
         }
 
         .floorplan-3d-wall-south {
           bottom: 0;
           left: 0;
           width: 100%;
-          height: var(--wall-height, 28px);
+          height: var(--wall-height, 36px);
           transform-origin: bottom center;
           transform: rotateX(90deg);
-          border-top: 2px solid rgba(56, 189, 248, 0.95);
-          box-shadow: 0 0 8px rgba(56, 189, 248, 0.55);
+          border-top: 2.5px solid #38bdf8;
+          box-shadow: 0 0 10px rgba(56, 189, 248, 0.85);
         }
 
         .floorplan-3d-wall-west {
           top: 0;
           left: 0;
-          width: var(--wall-height, 28px);
+          width: var(--wall-height, 36px);
           height: 100%;
           transform-origin: left center;
           transform: rotateY(90deg);
-          border-right: 2px solid rgba(56, 189, 248, 0.95);
-          box-shadow: 0 0 8px rgba(56, 189, 248, 0.55);
+          border-right: 2.5px solid #38bdf8;
+          box-shadow: 0 0 10px rgba(56, 189, 248, 0.85);
         }
 
         .floorplan-3d-wall-east {
           top: 0;
           right: 0;
-          width: var(--wall-height, 28px);
+          width: var(--wall-height, 36px);
           height: 100%;
           transform-origin: right center;
           transform: rotateY(-90deg);
-          border-left: 2px solid rgba(56, 189, 248, 0.95);
-          box-shadow: 0 0 8px rgba(56, 189, 248, 0.55);
+          border-left: 2.5px solid #38bdf8;
+          box-shadow: 0 0 10px rgba(56, 189, 248, 0.85);
         }
 
         /* Outdoor area low railing/glass styling */
         .floorplan-3d-room-shell[data-zone="outdoor"] .floorplan-3d-wall {
-          height: calc(var(--wall-height, 28px) * 0.45) !important;
-          background: linear-gradient(to top, rgba(245, 158, 11, 0.14) 0%, rgba(245, 158, 11, 0.03) 70%, rgba(245, 158, 11, 0.3) 100%);
-          border-color: rgba(245, 158, 11, 0.3);
+          height: calc(var(--wall-height, 36px) * 0.45) !important;
+          background: linear-gradient(to top, rgba(245, 158, 11, 0.38) 0%, rgba(245, 158, 11, 0.18) 60%, rgba(245, 158, 11, 0.80) 100%);
+          border-color: rgba(245, 158, 11, 0.75);
         }
         .floorplan-3d-room-shell[data-zone="outdoor"] .floorplan-3d-wall-west,
         .floorplan-3d-room-shell[data-zone="outdoor"] .floorplan-3d-wall-east {
-          width: calc(var(--wall-height, 28px) * 0.45) !important;
+          width: calc(var(--wall-height, 36px) * 0.45) !important;
           height: 100% !important;
         }
         .floorplan-3d-room-shell[data-zone="outdoor"] .floorplan-3d-wall-north,
         .floorplan-3d-room-shell[data-zone="outdoor"] .floorplan-3d-wall-south,
         .floorplan-3d-room-shell[data-zone="outdoor"] .floorplan-3d-wall-west,
         .floorplan-3d-room-shell[data-zone="outdoor"] .floorplan-3d-wall-east {
-          border-color: rgba(245, 158, 11, 0.85);
-          box-shadow: 0 0 6px rgba(245, 158, 11, 0.45);
+          border-color: rgba(245, 158, 11, 0.95);
+          box-shadow: 0 0 8px rgba(245, 158, 11, 0.75);
         }
 
         /* Contextual presence glow on room walls */
         .floorplan-3d-room-shell.is-occupied .floorplan-3d-wall {
-          background: linear-gradient(to top, rgba(16, 185, 129, 0.28) 0%, rgba(16, 185, 129, 0.08) 65%, rgba(16, 185, 129, 0.48) 100%);
-          border-color: rgba(16, 185, 129, 0.45);
-          box-shadow: inset 0 0 12px rgba(16, 185, 129, 0.25), 0 0 12px rgba(16, 185, 129, 0.35);
+          background: linear-gradient(to top, rgba(16, 185, 129, 0.55) 0%, rgba(16, 185, 129, 0.28) 60%, rgba(16, 185, 129, 0.90) 100%);
+          border-color: rgba(16, 185, 129, 0.95);
+          box-shadow: 0 0 16px rgba(16, 185, 129, 0.85), inset 0 0 10px rgba(16, 185, 129, 0.4);
         }
         .floorplan-3d-room-shell.is-occupied .floorplan-3d-wall-north,
         .floorplan-3d-room-shell.is-occupied .floorplan-3d-wall-south,
         .floorplan-3d-room-shell.is-occupied .floorplan-3d-wall-west,
         .floorplan-3d-room-shell.is-occupied .floorplan-3d-wall-east {
           border-color: rgba(16, 185, 129, 0.95);
-          box-shadow: 0 0 10px rgba(16, 185, 129, 0.65);
+          box-shadow: 0 0 14px rgba(16, 185, 129, 0.85);
         }
 
         .floorplan-pins-overlay {
@@ -6590,6 +6596,7 @@ class OtisCompanionCard extends HTMLElement {
               <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 270 ? 'active' : ''}" data-azimuth="270" data-pitch="55" title="West">270° W</button>
               <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 315 ? 'active' : ''}" data-azimuth="315" data-pitch="58" title="Isometric NW">315° NW</button>
               <button type="button" class="btn-preset-reset" id="btn-reset-3d-view" title="Reset to Default Isometric Projection">↺ Reset</button>
+              <button type="button" class="btn-preset-reset" id="btn-save-3d-dashboard" title="Save current 3D camera angles and sync to Interactive Floor Plan dashboard view" style="background: rgba(14, 165, 233, 0.22); border-color: rgba(56, 189, 248, 0.55); color: #38bdf8; font-weight: 700;">💾 Save 3D to Dashboard</button>
             </div>
           </div>
           <div class="hud-hint">
@@ -10251,6 +10258,38 @@ class OtisCompanionCard extends HTMLElement {
         root.querySelectorAll(".btn-preset-pill").forEach((p) => {
           p.classList.toggle("active", p.getAttribute("data-azimuth") === "45");
         });
+      };
+    }
+
+    const btnSave3dDash = root.querySelector("#btn-save-3d-dashboard");
+    if (btnSave3dDash) {
+      btnSave3dDash.onclick = async () => {
+        try {
+          this._showToast("💾 Saving 3D View to Interactive Floor Plan Dashboard...");
+          try {
+            localStorage.setItem("otis_floorplan_view_mode", "3d");
+            localStorage.setItem("otis_floorplan_orbit_azimuth", String(this._floorplanAzimuth));
+            localStorage.setItem("otis_floorplan_pitch_incline", String(this._floorplanPitch));
+            localStorage.setItem("otis_floorplan_walls_enabled", String(this._floorplanWallsEnabled));
+            localStorage.setItem("otis_floorplan_wall_height", String(this._floorplanWallHeight || 36));
+          } catch (_) {}
+          await this._hass.callService("otis_ai", "set_user_rules", {
+            rules: {
+              floorplan_view_mode: "3d",
+              floorplan_3d: true,
+              floorplan_azimuth: this._floorplanAzimuth,
+              floorplan_pitch: this._floorplanPitch,
+              floorplan_wall_height: this._floorplanWallHeight || 36,
+              floorplan_walls_enabled: this._floorplanWallsEnabled !== false,
+            },
+          });
+          await this._hass.callService("otis_ai", "regenerate_dashboards", {});
+          this._showToast("✨ 3D Floor Plan saved & synced to Interactive Floor Plan dashboard view!");
+          await this._fetchData();
+        } catch (err) {
+          console.error("Failed to save 3D dashboard view:", err);
+          this._showToast(`Failed to sync 3D view: ${err.message || err}`, true);
+        }
       };
     }
 
