@@ -98,8 +98,13 @@ from .const import (
     SERVICE_BENCHMARK_LOCAL_LLM,
     SERVICE_PULL_LOCAL_LLM_MODEL,
     SERVICE_EXECUTE_TOOL_PLAN,
+    SERVICE_INDEX_DOCUMENT,
+    SERVICE_QUERY_KNOWLEDGE,
+    SERVICE_INDEX_ENTITY_HISTORY,
+    SERVICE_CLEAR_KNOWLEDGE,
 )
 from .local_llm import LocalLLMManager
+from .rag_manager import RAGKnowledgeManager
 from .audio_manager import AudioHandoffManager
 from .automation_manager import AutomationManager
 from .dashboard_manager import DashboardManager
@@ -418,6 +423,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         api_key=entry.options.get(CONF_LOCAL_LLM_API_KEY) or entry.data.get(CONF_LOCAL_LLM_API_KEY),
         timeout=reasoning_timeout,
     )
+    rag_manager = RAGKnowledgeManager(hass, local_llm_manager=local_llm_manager)
+    local_llm_manager.rag_manager = rag_manager
     sentinel_manager = SentinelManager(hass, local_llm_manager=local_llm_manager)
     macro_manager = MacroManager(hass)
     audio_manager = AudioHandoffManager(hass, spatial_manager=spatial_manager, rules_manager=rules_manager)
@@ -441,6 +448,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         sentinel_manager.async_load_preferences(),
         federation_manager.async_load(),
         rules_manager.async_load(),
+        rag_manager.async_load(),
     )
     engine = DiscoveryEngine(
         hass,
@@ -456,6 +464,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         federation_manager=federation_manager,
         rules_manager=rules_manager,
         local_llm_manager=local_llm_manager,
+        rag_manager=rag_manager,
     )
 
     async def _async_sync_dashboards_on_startup() -> None:
@@ -512,6 +521,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         local_llm_manager=local_llm_manager,
         dashboard_manager=dashboard_manager,
         floorplan_parser=floorplan_parser,
+        rag_manager=rag_manager,
     )
 
     if hasattr(conversation, "async_register_agent"):
@@ -547,6 +557,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "federation_manager": federation_manager,
         "rules_manager": rules_manager,
         "local_llm_manager": local_llm_manager,
+        "rag_manager": rag_manager,
     }
 
     async def _async_update_listener(hass_inst: HomeAssistant, updated_entry: ConfigEntry) -> None:
@@ -1886,6 +1897,49 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         return {"success": False, "error": "Neither 'plan' list nor 'prompt' string was provided."}
 
+    async def handle_index_document(call) -> ServiceResponse:
+        """Handle service call to index a manual or document into knowledge store."""
+        _LOGGER.debug("Service 'index_document' triggered with: %s", call.data)
+        entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        rm = entry_store.get("rag_manager", rag_manager)
+        title = call.data.get("title") or "Smart Home Document"
+        content = call.data.get("content", "")
+        category = call.data.get("category", "manual")
+        doc_id = call.data.get("document_id")
+        metadata = call.data.get("metadata", {})
+        return await rm.async_index_document(title=title, content=content, category=category, doc_id=doc_id, metadata=metadata)
+
+    async def handle_query_knowledge_base(call) -> ServiceResponse:
+        """Handle service call to query the knowledge store using hybrid RAG."""
+        _LOGGER.debug("Service 'query_knowledge_base' triggered with: %s", call.data)
+        entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        rm = entry_store.get("rag_manager", rag_manager)
+        query = call.data.get("query", "")
+        limit = call.data.get("limit", 3)
+        category = call.data.get("category")
+        min_score = float(call.data.get("min_score", 0.12))
+        results = await rm.async_query_knowledge(query=query, limit=limit, category=category, min_score=min_score)
+        return {"query": query, "count": len(results), "results": results}
+
+    async def handle_index_entity_history(call) -> ServiceResponse:
+        """Handle service call to index entity state history or anomaly logs."""
+        _LOGGER.debug("Service 'index_entity_history' triggered with: %s", call.data)
+        entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        rm = entry_store.get("rag_manager", rag_manager)
+        entity_id = call.data.get("entity_id", "")
+        events = call.data.get("events")
+        max_events = call.data.get("max_events", 20)
+        return await rm.async_index_entity_history(entity_id=entity_id, events=events, max_events=max_events)
+
+    async def handle_clear_knowledge_base(call) -> ServiceResponse:
+        """Handle service call to clear knowledge base chunks."""
+        _LOGGER.debug("Service 'clear_knowledge_base' triggered with: %s", call.data)
+        entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        rm = entry_store.get("rag_manager", rag_manager)
+        category = call.data.get("category")
+        doc_id = call.data.get("document_id")
+        return await rm.async_clear_knowledge(category=category, document_id=doc_id)
+
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
         DOMAIN,
@@ -2223,6 +2277,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_execute_tool_plan,
         supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_INDEX_DOCUMENT,
+        handle_index_document,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_QUERY_KNOWLEDGE,
+        handle_query_knowledge_base,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_INDEX_ENTITY_HISTORY,
+        handle_index_entity_history,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CLEAR_KNOWLEDGE,
+        handle_clear_knowledge_base,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
 
     _LOGGER.info("Otis AI Companion entry set up successfully")
     return True
@@ -2299,6 +2377,7 @@ class OtisAIConversationAgent(AbstractAgent):
         local_llm_manager: LocalLLMManager | None = None,
         dashboard_manager: DashboardManager | None = None,
         floorplan_parser: FloorplanParser | None = None,
+        rag_manager: RAGKnowledgeManager | None = None,
     ) -> None:
         """Initialize the agent."""
         self.hass = hass
@@ -2317,6 +2396,7 @@ class OtisAIConversationAgent(AbstractAgent):
         self.federation_manager = federation_manager or FederationManager(hass)
         self.rules_manager = rules_manager or BehavioralRulesManager(hass)
         self.local_llm_manager = local_llm_manager
+        self.rag_manager = rag_manager
         self.dashboard_manager = dashboard_manager or getattr(hass.data.get(DOMAIN, {}), "get", lambda k: None)("dashboard_manager") or DashboardManager(hass)
         self.floorplan_parser = floorplan_parser or getattr(hass.data.get(DOMAIN, {}), "get", lambda k: None)("floorplan_parser") or FloorplanParser(hass)
 
@@ -3578,6 +3658,17 @@ class OtisAIConversationAgent(AbstractAgent):
             except Exception as cr_err:
                 _LOGGER.debug("Error cross-referencing automations: %s", cr_err)
 
+        # 3.2.5 Semantic RAG Context Retrieval for Smart Home Manuals & Event Logs
+        rag_context = ""
+        if getattr(self, "rag_manager", None):
+            try:
+                rag_context = await self.rag_manager.async_get_rag_context(user_input.text, limit=3)
+                if rag_context:
+                    fire_progress("domain", "RAG Knowledge Retrieval", "Found relevant smart home documentation & historical logs")
+                    _LOGGER.info("Injected semantic RAG context into conversation prompt")
+            except Exception as rag_err:
+                _LOGGER.debug("RAG context retrieval notice: %s", rag_err)
+
         prompt = f"""You are the Otis AI Companion, an intelligent, proactive smart home architect, co-pilot, and butler.
 Your goal is to guide the user from a bare Home Assistant installation to a fully optimized, cohesive, automated smart home—and offer to build and configure everything for them.
 Always prioritize native Home Assistant solutions, minimize frontend dependencies, and synthesize right-sized, modular coordinator automations and scripts.
@@ -3590,7 +3681,7 @@ CONVERSATION DISCIPLINE & FOCUS:
 
 {rules_snippet}
 
-{history_snippet}{matched_yaml_context}Here is the current capability and architecture map of the home:
+{history_snippet}{matched_yaml_context}{rag_context}Here is the current capability and architecture map of the home:
 - System Maturity: {maturity_summary}
 - Key Integrations: {notable_integrations}
 - Spatial Adjacency (Connected Rooms): {spatial_summary}
@@ -4025,6 +4116,7 @@ class DiscoveryEngine:
         federation_manager: FederationManager | None = None,
         rules_manager: BehavioralRulesManager | None = None,
         local_llm_manager: LocalLLMManager | None = None,
+        rag_manager: RAGKnowledgeManager | None = None,
     ) -> None:
         """Initialize the discovery engine."""
         self.hass = hass
@@ -4039,6 +4131,7 @@ class DiscoveryEngine:
         self.federation_manager = federation_manager or FederationManager(hass)
         self.rules_manager = rules_manager or BehavioralRulesManager(hass)
         self.local_llm_manager = local_llm_manager
+        self.rag_manager = rag_manager
         self.dashboard_manager = dashboard_manager or DashboardManager(
             hass, floorplan_parser=self.floorplan_parser, rules_manager=self.rules_manager
         )

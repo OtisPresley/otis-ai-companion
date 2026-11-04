@@ -398,6 +398,10 @@ def test_async_execute_tool_plan():
     hass.services.async_call = AsyncMock()
 
     mgr = LocalLLMManager(hass)
+    mock_rag = MagicMock()
+    mock_rag.async_query_knowledge = AsyncMock(return_value=[{"title": "Dimmer Manual", "content": "Reset instructions"}])
+    mgr.rag_manager = mock_rag
+
     plan = [
         {"name": "pin_floorplan_entity", "parameters": {"entity_id": "light.office_desk", "room": "office"}},
         {"name": "turn_off_stuck_actuator", "parameters": {"entity_id": "switch.sump_pump"}},
@@ -406,11 +410,14 @@ def test_async_execute_tool_plan():
             "name": "call_ha_service",
             "parameters": {"domain": "climate", "service": "set_temperature", "service_data": {"temperature": 70}},
         },
+        {"name": "query_knowledge_base", "parameters": {"query": "How to reset dimmer?"}},
     ]
 
     results = asyncio.run(mgr.async_execute_tool_plan(plan))
-    assert len(results) == 4
+    assert len(results) == 5
     assert all(r["success"] is True for r in results)
+    assert results[4]["result"][0]["title"] == "Dimmer Manual"
+    mock_rag.async_query_knowledge.assert_called_once()
 
     # Check that Home Assistant services were called
     calls = hass.services.async_call.call_args_list

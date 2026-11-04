@@ -7,6 +7,24 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.22] - 2026-11-03
+
+### Added
+- **Local LLM Embedding-Based RAG for Smart Home Manuals & Historical Events (Roadmap Item 1)**:
+  - **Persistent Local Knowledge Store (`RAGKnowledgeManager`)**: Fully zero-cloud vector knowledge base persisted across Home Assistant restarts in `.storage/otis_ai_knowledge_store`.
+  - **Hybrid Dense + Lexical Retrieval**: Combines cosine similarity from dense vector embeddings (via Ollama `/api/embed`, legacy `/api/embeddings`, or OpenAI `/v1/embeddings`) with deterministic subword fallback hash vectors and sparse token overlap (BM25/Jaccard), ensuring search functions even if local neural models are offline or loading.
+  - **Automatic Text Chunking**: Semantic document chunking engine splitting user manuals, Markdown guides, and hardware notes by paragraphs and sentence boundaries with configurable overlap.
+  - **Smart Home Historical Event Indexing**: Transforms entity state transitions, Sentinel watchdog remediation logs, and automation anomaly events into searchable historical context.
+  - **New Registered Services**:
+    - `otis_ai.index_document`: Ingest device manuals, troubleshooting guides, or notes with custom metadata and category filtering.
+    - `otis_ai.query_knowledge_base`: Semantic vector retrieval returning ranked knowledge snippets with relevance scores.
+    - `otis_ai.index_entity_history`: Ingest recent state history or anomaly logs for specific entities.
+    - `otis_ai.clear_knowledge_base`: Prune or wipe knowledge entries by category, document ID, or full reset.
+  - **Default Smart Home Manual Pre-Seeding**: Automatically seeds essential architectural references (Otis AI core services, TP-Link/Shelly/Inovelli smart switch Wi-Fi reset procedures, Zigbee/Z-Wave mesh healing topology rules) when store is initialized.
+  - **Assist Co-Pilot Prompt RAG Injection**: Automatically searches the local knowledge base on user queries and injects relevant device documentation into the system prompt context before reasoning.
+  - **Autonomous Tool Calling Integration**: Added `query_knowledge_base` to `DEFAULT_OTIS_TOOLS` for autonomous local LLM retrieval during multi-step reasoning.
+- Bumped Lovelace Companion Card to `v0.1.22`.
+
 ## [0.1.21] - 2026-11-02
 
 ### Added

@@ -936,6 +936,124 @@ execute_tool_plan:
       selector:
         text:
 
+index_document:
+  name: Index Smart Home Document
+  description: Ingest a user manual, setup guide, or troubleshooting document into the local RAG knowledge store with automatic chunking and vector embeddings.
+  fields:
+    title:
+      name: Title
+      description: Descriptive title of the manual or document.
+      required: true
+      example: "TP-Link Kasa Dimmer User Manual"
+      selector:
+        text:
+    content:
+      name: Content
+      description: Text or markdown body of the document to index.
+      required: true
+      selector:
+        text:
+          multiline: true
+    category:
+      name: Category
+      description: Classification category for targeted search filtering (e.g. manual, troubleshooting, device_spec, note).
+      required: false
+      default: manual
+      selector:
+        text:
+    document_id:
+      name: Document ID
+      description: Optional unique document identifier for updating or deleting (e.g. manual:tp_link_ks205).
+      required: false
+      selector:
+        text:
+    metadata:
+      name: Metadata
+      description: Optional dictionary of metadata attributes (e.g. entity_id, area, manufacturer).
+      required: false
+      selector:
+        object:
+
+query_knowledge_base:
+  name: Query Knowledge Base (RAG)
+  description: Perform hybrid semantic vector and lexical keyword retrieval across indexed smart home manuals, guides, and historical event logs.
+  fields:
+    query:
+      name: Search Query
+      description: Question or search phrase (e.g. "What does blinking amber light on switch mean?").
+      required: true
+      selector:
+        text:
+    limit:
+      name: Max Results
+      description: Maximum number of relevant knowledge chunks to return.
+      required: false
+      default: 3
+      selector:
+        number:
+          min: 1
+          max: 10
+    category:
+      name: Category Filter
+      description: Optional filter to restrict search to a specific category.
+      required: false
+      selector:
+        text:
+    min_score:
+      name: Minimum Relevance Score
+      description: Threshold similarity score (0.0 to 1.0) below which results are excluded.
+      required: false
+      default: 0.12
+      selector:
+        number:
+          min: 0.0
+          max: 1.0
+          step: 0.01
+
+index_entity_history:
+  name: Index Entity Event History
+  description: Ingest state change history or sentinel anomaly logs for an entity into the RAG knowledge store for contextual troubleshooting.
+  fields:
+    entity_id:
+      name: Entity ID
+      description: Home Assistant entity identifier (e.g. switch.patio_heater).
+      required: true
+      selector:
+        text:
+    events:
+      name: Event List
+      description: Optional explicit list of event objects ({time, state, description}) to index.
+      required: false
+      selector:
+        object:
+    max_events:
+      name: Max Events
+      description: Maximum number of events to process.
+      required: false
+      default: 20
+      selector:
+        number:
+          min: 1
+          max: 50
+
+clear_knowledge_base:
+  name: Clear Knowledge Base
+  description: Remove indexed knowledge chunks and documents from the persistent vector store.
+  fields:
+    category:
+      name: Category
+      description: Optional category to clear (leaving other categories intact).
+      required: false
+      selector:
+        text:
+    document_id:
+      name: Document ID
+      description: Optional specific document identifier to remove.
+      required: false
+      selector:
+        text:
+
+
 
 
 

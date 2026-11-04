@@ -227,6 +227,31 @@ DEFAULT_OTIS_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_knowledge_base",
+            "description": "Search local smart home user manuals, device specifications, troubleshooting guides, and historical event logs using semantic RAG retrieval.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search question or keywords (e.g. 'How do I factory reset kitchen smart dimmer?', 'Why did the heater trigger anomaly?').",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of relevant knowledge snippets to return (default: 3).",
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Optional category filter (e.g. 'manual', 'event_history', 'troubleshooting').",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
@@ -375,6 +400,8 @@ class LocalLLMManager:
         model: str = DEFAULT_LOCAL_LLM_MODEL,
         api_key: str | None = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        embedding_model: str | None = None,
+        rag_manager: Any | None = None,
     ) -> None:
         """Initialize the Local LLM Manager."""
         self.hass = hass
@@ -382,6 +409,8 @@ class LocalLLMManager:
         self.model = model or DEFAULT_LOCAL_LLM_MODEL
         self.api_key = api_key
         self.timeout = timeout
+        self.embedding_model = embedding_model
+        self.rag_manager = rag_manager
         self._last_health: dict[str, Any] = {"status": "unknown"}
 
     def _get_headers(self) -> dict[str, str]:
@@ -545,6 +574,71 @@ class LocalLLMManager:
                 "error": str(err),
                 "duration_s": elapsed,
             }
+
+    async def async_get_embedding(
+        self,
+        text: str,
+        model: str | None = None,
+        timeout: float = 15.0,
+    ) -> list[float] | None:
+        """Generate a dense vector embedding using the local LLM server (Ollama /embed or /v1/embeddings)."""
+        chosen_model = model or self.embedding_model or self.model
+        session = self._get_session()
+        headers = self._get_headers()
+        req_timeout = ClientTimeout(total=timeout)
+
+        # 1. Try Ollama /api/embed (Ollama v0.1.34+)
+        try:
+            ollama_embed_url = f"{self.url}/api/embed"
+            async with session.post(
+                ollama_embed_url,
+                json={"model": chosen_model, "input": text},
+                headers=headers,
+                timeout=req_timeout,
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    embeddings = data.get("embeddings", [])
+                    if embeddings and isinstance(embeddings, list) and isinstance(embeddings[0], list):
+                        return embeddings[0]
+        except Exception as err:
+            _LOGGER.debug("Ollama /api/embed attempt failed: %s; trying legacy /api/embeddings", err)
+
+        # 2. Try legacy Ollama /api/embeddings
+        try:
+            ollama_url = f"{self.url}/api/embeddings"
+            async with session.post(
+                ollama_url,
+                json={"model": chosen_model, "prompt": text},
+                headers=headers,
+                timeout=req_timeout,
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    embedding = data.get("embedding", [])
+                    if embedding and isinstance(embedding, list):
+                        return embedding
+        except Exception as err:
+            _LOGGER.debug("Ollama /api/embeddings attempt failed: %s; trying /v1/embeddings", err)
+
+        # 3. Fallback to OpenAI-compatible /v1/embeddings
+        try:
+            v1_url = f"{self.url}/v1/embeddings"
+            async with session.post(
+                v1_url,
+                json={"model": chosen_model, "input": text},
+                headers=headers,
+                timeout=req_timeout,
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    data_items = data.get("data", [])
+                    if data_items and isinstance(data_items[0], dict):
+                        return data_items[0].get("embedding")
+        except Exception as err:
+            _LOGGER.debug("OpenAI /v1/embeddings attempt failed: %s", err)
+
+        return None
 
     async def async_generate(
         self,
@@ -710,7 +804,13 @@ class LocalLLMManager:
             t_start = time.perf_counter()
 
             try:
-                if name == "call_ha_service":
+                if name == "query_knowledge_base" and hasattr(self, "rag_manager") and self.rag_manager:
+                    res_data = await self.rag_manager.async_query_knowledge(
+                        query=params.get("query", ""),
+                        limit=params.get("limit", 3),
+                        category=params.get("category"),
+                    )
+                elif name == "call_ha_service":
                     domain = params.pop("domain", "")
                     service = params.pop("service", "")
                     sdata = params.pop("service_data", {}) or params
