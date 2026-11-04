@@ -262,3 +262,185 @@ def test_conversational_assist_backup_reserve_intent(mock_hass, energy_manager):
     speech = user_input.create_response.call_args[1]["speech"]
     assert "BACKUP_RESERVE" in speech
 
+
+def test_dynamic_hourly_tariffs_and_negative_pricing(mock_hass, energy_manager):
+    """Test dynamic spot price sensor extraction with peak, shoulder, off-peak, and negative pricing."""
+    mock_nordpool = MagicMock()
+    mock_nordpool.entity_id = "sensor.nordpool_kwh_eur"
+    mock_nordpool.state = "0.15"
+    # 24 hourly prices with a negative price at 13:00 and peak at 17:00
+    prices = [0.08] * 12 + [-0.02, 0.05, 0.12, 0.20, 0.45, 0.40, 0.25, 0.15, 0.10, 0.08, 0.08, 0.08]
+    mock_nordpool.attributes = {"raw_today": prices}
+
+    mock_hass.states.async_all.return_value = [mock_nordpool]
+
+    start_dt = datetime(2026, 11, 4, 0, 0, 0)
+    schedule = energy_manager.get_hourly_tariffs(start_dt)
+    assert len(schedule) == 24
+
+    # Hour 12 (12:00) has price -0.02 -> should be classified as negative
+    neg_step = schedule[12]
+    assert neg_step["period"] == "negative"
+    assert neg_step["rate_per_kwh"] == -0.02
+    assert neg_step["is_negative"] is True
+
+    # Hour 16 (16:00) has price 0.45 -> should be classified as peak
+    peak_step = schedule[16]
+    assert peak_step["period"] == "peak"
+    assert peak_step["is_peak"] is True
+
+
+def test_contextual_solar_forecast_detailed_table(mock_hass, energy_manager):
+    """Test contextual solar forecasting parsing detailed attribute tables."""
+    mock_solar = MagicMock()
+    mock_solar.entity_id = "sensor.forecast_solar_energy_today"
+    mock_solar.state = "32.0"
+    detailed = [
+        {"datetime": "2026-11-04T08:00:00", "pv_estimate": 1500},
+        {"datetime": "2026-11-04T12:00:00", "pv_estimate": 6200},
+        {"datetime": "2026-11-04T16:00:00", "pv_estimate": 2800},
+    ]
+    mock_solar.attributes = {"detailed_forecast": detailed}
+
+    def mock_get(eid):
+        if eid == "sensor.forecast_solar_energy_today":
+            return mock_solar
+        return None
+
+    mock_hass.states.get.side_effect = mock_get
+
+    forecast = energy_manager.get_hourly_solar_forecast(start_dt=datetime(2026, 11, 4, 0, 0, 0))
+    assert len(forecast) == 24
+    assert forecast[8]["solar_kwh"] == 1.5
+    assert forecast[12]["solar_kwh"] == 6.2
+    assert forecast[16]["solar_kwh"] == 2.8
+    assert "provider_telemetry" in forecast[12]["source"]
+
+
+def test_smart_ev_charging_schedule_optimization(energy_manager):
+    """Test smart EV scheduling prioritizes solar surplus and off-peak windows before departure."""
+    start_dt = datetime(2026, 11, 4, 8, 0, 0)  # 08:00 AM
+    solar_profile = [0.0] * 8 + [1.5, 3.5, 6.0, 7.5, 6.0, 3.5, 1.5] + [0.0] * 9  # High midday solar
+    load_profile = [1.0] * 24
+
+    plan = energy_manager.calculate_ev_charging_schedule(
+        current_soc_pct=40.0,
+        target_soc_pct=80.0,
+        battery_capacity_kwh=77.0,
+        max_charge_rate_kw=9.6,
+        target_departure_hour=7,  # Tomorrow 07:00 AM
+        prefer_solar_surplus=True,
+        solar_profile=solar_profile,
+        load_profile=load_profile,
+        start_dt=start_dt,
+    )
+
+    assert plan["energy_needed_kwh"] == 30.8
+    assert plan["hours_needed"] >= 3
+    assert plan["solar_kwh_utilized"] > 0.0
+    assert len(plan["schedule"]) == 24
+
+    # Midday hours with surplus should have ACTION_EV_SOLAR_CHARGE
+    solar_steps = [s for s in plan["schedule"] if s["source"] == "solar"]
+    assert len(solar_steps) > 0
+    assert any(s["action"] == "smart_ev_solar_charge" for s in solar_steps)
+
+    # Peak hours (14:00 - 19:00) should pause EV charging
+    peak_steps = [s for s in plan["schedule"] if s["hour"] in (14, 15, 16, 17, 18)]
+    assert all(s["action"] in ("ev_charge_pause_peak", "smart_ev_solar_charge", "idle") for s in peak_steps)
+
+
+def test_async_discover_ev_infrastructure(mock_hass, energy_manager):
+    """Test discovery of EV chargers, amperage sliders, and vehicle battery entities."""
+    charger_switch = MagicMock()
+    charger_switch.entity_id = "switch.rivian_wall_charger"
+    charger_switch.state = "off"
+    charger_switch.attributes = {"friendly_name": "Rivian Wall Charger"}
+
+    charger_current = MagicMock()
+    charger_current.entity_id = "number.rivian_charger_amperage"
+    charger_current.state = "32"
+    charger_current.attributes = {"friendly_name": "Rivian Charger Amperage"}
+
+    ev_vehicle = MagicMock()
+    ev_vehicle.entity_id = "sensor.rivian_r1t_battery"
+    ev_vehicle.state = "52.0"
+    ev_vehicle.attributes = {"friendly_name": "Rivian R1T Battery", "device_class": "battery", "unit_of_measurement": "%"}
+
+    mock_hass.states.async_all.return_value = [charger_switch, charger_current, ev_vehicle]
+
+    topo = asyncio.run(energy_manager.async_discover_energy_topology())
+    assert len(topo["ev_chargers"]) >= 2
+    assert any(c["entity_id"] == "switch.rivian_wall_charger" for c in topo["ev_chargers"])
+    assert any(c["entity_id"] == "number.rivian_charger_amperage" for c in topo["ev_chargers"])
+    assert len(topo["ev_vehicles"]) >= 1
+    assert topo["ev_vehicles"][0]["soc_pct"] == 52.0
+
+
+def test_sensor_otis_energy_arbitrage_publishing(mock_hass, energy_manager):
+    """Test publish_energy_arbitrage_telemetry sets sensor.otis_energy_arbitrage with rich attributes."""
+    plan = {
+        "current_action": "store_solar_surplus",
+        "mode": "auto",
+        "current_soc_pct": 68.0,
+        "battery_capacity_kwh": 13.5,
+        "min_reserve_soc_pct": 20.0,
+        "daily_solar_forecast_kwh": 26.5,
+        "baseline_load_kw": 1.1,
+        "projected_savings_usd": 3.45,
+        "projected_peak_shave_kwh": 7.2,
+        "ev_charging_plan": {"current_action": "smart_ev_solar_charge", "target_soc_pct": 80.0},
+        "schedule": [],
+        "timestamp": "2026-11-04T12:00:00",
+    }
+
+    energy_manager.publish_energy_arbitrage_telemetry(plan)
+    mock_hass.states.async_set.assert_called_once()
+    args = mock_hass.states.async_set.call_args[0]
+    assert args[0] == "sensor.otis_energy_arbitrage"
+    assert args[1] == "store_solar_surplus"
+    assert args[2]["current_soc_pct"] == 68.0
+    assert args[2]["projected_savings_usd"] == 3.45
+    assert args[2]["ev_charging"]["current_action"] == "smart_ev_solar_charge"
+
+
+def test_conversational_assist_ev_schedule_and_dispatch(mock_hass, energy_manager):
+    """Test Assist NLP processing of EV charging schedule and arbitrage dispatch."""
+    from custom_components.otis_ai import OtisAIConversationAgent
+
+    entry = MagicMock()
+    entry.entry_id = "test_entry"
+    entry.data = {}
+    entry.options = {}
+
+    agent = OtisAIConversationAgent(
+        mock_hass,
+        entry,
+        MagicMock(),
+        automation_manager=MagicMock(),
+        energy_manager=energy_manager,
+    )
+
+    user_input = MagicMock()
+    user_input.text = "What is my EV charging schedule?"
+    user_input.conversation_id = "conv_ev_1"
+    user_input.create_response = MagicMock(return_value=MagicMock(conversation_id="conv_ev_1"))
+
+    result = asyncio.run(agent.async_process(user_input))
+    assert result.conversation_id == "conv_ev_1"
+    speech = user_input.create_response.call_args[1]["speech"]
+    assert "Smart EV Charging Schedule" in speech
+    assert "Energy Needed" in speech
+
+    # Dispatch command
+    user_input_dispatch = MagicMock()
+    user_input_dispatch.text = "Execute energy arbitrage"
+    user_input_dispatch.conversation_id = "conv_ev_2"
+    user_input_dispatch.create_response = MagicMock(return_value=MagicMock(conversation_id="conv_ev_2"))
+
+    result_dispatch = asyncio.run(agent.async_process(user_input_dispatch))
+    assert result_dispatch.conversation_id == "conv_ev_2"
+    speech_dispatch = user_input_dispatch.create_response.call_args[1]["speech"]
+    assert "Energy Arbitrage Dispatch Executed" in speech_dispatch
+
+

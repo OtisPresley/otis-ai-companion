@@ -1318,6 +1318,92 @@ get_energy_arbitrage_plan:
             - self_consumption
             - backup_reserve
 
+schedule_ev_charging:
+  name: Schedule Smart EV Charging
+  description: Compute and generate an optimized 24-hour EV charging schedule balancing solar surplus utilization and low-cost off-peak tariffs before target departure.
+  fields:
+    target_soc_pct:
+      name: Target State of Charge (%)
+      description: Desired EV battery charge percentage before departure.
+      default: 80
+      required: false
+      selector:
+        number:
+          min: 20
+          max: 100
+          step: 5
+          unit_of_measurement: "%"
+    target_departure_time:
+      name: Target Departure Time
+      description: Time by which the vehicle must reach target charge (HH:MM format).
+      default: "07:00"
+      required: false
+      selector:
+        text:
+    battery_capacity_kwh:
+      name: EV Battery Capacity (kWh)
+      description: Total usable battery capacity of the electric vehicle.
+      default: 77.0
+      required: false
+      selector:
+        number:
+          min: 10.0
+          max: 200.0
+          step: 1.0
+          unit_of_measurement: kWh
+    max_charge_rate_kw:
+      name: Maximum Charge Rate (kW)
+      description: Maximum AC/DC charging speed of the EVSE charger.
+      default: 9.6
+      required: false
+      selector:
+        number:
+          min: 1.0
+          max: 50.0
+          step: 0.5
+          unit_of_measurement: kW
+    prefer_solar_surplus:
+      name: Prioritize Solar Surplus
+      description: Whether to prioritize charging from excess solar production over grid power.
+      default: true
+      required: false
+      selector:
+        boolean:
+    ev_entity:
+      name: EV Battery Sensor
+      description: Entity ID representing EV battery level.
+      required: false
+      selector:
+        entity:
+          domain: sensor
+          device_class: battery
+
+execute_energy_arbitrage:
+  name: Execute Energy Arbitrage Dispatch
+  description: Apply active 24-hour schedule recommendations to discovered EV chargers and battery storage equipment.
+  fields:
+    apply_ev_schedule:
+      name: Apply EV Charging Controls
+      description: Automatically switch on/off or throttle EV chargers according to schedule.
+      default: true
+      required: false
+      selector:
+        boolean:
+    apply_battery_mode:
+      name: Apply Battery Operating Mode
+      description: Update stationary home battery operating mode to match active arbitrage strategy.
+      default: true
+      required: false
+      selector:
+        boolean:
+    dry_run:
+      name: Dry Run
+      description: Preview which control actions would be dispatched without executing service calls.
+      default: false
+      required: false
+      selector:
+        boolean:
+
 toggle_voice_announcements:
   name: Toggle Voice Announcements
   description: Enable or disable proactive spoken voice announcements for security and camera detections.

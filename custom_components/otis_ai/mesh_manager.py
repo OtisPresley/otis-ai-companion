@@ -45,7 +45,8 @@ class MeshManager:
         dev_reg = dr.async_get(self.hass) if hasattr(dr, "async_get") else None
         ent_reg = er.async_get(self.hass) if hasattr(er, "async_get") else None
 
-        all_devices = list(dev_reg.devices.values()) if dev_reg and hasattr(dev_reg, "devices") else []
+        raw_devices = dev_reg.devices if dev_reg and hasattr(dev_reg, "devices") else []
+        all_devices = list(raw_devices.values()) if isinstance(raw_devices, dict) else list(raw_devices)
         all_entities = list(ent_reg.entities.values()) if ent_reg and hasattr(ent_reg, "entities") else []
 
         ent_by_dev: dict[str, list[Any]] = {}

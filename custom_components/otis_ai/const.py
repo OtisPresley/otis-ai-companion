@@ -126,9 +126,11 @@ SERVICE_INDEX_DEVICE_MANUAL = "index_device_manual"
 SERVICE_TOGGLE_AUDIO_FOLLOW = "toggle_audio_follow"
 CONF_AUDIO_FOLLOW_ENABLED = "audio_follow_enabled"
 
-# Context-Aware Energy Arbitrage & Battery Scheduling (Phase 2)
+# Context-Aware Energy Arbitrage & Battery Scheduling (Phase 7)
 SERVICE_OPTIMIZE_BATTERY_SCHEDULE = "optimize_battery_schedule"
 SERVICE_GET_ENERGY_ARBITRAGE_PLAN = "get_energy_arbitrage_plan"
+SERVICE_SCHEDULE_EV_CHARGING = "schedule_ev_charging"
+SERVICE_EXECUTE_ENERGY_ARBITRAGE = "execute_energy_arbitrage"
 
 # Spatial Audio Migration & Follow-Me (Phase 4 Step 3)
 DEFAULT_AUDIO_MIGRATION_CONFIDENCE = 0.70

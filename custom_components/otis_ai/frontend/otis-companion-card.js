@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.40";
+const CARD_VERSION = "0.1.41";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -6419,13 +6419,36 @@ class OtisCompanionCard extends HTMLElement {
                   </div>
                 ` : ""}
 
+                <!-- Smart EV Charging Section (Phase 7) -->
+                ${arbitrage.ev_charging_plan ? `
+                  <div style="margin-top: 8px; margin-bottom: 8px; padding: 6px 8px; background: rgba(14, 165, 233, 0.08); border-radius: 6px; border: 1px solid rgba(14, 165, 233, 0.2);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                      <span style="font-weight: 600; font-size: 0.70rem; color: var(--otis-primary);">
+                        🚗 Smart EV Charging (${arbitrage.ev_charging_plan.current_soc_pct}% ➔ ${arbitrage.ev_charging_plan.target_soc_pct}% target by ${arbitrage.ev_charging_plan.target_departure_hour}:00)
+                      </span>
+                      <span style="font-size: 0.68rem; color: #10b981; font-weight: 600;">
+                        Est. EV Cost: $${(arbitrage.ev_charging_plan.projected_cost_usd || 0).toFixed(2)}
+                      </span>
+                    </div>
+                    <div style="font-size: 0.68rem; color: var(--otis-text-muted); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px;">
+                      <span>⚡ Status: <strong>${arbitrage.ev_charging_plan.current_action ? arbitrage.ev_charging_plan.current_action.replace(/_/g, " ").toUpperCase() : "IDLE"}</strong> (${arbitrage.ev_charging_plan.current_ev_charge_kw || 0} kW)</span>
+                      <span>☀️ Solar Used: <strong>${(arbitrage.ev_charging_plan.solar_kwh_utilized || 0).toFixed(1)} kWh</strong> • Grid Off-Peak: <strong>${(arbitrage.ev_charging_plan.grid_kwh_utilized || 0).toFixed(1)} kWh</strong></span>
+                    </div>
+                  </div>
+                ` : ""}
+
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px; flex-wrap: wrap; gap: 6px;">
                   <div style="font-size: 0.70rem; color: var(--otis-text-muted);">
                     Solar Forecast: <strong>${(arbitrage.daily_solar_forecast_kwh || (solarInfo.production_w ? (solarInfo.production_w * 6 / 1000) : 24.0)).toFixed(1)} kWh</strong> • Baseline Load: <strong>${arbitrage.baseline_load_kw || 1.0} kW</strong>
                   </div>
-                  <button type="button" class="btn-toolbar" id="btn-optimize-arbitrage-tab" style="padding: 4px 10px; font-size: 0.72rem; color: var(--otis-primary); border-color: var(--otis-primary);">
-                    ⚡ Re-Optimize Schedule
-                  </button>
+                  <div>
+                    <button type="button" class="btn-toolbar" id="btn-optimize-arbitrage-tab" style="padding: 4px 10px; font-size: 0.72rem; color: var(--otis-primary); border-color: var(--otis-primary);">
+                      ⚡ Re-Optimize
+                    </button>
+                    <button type="button" class="btn-toolbar" id="btn-dispatch-arbitrage-tab" style="padding: 4px 10px; font-size: 0.72rem; color: #10b981; border-color: #10b981; margin-left: 4px;">
+                      ⚡ Apply Dispatch
+                    </button>
+                  </div>
                 </div>
               `;
             })()}
@@ -8939,6 +8962,22 @@ class OtisCompanionCard extends HTMLElement {
         } catch (err) {
           console.error("Arbitrage optimization failed:", err);
           this._showToast(`Arbitrage optimization failed: ${err.message || err}`, true);
+        }
+      };
+    }
+
+    const dispatchArbitrageBtn = root.querySelector("#btn-dispatch-arbitrage-tab");
+    if (dispatchArbitrageBtn) {
+      dispatchArbitrageBtn.onclick = async (e) => {
+        e.stopPropagation();
+        try {
+          this._showToast("⚡ Dispatching arbitrage and smart EV controls...");
+          await this._hass.callService("otis_ai", "execute_energy_arbitrage", { dry_run: false });
+          this._showToast("✨ Arbitrage & EV dispatch applied!");
+          await this._fetchData();
+        } catch (err) {
+          console.error("Arbitrage dispatch failed:", err);
+          this._showToast(`Failed to dispatch arbitrage: ${err.message || err}`, true);
         }
       };
     }

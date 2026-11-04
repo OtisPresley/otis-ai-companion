@@ -7,6 +7,22 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.41] - 2026-11-04
+
+### Added
+- **Phase 7: Contextual Energy Arbitrage with Time-Of-Use Tariffs, Solar Forecasting, and Smart EV/Battery Scheduling**:
+  - Implemented dynamic tariff support in `EnergyManager` (`get_hourly_tariffs`), reading Nordpool, Amber, Tibber, and wholesale spot pricing sensors with negative pricing detection and standard TOU fallback.
+  - Implemented contextual solar forecasting (`get_hourly_solar_forecast`), parsing Forecast.Solar and Solcast detailed hourly attribute tables with fallback to astronomical bell curves.
+  - Implemented automated discovery of EVSE chargers (switches, amperage controllers, telemetry) and connected electric vehicles in `async_discover_energy_topology`.
+  - Implemented `calculate_ev_charging_schedule` co-optimizing solar surplus utilization (curtailment avoidance) and lowest-cost off-peak grid windows prior to morning departure.
+  - Implemented `otis_ai.schedule_ev_charging` and `otis_ai.execute_energy_arbitrage` services for automated dispatch of EV charger controls and battery modes.
+  - Implemented real-time telemetry publishing to `sensor.otis_energy_arbitrage` with complete 24-hour horizon, EV charging metrics, and tariff details.
+  - Added smart EV charging section, dispatch action triggers, and updated timeline indicators to Lovelace `otis-companion-card.js`.
+
+### Fixed
+- **Home Assistant 2026+ Deprecation Warning**:
+  - Resolved `device_registry.devices` mapping usage deprecation in `mesh_manager.py:48`, iterating devices directly without `.values()` to guarantee seamless compatibility with HA 2026.10+ and 2027+.
+
 ## [0.1.40] - 2026-11-04
 
 ### Added

@@ -116,6 +116,8 @@ from .const import (
     SERVICE_HEAL_MESH_NODE,
     SERVICE_OPTIMIZE_BATTERY_SCHEDULE,
     SERVICE_GET_ENERGY_ARBITRAGE_PLAN,
+    SERVICE_SCHEDULE_EV_CHARGING,
+    SERVICE_EXECUTE_ENERGY_ARBITRAGE,
 )
 from .local_llm import LocalLLMManager
 from .rag_manager import RAGKnowledgeManager
@@ -1755,6 +1757,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             mode=mode,
         )
 
+    async def handle_schedule_ev_charging(call) -> ServiceResponse:
+        """Handle service call to optimize and schedule smart EV charging."""
+        _LOGGER.debug("Service 'schedule_ev_charging' triggered: %s", call.data)
+        em = _get_energy_manager()
+        return await em.async_schedule_ev_charging(
+            target_soc_pct=call.data.get("target_soc_pct"),
+            target_departure_time=call.data.get("target_departure_time"),
+            battery_capacity_kwh=call.data.get("battery_capacity_kwh"),
+            max_charge_rate_kw=call.data.get("max_charge_rate_kw"),
+            prefer_solar_surplus=call.data.get("prefer_solar_surplus", True),
+            ev_entity=call.data.get("ev_entity"),
+        )
+
+    async def handle_execute_energy_arbitrage(call) -> ServiceResponse:
+        """Handle service call to dispatch real-time load, EV charging, and storage commands."""
+        _LOGGER.debug("Service 'execute_energy_arbitrage' triggered: %s", call.data)
+        em = _get_energy_manager()
+        apply_ev_schedule = call.data.get("apply_ev_schedule", True)
+        apply_battery_mode = call.data.get("apply_battery_mode", True)
+        dry_run = call.data.get("dry_run", False)
+        return await em.async_execute_energy_arbitrage(
+            apply_ev_schedule=apply_ev_schedule,
+            apply_battery_mode=apply_battery_mode,
+            dry_run=dry_run,
+        )
+
     async def handle_get_presence_states(call) -> ServiceResponse:
         """Handle service call to retrieve fused room occupancy states."""
         _LOGGER.debug("Service 'get_presence_states' triggered")
@@ -2417,6 +2445,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         SERVICE_GET_ENERGY_ARBITRAGE_PLAN,
         handle_get_energy_arbitrage_plan,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SCHEDULE_EV_CHARGING,
+        handle_schedule_ev_charging,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_EXECUTE_ENERGY_ARBITRAGE,
+        handle_execute_energy_arbitrage,
         supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
@@ -3603,6 +3643,20 @@ class OtisAIConversationAgent(AbstractAgent):
             res = await self.energy_manager.async_restore_shed_loads()
             return self._create_response(user_input, res.get("message", res.get("error", "")))
 
+        # Check for Execute Energy Arbitrage commands (Phase 7)
+        if self.energy_manager and any(w in user_lower for w in (
+            "execute energy arbitrage", "execute arbitrage", "apply energy schedule", "dispatch energy arbitrage"
+        )):
+            fire_progress("macro", "Executing Arbitrage Dispatch", "Applying recommended battery & EV charging states")
+            res = await self.energy_manager.async_execute_energy_arbitrage(dry_run=False)
+            speech = (
+                f"⚡ **Energy Arbitrage Dispatch Executed!**\n\n"
+                f"• Battery Action: `{res.get('current_battery_action', 'idle')}`\n"
+                f"• EV Action: `{res.get('current_ev_action', 'idle')}`\n"
+                f"• Dispatched Controls: `{res.get('dispatched_count', 0)} device actions applied`"
+            )
+            return self._create_response(user_input, speech)
+
         # Check for Battery Arbitrage & Scheduling commands (Phase 2)
         if self.energy_manager and any(w in user_lower for w in (
             "battery arbitrage", "battery schedule", "energy arbitrage",
@@ -3636,6 +3690,29 @@ class OtisAIConversationAgent(AbstractAgent):
                     f"`{step['action']}` ({flow_desc}) ➔ Ending SoC: {step['ending_soc_pct']:.0f}%"
                 )
             lines.append("\n*(Say 'optimize battery for backup' to preserve full emergency reserves, or 'optimize battery for peak arbitrage')*")
+            return self._create_response(user_input, "\n".join(lines))
+
+        # Check for Smart EV Charging commands (Phase 7)
+        if self.energy_manager and any(w in user_lower for w in (
+            "ev charging schedule", "ev schedule", "charge my car", "charge ev",
+            "smart ev", "when should i charge", "ev charging plan", "electric vehicle schedule"
+        )):
+            fire_progress("domain", "Smart EV Orchestrator", "Calculating solar surplus and low-cost off-peak charging schedule")
+            ev_plan = await self.energy_manager.async_schedule_ev_charging()
+            lines = [
+                f"🚗 **Smart EV Charging Schedule** (Target: {ev_plan.get('target_soc_pct', 80)}% by {ev_plan.get('target_departure_hour', 7):02d}:00)\n",
+                f"• **Current EV Battery**: {ev_plan.get('current_soc_pct', 45)}% | Energy Needed: `{ev_plan.get('energy_needed_kwh', 0)} kWh` (~{ev_plan.get('hours_needed', 0)}h charge time)",
+                f"• **Energy Mix**: `{ev_plan.get('solar_kwh_utilized', 0)} kWh` Solar Surplus (Free) + `{ev_plan.get('grid_kwh_utilized', 0)} kWh` Off-Peak Grid",
+                f"• **Estimated Charging Cost**: **${ev_plan.get('projected_cost_usd', 0.0):.2f}**",
+                f"• **Current Recommendation**: `{ev_plan.get('current_action', 'idle')}` ({ev_plan.get('current_ev_charge_kw', 0)} kW) — *{ev_plan.get('current_reason', '')}*\n",
+                "**Upcoming Charging Windows**:"
+            ]
+            for step in [s for s in ev_plan.get("schedule", []) if s.get("ev_charge_kw", 0) > 0][:5]:
+                src = "☀️ Solar" if step.get("source") == "solar" else "⚡ Off-Peak"
+                lines.append(f"- `{step['time_label']}`: `{step['ev_charge_kw']} kW` via {src} (${step.get('cost_usd', 0):.2f}) ➔ Ending SoC: {step['ending_soc_pct']:.0f}%")
+            if not any(s.get("ev_charge_kw", 0) > 0 for s in ev_plan.get("schedule", [])):
+                lines.append("• No charging needed; target battery state of charge satisfied.")
+            lines.append("\n*(Say 'execute energy arbitrage' to apply active charger & battery dispatch actions)*")
             return self._create_response(user_input, "\n".join(lines))
 
         # Check for Presence / Occupancy queries (Phase 8)
