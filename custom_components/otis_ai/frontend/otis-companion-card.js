@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.24";
+const CARD_VERSION = "0.1.25";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -105,6 +105,28 @@ class OtisCompanionCard extends HTMLElement {
     } catch (_) {
       this._floorplanViewMode = "2d";
     }
+
+    // Phase 3: Interactive Floorplan 3D Orbit & Pitch Controls
+    try {
+      const savedAz = parseFloat(localStorage.getItem("otis_floorplan_orbit_azimuth"));
+      this._floorplanAzimuth = !isNaN(savedAz) ? Math.max(0, Math.min(360, savedAz)) : 45;
+    } catch (_) {
+      this._floorplanAzimuth = 45;
+    }
+    try {
+      const savedPitch = parseFloat(localStorage.getItem("otis_floorplan_pitch_incline"));
+      this._floorplanPitch = !isNaN(savedPitch) ? Math.max(30, Math.min(75, savedPitch)) : 58;
+    } catch (_) {
+      this._floorplanPitch = 58;
+    }
+    try {
+      const savedScale = parseFloat(localStorage.getItem("otis_floorplan_scale"));
+      this._floorplanScale = !isNaN(savedScale) ? Math.max(0.6, Math.min(1.8, savedScale)) : 1.0;
+    } catch (_) {
+      this._floorplanScale = 1.0;
+    }
+    this._floorplanHudCollapsed = false;
+    this._previousViewMode = null;
     this._selectedRoomInfo = null;
     this._spokenOrderOverride = "";
     this._selectedWalkthroughFiles = [];
@@ -4190,15 +4212,23 @@ class OtisCompanionCard extends HTMLElement {
           border: 1px solid var(--otis-surface-border);
           border-radius: 12px;
           padding: 8px 12px 12px 12px;
-          overflow: auto;
-          min-height: 380px;
-          max-height: 520px;
+          overflow: hidden;
+          min-height: 440px;
           display: flex;
           justify-content: center;
-          align-items: flex-start;
+          align-items: center;
           position: relative;
           box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.5);
           user-select: none;
+        }
+
+        .floorplan-svg-viewport.view-3d-active {
+          touch-action: none;
+          cursor: grab;
+        }
+
+        .floorplan-svg-viewport.view-3d-active:active {
+          cursor: grabbing;
         }
 
         .floorplan-svg-viewport.editor-mode {
@@ -4211,6 +4241,31 @@ class OtisCompanionCard extends HTMLElement {
           display: none !important;
         }
 
+        /* 3D Stage & Canvas Projection */
+        .floorplan-3d-stage {
+          perspective: 1200px;
+          perspective-origin: 50% 50%;
+          width: 100%;
+          height: 100%;
+          min-height: 420px;
+          display: flex;
+          justify-content: center;
+          align-items: center;
+          position: relative;
+          overflow: visible;
+        }
+
+        .floorplan-3d-canvas {
+          position: relative;
+          display: inline-block;
+          max-width: 100%;
+          transform-style: preserve-3d;
+          transform-origin: 50% 50%;
+          will-change: transform;
+          transition: transform 0.08s ease-out;
+          filter: drop-shadow(0 18px 28px rgba(0, 0, 0, 0.65));
+        }
+
         .floorplan-pins-overlay {
           position: absolute;
           top: 0;
@@ -4219,16 +4274,19 @@ class OtisCompanionCard extends HTMLElement {
           height: 100%;
           pointer-events: none;
           z-index: 10;
+          transform-style: preserve-3d;
         }
 
         .floorplan-device-pin {
           position: absolute;
-          transform: translate(-50%, -50%);
+          transform: translate(-50%, -50%) rotateZ(calc(-1 * var(--floorplan-azimuth, 0deg))) rotateX(calc(-1 * var(--floorplan-pitch, 0deg)));
+          transform-origin: 50% 50%;
+          transform-style: preserve-3d;
           display: flex;
           align-items: center;
           justify-content: center;
           cursor: pointer;
-          transition: transform 0.15s ease;
+          transition: transform 0.08s ease-out;
           z-index: 20;
           pointer-events: auto;
           width: 26px;
@@ -4239,8 +4297,8 @@ class OtisCompanionCard extends HTMLElement {
         }
 
         .floorplan-device-pin:hover {
-          transform: translate(-50%, -50%) scale(1.3);
-          z-index: 30;
+          transform: translate(-50%, -50%) rotateZ(calc(-1 * var(--floorplan-azimuth, 0deg))) rotateX(calc(-1 * var(--floorplan-pitch, 0deg))) scale(1.3);
+          z-index: 35;
         }
 
         .floorplan-device-pin.is-active ha-state-icon {
@@ -4261,6 +4319,206 @@ class OtisCompanionCard extends HTMLElement {
           max-height: 500px;
           object-fit: contain;
           filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4));
+          display: block;
+        }
+
+        /* 3D Orbit & Pitch Controls HUD */
+        .floorplan-3d-hud {
+          position: absolute;
+          top: 10px;
+          right: 10px;
+          z-index: 40;
+          background: rgba(15, 23, 42, 0.88);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+          border: 1px solid rgba(56, 189, 248, 0.35);
+          border-radius: 10px;
+          padding: 8px 12px;
+          max-width: 380px;
+          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+          font-size: 0.74rem;
+          color: var(--otis-text, #f1f5f9);
+          user-select: none;
+          pointer-events: auto;
+          transition: all 0.2s ease;
+        }
+
+        .floorplan-3d-hud.collapsed {
+          padding: 5px 10px;
+        }
+
+        .floorplan-3d-hud .hud-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+        }
+
+        .floorplan-3d-hud .hud-title {
+          font-weight: 700;
+          color: var(--otis-primary, #38bdf8);
+          font-size: 0.76rem;
+        }
+
+        .floorplan-3d-hud .hud-badge {
+          background: rgba(56, 189, 248, 0.15);
+          border: 1px solid rgba(56, 189, 248, 0.3);
+          border-radius: 4px;
+          padding: 1px 6px;
+          font-size: 0.68rem;
+          font-weight: 600;
+          color: #93c5fd;
+        }
+
+        .floorplan-3d-hud .btn-hud-toggle {
+          background: transparent;
+          border: none;
+          color: var(--otis-text-muted, #94a3b8);
+          font-size: 0.76rem;
+          cursor: pointer;
+          padding: 2px 4px;
+          border-radius: 4px;
+        }
+
+        .floorplan-3d-hud .btn-hud-toggle:hover {
+          color: #fff;
+          background: rgba(255, 255, 255, 0.1);
+        }
+
+        .floorplan-3d-hud .hud-body {
+          margin-top: 8px;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          border-top: 1px solid rgba(255, 255, 255, 0.08);
+          padding-top: 6px;
+        }
+
+        .floorplan-3d-hud .hud-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+        }
+
+        .floorplan-3d-hud .hud-label {
+          color: var(--otis-text-muted, #94a3b8);
+          font-size: 0.7rem;
+          min-width: 82px;
+        }
+
+        .floorplan-3d-hud .hud-slider-wrap {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex: 1;
+        }
+
+        .floorplan-3d-hud .hud-slider {
+          flex: 1;
+          height: 4px;
+          background: rgba(255, 255, 255, 0.15);
+          border-radius: 2px;
+          outline: none;
+          -webkit-appearance: none;
+          appearance: none;
+        }
+
+        .floorplan-3d-hud .hud-slider::-webkit-slider-thumb {
+          -webkit-appearance: none;
+          appearance: none;
+          width: 13px;
+          height: 13px;
+          border-radius: 50%;
+          background: var(--otis-primary, #38bdf8);
+          cursor: pointer;
+          box-shadow: 0 0 6px rgba(56, 189, 248, 0.6);
+        }
+
+        .floorplan-3d-hud .btn-hud-step {
+          background: rgba(255, 255, 255, 0.08);
+          border: 1px solid rgba(255, 255, 255, 0.15);
+          color: #cbd5e1;
+          font-size: 0.68rem;
+          border-radius: 4px;
+          padding: 2px 6px;
+          cursor: pointer;
+          transition: all 0.15s;
+        }
+
+        .floorplan-3d-hud .btn-hud-step:hover {
+          background: rgba(56, 189, 248, 0.25);
+          border-color: rgba(56, 189, 248, 0.45);
+          color: #fff;
+        }
+
+        .floorplan-3d-hud .hud-val {
+          font-variant-numeric: tabular-nums;
+          font-size: 0.7rem;
+          min-width: 32px;
+          text-align: right;
+          color: #e2e8f0;
+          font-weight: 600;
+        }
+
+        .floorplan-3d-hud .presets-row {
+          align-items: flex-start;
+          margin-top: 2px;
+        }
+
+        .floorplan-3d-hud .hud-presets-wrap {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 3px;
+          flex: 1;
+        }
+
+        .floorplan-3d-hud .btn-preset-pill {
+          background: rgba(15, 23, 42, 0.7);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          color: #94a3b8;
+          font-size: 0.65rem;
+          padding: 2px 5px;
+          border-radius: 4px;
+          cursor: pointer;
+          transition: all 0.15s;
+        }
+
+        .floorplan-3d-hud .btn-preset-pill:hover {
+          color: #fff;
+          border-color: rgba(56, 189, 248, 0.4);
+        }
+
+        .floorplan-3d-hud .btn-preset-pill.active {
+          background: rgba(56, 189, 248, 0.2);
+          border-color: var(--otis-primary, #38bdf8);
+          color: #fff;
+          font-weight: 700;
+        }
+
+        .floorplan-3d-hud .btn-preset-reset {
+          background: rgba(168, 85, 247, 0.15);
+          border: 1px solid rgba(168, 85, 247, 0.35);
+          color: #c084fc;
+          font-size: 0.65rem;
+          padding: 2px 6px;
+          border-radius: 4px;
+          cursor: pointer;
+          transition: all 0.15s;
+          margin-left: auto;
+        }
+
+        .floorplan-3d-hud .btn-preset-reset:hover {
+          background: rgba(168, 85, 247, 0.3);
+          color: #fff;
+        }
+
+        .floorplan-3d-hud .hud-hint {
+          font-size: 0.64rem;
+          color: var(--otis-text-muted, #94a3b8);
+          text-align: center;
+          margin-top: 4px;
+          font-style: italic;
         }
 
         .editor-toolbar-strip {
@@ -6070,10 +6328,15 @@ class OtisCompanionCard extends HTMLElement {
             ? `<div class="empty-state"><div class="spinner" style="margin: 0 auto 8px auto; width: 24px; height: 24px;"></div>Rendering vector floor plan...</div>`
             : this._floorplanSvg
             ? `
-            <div class="floorplan-svg-viewport ${this._editorActive && isAdmin ? 'editor-mode' : ''}" id="floorplan-viewport">
+            <div class="floorplan-svg-viewport ${this._editorActive && isAdmin ? 'editor-mode' : ''} ${this._floorplanViewMode === '3d' ? 'view-3d-active' : ''}" id="floorplan-viewport">
               ${this._editorActive && isAdmin ? `<div class="editor-hud" id="editor-hud">📐 Pointer: --, --</div>` : ''}
-              ${this._floorplanSvg}
-              ${this._renderFloorplanPins()}
+              ${this._floorplanViewMode === '3d' && !this._editorActive ? this._renderFloorplan3dControls() : ''}
+              <div class="floorplan-3d-stage" id="floorplan-3d-stage">
+                <div class="floorplan-3d-canvas" id="floorplan-canvas" style="--floorplan-azimuth: ${this._floorplanAzimuth}deg; --floorplan-pitch: ${this._floorplanPitch}deg;">
+                  ${this._floorplanSvg}
+                  ${this._renderFloorplanPins()}
+                </div>
+              </div>
               ${this._editorActive && isAdmin && this._selectedEditorRoomId ? this._renderRoomInspector() : ""}
             </div>
             ${
@@ -6143,6 +6406,65 @@ class OtisCompanionCard extends HTMLElement {
             </div>
           `
         }
+      </div>
+    `;
+  }
+
+  _renderFloorplan3dControls() {
+    if (this._editorActive) return "";
+    const isCollapsed = Boolean(this._floorplanHudCollapsed);
+
+    return `
+      <div class="floorplan-3d-hud ${isCollapsed ? 'collapsed' : ''}" id="floorplan-3d-hud">
+        <div class="hud-header">
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <span class="hud-icon">🧭</span>
+            <span class="hud-title">3D Orbit &amp; Pitch Controls</span>
+            <span class="hud-badge" id="hud-orbit-readout">${Math.round(this._floorplanAzimuth)}° Az / ${Math.round(this._floorplanPitch)}° Pitch</span>
+          </div>
+          <button type="button" class="btn-hud-toggle" id="btn-toggle-3d-hud" title="${isCollapsed ? 'Expand 3D Controls' : 'Collapse 3D Controls'}">
+            ${isCollapsed ? '▾' : '▴'}
+          </button>
+        </div>
+        ${!isCollapsed ? `
+        <div class="hud-body">
+          <div class="hud-row">
+            <span class="hud-label">Orbit Azimuth:</span>
+            <div class="hud-slider-wrap">
+              <button type="button" class="btn-hud-step" id="btn-azimuth-step-minus" title="Rotate -15°">⟲</button>
+              <input type="range" min="0" max="360" step="1" value="${Math.round(this._floorplanAzimuth)}" id="slider-orbit-azimuth" class="hud-slider" />
+              <button type="button" class="btn-hud-step" id="btn-azimuth-step-plus" title="Rotate +15°">⟳</button>
+              <span class="hud-val" id="val-orbit-azimuth">${Math.round(this._floorplanAzimuth)}°</span>
+            </div>
+          </div>
+          <div class="hud-row">
+            <span class="hud-label">Pitch Incline:</span>
+            <div class="hud-slider-wrap">
+              <button type="button" class="btn-hud-step" id="btn-pitch-step-minus" title="Lower Incline -5°">▼</button>
+              <input type="range" min="30" max="75" step="1" value="${Math.round(this._floorplanPitch)}" id="slider-pitch-incline" class="hud-slider" />
+              <button type="button" class="btn-hud-step" id="btn-pitch-step-plus" title="Steepen Incline +5°">▲</button>
+              <span class="hud-val" id="val-pitch-incline">${Math.round(this._floorplanPitch)}°</span>
+            </div>
+          </div>
+          <div class="hud-row presets-row">
+            <span class="hud-label">Presets:</span>
+            <div class="hud-presets-wrap">
+              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 0 ? 'active' : ''}" data-azimuth="0" data-pitch="55" title="North (Front)">0° N</button>
+              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 45 ? 'active' : ''}" data-azimuth="45" data-pitch="58" title="Isometric NE">45° NE</button>
+              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 90 ? 'active' : ''}" data-azimuth="90" data-pitch="55" title="East">90° E</button>
+              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 135 ? 'active' : ''}" data-azimuth="135" data-pitch="58" title="Isometric SE">135° SE</button>
+              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 180 ? 'active' : ''}" data-azimuth="180" data-pitch="55" title="South (Rear)">180° S</button>
+              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 225 ? 'active' : ''}" data-azimuth="225" data-pitch="58" title="Isometric SW">225° SW</button>
+              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 270 ? 'active' : ''}" data-azimuth="270" data-pitch="55" title="West">270° W</button>
+              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 315 ? 'active' : ''}" data-azimuth="315" data-pitch="58" title="Isometric NW">315° NW</button>
+              <button type="button" class="btn-preset-reset" id="btn-reset-3d-view" title="Reset to Default Isometric Projection">↺ Reset</button>
+            </div>
+          </div>
+          <div class="hud-hint">
+            <span>🖱️ Drag canvas to orbit freely • Scroll/pinch to zoom</span>
+          </div>
+        </div>
+        ` : ''}
       </div>
     `;
   }
@@ -9330,20 +9652,50 @@ class OtisCompanionCard extends HTMLElement {
       };
     }
 
-    // Floorplan: Zone filter pills (All Floors vs Ground & Outdoor vs Separate Upper Level)
+    // Phase 3: Interactive Floorplan 3D Orbit & Pitch Controls & View Projection
+    const floorplanViewport = root.querySelector("#floorplan-viewport");
+    const floorplanCanvas = root.querySelector("#floorplan-canvas");
+    const hudOrbitReadout = root.querySelector("#hud-orbit-readout");
+    const sliderAzimuth = root.querySelector("#slider-orbit-azimuth");
+    const sliderPitch = root.querySelector("#slider-pitch-incline");
+    const valAzimuth = root.querySelector("#val-orbit-azimuth");
+    const valPitch = root.querySelector("#val-pitch-incline");
+
+    const applyCanvas3dTransform = (smooth = false) => {
+      if (!floorplanCanvas) return;
+      if (this._floorplanViewMode === "3d") {
+        if (smooth) {
+          floorplanCanvas.style.transition = "transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)";
+          floorplanCanvas.querySelectorAll(".floorplan-device-pin").forEach((p) => {
+            p.style.transition = "transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)";
+          });
+        }
+        floorplanCanvas.style.transform = `perspective(1200px) rotateX(${this._floorplanPitch}deg) rotateZ(${this._floorplanAzimuth}deg) scale(${this._floorplanScale || 1})`;
+        floorplanCanvas.style.setProperty("--floorplan-azimuth", `${this._floorplanAzimuth}deg`);
+        floorplanCanvas.style.setProperty("--floorplan-pitch", `${this._floorplanPitch}deg`);
+      } else {
+        floorplanCanvas.style.transition = "";
+        floorplanCanvas.style.transform = "none";
+        floorplanCanvas.style.setProperty("--floorplan-azimuth", "0deg");
+        floorplanCanvas.style.setProperty("--floorplan-pitch", "0deg");
+      }
+      if (hudOrbitReadout) {
+        hudOrbitReadout.textContent = `${Math.round(this._floorplanAzimuth)}° Az / ${Math.round(this._floorplanPitch)}° Pitch`;
+      }
+      if (valAzimuth) valAzimuth.textContent = `${Math.round(this._floorplanAzimuth)}°`;
+      if (valPitch) valPitch.textContent = `${Math.round(this._floorplanPitch)}°`;
+      if (sliderAzimuth) sliderAzimuth.value = String(Math.round(this._floorplanAzimuth));
+      if (sliderPitch) sliderPitch.value = String(Math.round(this._floorplanPitch));
+    };
+
+    // Floorplan: Zero-drift pin positioning and zone filtering
     const updatePinPositions = () => {
       const currentSvgEl = root.querySelector("#floorplan-viewport svg");
       const currentViewport = root.querySelector("#floorplan-viewport");
       const pinsOverlay = root.querySelector("#floorplan-pins-overlay");
       if (!currentSvgEl || !currentViewport || !pinsOverlay) return;
 
-      const ctm = currentSvgEl.getScreenCTM();
-      if (!ctm) return;
-      const oRect = pinsOverlay.getBoundingClientRect();
-      if (!oRect.width || !oRect.height) return;
-
       const curZone = this._selectedFloorZone || "all";
-      const is3d = this._floorplanViewMode === "3d";
       const planUpper = currentSvgEl.querySelector("#plan-upper");
 
       let uVbY = 730;
@@ -9355,14 +9707,17 @@ class OtisCompanionCard extends HTMLElement {
         }
       }
 
+      const vbAttr = currentSvgEl.getAttribute("viewBox") || "0 0 1300 1250";
+      const vbParts = vbAttr.split(/[\s,]+/).map(Number);
+      const vbX = !isNaN(vbParts[0]) ? vbParts[0] : 0;
+      const vbY = !isNaN(vbParts[1]) ? vbParts[1] : 0;
+      const vbW = (!isNaN(vbParts[2]) && vbParts[2] > 0) ? vbParts[2] : 1300;
+      const vbH = (!isNaN(vbParts[3]) && vbParts[3] > 0) ? vbParts[3] : 1250;
+
       pinsOverlay.querySelectorAll(".floorplan-device-pin").forEach((pin) => {
-        const bx = is3d
-          ? parseFloat(pin.getAttribute("data-iso-x") || pin.getAttribute("data-x") || 300)
-          : parseFloat(pin.getAttribute("data-x") || 300);
-        const by = is3d
-          ? parseFloat(pin.getAttribute("data-iso-y") || pin.getAttribute("data-y") || 300)
-          : parseFloat(pin.getAttribute("data-y") || 300);
-        const isUpperPin = is3d ? pin.getAttribute("data-is-upper") === "1" : by >= uVbY;
+        const bx = parseFloat(pin.getAttribute("data-x") || 300);
+        const by = parseFloat(pin.getAttribute("data-y") || 300);
+        const isUpperPin = by >= uVbY;
 
         if (curZone === "main" && isUpperPin) {
           pin.style.display = "none";
@@ -9390,13 +9745,11 @@ class OtisCompanionCard extends HTMLElement {
         pin.style.display = "flex";
         pin.style.opacity = "1";
 
-        const pt = currentSvgEl.createSVGPoint();
-        pt.x = bx;
-        pt.y = by;
-        const screenPt = pt.matrixTransform(ctm);
+        const pctX = ((bx - vbX) / vbW) * 100;
+        const pctY = ((by - vbY) / vbH) * 100;
 
-        pin.style.left = `${Math.round(screenPt.x - oRect.left)}px`;
-        pin.style.top = `${Math.round(screenPt.y - oRect.top)}px`;
+        pin.style.left = `${pctX.toFixed(3)}%`;
+        pin.style.top = `${pctY.toFixed(3)}%`;
       });
     };
 
@@ -9407,118 +9760,63 @@ class OtisCompanionCard extends HTMLElement {
       const view2d = svgEl.querySelector("#view-mode-2d");
       const view3d = svgEl.querySelector("#view-mode-3d");
 
-      if (is3d && view3d) {
-        if (view2d) view2d.style.display = "none";
-        view3d.style.display = "";
+      if (view2d) view2d.style.display = "";
+      if (view3d) view3d.style.display = "none";
 
-        const isoGround = view3d.querySelector("#iso-ground");
-        const isoUpper = view3d.querySelector("#iso-upper");
-        const isoConn = view3d.querySelector("#iso-connectors");
+      const planGround = svgEl.querySelector("#plan-ground");
+      const planUpper = svgEl.querySelector("#plan-upper");
+      const fullVb = svgEl.getAttribute("data-full-viewbox") || "0 0 1300 1250";
 
-        if (zone === "main") {
-          if (isoGround) isoGround.style.display = "";
-          if (isoUpper) isoUpper.style.display = "none";
-          if (isoConn) isoConn.style.display = "none";
-          svgEl.setAttribute("viewBox", "0 360 1300 680");
-          view3d.querySelectorAll("[data-zone]").forEach((el) => {
-            el.style.opacity = "1";
-            el.style.filter = "none";
-          });
-        } else if (zone === "upper") {
-          if (isoGround) isoGround.style.display = "none";
-          if (isoUpper) isoUpper.style.display = "";
-          if (isoConn) isoConn.style.display = "none";
-          svgEl.setAttribute("viewBox", "0 40 1300 580");
-          view3d.querySelectorAll("[data-zone]").forEach((el) => {
-            el.style.opacity = "1";
-            el.style.filter = "none";
-          });
-        } else if (zone === "outdoor") {
-          if (isoGround) isoGround.style.display = "";
-          if (isoUpper) isoUpper.style.display = "none";
-          if (isoConn) isoConn.style.display = "none";
-          svgEl.setAttribute("viewBox", "0 360 1300 680");
-          view3d.querySelectorAll("[data-zone]").forEach((el) => {
-            const elZone = el.getAttribute("data-zone");
-            if (elZone === "outdoor") {
-              el.style.opacity = "1";
-              el.style.filter = "none";
-            } else {
-              el.style.opacity = "0.22";
-              el.style.filter = "grayscale(75%)";
-            }
-          });
-        } else {
-          // "all": Multi-floor stacked isometric view
-          if (isoGround) isoGround.style.display = "";
-          if (isoUpper) isoUpper.style.display = "";
-          if (isoConn) isoConn.style.display = "";
-          svgEl.setAttribute("viewBox", svgEl.getAttribute("data-iso-viewbox") || "0 0 1300 1080");
-          view3d.querySelectorAll("[data-zone]").forEach((el) => {
-            el.style.opacity = "1";
-            el.style.filter = "none";
-          });
+      if (zone === "main") {
+        if (planGround) {
+          planGround.style.display = "";
+          const gVb = planGround.getAttribute("data-viewbox");
+          if (gVb) svgEl.setAttribute("viewBox", gVb);
         }
+        if (planUpper) planUpper.style.display = "none";
+        svgEl.querySelectorAll("[data-zone]").forEach((el) => {
+          el.style.opacity = "1";
+          el.style.filter = "none";
+        });
+      } else if (zone === "upper") {
+        if (planGround) planGround.style.display = "none";
+        if (planUpper) {
+          planUpper.style.display = "";
+          const uVb = planUpper.getAttribute("data-viewbox");
+          if (uVb) svgEl.setAttribute("viewBox", uVb);
+        }
+        svgEl.querySelectorAll("[data-zone]").forEach((el) => {
+          el.style.opacity = "1";
+          el.style.filter = "none";
+        });
+      } else if (zone === "outdoor") {
+        if (planGround) {
+          planGround.style.display = "";
+          const gVb = planGround.getAttribute("data-viewbox");
+          if (gVb) svgEl.setAttribute("viewBox", gVb);
+        }
+        if (planUpper) planUpper.style.display = "none";
+        svgEl.querySelectorAll("[data-zone]").forEach((el) => {
+          const elZone = el.getAttribute("data-zone");
+          if (elZone === "outdoor") {
+            el.style.opacity = "1";
+            el.style.filter = "none";
+          } else {
+            el.style.opacity = "0.22";
+            el.style.filter = "grayscale(75%)";
+          }
+        });
       } else {
-        if (view2d) view2d.style.display = "";
-        if (view3d) view3d.style.display = "none";
-        const planGround = svgEl.querySelector("#plan-ground");
-        const planUpper = svgEl.querySelector("#plan-upper");
-        const fullVb = svgEl.getAttribute("data-full-viewbox") || "0 0 1300 1250";
-
-        if (zone === "main") {
-          // Ground floorplan includes outdoor areas; draw separately from Upper Floor
-          if (planGround) {
-            planGround.style.display = "";
-            const gVb = planGround.getAttribute("data-viewbox");
-            if (gVb) svgEl.setAttribute("viewBox", gVb);
-          }
-          if (planUpper) planUpper.style.display = "none";
-          svgEl.querySelectorAll("[data-zone]").forEach((el) => {
-            el.style.opacity = "1";
-            el.style.filter = "none";
-          });
-        } else if (zone === "upper") {
-          // Upper floorplan drawn separately
-          if (planGround) planGround.style.display = "none";
-          if (planUpper) {
-            planUpper.style.display = "";
-            const uVb = planUpper.getAttribute("data-viewbox");
-            if (uVb) svgEl.setAttribute("viewBox", uVb);
-          }
-          svgEl.querySelectorAll("[data-zone]").forEach((el) => {
-            el.style.opacity = "1";
-            el.style.filter = "none";
-          });
-        } else if (zone === "outdoor") {
-          if (planGround) {
-            planGround.style.display = "";
-            const gVb = planGround.getAttribute("data-viewbox");
-            if (gVb) svgEl.setAttribute("viewBox", gVb);
-          }
-          if (planUpper) planUpper.style.display = "none";
-          svgEl.querySelectorAll("[data-zone]").forEach((el) => {
-            const elZone = el.getAttribute("data-zone");
-            if (elZone === "outdoor") {
-              el.style.opacity = "1";
-              el.style.filter = "none";
-            } else {
-              el.style.opacity = "0.22";
-              el.style.filter = "grayscale(75%)";
-            }
-          });
-        } else {
-          // "all": Show both Ground+Outdoor and Upper Level plans
-          if (planGround) planGround.style.display = "";
-          if (planUpper) planUpper.style.display = "";
-          svgEl.setAttribute("viewBox", fullVb);
-          svgEl.querySelectorAll("[data-zone]").forEach((el) => {
-            el.style.opacity = "1";
-            el.style.filter = "none";
-          });
-        }
+        if (planGround) planGround.style.display = "";
+        if (planUpper) planUpper.style.display = "";
+        svgEl.setAttribute("viewBox", fullVb);
+        svgEl.querySelectorAll("[data-zone]").forEach((el) => {
+          el.style.opacity = "1";
+          el.style.filter = "none";
+        });
       }
 
+      applyCanvas3dTransform();
       updatePinPositions();
     };
 
@@ -9528,6 +9826,170 @@ class OtisCompanionCard extends HTMLElement {
     setTimeout(updatePinPositions, 200);
     setTimeout(updatePinPositions, 600);
 
+    // 3D Canvas Drag-to-Orbit Pointer Interaction
+    if (floorplanViewport && this._floorplanViewMode === "3d" && !this._editorActive) {
+      let isOrbiting = false;
+      let startX = 0;
+      let startY = 0;
+      let startAz = this._floorplanAzimuth;
+      let startPitch = this._floorplanPitch;
+
+      floorplanViewport.onpointerdown = (e) => {
+        if (this._floorplanViewMode !== "3d" || this._editorActive) return;
+        if (e.target.closest(".floorplan-device-pin, .floorplan-3d-hud, button, input, select, .room-info-card")) {
+          return;
+        }
+        isOrbiting = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        startAz = this._floorplanAzimuth;
+        startPitch = this._floorplanPitch;
+        floorplanViewport.style.cursor = "grabbing";
+        if (floorplanCanvas) {
+          floorplanCanvas.style.transition = "none";
+          floorplanCanvas.querySelectorAll(".floorplan-device-pin").forEach((p) => {
+            p.style.transition = "none";
+          });
+        }
+        try { floorplanViewport.setPointerCapture(e.pointerId); } catch (_) {}
+      };
+
+      floorplanViewport.onpointermove = (e) => {
+        if (!isOrbiting) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        const sensitivity = 0.5;
+
+        let newAz = Math.round((startAz - dx * sensitivity) % 360);
+        if (newAz < 0) newAz += 360;
+
+        let newPitch = Math.round(startPitch + dy * sensitivity);
+        newPitch = Math.max(30, Math.min(75, newPitch));
+
+        this._floorplanAzimuth = newAz;
+        this._floorplanPitch = newPitch;
+        applyCanvas3dTransform(false);
+      };
+
+      const finishOrbit = (e) => {
+        if (!isOrbiting) return;
+        isOrbiting = false;
+        floorplanViewport.style.cursor = "";
+        try { floorplanViewport.releasePointerCapture(e.pointerId); } catch (_) {}
+        try {
+          localStorage.setItem("otis_floorplan_orbit_azimuth", String(this._floorplanAzimuth));
+          localStorage.setItem("otis_floorplan_pitch_incline", String(this._floorplanPitch));
+        } catch (_) {}
+      };
+
+      floorplanViewport.onpointerup = finishOrbit;
+      floorplanViewport.onpointercancel = finishOrbit;
+
+      floorplanViewport.onwheel = (e) => {
+        e.preventDefault();
+        const delta = e.deltaY < 0 ? 0.05 : -0.05;
+        this._floorplanScale = Math.max(0.6, Math.min(1.8, (this._floorplanScale || 1.0) + delta));
+        applyCanvas3dTransform(false);
+        try { localStorage.setItem("otis_floorplan_scale", String(this._floorplanScale)); } catch (_) {}
+      };
+    }
+
+    // 3D HUD Controls: Sliders, Steppers, Presets & Reset
+    if (sliderAzimuth) {
+      sliderAzimuth.oninput = (e) => {
+        this._floorplanAzimuth = parseFloat(e.target.value) || 0;
+        applyCanvas3dTransform(false);
+      };
+      sliderAzimuth.onchange = () => {
+        try { localStorage.setItem("otis_floorplan_orbit_azimuth", String(this._floorplanAzimuth)); } catch (_) {}
+      };
+    }
+
+    if (sliderPitch) {
+      sliderPitch.oninput = (e) => {
+        this._floorplanPitch = Math.max(30, Math.min(75, parseFloat(e.target.value) || 58));
+        applyCanvas3dTransform(false);
+      };
+      sliderPitch.onchange = () => {
+        try { localStorage.setItem("otis_floorplan_pitch_incline", String(this._floorplanPitch)); } catch (_) {}
+      };
+    }
+
+    const btnAzMinus = root.querySelector("#btn-azimuth-step-minus");
+    if (btnAzMinus) {
+      btnAzMinus.onclick = () => {
+        this._floorplanAzimuth = (this._floorplanAzimuth - 15 + 360) % 360;
+        applyCanvas3dTransform(true);
+        try { localStorage.setItem("otis_floorplan_orbit_azimuth", String(this._floorplanAzimuth)); } catch (_) {}
+      };
+    }
+
+    const btnAzPlus = root.querySelector("#btn-azimuth-step-plus");
+    if (btnAzPlus) {
+      btnAzPlus.onclick = () => {
+        this._floorplanAzimuth = (this._floorplanAzimuth + 15) % 360;
+        applyCanvas3dTransform(true);
+        try { localStorage.setItem("otis_floorplan_orbit_azimuth", String(this._floorplanAzimuth)); } catch (_) {}
+      };
+    }
+
+    const btnPitchMinus = root.querySelector("#btn-pitch-step-minus");
+    if (btnPitchMinus) {
+      btnPitchMinus.onclick = () => {
+        this._floorplanPitch = Math.max(30, this._floorplanPitch - 5);
+        applyCanvas3dTransform(true);
+        try { localStorage.setItem("otis_floorplan_pitch_incline", String(this._floorplanPitch)); } catch (_) {}
+      };
+    }
+
+    const btnPitchPlus = root.querySelector("#btn-pitch-step-plus");
+    if (btnPitchPlus) {
+      btnPitchPlus.onclick = () => {
+        this._floorplanPitch = Math.min(75, this._floorplanPitch + 5);
+        applyCanvas3dTransform(true);
+        try { localStorage.setItem("otis_floorplan_pitch_incline", String(this._floorplanPitch)); } catch (_) {}
+      };
+    }
+
+    root.querySelectorAll(".btn-preset-pill").forEach((btn) => {
+      btn.onclick = (e) => {
+        const az = parseFloat(e.currentTarget.getAttribute("data-azimuth") || "45");
+        const pitch = parseFloat(e.currentTarget.getAttribute("data-pitch") || "58");
+        this._floorplanAzimuth = az;
+        this._floorplanPitch = pitch;
+        applyCanvas3dTransform(true);
+        try {
+          localStorage.setItem("otis_floorplan_orbit_azimuth", String(this._floorplanAzimuth));
+          localStorage.setItem("otis_floorplan_pitch_incline", String(this._floorplanPitch));
+        } catch (_) {}
+        root.querySelectorAll(".btn-preset-pill").forEach((p) => p.classList.toggle("active", p === e.currentTarget));
+      };
+    });
+
+    const btnReset3d = root.querySelector("#btn-reset-3d-view");
+    if (btnReset3d) {
+      btnReset3d.onclick = () => {
+        this._floorplanAzimuth = 45;
+        this._floorplanPitch = 58;
+        applyCanvas3dTransform(true);
+        try {
+          localStorage.setItem("otis_floorplan_orbit_azimuth", "45");
+          localStorage.setItem("otis_floorplan_pitch_incline", "58");
+        } catch (_) {}
+        root.querySelectorAll(".btn-preset-pill").forEach((p) => {
+          p.classList.toggle("active", p.getAttribute("data-azimuth") === "45");
+        });
+      };
+    }
+
+    const btnToggleHud = root.querySelector("#btn-toggle-3d-hud");
+    if (btnToggleHud) {
+      btnToggleHud.onclick = () => {
+        this._floorplanHudCollapsed = !this._floorplanHudCollapsed;
+        this._render();
+      };
+    }
+
     root.querySelectorAll(".view-mode-pill").forEach((pill) => {
       pill.onclick = (e) => {
         const mode = e.currentTarget.getAttribute("data-view-mode") || "2d";
@@ -9536,7 +9998,7 @@ class OtisCompanionCard extends HTMLElement {
           localStorage.setItem("otis_floorplan_view_mode", mode);
         } catch (_) {}
         root.querySelectorAll(".view-mode-pill").forEach((p) => p.classList.toggle("active", p === e.currentTarget));
-        applyZoneFilterToSvg(this._selectedFloorZone || "all");
+        this._render();
       };
     });
 
@@ -10551,8 +11013,17 @@ class OtisCompanionCard extends HTMLElement {
     if (btnToggleEditor) {
       btnToggleEditor.onclick = () => {
         this._editorActive = !this._editorActive;
-        if (!this._editorActive) {
+        if (this._editorActive) {
+          if (this._floorplanViewMode === "3d") {
+            this._previousViewMode = "3d";
+            this._floorplanViewMode = "2d";
+          }
+        } else {
           this._selectedEditorRoomId = null;
+          if (this._previousViewMode === "3d") {
+            this._floorplanViewMode = "3d";
+            this._previousViewMode = null;
+          }
         }
         this._render();
       };
@@ -10562,6 +11033,10 @@ class OtisCompanionCard extends HTMLElement {
       btnExitEditor.onclick = () => {
         this._editorActive = false;
         this._selectedEditorRoomId = null;
+        if (this._previousViewMode === "3d") {
+          this._floorplanViewMode = "3d";
+          this._previousViewMode = null;
+        }
         this._render();
       };
     }

@@ -7,6 +7,20 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.25] - 2026-11-04
+
+### Added
+- **Interactive Floorplan 3D Orbit & Pitch Controls (Roadmap Phase 3)**:
+  - **Dynamic 3D Camera Orbit & Pitch Projection Engine**:
+    - Interactive 3D perspective projection onto the floorplan canvas with smooth orbit azimuth ($0^\circ \dots 360^\circ$) and pitch incline ($30^\circ \dots 75^\circ$).
+    - Zero-drift SVG device pin coordinate locking: pins are mapped via exact viewBox relative percentage vectors inside the 3D-transformed canvas, preventing subpixel offset or drift during high-speed rotation and tilt.
+    - Automatic 3D pin billboarding: pin badges and state icons counter-rotate on GPU hardware acceleration to remain upright and oriented toward the viewer across all azimuth and pitch angles.
+    - Smooth gesture & pointer controls: intuitive click-and-drag orbit and pitch manipulation on the canvas with pointer capture, plus mouse wheel and pinch-to-zoom scaling ($0.6\times \dots 1.8\times$).
+    - Floating Frosted Glass 3D HUD: real-time live azimuth/pitch readout, dual continuous range sliders, single-step angle nudges ($\pm 15^\circ$ azimuth, $\pm 5^\circ$ pitch), 8 cardinal/isometric preset pills (`0° N`, `45° NE`, `90° E`, `135° SE`, `180° S`, `225° SW`, `270° W`, `315° NW`), one-click default reset, and collapsibility toggle.
+    - Persistent Camera State: stores and restores custom azimuth, pitch, scale, and active view mode across browser reloads via `localStorage`.
+    - Intelligent Canvas Editor Integration: automatically drops into 2D orthogonal grid when entering edit mode for room boundary adjustments, restoring the user's active 3D orbit camera on exit.
+  - Bumped Lovelace Companion Card to `v0.1.25`.
+
 ## [0.1.24] - 2026-11-04
 
 ### Added
