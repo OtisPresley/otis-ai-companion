@@ -559,7 +559,7 @@ get_presence_states:
 
 analyze_camera:
   name: Analyze Camera Snapshot
-  description: Capture and evaluate a camera snapshot using Gemini Vision or edge sensors for visitor activity, package deliveries, or safety anomalies.
+  description: Capture and evaluate a camera snapshot using Local LLM / Ollama multimodal vision or edge sensors for visitor activity, package deliveries, or safety anomalies.
   fields:
     camera_entity_id:
       name: Camera Entity
@@ -574,6 +574,25 @@ analyze_camera:
       required: false
       selector:
         text:
+    model:
+      name: Vision Model
+      description: Optional multimodal vision model name (e.g. llama3.2-vision, llava, qwen2.5-vl).
+      required: false
+      selector:
+        text:
+
+audit_perimeter:
+  name: Audit Perimeter Cameras
+  description: Run concurrent snapshot anomaly scans across all perimeter cameras (driveway, porch, gates, yard) using local multimodal vision.
+  fields:
+    camera_entities:
+      name: Camera Entities
+      description: Optional subset of cameras to scan. If omitted, all perimeter cameras are auto-discovered.
+      required: false
+      selector:
+        entity:
+          domain: camera
+          multiple: true
 
 evaluate_contextual_alerts:
   name: Evaluate Contextual Presence Alerts

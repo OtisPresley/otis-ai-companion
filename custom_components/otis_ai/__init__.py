@@ -69,6 +69,7 @@ from .const import (
     SERVICE_RESTORE_SHED_LOADS,
     SERVICE_GET_PRESENCE_STATES,
     SERVICE_ANALYZE_CAMERA,
+    SERVICE_AUDIT_PERIMETER,
     SERVICE_EVALUATE_CONTEXTUAL_ALERTS,
     SERVICE_MINE_HABITS,
     SERVICE_GET_CIRCADIAN_CURVES,
@@ -444,6 +445,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         energy_manager=energy_manager,
         macro_manager=macro_manager,
         audio_manager=audio_manager,
+        local_llm_manager=local_llm_manager,
     )
     # Start real-time presence tracking and publish initial fused presence states
     vision_manager.async_start_presence_tracking()
@@ -1719,11 +1721,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Handle service call to analyze camera snapshot."""
         camera_entity_id = call.data.get("camera_entity_id")
         prompt = call.data.get("prompt")
+        model = call.data.get("model")
         _LOGGER.debug("Service 'analyze_camera' triggered for %s", camera_entity_id)
         if not camera_entity_id:
             return {"success": False, "error": "Missing 'camera_entity_id' parameter"}
         vm = _get_vision_manager()
-        return await vm.async_analyze_camera(camera_entity_id, prompt=prompt)
+        return await vm.async_analyze_camera(camera_entity_id, prompt=prompt, model=model)
+
+    async def handle_audit_perimeter(call) -> ServiceResponse:
+        """Handle service call to audit all perimeter cameras for security anomalies."""
+        _LOGGER.debug("Service 'audit_perimeter' triggered")
+        vm = _get_vision_manager()
+        cameras = call.data.get("camera_entities")
+        return await vm.async_audit_perimeter(camera_entities=cameras)
 
     async def handle_evaluate_contextual_alerts(call) -> ServiceResponse:
         """Handle service call to evaluate contextual presence alerts."""
@@ -2229,6 +2239,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         SERVICE_ANALYZE_CAMERA,
         handle_analyze_camera,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_AUDIT_PERIMETER,
+        handle_audit_perimeter,
         supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(

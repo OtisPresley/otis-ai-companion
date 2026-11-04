@@ -7,6 +7,7 @@ detection via Gemini Vision, and proactive contextual perimeter alerts.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from datetime import datetime
 import logging
@@ -147,6 +148,7 @@ class VisionPresenceManager:
         energy_manager=None,
         macro_manager=None,
         audio_manager=None,
+        local_llm_manager=None,
     ) -> None:
         """Initialize the Vision & Presence Manager."""
         self.hass = hass
@@ -154,6 +156,7 @@ class VisionPresenceManager:
         self.energy_manager = energy_manager
         self.macro_manager = macro_manager
         self.audio_manager = audio_manager
+        self.local_llm_manager = local_llm_manager
         self._camera_audit_history: list[dict[str, Any]] = []
         self._presence_cache: dict[str, Any] = {}
         self._presence_cache_ts: float = 0.0
@@ -566,8 +569,9 @@ class VisionPresenceManager:
         camera_entity_id: str,
         prompt: str | None = None,
         context: dict[str, Any] | None = None,
+        model: str | None = None,
     ) -> dict[str, Any]:
-        """Perform snapshot analysis and anomaly detection using Gemini Vision or multi-attribute telemetry."""
+        """Perform snapshot analysis and perimeter anomaly detection using Local LLM / Ollama with sensor telemetry fallback."""
         _LOGGER.debug("Starting camera analysis for entity: %s", camera_entity_id)
         state = self.hass.states.get(camera_entity_id) if hasattr(self.hass.states, "get") else None
         if not state:
@@ -594,52 +598,106 @@ class VisionPresenceManager:
         except Exception as img_err:
             _LOGGER.debug("Could not capture camera snapshot image: %s", img_err)
 
-        # 2. Inspect smart vision sensors in same area or prefix (AI object detection, perimeter alerts)
+        # 2. Derive perimeter zone from camera metadata
+        perimeter_zone = "perimeter"
+        for z in ("driveway", "porch", "front_door", "backyard", "side_yard", "gate", "garage", "patio", "garden"):
+            if z in cam_lower:
+                perimeter_zone = z
+                break
+
         detected_objects: list[str] = []
-        is_doorbell = "doorbell" in cam_lower
-        prefix = camera_entity_id.replace("camera.", "")
-
-        all_states = self.hass.states.async_all() if hasattr(self.hass.states, "async_all") else []
-        for s in all_states:
-            eid = s.entity_id.lower()
-            if prefix in eid and s.state == "on":
-                if "person" in eid:
-                    detected_objects.append("person")
-                elif "vehicle" in eid or "car" in eid:
-                    detected_objects.append("vehicle")
-                elif "package" in eid:
-                    detected_objects.append("package")
-                elif "pet" in eid or "animal" in eid:
-                    detected_objects.append("animal")
-                elif "motion" in eid:
-                    detected_objects.append("motion")
-
-        # Deduplicate tags
-        detected_objects = sorted(list(set(detected_objects)))
-
-        # 3. Formulate Vision Analysis summary
-        status = "normal"
+        anomaly_detected = False
+        anomaly_type: str | None = None
+        severity = "normal"
+        confidence = 0.50
+        recommended_action: str | None = None
+        llm_used = False
+        llm_model: str | None = None
         safety_assessment = "Perimeter normal. No security anomalies detected."
+        summary = f"Visual audit for {name}: Scene clear. Normal baseline."
+        status = "normal"
 
-        if "package" in detected_objects:
-            status = "attention_needed"
-            safety_assessment = "Package delivery detected on doorstep/walkway."
-            summary = f"Visual audit for {name}: Package detected. Walkway unobstructed."
-        elif "person" in detected_objects:
-            status = "attention_needed" if is_doorbell else "motion_detected"
-            safety_assessment = "Visitor or individual detected within field of view."
-            summary = f"Visual audit for {name}: Person presence detected."
-        elif "vehicle" in detected_objects:
-            status = "motion_detected"
-            safety_assessment = "Vehicle detected in driveway or approach zone."
-            summary = f"Visual audit for {name}: Vehicle presence detected."
-        elif "motion" in detected_objects:
-            status = "motion_detected"
-            safety_assessment = "Active movement detected in monitored zone."
-            summary = f"Visual audit for {name}: Movement in frame."
-        else:
-            summary = f"Visual audit for {name}: Scene clear. Normal baseline."
+        # 3. Attempt local multimodal vision analysis if LocalLLMManager is available and snapshot captured
+        if image_bytes and getattr(self, "local_llm_manager", None):
+            try:
+                llm_res = await self.local_llm_manager.async_analyze_vision(
+                    image_bytes=image_bytes,
+                    prompt=prompt,
+                    model=model,
+                    context=context,
+                )
+                if llm_res.get("success"):
+                    llm_used = True
+                    llm_model = llm_res.get("model")
+                    detected_objects = llm_res.get("detected_objects", [])
+                    perimeter_zone = llm_res.get("perimeter_zone", perimeter_zone)
+                    anomaly_detected = bool(llm_res.get("anomaly_detected", False))
+                    anomaly_type = llm_res.get("anomaly_type")
+                    severity = llm_res.get("severity", "normal")
+                    confidence = float(llm_res.get("confidence", 0.85))
+                    recommended_action = llm_res.get("recommended_action")
+                    summary = llm_res.get("summary") or f"Visual audit for {name}: Analysis completed."
+                    safety_assessment = summary
+                    if anomaly_detected:
+                        status = "anomaly"
+                    elif severity in ("low", "medium"):
+                        status = "attention_needed"
+                    else:
+                        status = "normal"
+            except Exception as llm_err:
+                _LOGGER.debug("Local LLM vision analysis failed, falling back to sensor telemetry: %s", llm_err)
 
+        # 4. Fallback to smart vision sensors in same area or prefix if LLM not used
+        if not llm_used:
+            is_doorbell = "doorbell" in cam_lower
+            prefix = camera_entity_id.replace("camera.", "")
+
+            all_states = self.hass.states.async_all() if hasattr(self.hass.states, "async_all") else []
+            for s in all_states:
+                eid = s.entity_id.lower()
+                if prefix in eid and s.state == "on":
+                    if "person" in eid:
+                        detected_objects.append("person")
+                    elif "vehicle" in eid or "car" in eid:
+                        detected_objects.append("vehicle")
+                    elif "package" in eid:
+                        detected_objects.append("package")
+                    elif "pet" in eid or "animal" in eid:
+                        detected_objects.append("animal")
+                    elif "motion" in eid:
+                        detected_objects.append("motion")
+
+            detected_objects = sorted(list(set(detected_objects)))
+
+            if "package" in detected_objects:
+                status = "attention_needed"
+                severity = "low"
+                confidence = 0.80
+                safety_assessment = "Package delivery detected on doorstep/walkway."
+                summary = f"Visual audit for {name}: Package detected. Walkway unobstructed."
+                recommended_action = "log_delivery"
+            elif "person" in detected_objects:
+                status = "attention_needed" if is_doorbell else "motion_detected"
+                severity = "medium" if is_doorbell else "low"
+                confidence = 0.85
+                safety_assessment = "Visitor or individual detected within field of view."
+                summary = f"Visual audit for {name}: Person presence detected."
+            elif "vehicle" in detected_objects:
+                status = "motion_detected"
+                severity = "low"
+                confidence = 0.85
+                safety_assessment = "Vehicle detected in driveway or approach zone."
+                summary = f"Visual audit for {name}: Vehicle presence detected."
+            elif "motion" in detected_objects:
+                status = "motion_detected"
+                severity = "low"
+                confidence = 0.70
+                safety_assessment = "Active movement detected in monitored zone."
+                summary = f"Visual audit for {name}: Movement in frame."
+            else:
+                summary = f"Visual audit for {name}: Scene clear. Normal baseline."
+
+        prefix = camera_entity_id.replace("camera.", "")
         audit_entry = {
             "id": f"audit_{int(time.time())}_{prefix}",
             "timestamp": datetime.now().isoformat(),
@@ -648,7 +706,15 @@ class VisionPresenceManager:
             "status": status,
             "summary": summary,
             "detected_objects": detected_objects,
+            "perimeter_zone": perimeter_zone,
             "safety_assessment": safety_assessment,
+            "anomaly_detected": anomaly_detected,
+            "anomaly_type": anomaly_type,
+            "severity": severity,
+            "confidence": confidence,
+            "recommended_action": recommended_action,
+            "llm_used": llm_used,
+            "llm_model": llm_model,
             "has_snapshot": image_bytes is not None,
             "snapshot_preview": base64_data[:60] + "..." if base64_data else None,
             "prompt_used": prompt or "Analyze camera frame for visitors, packages, open gates, or anomalies",
@@ -658,6 +724,13 @@ class VisionPresenceManager:
         if len(self._camera_audit_history) > 30:
             self._camera_audit_history.pop()
 
+        # Update sensor.otis_perimeter_sentinel
+        self._update_perimeter_sentinel_sensor(audit_entry)
+
+        # Fire perimeter anomaly event if anomaly detected
+        if (anomaly_detected or severity in ("medium", "high", "critical")) and hasattr(self.hass, "bus") and hasattr(self.hass.bus, "async_fire"):
+            self.hass.bus.async_fire("otis_ai_perimeter_anomaly_detected", audit_entry)
+
         # Fire event on bus for real-time frontend listener
         if hasattr(self.hass, "bus") and hasattr(self.hass.bus, "async_fire"):
             self.hass.bus.async_fire("otis_ai_vision_analysis_completed", audit_entry)
@@ -665,6 +738,89 @@ class VisionPresenceManager:
         return {
             "success": True,
             "audit": audit_entry,
+        }
+
+    def _update_perimeter_sentinel_sensor(self, latest_audit: dict[str, Any]) -> None:
+        """Publish or update sensor.otis_perimeter_sentinel state with security status."""
+        if not hasattr(self.hass, "states") or not hasattr(self.hass.states, "async_set"):
+            return
+
+        recent_anomalies = [
+            a for a in self._camera_audit_history
+            if a.get("anomaly_detected") or a.get("severity") in ("medium", "high", "critical")
+        ]
+        has_critical = any(a.get("severity") == "critical" for a in recent_anomalies)
+        has_warning = any(a.get("severity") in ("high", "medium") for a in recent_anomalies)
+
+        if has_critical:
+            state_val = "critical"
+        elif has_warning:
+            state_val = "warning"
+        elif latest_audit.get("severity") == "low":
+            state_val = "attention"
+        else:
+            state_val = "normal"
+
+        attrs = {
+            "friendly_name": "Otis Perimeter Sentinel",
+            "icon": "mdi:shield-alert" if state_val in ("critical", "warning") else "mdi:shield-check",
+            "latest_camera": latest_audit.get("camera"),
+            "latest_zone": latest_audit.get("perimeter_zone"),
+            "latest_severity": latest_audit.get("severity"),
+            "latest_anomaly_type": latest_audit.get("anomaly_type"),
+            "latest_confidence": latest_audit.get("confidence"),
+            "latest_summary": latest_audit.get("summary"),
+            "active_anomalies_count": len(recent_anomalies),
+            "detected_objects": latest_audit.get("detected_objects", []),
+            "recommended_action": latest_audit.get("recommended_action"),
+            "llm_used": latest_audit.get("llm_used", False),
+            "llm_model": latest_audit.get("llm_model"),
+            "total_audits": len(self._camera_audit_history),
+        }
+        self.hass.states.async_set("sensor.otis_perimeter_sentinel", state_val, attrs)
+
+    async def async_audit_perimeter(self, camera_entities: list[str] | None = None) -> dict[str, Any]:
+        """Audit all perimeter cameras concurrently for security anomalies."""
+        if not camera_entities:
+            all_cams = await self.async_get_cameras()
+            perimeter_kw = ("driveway", "porch", "yard", "gate", "perimeter", "doorbell", "patio", "garage", "entrance")
+            target_cams = [
+                c["entity_id"] for c in all_cams
+                if any(kw in (c["entity_id"] + " " + c.get("name", "") + " " + c.get("area_name", "")).lower() for kw in perimeter_kw)
+            ]
+            if not target_cams:
+                target_cams = [c["entity_id"] for c in all_cams]
+        else:
+            target_cams = list(camera_entities)
+
+        if not target_cams:
+            return {
+                "success": True,
+                "total_cameras_scanned": 0,
+                "anomalies_detected": 0,
+                "anomalies": [],
+                "scans": [],
+            }
+
+        tasks = [self.async_analyze_camera(eid) for eid in target_cams]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        scans: list[dict[str, Any]] = []
+        anomalies: list[dict[str, Any]] = []
+
+        for r in results:
+            if isinstance(r, dict) and r.get("success"):
+                audit = r.get("audit", {})
+                scans.append(audit)
+                if audit.get("anomaly_detected") or audit.get("severity") in ("medium", "high", "critical"):
+                    anomalies.append(audit)
+
+        return {
+            "success": True,
+            "total_cameras_scanned": len(target_cams),
+            "anomalies_detected": len(anomalies),
+            "anomalies": anomalies,
+            "scans": scans,
         }
 
     async def async_evaluate_contextual_alerts(self) -> list[dict[str, Any]]:

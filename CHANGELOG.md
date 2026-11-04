@@ -7,6 +7,18 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.35] - 2026-11-04
+
+### Added
+- **Phase 5 Step 1: Real-Time Camera Snapshot Analysis & Perimeter Anomaly Detection**:
+  - Implemented multimodal vision inference in `LocalLLMManager` (`async_analyze_vision`) supporting both Ollama native `/api/chat` with raw base64 images and OpenAI-compatible `/v1/chat/completions` with structured image URLs.
+  - Added robust structured JSON response parser (`_parse_vision_response`) with heuristic regex fallbacks to classify detected objects (`person`, `vehicle`, `package`, `animal`), perimeter zone (`driveway`, `porch`, `front_door`, `backyard`, `gate`), security anomaly flags, risk severity (`normal`, `low`, `medium`, `high`, `critical`), confidence scores, and recommended actions (`turn_on_floodlights`, `notify_security`, `log_delivery`).
+  - Added automatic vision model discovery to detect installed vision models (`llama3.2-vision`, `llava`, `qwen2.5-vl`, `minicpm`) or default to `llama3.2-vision:latest`.
+  - Upgraded `VisionPresenceManager.async_analyze_camera` to capture live camera frames via `homeassistant.components.camera.async_get_image` and route through `LocalLLMManager`, with graceful fallback to edge sensor telemetry.
+  - Added real-time perimeter sentinel tracking updating `sensor.otis_perimeter_sentinel` and firing `otis_ai_perimeter_anomaly_detected` and `otis_ai_vision_analysis_completed` events.
+  - Added `async_audit_perimeter` method and registered `otis_ai.audit_perimeter` service to run concurrent anomaly scans across all perimeter cameras.
+  - Created module alias `local_llm_manager.py` ensuring full parity with roadmap specifications.
+
 ## [0.1.34] - 2026-11-04
 
 ### Added

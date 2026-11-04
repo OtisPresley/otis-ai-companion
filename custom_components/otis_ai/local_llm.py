@@ -6,6 +6,7 @@ Compatible with Ollama, vLLM, LocalAI, and OpenAI-compatible inference servers.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -20,6 +21,7 @@ _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_LOCAL_LLM_URL = "http://10.0.12.228:11434"
 DEFAULT_LOCAL_LLM_MODEL = "qwen2.5:3b"
+DEFAULT_LOCAL_VISION_MODEL = "llama3.2-vision:latest"
 DEFAULT_TIMEOUT_SECONDS = 60.0
 
 DEFAULT_OTIS_TOOLS: list[dict[str, Any]] = [
@@ -436,6 +438,19 @@ def validate_tool_call(call: dict[str, Any], allowed_tools: list[str] | None = N
     return True, None
 
 
+def normalize_image_base64(image_data: str) -> tuple[str, str]:
+    """Normalize base64 image data into (raw_base64, data_uri)."""
+    cleaned = (image_data or "").strip()
+    if cleaned.startswith("data:"):
+        parts = cleaned.split(",", 1)
+        raw_b64 = parts[1] if len(parts) > 1 else ""
+        data_uri = cleaned
+    else:
+        raw_b64 = cleaned
+        data_uri = f"data:image/jpeg;base64,{cleaned}"
+    return raw_b64, data_uri
+
+
 class LocalLLMManager:
     """Manages local LLM communication, health monitoring, benchmarking, and inference."""
 
@@ -696,6 +711,7 @@ class LocalLLMManager:
         max_tokens: int = 1024,
         timeout: float | None = None,
         tools: list[dict[str, Any]] | None = None,
+        images: list[str] | None = None,
     ) -> dict[str, Any]:
         """Send a prompt or message list to the local LLM and return structured output, tool calls, and metrics."""
         chosen_model = model or self.model
@@ -706,13 +722,23 @@ class LocalLLMManager:
 
         # Build message history
         if messages is not None:
-            msg_list = list(messages)
+            msg_list = [dict(m) for m in messages]
         else:
             msg_list = []
             if system_prompt:
                 msg_list.append({"role": "system", "content": system_prompt})
             if prompt:
                 msg_list.append({"role": "user", "content": prompt})
+
+        # Process images for Ollama native format
+        clean_images = [normalize_image_base64(img)[0] for img in images] if images else []
+        if clean_images and msg_list:
+            # Attach to the last user message
+            for i in reversed(range(len(msg_list))):
+                if msg_list[i].get("role") == "user":
+                    existing = msg_list[i].get("images", [])
+                    msg_list[i]["images"] = list(existing) + clean_images
+                    break
 
         # Try Ollama /api/chat
         ollama_endpoint = f"{self.url}/api/chat"
@@ -770,10 +796,23 @@ class LocalLLMManager:
 
         # Fallback to OpenAI-compatible /v1/chat/completions
         try:
+            # Format vision content for OpenAI compatibility if images are present
+            openai_messages: list[dict[str, Any]] = []
+            for m in msg_list:
+                m_copy = dict(m)
+                m_imgs = m_copy.pop("images", None)
+                if m_imgs:
+                    content_parts: list[dict[str, Any]] = [{"type": "text", "text": m_copy.get("content", "")}]
+                    for img in m_imgs:
+                        _, data_uri = normalize_image_base64(img)
+                        content_parts.append({"type": "image_url", "image_url": {"url": data_uri}})
+                    m_copy["content"] = content_parts
+                openai_messages.append(m_copy)
+
             v1_endpoint = f"{self.url}/v1/chat/completions"
             v1_payload: dict[str, Any] = {
                 "model": chosen_model,
-                "messages": msg_list,
+                "messages": openai_messages,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
                 "stream": False,
@@ -1024,4 +1063,231 @@ class LocalLLMManager:
             "endpoint_health": health,
             "sample_output": result.get("response", result.get("error", "")),
         }
+
+    def _parse_vision_response(self, text: str) -> dict[str, Any]:
+        """Parse structured detection, perimeter zone, and anomaly results from vision LLM response."""
+        data: dict[str, Any] = {}
+        cleaned = text.strip()
+
+        # 1. Try JSON extraction from code block or raw JSON
+        json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
+        if json_match:
+            try:
+                data = json.loads(json_match.group(1))
+            except Exception:
+                data = {}
+        if not data and cleaned.startswith("{") and cleaned.endswith("}"):
+            try:
+                data = json.loads(cleaned)
+            except Exception:
+                data = {}
+
+        # 2. If valid JSON object found, extract and validate fields
+        if isinstance(data, dict) and data:
+            detected_objects = data.get("detected_objects", [])
+            if not isinstance(detected_objects, list):
+                detected_objects = [str(detected_objects)]
+            detected_objects = [str(o).lower().strip() for o in detected_objects if o]
+
+            perimeter_zone = str(data.get("perimeter_zone", "perimeter")).lower().strip()
+            anomaly_detected = bool(data.get("anomaly_detected", False))
+            anomaly_type = data.get("anomaly_type")
+            if anomaly_type is not None:
+                anomaly_type = str(anomaly_type).lower().strip()
+                if anomaly_type in ("none", "null", ""):
+                    anomaly_type = None
+
+            severity = str(data.get("severity", "normal")).lower().strip()
+            if severity not in ("normal", "low", "medium", "high", "critical"):
+                severity = "medium" if anomaly_detected else "normal"
+
+            try:
+                confidence = float(data.get("confidence", 0.85))
+                confidence = max(0.0, min(1.0, confidence))
+            except (ValueError, TypeError):
+                confidence = 0.85
+
+            summary = str(data.get("summary") or "").strip()
+            if not summary:
+                summary = f"Visual audit: {len(detected_objects)} object(s) detected in {perimeter_zone}."
+
+            recommended_action = data.get("recommended_action")
+            if recommended_action:
+                recommended_action = str(recommended_action).strip()
+                if recommended_action.lower() in ("none", "null", ""):
+                    recommended_action = None
+
+            return {
+                "detected_objects": detected_objects,
+                "perimeter_zone": perimeter_zone,
+                "anomaly_detected": anomaly_detected,
+                "anomaly_type": anomaly_type,
+                "severity": severity,
+                "confidence": confidence,
+                "summary": summary,
+                "recommended_action": recommended_action,
+            }
+
+        # 3. Fallback heuristic parsing from unstructured text
+        text_lower = cleaned.lower()
+        detected_objects = []
+        for obj in ("person", "vehicle", "car", "truck", "package", "animal", "dog", "cat", "bicycle"):
+            if obj in text_lower:
+                canonical = "vehicle" if obj in ("car", "truck") else obj
+                if canonical not in detected_objects:
+                    detected_objects.append(canonical)
+
+        zone = "perimeter"
+        for z in ("driveway", "porch", "front_door", "doorstep", "backyard", "yard", "gate", "garage", "patio"):
+            if z in text_lower:
+                zone = z
+                break
+
+        anomaly_detected = False
+        anomaly_type = None
+        severity = "normal"
+        action = None
+
+        if any(w in text_lower for w in ("intruder", "breach", "prowler", "trespassing", "break-in", "burglar")):
+            anomaly_detected = True
+            anomaly_type = "perimeter_breach"
+            severity = "critical"
+            action = "notify_security"
+        elif any(w in text_lower for w in ("loiter", "suspicious", "unknown person", "nighttime motion", "unauthorized")):
+            anomaly_detected = True
+            anomaly_type = "loitering"
+            severity = "high"
+            action = "turn_on_floodlights"
+        elif any(w in text_lower for w in ("open gate", "gate open", "door open", "ajar")):
+            anomaly_detected = True
+            anomaly_type = "open_gate"
+            severity = "medium"
+            action = "check_perimeter_gate"
+        elif "package" in detected_objects or "package" in text_lower:
+            anomaly_detected = False
+            severity = "low"
+            action = "log_delivery"
+
+        summary = cleaned[:200] if cleaned else "Visual scan completed."
+
+        return {
+            "detected_objects": detected_objects,
+            "perimeter_zone": zone,
+            "anomaly_detected": anomaly_detected,
+            "anomaly_type": anomaly_type,
+            "severity": severity,
+            "confidence": 0.70 if detected_objects else 0.50,
+            "summary": summary,
+            "recommended_action": action,
+        }
+
+    async def async_analyze_vision(
+        self,
+        image_bytes: bytes | None = None,
+        image_base64: str | None = None,
+        prompt: str | None = None,
+        model: str | None = None,
+        system_prompt: str | None = None,
+        context: dict[str, Any] | None = None,
+        timeout: float | None = None,
+    ) -> dict[str, Any]:
+        """Analyze an image or camera snapshot using a local multimodal vision LLM (Ollama or OpenAI-compatible).
+
+        Performs object recognition, perimeter zone classification, and security anomaly detection.
+        """
+        t0 = time.perf_counter()
+
+        # 1. Resolve raw base64 data
+        resolved_b64 = image_base64
+        if not resolved_b64 and image_bytes:
+            if len(image_bytes) > 262144 and hasattr(self.hass, "async_add_executor_job"):
+                resolved_b64 = await self.hass.async_add_executor_job(
+                    lambda: base64.b64encode(image_bytes).decode("utf-8")
+                )
+            else:
+                resolved_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+        if not resolved_b64:
+            return {
+                "success": False,
+                "error": "No image data provided for vision analysis",
+                "detected_objects": [],
+                "anomaly_detected": False,
+                "severity": "normal",
+                "confidence": 0.0,
+            }
+
+        # 2. Select appropriate vision model
+        chosen_model = model
+        if not chosen_model:
+            if any(k in self.model.lower() for k in ("vision", "llava", "moondream", "vl", "minicpm")):
+                chosen_model = self.model
+            else:
+                health = await self.async_health_check()
+                models = health.get("models", [])
+                vision_models = [
+                    m for m in models
+                    if isinstance(m, str) and any(k in m.lower() for k in ("vision", "llava", "moondream", "vl", "minicpm"))
+                ]
+                if vision_models:
+                    chosen_model = vision_models[0]
+                else:
+                    chosen_model = DEFAULT_LOCAL_VISION_MODEL
+
+        # 3. Construct perimeter anomaly prompt
+        sys_prompt = system_prompt or (
+            "You are Otis, an edge AI vision sentinel. You analyze real-time home security and perimeter camera snapshots. "
+            "Examine the image thoroughly and return ONLY a valid JSON object with the following fields:\n"
+            "{\n"
+            '  "detected_objects": ["person", "vehicle", "package", "animal"],\n'
+            '  "perimeter_zone": "driveway|porch|front_door|backyard|side_yard|perimeter|garage",\n'
+            '  "anomaly_detected": true/false,\n'
+            '  "anomaly_type": "loitering|perimeter_breach|open_gate|unattended_package|prowler|none",\n'
+            '  "severity": "normal|low|medium|high|critical",\n'
+            '  "confidence": 0.0 to 1.0,\n'
+            '  "summary": "Concise natural language description of what is visible",\n'
+            '  "recommended_action": "turn_on_floodlights|notify_security|sound_chime|log_delivery|none"\n'
+            "}"
+        )
+
+        user_prompt = prompt or (
+            "Analyze this camera snapshot for perimeter activity, persons, vehicles, deliveries, or safety anomalies."
+        )
+
+        # 4. Invoke LLM with image
+        clean_b64, _ = normalize_image_base64(resolved_b64)
+        gen_result = await self.async_generate(
+            prompt=user_prompt,
+            system_prompt=sys_prompt,
+            model=chosen_model,
+            images=[clean_b64],
+            temperature=0.1,
+            max_tokens=512,
+            timeout=timeout or self.timeout,
+        )
+
+        if not gen_result.get("success"):
+            return {
+                "success": False,
+                "error": gen_result.get("error", "Vision model inference failed"),
+                "model": chosen_model,
+                "detected_objects": [],
+                "anomaly_detected": False,
+                "severity": "normal",
+                "confidence": 0.0,
+                "total_duration_s": round(time.perf_counter() - t0, 2),
+            }
+
+        raw_response = gen_result.get("response", "").strip()
+
+        # 5. Parse structured output
+        parsed = self._parse_vision_response(raw_response)
+        parsed["success"] = True
+        parsed["model"] = chosen_model
+        parsed["raw_response"] = raw_response
+        parsed["tokens_per_sec"] = gen_result.get("tokens_per_sec", 0.0)
+        parsed["total_duration_s"] = gen_result.get("total_duration_s", round(time.perf_counter() - t0, 2))
+        parsed["provider"] = gen_result.get("provider", "ollama")
+
+        return parsed
 
