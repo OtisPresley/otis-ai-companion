@@ -413,6 +413,14 @@ class AudioHandoffManager:
                 _LOGGER.debug("Audio follow-me disabled by user behavioral rules")
                 return None
 
+        # Check user toggle entity if present (for non-admin Command Center users)
+        if hasattr(self.hass, "states") and hasattr(self.hass.states, "get"):
+            for eid in ("input_boolean.otis_audio_follow", "switch.otis_audio_follow", "input_boolean.audio_follow"):
+                toggle_st = self.hass.states.get(eid)
+                if toggle_st and toggle_st.state in ("off", "false", "0"):
+                    _LOGGER.debug("Audio follow-me disabled by entity toggle '%s'", eid)
+                    return None
+
         # Check if target area is already occupied
         if occupied_areas and any(target_area == normalize_area_slug(a) for a in occupied_areas):
             if self._active_audio_migration and self._active_audio_migration.get("status") == "following":

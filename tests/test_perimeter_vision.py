@@ -10,6 +10,7 @@ from custom_components.otis_ai.const import (
     DEFAULT_LOCAL_VISION_MODEL,
     DOMAIN,
     SERVICE_AUDIT_PERIMETER,
+    SERVICE_GET_INTRUDER_TRACKS,
 )
 from custom_components.otis_ai.local_llm import (
     LocalLLMManager,
@@ -292,3 +293,126 @@ class TestPerimeterVisionAnalysis(unittest.TestCase):
         """Test service constants are properly defined."""
         self.assertEqual(DOMAIN, "otis_ai")
         self.assertEqual(SERVICE_AUDIT_PERIMETER, "audit_perimeter")
+        self.assertEqual(SERVICE_GET_INTRUDER_TRACKS, "get_intruder_tracks")
+
+    def test_multicamera_spatial_triangulation_and_kinematics(self):
+        """Test multi-camera correlation, kinematics calculation, and next-area prediction."""
+        mock_spatial = MagicMock()
+        mock_spatial.get_adjacent_areas.side_effect = lambda a: {
+            "driveway": ["front_porch", "garage"],
+            "front_porch": ["front_door", "driveway", "foyer"],
+            "front_door": ["foyer", "front_porch"],
+        }.get(a, [])
+
+        vm = VisionPresenceManager(self.hass, spatial_manager=mock_spatial)
+
+        # 1. Detection at Camera 1 (driveway)
+        audit_1 = {
+            "id": "audit_1",
+            "camera": "camera.driveway",
+            "name": "Driveway Camera",
+            "timestamp": "2026-11-04T15:00:00",
+            "detected_objects": ["person"],
+            "perimeter_zone": "driveway",
+            "anomaly_detected": True,
+            "anomaly_type": "loitering",
+            "severity": "medium",
+            "confidence": 0.90,
+        }
+        track_1 = vm.process_visual_detection(audit_1)
+        self.assertIsNotNone(track_1)
+        self.assertEqual(track_1["status"], "active")
+        self.assertEqual(track_1["threat_level"], "suspicious")
+        self.assertEqual(len(track_1["trajectory"]), 1)
+        self.assertEqual(track_1["cameras_involved"], ["camera.driveway"])
+        self.hass.bus.async_fire.assert_any_call("otis_ai_intruder_track_created", track_1)
+
+        # 2. Correlated detection at Camera 2 (front porch) 15 seconds later
+        audit_2 = {
+            "id": "audit_2",
+            "camera": "camera.front_porch",
+            "name": "Front Porch Camera",
+            "timestamp": "2026-11-04T15:00:15",
+            "detected_objects": ["person"],
+            "perimeter_zone": "doorstep",
+            "anomaly_detected": True,
+            "anomaly_type": "prowler",
+            "severity": "high",
+            "confidence": 0.95,
+        }
+        track_2 = vm.process_visual_detection(audit_2)
+        self.assertIsNotNone(track_2)
+        # Should correlate into same track ID
+        self.assertEqual(track_2["track_id"], track_1["track_id"])
+        self.assertEqual(len(track_2["trajectory"]), 2)
+        self.assertEqual(track_2["cameras_involved"], ["camera.driveway", "camera.front_porch"])
+        self.assertEqual(track_2["threat_level"], "intruder")  # Escalated from suspicious to intruder
+        self.assertGreater(track_2["velocity"]["speed"], 0.0)
+        self.assertIn("NE", track_2["velocity"]["heading_dir"])
+        self.assertIn("front_porch", track_2["current_area"])
+        self.hass.bus.async_fire.assert_any_call("otis_ai_intruder_track_updated", track_2)
+
+        # Check sensor.otis_intruder_tracks state published as "tracking"
+        sentinel_calls = [
+            c for c in self.hass.states.async_set.call_args_list
+            if c[0][0] == "sensor.otis_intruder_tracks"
+        ]
+        self.assertTrue(len(sentinel_calls) > 0)
+        self.assertEqual(sentinel_calls[-1][0][1], "tracking")
+        self.assertEqual(sentinel_calls[-1][0][2]["active_tracks_count"], 1)
+
+    def test_intruder_track_timeout_expiration(self):
+        """Test track transitions from active to departed after timeout."""
+        vm = VisionPresenceManager(self.hass)
+
+        audit = {
+            "camera": "camera.backyard_gate",
+            "detected_objects": ["person"],
+            "perimeter_zone": "gate",
+            "severity": "critical",
+            "anomaly_detected": True,
+            "anomaly_type": "perimeter_breach",
+        }
+        track = vm.process_visual_detection(audit)
+        self.assertEqual(track["threat_level"], "critical")
+        self.assertEqual(track["status"], "active")
+
+        # Age the track artificially past 180 seconds
+        track["last_seen_ts"] = track["last_seen_ts"] - 200
+
+        # Trigger cleanup
+        tracks_res = vm.get_intruder_tracks()
+        # Active tracks should exclude aged track once next detection processes or status checked
+        vm.process_visual_detection({
+            "camera": "camera.driveway",
+            "detected_objects": ["vehicle"],
+            "severity": "normal",
+        })
+        self.assertEqual(track["status"], "departed")
+
+    def test_audio_follow_disabled_by_user_rules_and_entity_toggle(self):
+        """Test Audio Follow can be disabled by rules manager and entity toggle for Command Center users."""
+        from custom_components.otis_ai.audio_manager import AudioHandoffManager
+
+        rules_mgr = MagicMock()
+        rules_mgr.get_rules.return_value = {"audio_follow_enabled": False}
+
+        audio_mgr = AudioHandoffManager(self.hass, rules_manager=rules_mgr)
+
+        intent = {
+            "source_area": "living_room",
+            "target_area": "kitchen",
+            "confidence": 0.85,
+        }
+
+        # 1. Disabled via rules_manager
+        res1 = asyncio.run(audio_mgr.async_process_spatial_audio_migration(intent))
+        self.assertIsNone(res1)
+
+        # 2. Enabled in rules_manager, but disabled via Command Center toggle entity
+        rules_mgr.get_rules.return_value = {"audio_follow_enabled": True}
+        toggle_state = MockEntityState("input_boolean.otis_audio_follow", "off")
+        self.hass.states.get.side_effect = lambda eid: toggle_state if eid == "input_boolean.otis_audio_follow" else None
+
+        res2 = asyncio.run(audio_mgr.async_process_spatial_audio_migration(intent))
+        self.assertIsNone(res2)

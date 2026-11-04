@@ -7,6 +7,19 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.36] - 2026-11-04
+
+### Added
+- **Phase 5 Step 2: Multi-Camera Spatial Triangulation & Unified Intruder Track History**:
+  - Implemented real-time multi-camera spatial triangulation in `VisionPresenceManager.process_visual_detection()`.
+  - Correlates continuous physical tracks across multiple camera viewpoints using spatial zone coordinates and topology adjacency graphs.
+  - Computes dynamic target kinematics: velocity vector, heading angle (0–360°), cardinal heading direction, and predictive next-area estimation.
+  - Maintains unified track lifecycle: active track correlation with 180s expiration timeout, chronological trajectory waypoints, threat level classification (`normal`, `suspicious`, `intruder`, `critical`), and plain-English narrative summaries.
+  - Publishes real-time track telemetry to `sensor.otis_intruder_tracks` (`clear`, `monitoring`, `tracking`, `breach`) and integrates active track counts into `sensor.otis_perimeter_sentinel`.
+  - Dispatches `otis_ai_intruder_track_created` and `otis_ai_intruder_track_updated` bus events.
+  - Registered `otis_ai.get_intruder_tracks` service in Home Assistant Core.
+  - Added user behavioral rule persistence for `"audio_follow_enabled"` and user toggle entity support (`input_boolean.otis_audio_follow`, `switch.otis_audio_follow`) for non-admin Command Center dashboard users.
+
 ## [0.1.35] - 2026-11-04
 
 ### Added

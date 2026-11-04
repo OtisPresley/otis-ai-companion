@@ -594,6 +594,10 @@ audit_perimeter:
           domain: camera
           multiple: true
 
+get_intruder_tracks:
+  name: Get Intruder Tracks
+  description: Query active and historical spatial intruder tracks with multi-camera triangulated waypoints, kinematics, and predicted target zones.
+
 evaluate_contextual_alerts:
   name: Evaluate Contextual Presence Alerts
   description: Audit home perimeter states (garage doors left open, unlocked doors at night, unattended appliances in vacant rooms) and return actionable alerts.

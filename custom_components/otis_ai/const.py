@@ -1,7 +1,7 @@
 """Constants for the Otis AI Companion integration."""
 
 DOMAIN = "otis_ai"
-INTEGRATION_VERSION = "0.1.35"
+INTEGRATION_VERSION = "0.1.36"
 
 # Configuration Keys
 CONF_CONVERSATION_AGENT = "conversation_agent"
@@ -36,6 +36,7 @@ DEFAULT_LOCAL_LLM_URL = "http://10.0.12.228:11434"
 DEFAULT_LOCAL_LLM_MODEL = "qwen2.5:3b"
 DEFAULT_LOCAL_VISION_MODEL = "llama3.2-vision:latest"
 DEFAULT_PERIMETER_ANOMALY_CONFIDENCE = 0.65
+DEFAULT_INTRUDER_TRACK_TIMEOUT = 180
 
 # Service Names
 SERVICE_GET_CAPABILITY_MAP = "get_capability_map"
@@ -73,6 +74,7 @@ SERVICE_RESTORE_SHED_LOADS = "restore_shed_loads"
 SERVICE_GET_PRESENCE_STATES = "get_presence_states"
 SERVICE_ANALYZE_CAMERA = "analyze_camera"
 SERVICE_AUDIT_PERIMETER = "audit_perimeter"
+SERVICE_GET_INTRUDER_TRACKS = "get_intruder_tracks"
 SERVICE_EVALUATE_CONTEXTUAL_ALERTS = "evaluate_contextual_alerts"
 SERVICE_MINE_HABITS = "mine_habits"
 SERVICE_GET_CIRCADIAN_CURVES = "get_circadian_curves"

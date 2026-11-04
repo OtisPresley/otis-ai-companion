@@ -70,6 +70,7 @@ from .const import (
     SERVICE_GET_PRESENCE_STATES,
     SERVICE_ANALYZE_CAMERA,
     SERVICE_AUDIT_PERIMETER,
+    SERVICE_GET_INTRUDER_TRACKS,
     SERVICE_EVALUATE_CONTEXTUAL_ALERTS,
     SERVICE_MINE_HABITS,
     SERVICE_GET_CIRCADIAN_CURVES,
@@ -1735,6 +1736,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         cameras = call.data.get("camera_entities")
         return await vm.async_audit_perimeter(camera_entities=cameras)
 
+    async def handle_get_intruder_tracks(call) -> ServiceResponse:
+        """Handle service call to query active and historical intruder spatial tracks."""
+        _LOGGER.debug("Service 'get_intruder_tracks' triggered")
+        vm = _get_vision_manager()
+        return vm.get_intruder_tracks()
+
     async def handle_evaluate_contextual_alerts(call) -> ServiceResponse:
         """Handle service call to evaluate contextual presence alerts."""
         _LOGGER.debug("Service 'evaluate_contextual_alerts' triggered")
@@ -2245,6 +2252,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         SERVICE_AUDIT_PERIMETER,
         handle_audit_perimeter,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GET_INTRUDER_TRACKS,
+        handle_get_intruder_tracks,
         supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(

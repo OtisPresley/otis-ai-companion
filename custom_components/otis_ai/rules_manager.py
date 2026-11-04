@@ -32,6 +32,7 @@ DEFAULT_RULES: dict[str, Any] = {
     "quiet_hours_start": "22:00",
     "quiet_hours_end": "07:00",
     "quiet_hours_volume": 25,
+    "audio_follow_enabled": True,
     "preferred_speaker": "",
     "custom_instructions": "",
     "dashboard_layout": "modern_sections",

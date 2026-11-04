@@ -11,6 +11,7 @@ import asyncio
 import base64
 from datetime import datetime
 import logging
+import math
 import re
 import time
 from typing import Any
@@ -29,6 +30,41 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+DEFAULT_ZONE_COORDINATES: dict[str, tuple[float, float]] = {
+    "driveway": (120.0, 480.0),
+    "front_porch": (260.0, 380.0),
+    "porch": (260.0, 380.0),
+    "front_door": (300.0, 340.0),
+    "doorbell": (300.0, 340.0),
+    "foyer": (320.0, 300.0),
+    "garage": (110.0, 360.0),
+    "side_yard": (140.0, 260.0),
+    "side_gate": (150.0, 200.0),
+    "gate": (150.0, 160.0),
+    "backyard_gate": (150.0, 160.0),
+    "backyard": (380.0, 120.0),
+    "patio": (420.0, 200.0),
+    "garden": (440.0, 140.0),
+    "perimeter": (250.0, 250.0),
+}
+
+ZONE_OFFSETS: dict[str, tuple[float, float]] = {
+    "approach": (-20.0, 30.0),
+    "doorstep": (10.0, -10.0),
+    "walkway": (0.0, 15.0),
+    "gate": (-15.0, -15.0),
+    "fence": (-30.0, -20.0),
+    "street": (-40.0, 50.0),
+    "lawn": (25.0, 20.0),
+}
+
+
+def get_cardinal_direction(deg: float) -> str:
+    """Convert an angular heading in degrees (0-360) to a cardinal direction."""
+    directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+    idx = int((deg + 22.5) // 45) % 8
+    return directions[idx]
 
 
 def get_canonical_camera_key(eid: str) -> str:
@@ -158,6 +194,8 @@ class VisionPresenceManager:
         self.audio_manager = audio_manager
         self.local_llm_manager = local_llm_manager
         self._camera_audit_history: list[dict[str, Any]] = []
+        self._active_intruder_tracks: list[dict[str, Any]] = []
+        self._historical_intruder_tracks: list[dict[str, Any]] = []
         self._presence_cache: dict[str, Any] = {}
         self._presence_cache_ts: float = 0.0
         self._transition_history: list[dict[str, Any]] = []
@@ -724,6 +762,14 @@ class VisionPresenceManager:
         if len(self._camera_audit_history) > 30:
             self._camera_audit_history.pop()
 
+        # Multi-camera spatial triangulation and unified intruder tracking
+        track = self.process_visual_detection(audit_entry)
+        if track:
+            audit_entry["track_id"] = track.get("track_id")
+            audit_entry["threat_level"] = track.get("threat_level")
+            audit_entry["predicted_next_area"] = track.get("predicted_next_area")
+            audit_entry["velocity"] = track.get("velocity")
+
         # Update sensor.otis_perimeter_sentinel
         self._update_perimeter_sentinel_sensor(audit_entry)
 
@@ -777,6 +823,11 @@ class VisionPresenceManager:
             "llm_model": latest_audit.get("llm_model"),
             "total_audits": len(self._camera_audit_history),
         }
+        active_tracks = [t for t in self._active_intruder_tracks if t.get("status") == "active"]
+        attrs["active_intruder_tracks_count"] = len(active_tracks)
+        if active_tracks:
+            attrs["latest_intruder_track"] = active_tracks[-1].get("track_id")
+            attrs["predicted_target_zone"] = active_tracks[-1].get("predicted_next_area")
         self.hass.states.async_set("sensor.otis_perimeter_sentinel", state_val, attrs)
 
     async def async_audit_perimeter(self, camera_entities: list[str] | None = None) -> dict[str, Any]:
@@ -821,6 +872,323 @@ class VisionPresenceManager:
             "anomalies_detected": len(anomalies),
             "anomalies": anomalies,
             "scans": scans,
+        }
+
+    def _resolve_camera_area(self, camera_entity_id: str) -> str:
+        """Resolve the area slug for a camera entity using entity registry or entity name."""
+        cam_lower = camera_entity_id.lower().replace("camera.", "")
+        # 1. Check entity registry
+        if hasattr(self.hass, "data") and isinstance(getattr(self.hass, "data", None), dict):
+            try:
+                ent_reg = er.async_get(self.hass)
+                entry = ent_reg.async_get(camera_entity_id) if hasattr(ent_reg, "async_get") else None
+                if not entry and hasattr(ent_reg, "entities") and isinstance(ent_reg.entities, dict):
+                    entry = ent_reg.entities.get(camera_entity_id)
+                if entry and hasattr(entry, "area_id") and isinstance(entry.area_id, str) and entry.area_id:
+                    return entry.area_id
+            except Exception:
+                pass
+
+        # 2. Check area names in DEFAULT_ZONE_COORDINATES
+        for zone_name in DEFAULT_ZONE_COORDINATES:
+            if zone_name in cam_lower:
+                return zone_name
+
+        return "perimeter"
+
+    def _get_camera_area_coordinates(self, camera_entity_id: str, zone_hint: str | None = None) -> tuple[float, float]:
+        """Resolve the spatial (x, y) coordinates for a camera detection."""
+        cam_lower = camera_entity_id.lower()
+        base_x, base_y = 250.0, 250.0
+
+        area_id = self._resolve_camera_area(camera_entity_id)
+        if area_id in DEFAULT_ZONE_COORDINATES:
+            base_x, base_y = DEFAULT_ZONE_COORDINATES[area_id]
+        else:
+            for zone_name, coords in DEFAULT_ZONE_COORDINATES.items():
+                if zone_name in cam_lower:
+                    base_x, base_y = coords
+                    break
+
+        if zone_hint:
+            hint_lower = zone_hint.lower()
+            for hint_key, offset in ZONE_OFFSETS.items():
+                if hint_key in hint_lower:
+                    base_x += offset[0]
+                    base_y += offset[1]
+                    break
+
+        return round(base_x, 1), round(base_y, 1)
+
+    def process_visual_detection(self, audit_entry: dict[str, Any]) -> dict[str, Any] | None:
+        """Process visual audit detection into unified intruder track history and spatial triangulation."""
+        if not isinstance(audit_entry, dict):
+            return None
+
+        detected_objects = audit_entry.get("detected_objects", [])
+        anomaly_detected = bool(audit_entry.get("anomaly_detected", False))
+        severity = str(audit_entry.get("severity", "normal")).lower()
+        camera_entity_id = audit_entry.get("camera", "")
+        name = audit_entry.get("name") or camera_entity_id
+
+        # Target types of interest
+        target_type = "unknown"
+        if "person" in detected_objects:
+            target_type = "person"
+        elif "vehicle" in detected_objects:
+            target_type = "vehicle"
+        elif "animal" in detected_objects:
+            target_type = "animal"
+        elif anomaly_detected or severity in ("medium", "high", "critical"):
+            target_type = "target"
+        else:
+            return None
+
+        now_ts = time.time()
+        now_iso = audit_entry.get("timestamp") or datetime.now().isoformat()
+        current_area = self._resolve_camera_area(camera_entity_id)
+        perimeter_zone = str(audit_entry.get("perimeter_zone") or "perimeter").lower()
+        x, y = self._get_camera_area_coordinates(camera_entity_id, perimeter_zone)
+
+        # 1. Clean up expired active tracks (> 180 seconds)
+        still_active: list[dict[str, Any]] = []
+        for trk in self._active_intruder_tracks:
+            if now_ts - trk.get("last_seen_ts", 0) > 180:
+                trk["status"] = "departed"
+            else:
+                still_active.append(trk)
+        self._active_intruder_tracks = still_active
+
+        # 2. Match with existing active track
+        matched_track: dict[str, Any] | None = None
+        min_dist = float("inf")
+
+        for trk in self._active_intruder_tracks:
+            trk_type = trk.get("target_type")
+            if trk_type != target_type and trk_type != "target" and target_type != "target":
+                continue
+
+            last_area = trk.get("current_area", "")
+            last_wp = trk["trajectory"][-1] if trk.get("trajectory") else None
+            last_x = last_wp.get("x", 250.0) if last_wp else 250.0
+            last_y = last_wp.get("y", 250.0) if last_wp else 250.0
+            dist = math.hypot(x - last_x, y - last_y)
+
+            # Spatial adjacency check
+            is_adjacent = False
+            if hasattr(self, "spatial_manager") and self.spatial_manager:
+                try:
+                    adj = self.spatial_manager.get_adjacent_areas(last_area)
+                    is_adjacent = current_area in adj or last_area in self.spatial_manager.get_adjacent_areas(current_area)
+                except Exception:
+                    is_adjacent = False
+
+            if last_area == current_area or is_adjacent or dist <= 250.0:
+                if dist < min_dist:
+                    min_dist = dist
+                    matched_track = trk
+
+        # 3. Update existing track or instantiate new track
+        if matched_track:
+            prev_wp = matched_track["trajectory"][-1]
+            dx = x - prev_wp.get("x", x)
+            dy = y - prev_wp.get("y", y)
+            dt = max(1.0, now_ts - matched_track.get("last_seen_ts", now_ts))
+            dist = math.hypot(dx, dy)
+            speed = round(dist / dt, 2)
+            # In screen/SVG coordinates, -dy is North (upwards) and +dx is East (rightwards)
+            heading_deg = round((math.degrees(math.atan2(dx, -dy)) + 360) % 360, 1) if dist > 0.1 else 0.0
+            heading_dir = get_cardinal_direction(heading_deg) if dist > 5.0 else "Stationary"
+
+            # Predict next area from adjacent topology
+            predicted_next_area = current_area
+            if hasattr(self, "spatial_manager") and self.spatial_manager and dist > 5.0:
+                try:
+                    adj_areas = self.spatial_manager.get_adjacent_areas(current_area)
+                    best_dot = -1.0
+                    for adj in adj_areas:
+                        adj_x, adj_y = self._get_camera_area_coordinates(adj)
+                        v_adj_x = adj_x - x
+                        v_adj_y = adj_y - y
+                        mag = math.hypot(v_adj_x, v_adj_y)
+                        if mag > 0:
+                            dot = (dx * v_adj_x + dy * v_adj_y) / (dist * mag)
+                            if dot > best_dot:
+                                best_dot = dot
+                                predicted_next_area = adj
+                except Exception:
+                    predicted_next_area = current_area
+
+            # Threat escalation
+            new_threat = (
+                "critical" if severity == "critical" or audit_entry.get("anomaly_type") == "perimeter_breach"
+                else ("intruder" if severity == "high" or audit_entry.get("anomaly_type") in ("prowler", "trespassing")
+                else ("suspicious" if severity == "medium" or anomaly_detected
+                else "normal"))
+            )
+            threat_rank = {"normal": 0, "suspicious": 1, "intruder": 2, "critical": 3}
+            current_threat = matched_track.get("threat_level", "normal")
+            if threat_rank.get(new_threat, 0) > threat_rank.get(current_threat, 0):
+                matched_track["threat_level"] = new_threat
+
+            new_wp = {
+                "timestamp": now_iso,
+                "camera": camera_entity_id,
+                "area": current_area,
+                "zone": perimeter_zone,
+                "x": x,
+                "y": y,
+                "confidence": audit_entry.get("confidence", 0.8),
+                "detected_objects": list(detected_objects),
+            }
+            matched_track["trajectory"].append(new_wp)
+            matched_track["last_seen_ts"] = now_ts
+            matched_track["last_seen_time"] = now_iso
+            matched_track["current_area"] = current_area
+            matched_track["current_camera"] = camera_entity_id
+            matched_track["predicted_next_area"] = predicted_next_area
+            if camera_entity_id not in matched_track["cameras_involved"]:
+                matched_track["cameras_involved"].append(camera_entity_id)
+
+            matched_track["velocity"] = {
+                "speed": speed,
+                "heading_deg": heading_deg,
+                "heading_dir": heading_dir,
+                "dx": round(dx, 1),
+                "dy": round(dy, 1),
+            }
+            cams_str = " -> ".join(matched_track["cameras_involved"])
+            matched_track["summary"] = (
+                f"{target_type.capitalize()} tracked across {len(matched_track['cameras_involved'])} camera(s) ({cams_str}). "
+                f"Heading {heading_dir} ({heading_deg}°) at {speed} u/s toward {predicted_next_area}."
+            )
+
+            # Fire updated event
+            if hasattr(self.hass, "bus") and hasattr(self.hass.bus, "async_fire"):
+                self.hass.bus.async_fire("otis_ai_intruder_track_updated", matched_track)
+
+            result_track = matched_track
+
+        else:
+            prefix = camera_entity_id.replace("camera.", "")
+            track_id = f"trk_{int(now_ts)}_{prefix}"
+            threat_level = (
+                "critical" if severity == "critical" or audit_entry.get("anomaly_type") == "perimeter_breach"
+                else ("intruder" if severity == "high" or audit_entry.get("anomaly_type") in ("prowler", "trespassing")
+                else ("suspicious" if severity == "medium" or anomaly_detected
+                else "normal"))
+            )
+            new_track = {
+                "track_id": track_id,
+                "target_type": target_type,
+                "threat_level": threat_level,
+                "status": "active",
+                "start_time": now_iso,
+                "last_seen_time": now_iso,
+                "start_ts": now_ts,
+                "last_seen_ts": now_ts,
+                "current_area": current_area,
+                "current_camera": camera_entity_id,
+                "cameras_involved": [camera_entity_id],
+                "predicted_next_area": current_area,
+                "velocity": {
+                    "speed": 0.0,
+                    "heading_deg": 0.0,
+                    "heading_dir": "Stationary",
+                    "dx": 0.0,
+                    "dy": 0.0,
+                },
+                "trajectory": [{
+                    "timestamp": now_iso,
+                    "camera": camera_entity_id,
+                    "area": current_area,
+                    "zone": perimeter_zone,
+                    "x": x,
+                    "y": y,
+                    "confidence": audit_entry.get("confidence", 0.8),
+                    "detected_objects": list(detected_objects),
+                }],
+                "summary": f"{target_type.capitalize()} detected at {current_area} via {name}.",
+            }
+            self._active_intruder_tracks.append(new_track)
+            self._historical_intruder_tracks.insert(0, new_track)
+            if len(self._historical_intruder_tracks) > 50:
+                self._historical_intruder_tracks.pop()
+
+            # Fire created event
+            if hasattr(self.hass, "bus") and hasattr(self.hass.bus, "async_fire"):
+                self.hass.bus.async_fire("otis_ai_intruder_track_created", new_track)
+
+            result_track = new_track
+
+        # 4. Update sensor telemetry
+        self._update_intruder_tracks_sensor()
+        return result_track
+
+    def _update_intruder_tracks_sensor(self) -> None:
+        """Publish or update sensor.otis_intruder_tracks state with real-time triangulation state."""
+        if not hasattr(self.hass, "states") or not hasattr(self.hass.states, "async_set"):
+            return
+
+        active = [t for t in self._active_intruder_tracks if t.get("status") == "active"]
+        has_critical = any(t.get("threat_level") == "critical" for t in active)
+        has_intruder = any(t.get("threat_level") in ("intruder", "suspicious") for t in active)
+
+        if has_critical:
+            state_val = "breach"
+        elif has_intruder:
+            state_val = "tracking"
+        elif active:
+            state_val = "monitoring"
+        else:
+            state_val = "clear"
+
+        latest = active[-1] if active else (self._historical_intruder_tracks[0] if self._historical_intruder_tracks else None)
+
+        attrs: dict[str, Any] = {
+            "friendly_name": "Otis Intruder Spatial Tracks",
+            "icon": "mdi:radar" if state_val in ("breach", "tracking") else "mdi:shield-check",
+            "active_tracks_count": len(active),
+            "active_tracks": [
+                {
+                    "track_id": t["track_id"],
+                    "target_type": t["target_type"],
+                    "threat_level": t["threat_level"],
+                    "current_camera": t["current_camera"],
+                    "current_area": t["current_area"],
+                    "predicted_next_area": t.get("predicted_next_area"),
+                    "waypoints_count": len(t.get("trajectory", [])),
+                    "speed": t.get("velocity", {}).get("speed", 0.0),
+                    "heading": t.get("velocity", {}).get("heading_dir", "Stationary"),
+                    "summary": t.get("summary"),
+                }
+                for t in active
+            ],
+            "total_historical_tracks": len(self._historical_intruder_tracks),
+        }
+
+        if latest:
+            attrs["latest_track_id"] = latest.get("track_id")
+            attrs["latest_threat_level"] = latest.get("threat_level")
+            attrs["latest_target_type"] = latest.get("target_type")
+            attrs["latest_camera"] = latest.get("current_camera")
+            attrs["latest_area"] = latest.get("current_area")
+            attrs["latest_predicted_next_area"] = latest.get("predicted_next_area")
+            attrs["latest_velocity"] = latest.get("velocity")
+            attrs["latest_trajectory"] = latest.get("trajectory", [])
+            attrs["latest_summary"] = latest.get("summary")
+
+        self.hass.states.async_set("sensor.otis_intruder_tracks", state_val, attrs)
+
+    def get_intruder_tracks(self) -> dict[str, Any]:
+        """Return active and historical intruder spatial tracks."""
+        active = [t for t in self._active_intruder_tracks if t.get("status") == "active"]
+        return {
+            "success": True,
+            "active_tracks_count": len(active),
+            "active_tracks": active,
+            "historical_tracks": self._historical_intruder_tracks,
+            "total_tracks": len(self._historical_intruder_tracks),
         }
 
     async def async_evaluate_contextual_alerts(self) -> list[dict[str, Any]]:
