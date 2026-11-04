@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.25";
+const CARD_VERSION = "0.1.26";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -124,6 +124,17 @@ class OtisCompanionCard extends HTMLElement {
       this._floorplanScale = !isNaN(savedScale) ? Math.max(0.6, Math.min(1.8, savedScale)) : 1.0;
     } catch (_) {
       this._floorplanScale = 1.0;
+    }
+    try {
+      this._floorplanWallsEnabled = localStorage.getItem("otis_floorplan_walls_enabled") !== "false";
+    } catch (_) {
+      this._floorplanWallsEnabled = true;
+    }
+    try {
+      const savedWallH = parseFloat(localStorage.getItem("otis_floorplan_wall_height"));
+      this._floorplanWallHeight = !isNaN(savedWallH) ? Math.max(10, Math.min(50, savedWallH)) : 28;
+    } catch (_) {
+      this._floorplanWallHeight = 28;
     }
     this._floorplanHudCollapsed = false;
     this._previousViewMode = null;
@@ -4266,6 +4277,113 @@ class OtisCompanionCard extends HTMLElement {
           filter: drop-shadow(0 18px 28px rgba(0, 0, 0, 0.65));
         }
 
+        /* 3D Raised Transparent Walls */
+        .floorplan-walls-overlay {
+          position: absolute;
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: 100%;
+          pointer-events: none;
+          z-index: 6;
+          transform-style: preserve-3d;
+        }
+
+        .floorplan-3d-room-shell {
+          position: absolute;
+          transform-style: preserve-3d;
+          pointer-events: none;
+          transition: opacity 0.2s ease;
+        }
+
+        .floorplan-3d-wall {
+          position: absolute;
+          pointer-events: none;
+          background: linear-gradient(to top, rgba(56, 189, 248, 0.16) 0%, rgba(56, 189, 248, 0.04) 65%, rgba(56, 189, 248, 0.35) 100%);
+          border: 1px solid rgba(56, 189, 248, 0.25);
+          box-shadow: inset 0 0 10px rgba(56, 189, 248, 0.12);
+          backdrop-filter: blur(1.5px);
+          -webkit-backdrop-filter: blur(1.5px);
+          transform-style: preserve-3d;
+        }
+
+        .floorplan-3d-wall-north {
+          top: 0;
+          left: 0;
+          width: 100%;
+          height: var(--wall-height, 28px);
+          transform-origin: top center;
+          transform: rotateX(-90deg);
+          border-bottom: 2px solid rgba(56, 189, 248, 0.95);
+          box-shadow: 0 0 8px rgba(56, 189, 248, 0.55);
+        }
+
+        .floorplan-3d-wall-south {
+          bottom: 0;
+          left: 0;
+          width: 100%;
+          height: var(--wall-height, 28px);
+          transform-origin: bottom center;
+          transform: rotateX(90deg);
+          border-top: 2px solid rgba(56, 189, 248, 0.95);
+          box-shadow: 0 0 8px rgba(56, 189, 248, 0.55);
+        }
+
+        .floorplan-3d-wall-west {
+          top: 0;
+          left: 0;
+          width: var(--wall-height, 28px);
+          height: 100%;
+          transform-origin: left center;
+          transform: rotateY(90deg);
+          border-right: 2px solid rgba(56, 189, 248, 0.95);
+          box-shadow: 0 0 8px rgba(56, 189, 248, 0.55);
+        }
+
+        .floorplan-3d-wall-east {
+          top: 0;
+          right: 0;
+          width: var(--wall-height, 28px);
+          height: 100%;
+          transform-origin: right center;
+          transform: rotateY(-90deg);
+          border-left: 2px solid rgba(56, 189, 248, 0.95);
+          box-shadow: 0 0 8px rgba(56, 189, 248, 0.55);
+        }
+
+        /* Outdoor area low railing/glass styling */
+        .floorplan-3d-room-shell[data-zone="outdoor"] .floorplan-3d-wall {
+          height: calc(var(--wall-height, 28px) * 0.45) !important;
+          background: linear-gradient(to top, rgba(245, 158, 11, 0.14) 0%, rgba(245, 158, 11, 0.03) 70%, rgba(245, 158, 11, 0.3) 100%);
+          border-color: rgba(245, 158, 11, 0.3);
+        }
+        .floorplan-3d-room-shell[data-zone="outdoor"] .floorplan-3d-wall-west,
+        .floorplan-3d-room-shell[data-zone="outdoor"] .floorplan-3d-wall-east {
+          width: calc(var(--wall-height, 28px) * 0.45) !important;
+          height: 100% !important;
+        }
+        .floorplan-3d-room-shell[data-zone="outdoor"] .floorplan-3d-wall-north,
+        .floorplan-3d-room-shell[data-zone="outdoor"] .floorplan-3d-wall-south,
+        .floorplan-3d-room-shell[data-zone="outdoor"] .floorplan-3d-wall-west,
+        .floorplan-3d-room-shell[data-zone="outdoor"] .floorplan-3d-wall-east {
+          border-color: rgba(245, 158, 11, 0.85);
+          box-shadow: 0 0 6px rgba(245, 158, 11, 0.45);
+        }
+
+        /* Contextual presence glow on room walls */
+        .floorplan-3d-room-shell.is-occupied .floorplan-3d-wall {
+          background: linear-gradient(to top, rgba(16, 185, 129, 0.28) 0%, rgba(16, 185, 129, 0.08) 65%, rgba(16, 185, 129, 0.48) 100%);
+          border-color: rgba(16, 185, 129, 0.45);
+          box-shadow: inset 0 0 12px rgba(16, 185, 129, 0.25), 0 0 12px rgba(16, 185, 129, 0.35);
+        }
+        .floorplan-3d-room-shell.is-occupied .floorplan-3d-wall-north,
+        .floorplan-3d-room-shell.is-occupied .floorplan-3d-wall-south,
+        .floorplan-3d-room-shell.is-occupied .floorplan-3d-wall-west,
+        .floorplan-3d-room-shell.is-occupied .floorplan-3d-wall-east {
+          border-color: rgba(16, 185, 129, 0.95);
+          box-shadow: 0 0 10px rgba(16, 185, 129, 0.65);
+        }
+
         .floorplan-pins-overlay {
           position: absolute;
           top: 0;
@@ -6332,8 +6450,11 @@ class OtisCompanionCard extends HTMLElement {
               ${this._editorActive && isAdmin ? `<div class="editor-hud" id="editor-hud">📐 Pointer: --, --</div>` : ''}
               ${this._floorplanViewMode === '3d' && !this._editorActive ? this._renderFloorplan3dControls() : ''}
               <div class="floorplan-3d-stage" id="floorplan-3d-stage">
-                <div class="floorplan-3d-canvas" id="floorplan-canvas" style="--floorplan-azimuth: ${this._floorplanAzimuth}deg; --floorplan-pitch: ${this._floorplanPitch}deg;">
+                <div class="floorplan-3d-canvas" id="floorplan-canvas" style="--floorplan-azimuth: ${this._floorplanAzimuth}deg; --floorplan-pitch: ${this._floorplanPitch}deg; --wall-height: ${this._floorplanWallHeight || 28}px;">
                   ${this._floorplanSvg}
+                  <div class="floorplan-walls-overlay" id="floorplan-walls-overlay" style="${this._floorplanViewMode === '3d' && this._floorplanWallsEnabled !== false ? '' : 'display: none;'}">
+                    ${this._renderFloorplan3dWalls()}
+                  </div>
                   ${this._renderFloorplanPins()}
                 </div>
               </div>
@@ -6446,6 +6567,17 @@ class OtisCompanionCard extends HTMLElement {
               <span class="hud-val" id="val-pitch-incline">${Math.round(this._floorplanPitch)}°</span>
             </div>
           </div>
+          <div class="hud-row">
+            <span class="hud-label">3D Glass Walls:</span>
+            <div style="display: flex; align-items: center; gap: 6px; flex: 1;">
+              <button type="button" class="btn-preset-pill ${this._floorplanWallsEnabled !== false ? 'active' : ''}" id="btn-toggle-3d-walls" title="Toggle Raised 3D Glass Walls">
+                ${this._floorplanWallsEnabled !== false ? '🏢 Walls ON' : '🏢 Walls OFF'}
+              </button>
+              <button type="button" class="btn-hud-step" id="btn-wall-height-minus" title="Lower Wall Height -4px">▼</button>
+              <span class="hud-val" id="val-wall-height" style="min-width: 44px; text-align: center;">${Math.round(this._floorplanWallHeight || 28)}px</span>
+              <button type="button" class="btn-hud-step" id="btn-wall-height-plus" title="Raise Wall Height +4px">▲</button>
+            </div>
+          </div>
           <div class="hud-row presets-row">
             <span class="hud-label">Presets:</span>
             <div class="hud-presets-wrap">
@@ -6467,6 +6599,85 @@ class OtisCompanionCard extends HTMLElement {
         ` : ''}
       </div>
     `;
+  }
+
+  _getFloorplanRooms() {
+    const rooms = [];
+    if (!this._floorplanSvg) return rooms;
+    const gRegex = /<g\b[^>]*\bclass="[^"]*room-group[^"]*"[^>]*\bdata-area-id="([^"]+)"[^>]*\bdata-zone="([^"]+)"[^>]*>([\s\S]*?)<\/g>/gi;
+    let gMatch;
+    while ((gMatch = gRegex.exec(this._floorplanSvg)) !== null) {
+      const rid = gMatch[1];
+      const zone = gMatch[2];
+      const inner = gMatch[3];
+      const rectMatch = /<rect\b[^>]*>/i.exec(inner);
+      if (rectMatch) {
+        const tag = rectMatch[0];
+        const xMatch = tag.match(/\bx="([^"]+)"/);
+        const yMatch = tag.match(/\by="([^"]+)"/);
+        const wMatch = tag.match(/\bwidth="([^"]+)"/);
+        const hMatch = tag.match(/\bheight="([^"]+)"/);
+        if (xMatch && yMatch && wMatch && hMatch) {
+          rooms.push({
+            id: rid,
+            zone,
+            x: parseFloat(xMatch[1]),
+            y: parseFloat(yMatch[1]),
+            width: parseFloat(wMatch[1]),
+            height: parseFloat(hMatch[1]),
+          });
+        }
+      }
+    }
+    return rooms;
+  }
+
+  _renderFloorplan3dWalls() {
+    const rooms = this._getFloorplanRooms();
+    if (!rooms.length) return "";
+
+    let vbX = 0, vbY = 0, vbW = 1300, vbH = 1250;
+    const vbMatch = /viewBox="([^"]+)"/i.exec(this._floorplanSvg || "");
+    if (vbMatch) {
+      const parts = vbMatch[1].split(/[\s,]+/).map(Number);
+      if (parts.length === 4 && !isNaN(parts[2]) && parts[2] > 0) {
+        vbX = parts[0];
+        vbY = parts[1];
+        vbW = parts[2];
+        vbH = parts[3];
+      }
+    }
+
+    return rooms
+      .map((r) => {
+        const pctX = ((r.x - vbX) / vbW) * 100;
+        const pctY = ((r.y - vbY) / vbH) * 100;
+        const pctW = (r.width / vbW) * 100;
+        const pctH = (r.height / vbH) * 100;
+
+        const presEid = `binary_sensor.otis_presence_${r.id.toLowerCase().replace(/[^a-z0-9_]/g, "_")}`;
+        const presState = this._hass?.states?.[presEid];
+        const isOccupied = presState?.state === "on";
+
+        return `
+          <div
+            class="floorplan-3d-room-shell ${isOccupied ? "is-occupied" : ""}"
+            data-room-id="${r.id}"
+            data-zone="${r.zone}"
+            data-x="${r.x}"
+            data-y="${r.y}"
+            data-w="${r.width}"
+            data-h="${r.height}"
+            style="left: ${pctX.toFixed(3)}%; top: ${pctY.toFixed(3)}%; width: ${pctW.toFixed(3)}%; height: ${pctH.toFixed(3)}%;"
+          >
+            <div class="floorplan-3d-wall floorplan-3d-wall-north"></div>
+            <div class="floorplan-3d-wall floorplan-3d-wall-south"></div>
+            <div class="floorplan-3d-wall floorplan-3d-wall-west"></div>
+            <div class="floorplan-3d-wall floorplan-3d-wall-east"></div>
+          </div>
+        `;
+      })
+      .join("");
   }
 
   _renderRoomInspector() {
@@ -9673,6 +9884,7 @@ class OtisCompanionCard extends HTMLElement {
         floorplanCanvas.style.transform = `perspective(1200px) rotateX(${this._floorplanPitch}deg) rotateZ(${this._floorplanAzimuth}deg) scale(${this._floorplanScale || 1})`;
         floorplanCanvas.style.setProperty("--floorplan-azimuth", `${this._floorplanAzimuth}deg`);
         floorplanCanvas.style.setProperty("--floorplan-pitch", `${this._floorplanPitch}deg`);
+        floorplanCanvas.style.setProperty("--wall-height", `${this._floorplanWallHeight || 28}px`);
       } else {
         floorplanCanvas.style.transition = "";
         floorplanCanvas.style.transform = "none";
@@ -9684,8 +9896,55 @@ class OtisCompanionCard extends HTMLElement {
       }
       if (valAzimuth) valAzimuth.textContent = `${Math.round(this._floorplanAzimuth)}°`;
       if (valPitch) valPitch.textContent = `${Math.round(this._floorplanPitch)}°`;
+      const valWallH = root.querySelector("#val-wall-height");
+      if (valWallH) valWallH.textContent = `${Math.round(this._floorplanWallHeight || 28)}px`;
       if (sliderAzimuth) sliderAzimuth.value = String(Math.round(this._floorplanAzimuth));
       if (sliderPitch) sliderPitch.value = String(Math.round(this._floorplanPitch));
+    };
+
+    // Floorplan: 3D Raised Transparent Walls update & positioning
+    const updateWallPositions = () => {
+      const currentSvgEl = root.querySelector("#floorplan-viewport svg");
+      const wallsOverlay = root.querySelector("#floorplan-walls-overlay");
+      if (!currentSvgEl || !wallsOverlay) return;
+
+      const curZone = this._selectedFloorZone || "all";
+      const is3d = this._floorplanViewMode === "3d";
+      wallsOverlay.style.display = is3d && this._floorplanWallsEnabled !== false ? "" : "none";
+
+      const vbAttr = currentSvgEl.getAttribute("viewBox") || "0 0 1300 1250";
+      const vbParts = vbAttr.split(/[\s,]+/).map(Number);
+      const vbX = !isNaN(vbParts[0]) ? vbParts[0] : 0;
+      const vbY = !isNaN(vbParts[1]) ? vbParts[1] : 0;
+      const vbW = (!isNaN(vbParts[2]) && vbParts[2] > 0) ? vbParts[2] : 1300;
+      const vbH = (!isNaN(vbParts[3]) && vbParts[3] > 0) ? vbParts[3] : 1250;
+
+      wallsOverlay.querySelectorAll(".floorplan-3d-room-shell").forEach((shell) => {
+        const sZone = shell.getAttribute("data-zone");
+        if (curZone === "main" && sZone === "upper") {
+          shell.style.display = "none";
+          return;
+        }
+        if (curZone === "upper" && sZone !== "upper") {
+          shell.style.display = "none";
+          return;
+        }
+        if (curZone === "outdoor" && sZone !== "outdoor") {
+          shell.style.display = "none";
+          return;
+        }
+        shell.style.display = "";
+
+        const rx = parseFloat(shell.getAttribute("data-x") || 0);
+        const ry = parseFloat(shell.getAttribute("data-y") || 0);
+        const rw = parseFloat(shell.getAttribute("data-w") || 0);
+        const rh = parseFloat(shell.getAttribute("data-h") || 0);
+
+        shell.style.left = `${(((rx - vbX) / vbW) * 100).toFixed(3)}%`;
+        shell.style.top = `${(((ry - vbY) / vbH) * 100).toFixed(3)}%`;
+        shell.style.width = `${((rw / vbW) * 100).toFixed(3)}%`;
+        shell.style.height = `${((rh / vbH) * 100).toFixed(3)}%`;
+      });
     };
 
     // Floorplan: Zero-drift pin positioning and zone filtering
@@ -9747,6 +10006,11 @@ class OtisCompanionCard extends HTMLElement {
 
         const pctX = ((bx - vbX) / vbW) * 100;
         const pctY = ((by - vbY) / vbH) * 100;
+
+        pin.style.left = `${pctX.toFixed(3)}%`;
+        pin.style.top = `${pctY.toFixed(3)}%`;
+      });
+    };
 
         pin.style.left = `${pctX.toFixed(3)}%`;
         pin.style.top = `${pctY.toFixed(3)}%`;
@@ -9817,14 +10081,27 @@ class OtisCompanionCard extends HTMLElement {
       }
 
       applyCanvas3dTransform();
+      updateWallPositions();
       updatePinPositions();
     };
 
     applyZoneFilterToSvg(this._selectedFloorZone || "all");
-    requestAnimationFrame(updatePinPositions);
-    setTimeout(updatePinPositions, 60);
-    setTimeout(updatePinPositions, 200);
-    setTimeout(updatePinPositions, 600);
+    requestAnimationFrame(() => {
+      updateWallPositions();
+      updatePinPositions();
+    });
+    setTimeout(() => {
+      updateWallPositions();
+      updatePinPositions();
+    }, 60);
+    setTimeout(() => {
+      updateWallPositions();
+      updatePinPositions();
+    }, 200);
+    setTimeout(() => {
+      updateWallPositions();
+      updatePinPositions();
+    }, 600);
 
     // 3D Canvas Drag-to-Orbit Pointer Interaction
     if (floorplanViewport && this._floorplanViewMode === "3d" && !this._editorActive) {
@@ -9979,6 +10256,38 @@ class OtisCompanionCard extends HTMLElement {
         root.querySelectorAll(".btn-preset-pill").forEach((p) => {
           p.classList.toggle("active", p.getAttribute("data-azimuth") === "45");
         });
+      };
+    }
+
+    const btnToggleWalls = root.querySelector("#btn-toggle-3d-walls");
+    if (btnToggleWalls) {
+      btnToggleWalls.onclick = () => {
+        this._floorplanWallsEnabled = this._floorplanWallsEnabled === false ? true : false;
+        try { localStorage.setItem("otis_floorplan_walls_enabled", String(this._floorplanWallsEnabled)); } catch (_) {}
+        updateWallPositions();
+        btnToggleWalls.classList.toggle("active", this._floorplanWallsEnabled);
+        btnToggleWalls.textContent = this._floorplanWallsEnabled ? "🏢 Walls ON" : "🏢 Walls OFF";
+      };
+    }
+
+    const valWallH = root.querySelector("#val-wall-height");
+    const btnWallHMinus = root.querySelector("#btn-wall-height-minus");
+    if (btnWallHMinus) {
+      btnWallHMinus.onclick = () => {
+        this._floorplanWallHeight = Math.max(10, (this._floorplanWallHeight || 28) - 4);
+        try { localStorage.setItem("otis_floorplan_wall_height", String(this._floorplanWallHeight)); } catch (_) {}
+        if (floorplanCanvas) floorplanCanvas.style.setProperty("--wall-height", `${this._floorplanWallHeight}px`);
+        if (valWallH) valWallH.textContent = `${this._floorplanWallHeight}px`;
+      };
+    }
+
+    const btnWallHPlus = root.querySelector("#btn-wall-height-plus");
+    if (btnWallHPlus) {
+      btnWallHPlus.onclick = () => {
+        this._floorplanWallHeight = Math.min(50, (this._floorplanWallHeight || 28) + 4);
+        try { localStorage.setItem("otis_floorplan_wall_height", String(this._floorplanWallHeight)); } catch (_) {}
+        if (floorplanCanvas) floorplanCanvas.style.setProperty("--wall-height", `${this._floorplanWallHeight}px`);
+        if (valWallH) valWallH.textContent = `${this._floorplanWallHeight}px`;
       };
     }
 

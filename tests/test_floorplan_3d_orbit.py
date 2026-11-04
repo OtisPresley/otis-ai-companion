@@ -17,22 +17,22 @@ class TestFloorplan3DOrbitAndControls(unittest.TestCase):
         )
         self.changelog_path = os.path.join(self.root_dir, "CHANGELOG.md")
 
-    def test_version_synchronization_v0_1_25(self) -> None:
-        """Verify manifest.json, otis-companion-card.js, and CHANGELOG.md are synced to v0.1.25."""
+    def test_version_synchronization_v0_1_26(self) -> None:
+        """Verify manifest.json, otis-companion-card.js, and CHANGELOG.md are synced to v0.1.26."""
         with open(self.manifest_path, "r", encoding="utf-8") as f:
             manifest = json.load(f)
-        self.assertEqual(manifest["version"], "0.1.25")
+        self.assertEqual(manifest["version"], "0.1.26")
 
         with open(self.card_path, "r", encoding="utf-8") as f:
             card_content = f.read()
-        self.assertIn('const CARD_VERSION = "0.1.25";', card_content)
+        self.assertIn('const CARD_VERSION = "0.1.26";', card_content)
 
         with open(self.changelog_path, "r", encoding="utf-8") as f:
             changelog_content = f.read()
-        self.assertIn("## [0.1.25] - 2026-11-04", changelog_content)
+        self.assertIn("## [0.1.26] - 2026-11-04", changelog_content)
 
     def test_card_3d_orbit_and_pitch_elements(self) -> None:
-        """Verify that otis-companion-card.js contains Phase 3 3D orbit and pitch components."""
+        """Verify that otis-companion-card.js contains Phase 3 3D orbit, pitch, and raised glass wall components."""
         with open(self.card_path, "r", encoding="utf-8") as f:
             content = f.read()
 
@@ -55,9 +55,20 @@ class TestFloorplan3DOrbitAndControls(unittest.TestCase):
         self.assertIn("btn-reset-3d-view", content)
         self.assertIn("btn-preset-pill", content)
 
-        # 4. Check persistent state keys in localStorage
+        # 4. Check 3D raised transparent glass walls
+        self.assertIn(".floorplan-walls-overlay", content)
+        self.assertIn(".floorplan-3d-room-shell", content)
+        self.assertIn(".floorplan-3d-wall-north", content)
+        self.assertIn(".floorplan-3d-wall-south", content)
+        self.assertIn(".floorplan-3d-wall-west", content)
+        self.assertIn(".floorplan-3d-wall-east", content)
+        self.assertIn("_renderFloorplan3dWalls", content)
+        self.assertIn("btn-toggle-3d-walls", content)
+
+        # 5. Check persistent state keys in localStorage
         self.assertIn("otis_floorplan_orbit_azimuth", content)
         self.assertIn("otis_floorplan_pitch_incline", content)
+        self.assertIn("otis_floorplan_walls_enabled", content)
 
         # 5. Check Drag-to-orbit pointer interaction
         self.assertIn("floorplanViewport.onpointerdown", content)

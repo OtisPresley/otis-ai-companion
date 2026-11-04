@@ -7,6 +7,17 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.26] - 2026-11-04
+
+### Added
+- **Raised Transparent 3D Glass Walls & Architectural Extrusion**:
+  - **Dynamic CSS 3D Room Shell Extrusion**:
+    - Extrudes vertical frosted glass walls along room perimeters (North, South, East, West) standing up in physical 3D space (`transform: rotateX/Y`) with neon-capped top wall rims.
+    - Low perimeter architectural railing/glass for outdoor zones (patio, deck, pool) vs full-height interior glass partitions.
+    - Context-aware presence illumination: occupied rooms illuminate their transparent 3D glass walls with a vibrant emerald green glow in real time.
+    - HUD wall controls: dedicated `🏢 3D Walls` toggle pill and wall height stepping adjustment controls ($\pm 4\text{px}$) with persistent settings in `localStorage`.
+  - Bumped Lovelace Companion Card to `v0.1.26`.
+
 ## [0.1.25] - 2026-11-04
 
 ### Added
