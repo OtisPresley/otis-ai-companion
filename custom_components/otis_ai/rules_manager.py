@@ -41,6 +41,12 @@ DEFAULT_RULES: dict[str, Any] = {
     "presence_room_cards": True,
     "dismissed_recommendation_ids": [],
     "show_ignored_recommendations": False,
+    "floorplan_view_mode": "2d",
+    "floorplan_3d": False,
+    "floorplan_azimuth": 0,
+    "floorplan_pitch": 30,
+    "floorplan_wall_height": 36,
+    "floorplan_walls_enabled": True,
 }
 
 
@@ -113,6 +119,27 @@ class BehavioralRulesManager:
             merged["primary_content_focus"] = str(merged["primary_content_focus"]).lower()
         if "show_ignored_recommendations" in merged:
             merged["show_ignored_recommendations"] = bool(merged["show_ignored_recommendations"])
+        if "floorplan_3d" in merged:
+            merged["floorplan_3d"] = bool(merged["floorplan_3d"])
+        if "floorplan_view_mode" in merged:
+            merged["floorplan_view_mode"] = "3d" if str(merged["floorplan_view_mode"]).lower() == "3d" else "2d"
+        if "floorplan_walls_enabled" in merged:
+            merged["floorplan_walls_enabled"] = bool(merged["floorplan_walls_enabled"])
+        if "floorplan_wall_height" in merged:
+            try:
+                merged["floorplan_wall_height"] = max(10, min(100, int(merged["floorplan_wall_height"])))
+            except (ValueError, TypeError):
+                merged["floorplan_wall_height"] = 36
+        if "floorplan_azimuth" in merged:
+            try:
+                merged["floorplan_azimuth"] = float(merged["floorplan_azimuth"]) % 360
+            except (ValueError, TypeError):
+                merged["floorplan_azimuth"] = 0
+        if "floorplan_pitch" in merged:
+            try:
+                merged["floorplan_pitch"] = max(30, min(75, float(merged["floorplan_pitch"])))
+            except (ValueError, TypeError):
+                merged["floorplan_pitch"] = 30
         if "dismissed_recommendation_ids" in merged:
             if isinstance(merged["dismissed_recommendation_ids"], (list, set, tuple)):
                 merged["dismissed_recommendation_ids"] = list(dict.fromkeys(str(x) for x in merged["dismissed_recommendation_ids"] if x))

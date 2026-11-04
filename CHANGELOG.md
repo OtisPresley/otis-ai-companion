@@ -7,6 +7,16 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.29] - 2026-11-04
+
+### Fixed
+- **3D Raised Transparent Walls True Extrusion**:
+  - Corrected inverted rotation angle signs on all 4 walls (North: $+90^\circ$, South: $-90^\circ$, West: $-90^\circ$, East: $+90^\circ$) which previously rotated into negative Z space (downwards behind the floorplan). All walls now stand upwards into positive Z space ($+36\text{px} \dots +50\text{px}$) with vibrant neon top rims.
+  - Removed canvas transform `perspective(1200px)` which flattened child 3D contexts; enabled true 3D spatial hierarchy via stage `preserve-3d`.
+- **Save 3D to Dashboard Persistence**:
+  - Added `floorplan_3d`, `floorplan_view_mode`, `floorplan_azimuth`, `floorplan_pitch`, `floorplan_wall_height`, and `floorplan_walls_enabled` to `DEFAULT_RULES` in `BehavioralRulesManager`.
+  - Updated `dashboard_manager.py` to cleanly rebuild the `/otis-ai/floorplan` and `/command-center/floorplan` views with `custom:otis-companion-card` in 3D mode upon user save.
+
 ## [0.1.28] - 2026-11-04
 
 ### Added

@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.28";
+const CARD_VERSION = "0.1.29";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -4259,6 +4259,7 @@ class OtisCompanionCard extends HTMLElement {
         .floorplan-3d-stage {
           perspective: 1200px;
           perspective-origin: 50% 50%;
+          transform-style: preserve-3d;
           width: 100%;
           height: 100%;
           min-height: 420px;
@@ -4319,7 +4320,7 @@ class OtisCompanionCard extends HTMLElement {
           width: 100%;
           height: var(--wall-height, 36px);
           transform-origin: top center;
-          transform: rotateX(-90deg);
+          transform: rotateX(90deg);
           border-bottom: 2.5px solid #38bdf8;
           box-shadow: 0 0 10px rgba(56, 189, 248, 0.85);
         }
@@ -4330,7 +4331,7 @@ class OtisCompanionCard extends HTMLElement {
           width: 100%;
           height: var(--wall-height, 36px);
           transform-origin: bottom center;
-          transform: rotateX(90deg);
+          transform: rotateX(-90deg);
           border-top: 2.5px solid #38bdf8;
           box-shadow: 0 0 10px rgba(56, 189, 248, 0.85);
         }
@@ -4341,7 +4342,7 @@ class OtisCompanionCard extends HTMLElement {
           width: var(--wall-height, 36px);
           height: 100%;
           transform-origin: left center;
-          transform: rotateY(90deg);
+          transform: rotateY(-90deg);
           border-right: 2.5px solid #38bdf8;
           box-shadow: 0 0 10px rgba(56, 189, 248, 0.85);
         }
@@ -4352,7 +4353,7 @@ class OtisCompanionCard extends HTMLElement {
           width: var(--wall-height, 36px);
           height: 100%;
           transform-origin: right center;
-          transform: rotateY(-90deg);
+          transform: rotateY(90deg);
           border-left: 2.5px solid #38bdf8;
           box-shadow: 0 0 10px rgba(56, 189, 248, 0.85);
         }
@@ -9888,7 +9889,7 @@ class OtisCompanionCard extends HTMLElement {
             p.style.transition = "transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)";
           });
         }
-        floorplanCanvas.style.transform = `perspective(1200px) rotateX(${this._floorplanPitch}deg) rotateZ(${this._floorplanAzimuth}deg) scale(${this._floorplanScale || 1})`;
+        floorplanCanvas.style.transform = `rotateX(${this._floorplanPitch}deg) rotateZ(${this._floorplanAzimuth}deg) scale(${this._floorplanScale || 1})`;
         floorplanCanvas.style.setProperty("--floorplan-azimuth", `${this._floorplanAzimuth}deg`);
         floorplanCanvas.style.setProperty("--floorplan-pitch", `${this._floorplanPitch}deg`);
         floorplanCanvas.style.setProperty("--wall-height", `${this._floorplanWallHeight || 28}px`);
