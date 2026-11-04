@@ -7,6 +7,17 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.23] - 2026-11-03
+
+### Fixed
+- **Home Assistant Event Loop Non-Blocking I/O Conformance (HACS Review #13059)**:
+  - Offloaded all synchronous filesystem I/O operations from async routines to the Home Assistant executor pool via `hass.async_add_executor_job` across all modules:
+    - `OtisWalkthroughUploadView.post`: Offloaded directory creation with `partial(os.makedirs, upload_dir, exist_ok=True)` and replaced blocking `os.path.getsize` with stream chunk byte counters.
+    - `AutomationManager.async_cross_reference`: Extracted blueprint file inspection and Home Assistant log scan into executor helper functions to avoid blocking on `open()` and `os.path.exists()`.
+    - `ThemeManager.async_generate_and_save_theme` & `async_list_otis_themes`: Ensured directory creation and existence checks run strictly inside thread executor jobs.
+    - `FloorplanParser`: Replaced event-loop blocking `os.path.exists()`, `os.path.isdir()`, and `open()` calls in walkthrough processing, audio extraction, audio concatenation, and layout updating with executor jobs.
+  - Bumped Lovelace Companion Card to `v0.1.23`.
+
 ## [0.1.22] - 2026-11-03
 
 ### Added

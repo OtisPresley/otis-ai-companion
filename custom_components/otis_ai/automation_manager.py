@@ -14,6 +14,22 @@ from homeassistant.util import yaml as yaml_util
 _LOGGER = logging.getLogger(__name__)
 
 
+def _read_blueprint_snippet(full_path: str, max_lines: int = 120) -> str | None:
+    """Read snippet of a blueprint file synchronously in executor."""
+    if not os.path.exists(full_path):
+        return None
+    try:
+        with open(full_path, "r", encoding="utf-8", errors="ignore") as bpf:
+            bp_lines = bpf.read().splitlines()
+            bp_snippet = "\n".join(bp_lines[:max_lines])
+            if len(bp_lines) > max_lines:
+                bp_snippet += "\n# ... [blueprint sequence truncated]"
+            return bp_snippet
+    except Exception as bpe:
+        _LOGGER.debug("Could not read blueprint file %s: %s", full_path, bpe)
+        return None
+
+
 class AutomationManager:
     """Manages reading and writing to automations.yaml and scripts.yaml."""
 
@@ -269,16 +285,9 @@ class AutomationManager:
 
                 if blueprint_path and hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
                     bp_full_path = self.hass.config.path("blueprints", "automation", blueprint_path)
-                    if os.path.exists(bp_full_path):
-                        try:
-                            with open(bp_full_path, "r", encoding="utf-8", errors="ignore") as bpf:
-                                bp_lines = bpf.read().splitlines()
-                                bp_snippet = "\n".join(bp_lines[:120])
-                                if len(bp_lines) > 120:
-                                    bp_snippet += "\n# ... [blueprint sequence truncated]"
-                                blueprint_file_content = bp_snippet
-                        except Exception as bpe:
-                            _LOGGER.debug("Could not read blueprint file %s: %s", bp_full_path, bpe)
+                    blueprint_file_content = await self.hass.async_add_executor_job(
+                        _read_blueprint_snippet, bp_full_path, 120
+                    )
 
                 match_payload = {
                     "type": "automation",
@@ -357,33 +366,37 @@ class AutomationManager:
         recent_log_errors = []
         if any(k in text_lower for k in ("fail", "failed", "error", "setup", "broken", "bug", "traceback", "fix")):
             log_path = self.hass.config.path("home-assistant.log")
-            if os.path.exists(log_path):
+            def _read_recent_log_errors() -> list[str]:
+                if not os.path.exists(log_path):
+                    return []
+                errs = []
                 try:
-                    def _read_recent_log_errors():
-                        errs = []
-                        with open(log_path, "r", encoding="utf-8", errors="ignore") as lf:
-                            recent_lines = lf.readlines()[-150:]
-                            capturing = False
-                            current_err = []
-                            for line in recent_lines:
-                                if "ERROR" in line or "The automation" in line:
-                                    capturing = True
+                    with open(log_path, "r", encoding="utf-8", errors="ignore") as lf:
+                        recent_lines = lf.readlines()[-150:]
+                        capturing = False
+                        current_err = []
+                        for line in recent_lines:
+                            if "ERROR" in line or "The automation" in line:
+                                capturing = True
+                                current_err.append(line.strip())
+                            elif capturing:
+                                if re.match(r"^\d{4}-\d{2}-\d{2}", line):
+                                    capturing = False
+                                    if current_err:
+                                        errs.append("\n".join(current_err[:10]))
+                                        current_err = []
+                                else:
                                     current_err.append(line.strip())
-                                elif capturing:
-                                    if re.match(r"^\d{4}-\d{2}-\d{2}", line):
-                                        capturing = False
-                                        if current_err:
-                                            errs.append("\n".join(current_err[:10]))
-                                            current_err = []
-                                    else:
-                                        current_err.append(line.strip())
-                            if current_err:
-                                errs.append("\n".join(current_err[:10]))
-                        return errs[-3:]
+                        if current_err:
+                            errs.append("\n".join(current_err[:10]))
+                except Exception as log_e:
+                    _LOGGER.debug("Could not read home-assistant.log: %s", log_e)
+                return errs[-3:]
 
-                    recent_log_errors = await self.hass.async_add_executor_job(_read_recent_log_errors)
-                except Exception as log_err:
-                    _LOGGER.debug("Could not inspect home-assistant.log for errors: %s", log_err)
+            try:
+                recent_log_errors = await self.hass.async_add_executor_job(_read_recent_log_errors)
+            except Exception as log_err:
+                _LOGGER.debug("Could not inspect home-assistant.log for errors: %s", log_err)
 
         return {"matches": top_matches, "recent_log_errors": recent_log_errors}
 

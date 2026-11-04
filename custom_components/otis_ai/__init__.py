@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 import json
 import logging
 import os
@@ -220,7 +221,7 @@ class OtisWalkthroughUploadView(HomeAssistantView):
         """Handle uploaded video file(s), overwriting previous uploads to manage disk space."""
         _LOGGER.info("Received video walkthrough upload request")
         upload_dir = self.hass.config.path("www")
-        os.makedirs(upload_dir, exist_ok=True)
+        await self.hass.async_add_executor_job(partial(os.makedirs, upload_dir, exist_ok=True))
         self._set_progress("Uploading videos", [], active=True)
 
         try:
@@ -252,17 +253,19 @@ class OtisWalkthroughUploadView(HomeAssistantView):
                         )
                         v_dest = os.path.join(upload_dir, fname)
                         await self.hass.async_add_executor_job(_append_chunk, v_dest, b"", "wb")
+                        file_bytes = 0
                         while True:
                             chunk = await field.read_chunk()
                             if not chunk:
                                 break
+                            file_bytes += len(chunk)
                             await self.hass.async_add_executor_job(_append_chunk, v_dest, chunk, "ab")
                         saved_videos.append(v_dest)
                         _LOGGER.info(
                             "Walkthrough video #%d saved to %s (%d bytes)",
                             file_idx,
                             v_dest,
-                            os.path.getsize(v_dest),
+                            file_bytes,
                         )
                     elif field.name == "spoken_order":
                         spoken_order = (await field.text()).strip()
@@ -274,7 +277,7 @@ class OtisWalkthroughUploadView(HomeAssistantView):
                 _LOGGER.info(
                     "Walkthrough video saved to %s (%d bytes)",
                     v_dest,
-                    os.path.getsize(v_dest),
+                    len(data),
                 )
 
             self._set_progress("Analyzing videos", [], active=True)

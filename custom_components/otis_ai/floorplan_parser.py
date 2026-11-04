@@ -517,6 +517,7 @@ class FloorplanParser:
         self._metadata: dict[str, Any] = {}
         self._initialized: bool = False
         self._cached_svg_room_bounds: dict[str, dict[str, float]] = {}
+        self._floorplan_exists: bool = False
 
     async def _async_run_in_executor(self, func: Any, *args: Any, **kwargs: Any) -> Any:
         """Execute a blocking function in the Home Assistant executor pool."""
@@ -540,7 +541,9 @@ class FloorplanParser:
         """Parse room coordinates from floorplan SVG synchronously in executor."""
         bounds: dict[str, dict[str, float]] = {}
         if not isinstance(svg_file_path, str) or not os.path.exists(svg_file_path):
+            self._floorplan_exists = False
             return bounds
+        self._floorplan_exists = True
         try:
             with open(svg_file_path, "r", encoding="utf-8") as svg_f:
                 svg_txt = svg_f.read()
@@ -618,9 +621,15 @@ class FloorplanParser:
 
     def floorplan_exists(self) -> bool:
         """Check if an interactive floorplan SVG already exists in www/."""
+        if self._floorplan_exists or bool(self._cached_svg_room_bounds):
+            return True
         if hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
             full_path = self.hass.config.path(DEFAULT_OUTPUT_SVG_PATH)
-            return os.path.exists(full_path)
+            try:
+                asyncio.get_running_loop()
+                return self._floorplan_exists
+            except RuntimeError:
+                return os.path.exists(full_path)
         return False
 
     def get_lovelace_yaml(self) -> str | None:
@@ -647,12 +656,12 @@ class FloorplanParser:
 
     async def async_extract_audio_from_video(self, video_path: str, output_wav_path: str) -> bool:
         """Extract a 16kHz mono audio track from a walkthrough video using ffmpeg."""
-        if not os.path.exists(video_path):
+        if not await self._async_run_in_executor(os.path.exists, video_path):
             _LOGGER.error("Walkthrough video file not found: %s", video_path)
             return False
 
         ffmpeg_bin = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
-        if not os.path.exists(ffmpeg_bin):
+        if not await self._async_run_in_executor(os.path.exists, ffmpeg_bin):
             _LOGGER.warning("ffmpeg binary not found in container path. Skipping audio extraction.")
             return False
 
@@ -687,7 +696,7 @@ class FloorplanParser:
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await process.communicate()
-            if process.returncode == 0 and os.path.exists(output_wav_path):
+            if process.returncode == 0 and await self._async_run_in_executor(os.path.exists, output_wav_path):
                 _LOGGER.info("Successfully extracted walkthrough audio to %s", output_wav_path)
                 return True
             else:
@@ -707,7 +716,7 @@ class FloorplanParser:
         extracted_paths: list[str] = []
         await self._async_run_in_executor(os.makedirs, output_dir, exist_ok=True)
         for idx, vpath in enumerate(video_paths, start=1):
-            if not os.path.exists(vpath):
+            if not await self._async_run_in_executor(os.path.exists, vpath):
                 _LOGGER.warning("Video clip %s not found. Skipping.", vpath)
                 continue
             ext = preferred_format.lower().lstrip(".")
@@ -720,7 +729,7 @@ class FloorplanParser:
                     "walkthrough_audio.wav" if idx == 1 else f"walkthrough_audio_{idx}.wav",
                 )
                 success = await self.async_extract_audio_from_video(vpath, target_path)
-            if success and os.path.exists(target_path):
+            if success and await self._async_run_in_executor(os.path.exists, target_path):
                 extracted_paths.append(target_path)
         return extracted_paths
 
@@ -743,7 +752,7 @@ class FloorplanParser:
                 return False
 
         ffmpeg_bin = shutil.which("ffmpeg") or "/usr/bin/ffmpeg"
-        if not os.path.exists(ffmpeg_bin):
+        if not await self._async_run_in_executor(os.path.exists, ffmpeg_bin):
             _LOGGER.warning("ffmpeg binary not found. Skipping audio clip concatenation.")
             return False
 
@@ -772,7 +781,7 @@ class FloorplanParser:
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await process.communicate()
-            if process.returncode == 0 and os.path.exists(output_path):
+            if process.returncode == 0 and await self._async_run_in_executor(os.path.exists, output_path):
                 _LOGGER.info("Successfully concatenated %d audio clips into %s", len(audio_paths), output_path)
                 return True
             else:
@@ -793,7 +802,7 @@ class FloorplanParser:
                     stderr=asyncio.subprocess.PIPE,
                 )
                 await proc2.communicate()
-                return proc2.returncode == 0 and os.path.exists(output_path)
+                return proc2.returncode == 0 and await self._async_run_in_executor(os.path.exists, output_path)
         except Exception as err:
             _LOGGER.warning("ffmpeg concatenation exception: %s", err)
             return False
@@ -902,7 +911,7 @@ class FloorplanParser:
             "detected_doors": [],
             "detected_windows": [],
         }
-        if not audio_path or not os.path.exists(audio_path):
+        if not audio_path:
             return result
 
         api_key, preferred_model = self._get_gemini_credentials()
@@ -943,6 +952,8 @@ class FloorplanParser:
                 candidate_models.append(fallback_m)
 
         def _call_gemini_sync() -> dict[str, Any]:
+            if not os.path.exists(audio_path):
+                return result
             with open(audio_path, "rb") as af:
                 audio_b64 = base64.b64encode(af.read()).decode("ascii")
             parts: list[dict[str, Any]] = [
@@ -1138,7 +1149,7 @@ class FloorplanParser:
                 frame_paths = None
 
             # 1. Extract audio if not provided
-            if not audio_path and video_path and os.path.exists(video_path):
+            if not audio_path and video_path and await self._async_run_in_executor(os.path.exists, video_path):
                 audio_target = os.path.join(upload_dir, f"walkthrough_clip_{idx}.mp3")
                 extracted = await self.async_extract_audio_from_video(video_path, audio_target)
                 if not extracted:
@@ -1149,14 +1160,14 @@ class FloorplanParser:
 
             # 2. Extract keyframes if not provided
             frame_dir = None
-            if not frame_paths and video_path and os.path.exists(video_path):
+            if not frame_paths and video_path and await self._async_run_in_executor(os.path.exists, video_path):
                 frame_dir = os.path.join(upload_dir, f"_frames_clip_{idx}")
                 frame_paths = await self.async_extract_keyframes_from_video(
                     video_path, frame_dir, prefix=f"clip{idx}", max_frames=6
                 )
 
             # 3. Analyze audio + frames with multimodal AI
-            if audio_path and os.path.exists(audio_path):
+            if audio_path and await self._async_run_in_executor(os.path.exists, audio_path):
                 analysis = await self.async_analyze_walkthrough_audio(
                     audio_path, area_list, frame_paths=frame_paths
                 )
@@ -1222,7 +1233,7 @@ class FloorplanParser:
                         combined_detected_windows.append(w)
 
             # Cleanup temporary frame directory
-            if frame_dir and os.path.isdir(frame_dir):
+            if frame_dir and await self._async_run_in_executor(os.path.isdir, frame_dir):
                 try:
                     await self.hass.async_add_executor_job(shutil.rmtree, frame_dir, True)
                 except Exception:
@@ -1450,17 +1461,20 @@ class FloorplanParser:
             output_full_path = p if isinstance(p, str) else svg_relative_path
         else:
             output_full_path = svg_relative_path
-        if not os.path.exists(output_full_path):
+
+        def read_sync() -> str | None:
+            if not os.path.exists(output_full_path):
+                return None
+            with open(output_full_path, "r", encoding="utf-8") as f:
+                return f.read()
+
+        svg_content = await self._async_run_in_executor(read_sync)
+        if svg_content is None:
             return {
                 "success": False,
                 "error": f"Floorplan SVG not found at {output_full_path}. Generate floor plan first.",
             }
 
-        def read_sync() -> str:
-            with open(output_full_path, "r", encoding="utf-8") as f:
-                return f.read()
-
-        svg_content = await self._async_run_in_executor(read_sync)
         # Sanitize any existing corrupted <text> elements in the SVG
         svg_content = sanitize_corrupted_svg_text(svg_content)
 

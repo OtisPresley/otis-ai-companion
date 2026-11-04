@@ -651,7 +651,6 @@ class ThemeManager:
         theme_key = theme_data["theme_key"]
         slug = theme_data["slug"]
         themes_dir = self._get_themes_directory()
-        os.makedirs(themes_dir, exist_ok=True)
 
         file_name = f"otis_{slug}.yaml"
         full_path = os.path.join(themes_dir, file_name)
@@ -677,6 +676,7 @@ class ThemeManager:
         )
 
         def write_sync() -> None:
+            os.makedirs(themes_dir, exist_ok=True)
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(yaml_content)
 
@@ -762,10 +762,10 @@ class ThemeManager:
     async def async_list_otis_themes(self) -> list[dict[str, Any]]:
         """Scan /config/themes/ for otis_*.yaml files and return discovered themes with color previews."""
         themes_dir = self._get_themes_directory()
-        if not os.path.exists(themes_dir):
-            return []
 
         def scan_sync() -> list[dict[str, Any]]:
+            if not os.path.exists(themes_dir):
+                return []
             results = []
             try:
                 for entry in sorted(os.listdir(themes_dir)):
