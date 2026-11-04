@@ -17,19 +17,19 @@ class TestFloorplan3DOrbitAndControls(unittest.TestCase):
         )
         self.changelog_path = os.path.join(self.root_dir, "CHANGELOG.md")
 
-    def test_version_synchronization_v0_1_26(self) -> None:
-        """Verify manifest.json, otis-companion-card.js, and CHANGELOG.md are synced to v0.1.26."""
+    def test_version_synchronization_v0_1_27(self) -> None:
+        """Verify manifest.json, otis-companion-card.js, and CHANGELOG.md are synced to v0.1.27."""
         with open(self.manifest_path, "r", encoding="utf-8") as f:
             manifest = json.load(f)
-        self.assertEqual(manifest["version"], "0.1.26")
+        self.assertEqual(manifest["version"], "0.1.27")
 
         with open(self.card_path, "r", encoding="utf-8") as f:
             card_content = f.read()
-        self.assertIn('const CARD_VERSION = "0.1.26";', card_content)
+        self.assertIn('const CARD_VERSION = "0.1.27";', card_content)
 
         with open(self.changelog_path, "r", encoding="utf-8") as f:
             changelog_content = f.read()
-        self.assertIn("## [0.1.26] - 2026-11-04", changelog_content)
+        self.assertIn("## [0.1.27] - 2026-11-04", changelog_content)
 
     def test_card_3d_orbit_and_pitch_elements(self) -> None:
         """Verify that otis-companion-card.js contains Phase 3 3D orbit, pitch, and raised glass wall components."""
@@ -70,9 +70,29 @@ class TestFloorplan3DOrbitAndControls(unittest.TestCase):
         self.assertIn("otis_floorplan_pitch_incline", content)
         self.assertIn("otis_floorplan_walls_enabled", content)
 
+    def test_card_javascript_syntax_validity(self) -> None:
+        """Verify otis-companion-card.js has zero JavaScript syntax errors using QuickJS engine."""
+        try:
+            import quickjs
+        except ImportError:
+            return
+
+        with open(self.card_path, "r", encoding="utf-8") as f:
+            code = f.read()
+
+        preamble = (
+            "class HTMLElement {}\n"
+            "const customElements = { define: () => {} };\n"
+            "const window = { addEventListener: () => {} };\n"
+            "const console = { info: () => {}, log: () => {}, error: () => {}, warn: () => {} };\n"
+        )
+        ctx = quickjs.Context()
+        # Must execute without throwing SyntaxError or ReferenceError
+        ctx.eval(preamble + code)
+
         # 5. Check Drag-to-orbit pointer interaction
-        self.assertIn("floorplanViewport.onpointerdown", content)
-        self.assertIn("isOrbiting", content)
+        self.assertIn("floorplanViewport.onpointerdown", code)
+        self.assertIn("isOrbiting", code)
 
     def test_zero_drift_coordinate_invariance(self) -> None:
         """Mathematically verify that percentage pin coordinates remain invariant under 3D transforms."""

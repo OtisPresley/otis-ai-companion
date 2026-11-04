@@ -7,6 +7,15 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.27] - 2026-11-04
+
+### Fixed
+- **Lovelace Frontend Card Syntax & Registration**:
+  - Eliminated trailing dangling pin-position lines in `otis-companion-card.js` that caused browser JavaScript parser `SyntaxError` and triggered `Custom element doesn't exist: otis-companion-card`.
+  - Added automated ES2022+ QuickJS JavaScript evaluation test (`test_card_javascript_syntax_validity`) to prevent JavaScript syntax regressions.
+- **GitHub Actions CI Workflow**:
+  - Resolved `ModuleNotFoundError: No module named 'pytest'` and unit test discovery failures by configuring `pytest`, `pytest-asyncio`, and `quickjs` dependencies and running `pytest tests`.
+
 ## [0.1.26] - 2026-11-04
 
 ### Added

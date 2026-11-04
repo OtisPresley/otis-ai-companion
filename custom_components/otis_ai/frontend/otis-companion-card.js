@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.26";
+const CARD_VERSION = "0.1.27";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -10006,11 +10006,6 @@ class OtisCompanionCard extends HTMLElement {
 
         const pctX = ((bx - vbX) / vbW) * 100;
         const pctY = ((by - vbY) / vbH) * 100;
-
-        pin.style.left = `${pctX.toFixed(3)}%`;
-        pin.style.top = `${pctY.toFixed(3)}%`;
-      });
-    };
 
         pin.style.left = `${pctX.toFixed(3)}%`;
         pin.style.top = `${pctY.toFixed(3)}%`;
