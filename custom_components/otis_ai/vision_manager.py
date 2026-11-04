@@ -963,6 +963,31 @@ class VisionPresenceManager:
         track_id = track.get("track_id") if track else audit_entry.get("track_id")
         dedup_key = track_id or cam_id
 
+        # Check behavioral rules
+        rules = {}
+        if hasattr(self.audio_manager, "rules_manager") and self.audio_manager.rules_manager:
+            rules = self.audio_manager.rules_manager.get_rules()
+        elif hasattr(self, "rules_manager") and self.rules_manager:
+            rules = self.rules_manager.get_rules()
+
+        # Check master voice announcements rules toggle
+        if not rules.get("voice_announcements_enabled", True):
+            _LOGGER.info("Visual alert voice announcement suppressed: voice_announcements_enabled is False")
+            return {
+                "dispatched": False,
+                "reason": "voice_announcements_disabled",
+            }
+
+        # Check entity toggle switch.otis_voice_announcements if present
+        if hasattr(self.hass, "states") and hasattr(self.hass.states, "get"):
+            sw_st = self.hass.states.get("switch.otis_voice_announcements")
+            if sw_st and sw_st.state in ("off", "false", "0"):
+                _LOGGER.info("Visual alert voice announcement suppressed: switch.otis_voice_announcements is off")
+                return {
+                    "dispatched": False,
+                    "reason": "voice_announcements_disabled",
+                }
+
         # Cooldown check: 45 seconds per track/camera unless force is True
         last_ts = self._last_voice_announcements.get(dedup_key, 0.0)
         cooldown = 45.0
@@ -984,9 +1009,6 @@ class VisionPresenceManager:
 
         # Determine target area / speaker:
         chosen_area = target_area
-        rules = {}
-        if hasattr(self.audio_manager, "rules_manager") and self.audio_manager.rules_manager:
-            rules = self.audio_manager.rules_manager.get_rules()
 
         if not chosen_area:
             pref_speaker = rules.get("preferred_speaker")
@@ -1001,6 +1023,23 @@ class VisionPresenceManager:
         # Quiet hours evaluation
         is_quiet, vol_cap, _ = self.audio_manager.is_quiet_hours_active()
         whisper = is_quiet and threat not in ("critical", "intruder")
+
+        # Check benign passerby / delivery filtering to prevent startling residents home alone
+        filter_passersby = rules.get("voice_filter_passersby", True)
+        if filter_passersby and not force:
+            raw_check = (summary + " " + " ".join(audit_entry.get("detected_objects", []))).lower()
+            benign_keywords = (
+                "delivery", "courier", "mail carrier", "mailman", "postal", "amazon", "ups", "fedex", "usps", "dhl",
+                "pedestrian", "sidewalk", "street", "passing by", "passerby", "walking past", "jogger", "traffic"
+            )
+            is_benign = any(kw in raw_check for kw in benign_keywords)
+            if is_benign or threat in ("benign", "low"):
+                _LOGGER.info("Visual alert voice announcement suppressed for benign passerby/delivery: '%s'", summary)
+                return {
+                    "dispatched": False,
+                    "reason": "suppressed_benign_passerby",
+                    "message": summary,
+                }
 
         # Dispatch voice notification
         notify_res = await self.audio_manager.async_notify_voice(

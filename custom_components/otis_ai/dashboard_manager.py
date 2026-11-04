@@ -2791,7 +2791,24 @@ class DashboardManager:
                         "## 🛡️ Security, Locks & Perimeter Center\n"
                         "Live status and controls for alarm panels, smart locks, garage doors, occupancy sensors, and perimeter cameras."
                     ),
-                }
+                },
+                {
+                    "type": "entities",
+                    "title": "Proactive Security Voice Announcements",
+                    "show_header_toggle": False,
+                    "entities": [
+                        {
+                            "entity": "switch.otis_voice_announcements",
+                            "name": "Spoken Security Announcements",
+                            "icon": "mdi:volume-high",
+                        },
+                        {
+                            "entity": "sensor.otis_perimeter_sentinel",
+                            "name": "Perimeter Sentinel Status",
+                            "icon": "mdi:shield-search",
+                        },
+                    ],
+                },
             ]
 
         entities = capability_map.get("entities", [])
@@ -2844,7 +2861,24 @@ class DashboardManager:
                     "## 🛡️ Security, Locks & Perimeter Command Center\n"
                     "Live control of alarm panels, smart locks, garage doors, occupancy sensors, and perimeter cameras."
                 ),
-            }
+            },
+            {
+                "type": "entities",
+                "title": "Proactive Security Voice Announcements",
+                "show_header_toggle": False,
+                "entities": [
+                    {
+                        "entity": "switch.otis_voice_announcements",
+                        "name": "Spoken Security Announcements",
+                        "icon": "mdi:volume-high",
+                    },
+                    {
+                        "entity": "sensor.otis_perimeter_sentinel",
+                        "name": "Perimeter Sentinel Status",
+                        "icon": "mdi:shield-search",
+                    },
+                ],
+            },
         ]
 
         vision_topo = capability_map.get("vision_topology", {})

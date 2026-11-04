@@ -1318,6 +1318,49 @@ get_energy_arbitrage_plan:
             - self_consumption
             - backup_reserve
 
+toggle_voice_announcements:
+  name: Toggle Voice Announcements
+  description: Enable or disable proactive spoken voice announcements for security and camera detections.
+  fields:
+    enabled:
+      name: Enabled
+      description: Boolean flag to enable or disable announcements. If omitted, toggles state.
+      required: false
+      selector:
+        boolean:
+
+confirm_person_identity:
+  name: Confirm Person Identity
+  description: Train or verify person identity to tie Home Assistant users with camera tracks and personalize audio follow-me.
+  fields:
+    person_id:
+      name: Person Entity ID
+      description: The Home Assistant person entity ID (e.g. person.jamie).
+      required: true
+      selector:
+        entity:
+          domain: person
+    track_id:
+      name: Track ID
+      description: Optional camera track ID to associate with the person.
+      required: false
+      selector:
+        text:
+    label:
+      name: Label / Name
+      description: Display name of the person.
+      required: false
+      selector:
+        text:
+    confirmed:
+      name: Confirmed
+      description: Whether the identity confirmation is positive (true) or negative (false).
+      required: false
+      default: true
+      selector:
+        boolean:
+
+
 
 
 

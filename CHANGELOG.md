@@ -7,6 +7,16 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.39] - 2026-11-04
+
+### Added
+- **Phase 5 Step 5: Proactive Voice Announcement Controls & Person Identification with Audio Follow Attribution**:
+  - Implemented `switch.otis_voice_announcements` with persistent state in `BehavioralRulesManager` and dynamic service listener, enabling instant silencing of spoken notifications when desired.
+  - Added benign passerby and delivery courier intelligent filtering in `VisionPresenceManager.async_dispatch_visual_alert_voice` to suppress frightening TTS alerts for postal, delivery, and sidewalk pedestrians while maintaining visual dashboard logs.
+  - Implemented `confirm_person_identity` service and proactive training cards in Lovelace to allow residents to verify and calibrate person recognition with continuous confidence scoring.
+  - Bound media playback sessions to the triggering user/person in `AudioHandoffManager` (`session_owner` tracking), preventing cross-user audio follow-me collisions in multi-occupant homes.
+  - Placed Proactive Security Voice Announcements entities card on Security Command Center view in `DashboardManager`.
+
 ## [0.1.38] - 2026-11-04
 
 ### Added

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from datetime import time as datetime_time
 import logging
+import time
 from typing import Any
 import uuid
 
@@ -72,11 +73,34 @@ class AudioHandoffManager:
         self.rules_manager = rules_manager
         self._ducked_sessions: dict[str, dict[str, Any]] = {}
         self._active_audio_migration: dict[str, Any] | None = None
+        self._media_sessions: dict[str, dict[str, Any]] = {}
         self._migration_unsub: Any = None
 
     def set_rules_manager(self, rules_manager: Any) -> None:
         """Set the user behavioral rules manager."""
         self.rules_manager = rules_manager
+
+    def record_media_session_owner(
+        self,
+        player_entity_id: str,
+        user_id: str | None = None,
+        person_id: str | None = None,
+        area_id: str | None = None,
+    ) -> None:
+        """Associate an active media player session with the Home Assistant user or person who initiated it."""
+        clean_eid = str(player_entity_id).strip().lower()
+        self._media_sessions[clean_eid] = {
+            "player_entity_id": clean_eid,
+            "user_id": user_id,
+            "person_id": person_id,
+            "area_id": normalize_area_slug(area_id) if area_id else None,
+            "timestamp": time.time(),
+        }
+
+    def get_media_session_owner(self, player_entity_id: str) -> dict[str, Any] | None:
+        """Retrieve the registered session owner of an active media player."""
+        clean_eid = str(player_entity_id).strip().lower()
+        return self._media_sessions.get(clean_eid)
 
     def is_quiet_hours_active(self) -> tuple[bool, int, str]:
         """Check if quiet hours are currently active based on BehavioralRulesManager."""
@@ -445,6 +469,26 @@ class AudioHandoffManager:
 
         source_player = playing_sources[0]
 
+        # Check person / user attribution to ensure audio only follows the person who initiated playback
+        intent_person = migration_intent.get("person_id") or migration_intent.get("user_id")
+        session_info = self.get_media_session_owner(source_player["entity_id"])
+        if session_info and intent_person:
+            session_owner = session_info.get("person_id") or session_info.get("user_id")
+            if session_owner and session_owner.lower() != intent_person.lower():
+                _LOGGER.debug(
+                    "Audio follow skipped: person mismatch (session owner: %s, transitioning: %s)",
+                    session_owner,
+                    intent_person,
+                )
+                return {
+                    "migrated": False,
+                    "reason": "user_mismatch",
+                    "session_owner": session_owner,
+                    "transitioning_user": intent_person,
+                    "source_area": source_area,
+                    "target_area": target_area,
+                }
+
         # Target candidate
         target_candidates = filter_zones_by_area(all_zones, target_area)
         if not target_candidates:
@@ -473,6 +517,17 @@ class AudioHandoffManager:
 
         if not handoff_res.get("success"):
             return handoff_res
+
+        # Transfer media session owner to target player if registered
+        if session_info:
+            target_eid = handoff_res.get("target_player") or (target_candidates[0]["entity_id"] if target_candidates else None)
+            if target_eid:
+                self.record_media_session_owner(
+                    player_entity_id=target_eid,
+                    user_id=session_info.get("user_id"),
+                    person_id=session_info.get("person_id"),
+                    area_id=target_area,
+                )
 
         self._active_audio_migration = {
             "source_area": source_area,

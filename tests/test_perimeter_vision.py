@@ -509,3 +509,192 @@ class TestPerimeterVisionAnalysis(unittest.TestCase):
         ]
         self.assertEqual(len(follow_cards), 1)
         self.assertEqual(follow_cards[0]["title"], "Autonomous Spatial Audio Follow-Me")
+
+    def test_voice_announcements_switch_and_suppression(self) -> None:
+        """Verify voice alerts are completely silenced when switch.otis_voice_announcements or rules are disabled."""
+        vm = VisionPresenceManager(self.hass)
+        mock_audio = MagicMock()
+        mock_rules = MagicMock()
+        mock_rules.get_rules.return_value = {
+            "voice_announcements_enabled": False,
+            "preferred_speaker": "living_room",
+        }
+        mock_audio.rules_manager = mock_rules
+        mock_audio.is_quiet_hours_active.return_value = (False, 25, "living_room")
+        mock_audio.async_notify_voice = AsyncMock(return_value={"success": True})
+        vm.audio_manager = mock_audio
+
+        audit_entry = {
+            "camera": "camera.front_porch",
+            "perimeter_zone": "front_porch",
+            "detected_objects": ["person"],
+            "severity": "high",
+            "confidence": 0.95,
+        }
+
+        # Suppressed by rules toggle
+        res = asyncio.run(vm.async_dispatch_visual_alert_voice(audit_entry))
+        self.assertFalse(res["dispatched"])
+        self.assertEqual(res["reason"], "voice_announcements_disabled")
+        mock_audio.async_notify_voice.assert_not_called()
+
+        # Suppressed by entity state off
+        mock_rules.get_rules.return_value = {"voice_announcements_enabled": True}
+        mock_switch = MagicMock()
+        mock_switch.state = "off"
+        self.hass.states.get.return_value = mock_switch
+
+        res2 = asyncio.run(vm.async_dispatch_visual_alert_voice(audit_entry))
+        self.assertFalse(res2["dispatched"])
+        self.assertEqual(res2["reason"], "voice_announcements_disabled")
+
+    def test_benign_passerby_and_delivery_filtering(self) -> None:
+        """Verify delivery couriers and sidewalk passersby do not trigger scary intruder voice announcements."""
+        vm = VisionPresenceManager(self.hass)
+        mock_audio = MagicMock()
+        mock_rules = MagicMock()
+        mock_rules.get_rules.return_value = {
+            "voice_announcements_enabled": True,
+            "voice_filter_passersby": True,
+            "preferred_speaker": "living_room",
+        }
+        mock_audio.rules_manager = mock_rules
+        mock_audio.is_quiet_hours_active.return_value = (False, 25, "living_room")
+        mock_audio.async_notify_voice = AsyncMock(return_value={"success": True})
+        vm.audio_manager = mock_audio
+        self.hass.states.get.return_value = None
+
+        # Delivery courier alert
+        delivery_entry = {
+            "camera": "camera.front_porch",
+            "perimeter_zone": "front_porch",
+            "detected_objects": ["person", "package"],
+            "summary": "Amazon delivery driver dropped off a package at front porch",
+            "severity": "low",
+            "confidence": 0.88,
+        }
+        res = asyncio.run(vm.async_dispatch_visual_alert_voice(delivery_entry))
+        self.assertFalse(res["dispatched"])
+        self.assertEqual(res["reason"], "suppressed_benign_passerby")
+
+        # Pedestrian walking on sidewalk
+        pedestrian_entry = {
+            "camera": "camera.driveway",
+            "perimeter_zone": "driveway",
+            "detected_objects": ["person"],
+            "summary": "Pedestrian walking past on sidewalk",
+            "severity": "low",
+            "confidence": 0.85,
+        }
+        res2 = asyncio.run(vm.async_dispatch_visual_alert_voice(pedestrian_entry))
+        self.assertFalse(res2["dispatched"])
+        self.assertEqual(res2["reason"], "suppressed_benign_passerby")
+
+    def test_security_view_contains_voice_announcements_switch(self) -> None:
+        """Verify Security Center subview includes Proactive Security Voice Announcements control card."""
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+
+        dm = DashboardManager(self.hass)
+        sec_cards = dm._build_security_view_cards(None)
+
+        voice_cards = [
+            c for c in sec_cards
+            if c.get("type") == "entities" and any(
+                e.get("entity") == "switch.otis_voice_announcements" for e in c.get("entities", [])
+            )
+        ]
+        self.assertEqual(len(voice_cards), 1)
+        self.assertEqual(voice_cards[0]["title"], "Proactive Security Voice Announcements")
+
+    def test_audio_follow_person_attribution_mismatch_and_match(self) -> None:
+        """Verify audio follow-me binds playback to initiator and prevents migration for other household members."""
+        from custom_components.otis_ai.audio_manager import AudioHandoffManager
+
+        hass = MagicMock()
+        hass.states = MagicMock()
+        hass.states.get.return_value = None
+        am = AudioHandoffManager(hass)
+
+        # Mock active zones
+        am.async_get_active_media_zones = AsyncMock(return_value={
+            "matrix_zones": [
+                {"entity_id": "media_player.living_room", "area_id": "living_room", "state": "playing", "volume_level": 0.4},
+                {"entity_id": "media_player.kitchen", "area_id": "kitchen", "state": "idle", "volume_level": 0.3},
+            ],
+            "other_players": [],
+            "tv_cinema_players": [],
+        })
+        am.async_audio_handoff = AsyncMock(return_value={"success": True, "target_player": "media_player.kitchen"})
+
+        # Record media playback session owned by "person.jamie"
+        am.record_media_session_owner(
+            player_entity_id="media_player.living_room",
+            person_id="person.jamie",
+            area_id="living_room",
+        )
+
+        # 1. Other family member ("person.alex") moves from living room to kitchen -> Migration skipped!
+        intent_other = {
+            "intent": "room_migration",
+            "source_area": "living_room",
+            "target_area": "kitchen",
+            "confidence": 0.85,
+            "person_id": "person.alex",
+        }
+        res_other = asyncio.run(am.async_process_spatial_audio_migration(intent_other))
+        self.assertIsNotNone(res_other)
+        self.assertFalse(res_other["migrated"])
+        self.assertEqual(res_other["reason"], "user_mismatch")
+        am.async_audio_handoff.assert_not_called()
+
+        # 2. Owner ("person.jamie") moves from living room to kitchen -> Audio follows!
+        intent_owner = {
+            "intent": "room_migration",
+            "source_area": "living_room",
+            "target_area": "kitchen",
+            "confidence": 0.85,
+            "person_id": "person.jamie",
+        }
+        res_owner = asyncio.run(am.async_process_spatial_audio_migration(intent_owner))
+        self.assertIsNotNone(res_owner)
+        self.assertEqual(res_owner["status"], "following")
+        am.async_audio_handoff.assert_called_once()
+        # Session owner transferred to target player
+        self.assertEqual(
+            am.get_media_session_owner("media_player.kitchen")["person_id"],
+            "person.jamie",
+        )
+
+    def test_confirm_person_identity_profile_calibration(self) -> None:
+        """Verify confirm_person_identity calibrates confidence scores and training samples."""
+        from custom_components.otis_ai.rules_manager import BehavioralRulesManager
+
+        hass = MagicMock()
+        mock_store = MagicMock()
+        mock_store.async_load = AsyncMock(return_value={})
+        mock_store.async_save = AsyncMock(return_value=None)
+
+        with patch("custom_components.otis_ai.rules_manager.Store", return_value=mock_store):
+            rm = BehavioralRulesManager(hass)
+            # 1. Positive confirmation
+            res1 = asyncio.run(rm.async_confirm_person_identity(
+                person_id="person.jamie",
+                track_id="trk_001",
+                label="Jamie",
+                confirmed=True,
+            ))
+            self.assertTrue(res1["success"])
+            prof1 = res1["profile"]
+            self.assertEqual(prof1["samples"], 1)
+            self.assertEqual(prof1["confidence"], 0.60)
+            self.assertIn("trk_001", prof1["tracks"])
+
+            # 2. Second positive confirmation boosts confidence further
+            res2 = asyncio.run(rm.async_confirm_person_identity(
+                person_id="person.jamie",
+                track_id="trk_002",
+                confirmed=True,
+            ))
+            self.assertEqual(res2["profile"]["samples"], 2)
+            self.assertEqual(res2["profile"]["confidence"], 0.70)
+            self.assertEqual(len(res2["profile"]["tracks"]), 2)

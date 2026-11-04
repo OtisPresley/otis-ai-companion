@@ -110,6 +110,8 @@ from .const import (
     SERVICE_SYNC_ENTITY_TELEMETRY,
     SERVICE_INDEX_DEVICE_MANUAL,
     SERVICE_TOGGLE_AUDIO_FOLLOW,
+    SERVICE_TOGGLE_VOICE_ANNOUNCEMENTS,
+    SERVICE_CONFIRM_PERSON_IDENTITY,
     SERVICE_OPTIMIZE_BATTERY_SCHEDULE,
     SERVICE_GET_ENERGY_ARBITRAGE_PLAN,
 )
@@ -1029,6 +1031,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 res = await fm.async_sync_all_nodes()
             _invalidate()
             return {"success": True, "sync_results": res}
+        elif action_type == "confirm_person_identity":
+            rm = _get_rules_manager()
+            res = await rm.async_confirm_person_identity(
+                person_id=payload.get("person_id", suggestion_id),
+                track_id=payload.get("track_id"),
+                label=payload.get("label"),
+                confirmed=bool(payload.get("confirmed", True)),
+                visual_features=payload.get("visual_features"),
+            )
+            _invalidate()
+            return {
+                "success": True,
+                "message": f"Successfully verified identity for {payload.get('label') or payload.get('person_id')}",
+                "result": res,
+            }
 
         return {"success": False, "error": f"Unsupported action_type '{action_type}'"}
 
@@ -2117,6 +2134,43 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "audio_follow_enabled": updated.get("audio_follow_enabled", enabled),
         }
 
+    async def handle_toggle_voice_announcements(call) -> ServiceResponse:
+        """Handle service call to toggle or set proactive voice announcements."""
+        _LOGGER.debug("Service 'toggle_voice_announcements' triggered with: %s", call.data)
+        entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        rm_rules = entry_store.get("rules_manager", rules_manager)
+        cur_rules = rm_rules.get_rules()
+        enabled = call.data.get("enabled")
+        if enabled is None:
+            enabled = not cur_rules.get("voice_announcements_enabled", True)
+        else:
+            enabled = bool(enabled)
+        updated = await rm_rules.async_save({"voice_announcements_enabled": enabled})
+        return {
+            "success": True,
+            "voice_announcements_enabled": updated.get("voice_announcements_enabled", enabled),
+        }
+
+    async def handle_confirm_person_identity(call) -> ServiceResponse:
+        """Handle service call to train or verify person identity for audio follow & vision security."""
+        _LOGGER.debug("Service 'confirm_person_identity' triggered with: %s", call.data)
+        entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        rm_rules = entry_store.get("rules_manager", rules_manager)
+        person_id = call.data.get("person_id")
+        if not person_id:
+            return {"success": False, "error": "person_id is required"}
+        track_id = call.data.get("track_id")
+        label = call.data.get("label")
+        confirmed = bool(call.data.get("confirmed", True))
+        features = call.data.get("visual_features") or {}
+        return await rm_rules.async_confirm_person_identity(
+            person_id=person_id,
+            track_id=track_id,
+            label=label,
+            confirmed=confirmed,
+            visual_features=features,
+        )
+
     _LOGGER.debug("Registering Otis AI services")
     hass.services.async_register(
         DOMAIN,
@@ -2532,9 +2586,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_toggle_audio_follow,
         supports_response=SupportsResponse.OPTIONAL,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_TOGGLE_VOICE_ANNOUNCEMENTS,
+        handle_toggle_voice_announcements,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CONFIRM_PERSON_IDENTITY,
+        handle_confirm_person_identity,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
 
-    # Listen for service calls targeting switch.otis_audio_follow
-    async def _on_service_call_audio_follow(event):
+    # Listen for service calls targeting switch.otis_audio_follow and switch.otis_voice_announcements
+    async def _on_service_call_switches(event):
         data = getattr(event, "data", {})
         domain = data.get("domain")
         service = data.get("service")
@@ -2549,9 +2615,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 cur = rules_manager.get_rules().get("audio_follow_enabled", True)
                 new_val = not cur if service == "toggle" else (service == "turn_on")
                 await rules_manager.async_save({"audio_follow_enabled": new_val})
+            if "switch.otis_voice_announcements" in eids:
+                cur = rules_manager.get_rules().get("voice_announcements_enabled", True)
+                new_val = not cur if service == "toggle" else (service == "turn_on")
+                await rules_manager.async_save({"voice_announcements_enabled": new_val})
 
     if hasattr(hass, "bus") and hasattr(hass.bus, "async_listen"):
-        hass.bus.async_listen("call_service", _on_service_call_audio_follow)
+        hass.bus.async_listen("call_service", _on_service_call_switches)
 
     _LOGGER.info("Otis AI Companion entry set up successfully")
     return True
@@ -7195,6 +7265,39 @@ class DiscoveryEngine:
                 "action_type": "advisor_guide",
                 "action_payload": {"guide": "Configure media players or Music Assistant in your main rooms for coordinated multi-room audio."},
             })
+
+        # 16. Proactive Person Identification & Audio Attribution Training (Phase 5 Step 5)
+        if getattr(self, "rules_manager", None):
+            try:
+                profiles = self.rules_manager.get_person_profiles()
+                person_entities = [e for e in entities if str(e.get("entity_id", "")).startswith("person.")]
+                for pe in person_entities:
+                    pid = pe["entity_id"]
+                    p_name = pe.get("name") or pid.replace("person.", "").title()
+                    prof = profiles.get(pid, {})
+                    conf = prof.get("confidence", 0.50)
+                    samples = prof.get("samples", 0)
+                    if samples < 3 or conf < 0.80:
+                        suggestions.append({
+                            "id": f"person_train_identity_{pid.replace('.', '_')}",
+                            "title": f"Train Identity: Confirm Profile for {p_name}",
+                            "category": "presence",
+                            "priority": "high" if samples == 0 else "medium",
+                            "icon": "mdi:account-badge",
+                            "description": (
+                                f"Otis AI is calibrating person identification for {p_name} ({int(conf * 100)}% confidence, {samples} samples). "
+                                "Confirming this profile enables high-confidence person recognition, personalized audio follow-me, "
+                                "and prevents startling voice announcements when residents are home."
+                            ),
+                            "action_type": "confirm_person_identity",
+                            "action_payload": {
+                                "person_id": pid,
+                                "label": p_name,
+                                "confirmed": True,
+                            },
+                        })
+            except Exception as err:
+                _LOGGER.debug("Error generating person identification suggestions: %s", err)
 
         # Surface Official Home Assistant News & Announcements
         try:

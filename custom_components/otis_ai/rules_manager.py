@@ -48,6 +48,9 @@ DEFAULT_RULES: dict[str, Any] = {
     "floorplan_pitch": 30,
     "floorplan_wall_height": 36,
     "floorplan_walls_enabled": True,
+    "voice_announcements_enabled": True,
+    "voice_filter_passersby": True,
+    "person_profiles": {},
 }
 
 
@@ -84,6 +87,7 @@ class BehavioralRulesManager:
         finally:
             self._loaded = True
             self._sync_audio_follow_switch()
+            self._sync_voice_announcements_switch()
 
         return dict(self._rules)
 
@@ -153,6 +157,7 @@ class BehavioralRulesManager:
         self._rules = merged
         await self._store.async_save(self._rules)
         self._sync_audio_follow_switch()
+        self._sync_voice_announcements_switch()
         _LOGGER.info(
             "Otis AI: Saved user behavioral rules (persona: %s, onboarding_completed: %s)",
             self._rules.get("persona"),
@@ -216,6 +221,82 @@ class BehavioralRulesManager:
                     "description": "Enables or disables autonomous room-to-room audio migration.",
                 },
             )
+
+    def _sync_voice_announcements_switch(self) -> None:
+        """Publish switch.otis_voice_announcements state in Home Assistant."""
+        if hasattr(self.hass, "states") and hasattr(self.hass.states, "async_set"):
+            enabled = bool(self._rules.get("voice_announcements_enabled", True))
+            self.hass.states.async_set(
+                "switch.otis_voice_announcements",
+                "on" if enabled else "off",
+                {
+                    "friendly_name": "Otis Proactive Voice Announcements",
+                    "icon": "mdi:volume-high" if enabled else "mdi:volume-off",
+                    "assumed_state": False,
+                    "description": "Enables or disables proactive spoken voice announcements for security and camera events.",
+                },
+            )
+
+    async def async_confirm_person_identity(
+        self,
+        person_id: str,
+        track_id: str | None = None,
+        label: str | None = None,
+        confirmed: bool = True,
+        visual_features: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Record verified person training feedback to link camera tracks with Home Assistant users."""
+        if not self._loaded:
+            await self.async_load()
+
+        profiles = dict(self._rules.get("person_profiles") or {})
+        clean_pid = str(person_id).strip().lower()
+        profile = profiles.get(clean_pid, {
+            "person_id": clean_pid,
+            "label": label or clean_pid.replace("person.", "").title(),
+            "confidence": 0.50,
+            "samples": 0,
+            "tracks": [],
+            "features": {},
+        })
+
+        if confirmed:
+            profile["samples"] = int(profile.get("samples", 0)) + 1
+            cur_conf = float(profile.get("confidence", 0.50))
+            profile["confidence"] = round(min(0.99, cur_conf + 0.10), 2)
+            if label:
+                profile["label"] = str(label).strip()
+            if track_id:
+                tr_list = list(profile.get("tracks") or [])
+                if track_id not in tr_list:
+                    tr_list.append(track_id)
+                profile["tracks"] = tr_list[-20:]
+            if visual_features and isinstance(visual_features, dict):
+                feats = dict(profile.get("features") or {})
+                feats.update(visual_features)
+                profile["features"] = feats
+        else:
+            cur_conf = float(profile.get("confidence", 0.50))
+            profile["confidence"] = round(max(0.10, cur_conf - 0.15), 2)
+
+        profiles[clean_pid] = profile
+        self._rules["person_profiles"] = profiles
+        await self._store.async_save(self._rules)
+        _LOGGER.info(
+            "Otis AI: Updated person profile for %s (confirmed: %s, confidence: %.2f)",
+            clean_pid,
+            confirmed,
+            profile["confidence"],
+        )
+        return {
+            "success": True,
+            "person_id": clean_pid,
+            "profile": profile,
+        }
+
+    def get_person_profiles(self) -> dict[str, Any]:
+        """Return all persisted person profiles and verification confidence levels."""
+        return dict(self._rules.get("person_profiles") or {})
 
     def is_onboarding_completed(self) -> bool:
         """Return whether user has completed initial onboarding."""

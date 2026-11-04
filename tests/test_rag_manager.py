@@ -377,7 +377,7 @@ def test_audio_follow_toggle_service_and_rules():
         rules_mgr = BehavioralRulesManager(hass)
         rules = asyncio.run(rules_mgr.async_load())
         assert rules["audio_follow_enabled"] is True
-        hass.states.async_set.assert_called_with(
+        hass.states.async_set.assert_any_call(
             "switch.otis_audio_follow",
             "on",
             {
@@ -391,7 +391,7 @@ def test_audio_follow_toggle_service_and_rules():
         # Toggle to false
         updated = asyncio.run(rules_mgr.async_save({"audio_follow_enabled": False}))
         assert updated["audio_follow_enabled"] is False
-        hass.states.async_set.assert_called_with(
+        hass.states.async_set.assert_any_call(
             "switch.otis_audio_follow",
             "off",
             {
