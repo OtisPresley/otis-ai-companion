@@ -389,6 +389,10 @@ rollback_macro:
       selector:
         text:
 
+cancel_preconditioning:
+  name: Cancel Spatial Pre-Conditioning
+  description: Cancel active spatial migration pre-conditioning and immediately roll back device setpoints to their pre-migration states.
+
 list_macros:
   name: List Macros & Execution History
   description: List available built-in smart macro templates and recent execution history with rollback statuses.

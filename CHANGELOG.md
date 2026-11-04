@@ -7,6 +7,17 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.32] - 2026-11-04
+
+### Added
+- **Phase 4 Step 2: Contextual Pre-Conditioning State Engine & Macro Integration**:
+  - Wired `sensor.otis_spatial_migration` into `MacroManager` to trigger soft pre-conditioning actions:
+    - **Theater Room Pre-Cooling**: Automatically pre-cools theater comfort climate setpoint by -1°F upon migration intent detection (`movie_night`).
+    - **Master Bedroom Nighttime Pre-Arming**: Triggers staged dim ambient illumination (10%) and pre-arms white noise machine / media player (`sleep_bedtime`).
+  - **10-Minute Auto-Rollback Watchdog**: Monitors physical presence in the target destination. If the target area is not occupied within 10 minutes, cleanly executes `async_rollback_macro`, restoring all pre-migration setpoints and lighting.
+  - **Companion Card Pre-Conditioning Chip**: Added real-time status banner chip (e.g. `🎬 Theater Pre-Cooling in progress [Cancel]`) with 1-click manual rollback.
+  - Registered `otis_ai.cancel_preconditioning` service in Core and updated `services.yaml`.
+
 ## [0.1.31] - 2026-11-04
 
 ### Fixed

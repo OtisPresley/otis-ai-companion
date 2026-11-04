@@ -58,6 +58,7 @@ from .const import (
     SERVICE_REGENERATE_DASHBOARDS,
     SERVICE_EXECUTE_MACRO,
     SERVICE_ROLLBACK_MACRO,
+    SERVICE_CANCEL_PRECONDITIONING,
     SERVICE_LIST_MACROS,
     SERVICE_AUDIO_HANDOFF,
     SERVICE_MEDIA_FOLLOW_ME,
@@ -432,9 +433,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     local_llm_manager.rag_manager = rag_manager
     sentinel_manager = SentinelManager(hass, local_llm_manager=local_llm_manager)
     macro_manager = MacroManager(hass)
+    macro_manager.async_start_migration_listener()
     audio_manager = AudioHandoffManager(hass, spatial_manager=spatial_manager, rules_manager=rules_manager)
     energy_manager = EnergyManager(hass, spatial_manager=spatial_manager)
-    vision_manager = VisionPresenceManager(hass, spatial_manager=spatial_manager, energy_manager=energy_manager)
+    vision_manager = VisionPresenceManager(
+        hass,
+        spatial_manager=spatial_manager,
+        energy_manager=energy_manager,
+        macro_manager=macro_manager,
+    )
     # Start real-time presence tracking and publish initial fused presence states
     vision_manager.async_start_presence_tracking()
     pres_coro = vision_manager.async_publish_fused_presence_states()
@@ -1496,6 +1503,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         res = await mm.async_rollback_macro(macro_id=macro_id)
         return res
 
+    async def handle_cancel_preconditioning(call) -> ServiceResponse:
+        """Handle service call to cancel active spatial migration pre-conditioning."""
+        _LOGGER.debug("Service 'cancel_preconditioning' triggered: %s", call.data)
+        mm = _get_macro_manager()
+        res = await mm.async_cancel_preconditioning()
+        return res
+
     async def handle_list_macros(call) -> ServiceResponse:
         """Handle service call to list available macros and execution history."""
         _LOGGER.debug("Service 'list_macros' triggered")
@@ -2134,6 +2148,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         SERVICE_ROLLBACK_MACRO,
         handle_rollback_macro,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CANCEL_PRECONDITIONING,
+        handle_cancel_preconditioning,
         supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(

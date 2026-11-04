@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.31";
+const CARD_VERSION = "0.1.32";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -5381,6 +5381,9 @@ class OtisCompanionCard extends HTMLElement {
           <!-- Weather & Calendar Glance Strip -->
           ${this._renderGlanceStrip()}
 
+          <!-- Spatial Migration Pre-Conditioning Status Chip -->
+          ${this._renderPreconditioningChip()}
+
           ${
             !this._userRules?.onboarding_completed && !this._onboardingDismissed
               ? `
@@ -5585,6 +5588,44 @@ class OtisCompanionCard extends HTMLElement {
       <div class="glance-strip">
         ${weatherHtml}
         ${calendarHtml}
+      </div>
+    `;
+  }
+
+  _renderPreconditioningChip() {
+    const sensor = this._hass?.states?.["sensor.otis_spatial_migration"];
+    if (!sensor) return "";
+    const pState = sensor.attributes?.preconditioning_state;
+    if (pState !== "in_progress") return "";
+
+    const label = sensor.attributes?.preconditioning_label || (
+      sensor.state === "movie_night" ? "🎬 Theater Pre-Cooling in progress" :
+      sensor.state === "sleep_bedtime" ? "🌙 Master Bedroom Nighttime Pre-Arming in progress" :
+      "⚡ Spatial Pre-Conditioning in progress"
+    );
+    const macroId = sensor.attributes?.preconditioning_macro_id || "";
+    const expiresAt = parseFloat(sensor.attributes?.preconditioning_expires_at) || 0;
+    const nowSec = Date.now() / 1000;
+    const minsLeft = expiresAt > nowSec ? Math.max(1, Math.round((expiresAt - nowSec) / 60)) : 10;
+    const actionSummary = sensor.attributes?.action_summary || "";
+
+    return `
+      <div class="preconditioning-banner" id="preconditioning-banner" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; margin-bottom: 12px; background: linear-gradient(135deg, rgba(14, 165, 233, 0.22), rgba(56, 189, 248, 0.08)); border: 1px solid rgba(56, 189, 248, 0.45); border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.25);">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 1.15rem; filter: drop-shadow(0 0 8px #38bdf8);">🎬</span>
+          <div>
+            <div style="font-weight: 700; font-size: 0.85rem; color: #38bdf8; display: flex; align-items: center; gap: 6px;">
+              <span>${this._escapeHtml(label)}</span>
+              <span style="font-size: 0.65rem; padding: 1px 6px; border-radius: 4px; background: rgba(56,189,248,0.25); color: #e0f2fe; text-transform: uppercase;">Active</span>
+            </div>
+            <div style="font-size: 0.73rem; color: var(--otis-text-muted, #94a3b8); margin-top: 2px;">
+              ${actionSummary ? `${this._escapeHtml(actionSummary)} • ` : ""}Auto-rollback in ${minsLeft}m if vacant.
+            </div>
+          </div>
+        </div>
+        <button type="button" class="btn-cancel-preconditioning subview-chip" data-macro-id="${macroId}" style="background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.45); color: #fca5a5; font-weight: 600; padding: 4px 10px; font-size: 0.74rem; cursor: pointer; border-radius: 6px; white-space: nowrap;">
+          ✕ Cancel
+        </button>
       </div>
     `;
   }
@@ -8902,6 +8943,28 @@ class OtisCompanionCard extends HTMLElement {
         this._render();
       };
     }
+
+    // Spatial Migration Pre-Conditioning Cancel Button
+    root.querySelectorAll(".btn-cancel-preconditioning").forEach((btn) => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        const macroId = btn.getAttribute("data-macro-id");
+        try {
+          this._showToast("↺ Cancelling pre-conditioning & restoring states...");
+          await this._hass.callService("otis_ai", "cancel_preconditioning", { macro_id: macroId || undefined });
+          this._showToast("✨ Pre-conditioning cancelled. States restored.");
+        } catch (err) {
+          console.warn("Could not cancel pre-conditioning via cancel_preconditioning, attempting rollback_macro:", err);
+          try {
+            await this._hass.callService("otis_ai", "rollback_macro", { macro_id: macroId || undefined });
+            this._showToast("✨ Pre-conditioning macro rolled back successfully.");
+          } catch (err2) {
+            console.error("Rollback failed:", err2);
+            this._showToast("⚠️ Could not roll back macro: " + err2.message);
+          }
+        }
+      };
+    });
 
     // Rules Modal Controls & Navigation
     if (this._rulesModalOpen) {

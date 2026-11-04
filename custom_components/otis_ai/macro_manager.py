@@ -5,6 +5,7 @@ automatic prior state snapshotting, and 1-click state rollback.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
@@ -42,6 +43,9 @@ class MacroManager:
         self.hass = hass
         self._history: list[dict[str, Any]] = []
         self._pending_macros: dict[str, dict[str, Any]] = {}
+        self._active_preconditioning: dict[str, Any] | None = None
+        self._watchdog_task: asyncio.Task | None = None
+        self._migration_unsub: Any = None
 
     def get_history(self, limit: int = 20) -> list[dict[str, Any]]:
         """Return the execution history of macros."""
@@ -450,6 +454,288 @@ class MacroManager:
                 else f"⚠️ Rolled back macro '{target_record.get('name')}' with {len(restore_errors)} errors."
             ),
         }
+
+    def get_active_preconditioning(self) -> dict[str, Any] | None:
+        """Return the active spatial migration pre-conditioning state if not expired."""
+        if not self._active_preconditioning:
+            return None
+        if self._active_preconditioning.get("status") != "in_progress":
+            return self._active_preconditioning
+        if time.time() > float(self._active_preconditioning.get("expires_at", 0)):
+            self._active_preconditioning["status"] = "expired"
+        return self._active_preconditioning
+
+    def _is_target_area_occupied(self, target_area: str) -> bool:
+        """Check if target area currently has physical presence."""
+        norm_target = target_area.lower().replace(" ", "_")
+        if hasattr(self.hass, "states") and hasattr(self.hass.states, "get"):
+            # 1. Direct room presence sensor
+            st = self.hass.states.get(f"binary_sensor.otis_presence_{norm_target}")
+            if st and st.state == "on":
+                return True
+            # 2. General household occupancy sensor occupied_areas list
+            occ_st = self.hass.states.get("binary_sensor.otis_occupancy")
+            if occ_st and occ_st.attributes:
+                occ_areas = occ_st.attributes.get("occupied_areas") or []
+                if any(norm_target == a.lower().replace(" ", "_") for a in occ_areas):
+                    return True
+        return False
+
+    def _update_spatial_migration_sensor(self, preconditioning_state: str) -> None:
+        """Update sensor.otis_spatial_migration with active pre-conditioning state and label."""
+        if hasattr(self.hass, "states") and hasattr(self.hass.states, "get") and hasattr(self.hass.states, "async_set"):
+            st = self.hass.states.get("sensor.otis_spatial_migration")
+            state_val = st.state if st else "idle"
+            attrs = dict(st.attributes) if st and st.attributes else {}
+            attrs["preconditioning_state"] = preconditioning_state
+            if self._active_preconditioning:
+                attrs["preconditioning_label"] = self._active_preconditioning.get("label")
+                attrs["preconditioning_macro_id"] = self._active_preconditioning.get("macro_id")
+                attrs["preconditioning_expires_at"] = self._active_preconditioning.get("expires_at")
+                attrs["action_summary"] = self._active_preconditioning.get("action_summary")
+            self.hass.states.async_set("sensor.otis_spatial_migration", state_val, attrs)
+
+    def _start_watchdog(
+        self, target_area: str, macro_id: str, timeout_seconds: float = 600.0
+    ) -> None:
+        """Start auto-rollback watchdog if target area is not occupied within timeout."""
+        if self._watchdog_task and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
+
+        async def _watchdog_coro():
+            try:
+                await asyncio.sleep(timeout_seconds)
+                if (
+                    self._active_preconditioning
+                    and self._active_preconditioning.get("macro_id") == macro_id
+                    and self._active_preconditioning.get("status") == "in_progress"
+                ):
+                    if not self._is_target_area_occupied(target_area):
+                        _LOGGER.info(
+                            "Watchdog expired: area '%s' not occupied within %ds. Rolling back pre-conditioning macro %s",
+                            target_area,
+                            int(timeout_seconds),
+                            macro_id,
+                        )
+                        await self.async_rollback_macro(macro_id)
+                        self._active_preconditioning["status"] = "rolled_back"
+                        self._update_spatial_migration_sensor("rolled_back")
+            except asyncio.CancelledError:
+                pass
+            except Exception as err:
+                _LOGGER.error("Error in preconditioning watchdog: %s", err)
+
+        try:
+            if hasattr(self.hass, "async_create_task"):
+                self._watchdog_task = self.hass.async_create_task(_watchdog_coro())
+            else:
+                self._watchdog_task = asyncio.create_task(_watchdog_coro())
+        except Exception:
+            self._watchdog_task = asyncio.create_task(_watchdog_coro())
+
+    async def async_cancel_preconditioning(self) -> dict[str, Any]:
+        """Cancel active spatial migration pre-conditioning and cleanly roll back states."""
+        if not self._active_preconditioning or self._active_preconditioning.get("status") != "in_progress":
+            return {"success": False, "error": "No active pre-conditioning in progress to cancel."}
+
+        macro_id = self._active_preconditioning.get("macro_id")
+        if self._watchdog_task and not self._watchdog_task.done():
+            self._watchdog_task.cancel()
+
+        res = await self.async_rollback_macro(macro_id)
+        self._active_preconditioning["status"] = "cancelled"
+        self._update_spatial_migration_sensor("cancelled")
+        return res
+
+    async def async_process_spatial_migration(
+        self,
+        migration_intent: dict[str, Any] | None,
+        occupied_areas: list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        """Process migration flow intent, executing soft pre-conditioning actions and starting watchdog."""
+        now_ts = time.time()
+
+        # 1. Check if occupied_areas confirms arrival for existing active preconditioning
+        if self._active_preconditioning and self._active_preconditioning.get("status") == "in_progress":
+            target = self._active_preconditioning.get("target_area")
+            occupied_list = [a.lower().replace(" ", "_") for a in (occupied_areas or [])]
+            if target and (target in occupied_list or self._is_target_area_occupied(target)):
+                _LOGGER.info("Arrival confirmed in target area '%s'. Pre-conditioning validated.", target)
+                if self._watchdog_task and not self._watchdog_task.done():
+                    self._watchdog_task.cancel()
+                self._active_preconditioning["status"] = "confirmed"
+                self._update_spatial_migration_sensor("confirmed")
+                return self._active_preconditioning
+
+        if not migration_intent or not isinstance(migration_intent, dict):
+            return None
+
+        intent_name = migration_intent.get("intent")
+        target_area = (migration_intent.get("target_area") or "").lower().replace(" ", "_")
+        precond_state = migration_intent.get("preconditioning_state")
+
+        if precond_state not in ("armed", "in_progress"):
+            return None
+
+        # Guard: Avoid duplicate execution for the same active intent
+        if (
+            self._active_preconditioning
+            and self._active_preconditioning.get("status") == "in_progress"
+            and self._active_preconditioning.get("intent") == intent_name
+            and self._active_preconditioning.get("target_area") == target_area
+        ):
+            return self._active_preconditioning
+
+        all_states = self.hass.states.async_all() if hasattr(self.hass.states, "async_all") else []
+
+        # Intent 1: Movie Night (Target: Theater)
+        if intent_name == "movie_night" or target_area == "theater":
+            climates = [
+                s.entity_id for s in all_states
+                if s.entity_id.startswith("climate.") and s.state != "unavailable"
+            ]
+            target_clim = next((c for c in climates if "theater" in c or "cinema" in c), None) or (climates[0] if climates else None)
+
+            current_temp = 70.0
+            if target_clim:
+                clim_st = self.hass.states.get(target_clim) if hasattr(self.hass.states, "get") else None
+                if clim_st and getattr(clim_st, "attributes", None):
+                    val = clim_st.attributes.get("temperature")
+                    if val is not None:
+                        try:
+                            current_temp = float(val)
+                        except (ValueError, TypeError):
+                            pass
+
+            new_temp = round(current_temp - 1.0, 1)
+            steps = []
+            if target_clim:
+                steps.append({
+                    "name": f"Soft Pre-Cool Theater Room ({target_clim} to {new_temp}°F)",
+                    "domain": "climate",
+                    "service": "set_temperature",
+                    "target": {"entity_id": target_clim},
+                    "data": {"temperature": new_temp},
+                })
+            else:
+                steps.append({
+                    "name": "Arm Theater Pre-Cooling Mode",
+                    "domain": "homeassistant",
+                    "service": "turn_on",
+                    "target": {"entity_id": "input_boolean.theater_precool"},
+                })
+
+            macro_res = await self.async_execute_macro(
+                macro_name="Theater Pre-Cooling",
+                steps=steps,
+                confirmed=True,
+            )
+
+            self._active_preconditioning = {
+                "intent": "movie_night",
+                "target_area": "theater",
+                "macro_id": macro_res.get("macro_id"),
+                "status": "in_progress",
+                "started_at": now_ts,
+                "expires_at": now_ts + 600.0,
+                "label": "🎬 Theater Pre-Cooling in progress",
+                "action_summary": f"Lowered temperature by -1°F (to {new_temp}°F)",
+                "target_entity": target_clim,
+            }
+            self._start_watchdog(target_area="theater", macro_id=macro_res.get("macro_id"), timeout_seconds=600.0)
+            self._update_spatial_migration_sensor("in_progress")
+            return self._active_preconditioning
+
+        # Intent 2: Sleep Bedtime (Target: Master Bedroom)
+        elif intent_name == "sleep_bedtime" or target_area in ("master", "master_bedroom"):
+            master_lights = [
+                s.entity_id for s in all_states
+                if s.entity_id.startswith("light.") and s.state != "unavailable" and any(k in s.entity_id for k in ("master", "bed", "nightstand"))
+            ]
+            white_noise = [
+                s.entity_id for s in all_states
+                if s.state != "unavailable" and any(k in s.entity_id for k in ("white_noise", "sound_machine", "fan.master", "switch.sound_machine", "media_player.master"))
+            ]
+
+            steps = []
+            if master_lights:
+                steps.append({
+                    "name": f"Staged Dim Ambient Lighting in Master ({len(master_lights[:2])} lights to 10%)",
+                    "domain": "light",
+                    "service": "turn_on",
+                    "target": {"entity_id": master_lights[:2]},
+                    "data": {"brightness_pct": 10},
+                })
+            if white_noise:
+                wn_eid = white_noise[0]
+                dom = wn_eid.split(".", 1)[0]
+                steps.append({
+                    "name": f"Pre-Arm White Noise Machine ({wn_eid})",
+                    "domain": dom if dom in ("switch", "fan", "media_player") else "homeassistant",
+                    "service": "turn_on",
+                    "target": {"entity_id": wn_eid},
+                })
+            if not steps:
+                steps.append({
+                    "name": "Arm Master Bedroom Nighttime Mode",
+                    "domain": "homeassistant",
+                    "service": "turn_on",
+                    "target": {"entity_id": "input_boolean.master_night_prearm"},
+                })
+
+            macro_res = await self.async_execute_macro(
+                macro_name="Master Bedroom Pre-Arming",
+                steps=steps,
+                confirmed=True,
+            )
+
+            self._active_preconditioning = {
+                "intent": "sleep_bedtime",
+                "target_area": "master",
+                "macro_id": macro_res.get("macro_id"),
+                "status": "in_progress",
+                "started_at": now_ts,
+                "expires_at": now_ts + 600.0,
+                "label": "🌙 Master Bedroom Nighttime Pre-Arming in progress",
+                "action_summary": "Staged dim ambient illumination & white noise pre-arming",
+            }
+            self._start_watchdog(target_area="master", macro_id=macro_res.get("macro_id"), timeout_seconds=600.0)
+            self._update_spatial_migration_sensor("in_progress")
+            return self._active_preconditioning
+
+        return None
+
+    def async_start_migration_listener(self) -> None:
+        """Listen to state changes on sensor.otis_spatial_migration for autonomous pre-conditioning."""
+        if getattr(self, "_migration_unsub", None):
+            return
+
+        async def _on_sensor_changed(event):
+            data = getattr(event, "data", {})
+            if data.get("entity_id") != "sensor.otis_spatial_migration":
+                return
+            new_state = data.get("new_state")
+            if not new_state:
+                return
+            attrs = new_state.attributes or {}
+            intent_dict = {
+                "intent": new_state.state,
+                "target_area": attrs.get("target_area"),
+                "source_area": attrs.get("source_area"),
+                "preconditioning_state": attrs.get("preconditioning_state"),
+                "lifestyle_macro": attrs.get("lifestyle_macro"),
+            }
+            await self.async_process_spatial_migration(intent_dict)
+
+        if hasattr(self.hass, "bus") and hasattr(self.hass.bus, "async_listen"):
+            try:
+                from homeassistant.const import EVENT_STATE_CHANGED
+            except ImportError:
+                EVENT_STATE_CHANGED = "state_changed"
+
+            self._migration_unsub = self.hass.bus.async_listen(
+                EVENT_STATE_CHANGED, _on_sensor_changed
+            )
 
     def build_smart_macro(
         self,

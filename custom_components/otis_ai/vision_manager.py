@@ -140,11 +140,12 @@ def stream_priority(
 class VisionPresenceManager:
     """Manages multi-sensor room occupancy fusion, camera vision analysis, and contextual perimeter alerts."""
 
-    def __init__(self, hass: HomeAssistant, spatial_manager=None, energy_manager=None) -> None:
+    def __init__(self, hass: HomeAssistant, spatial_manager=None, energy_manager=None, macro_manager=None) -> None:
         """Initialize the Vision & Presence Manager."""
         self.hass = hass
         self.spatial_manager = spatial_manager
         self.energy_manager = energy_manager
+        self.macro_manager = macro_manager
         self._camera_audit_history: list[dict[str, Any]] = []
         self._presence_cache: dict[str, Any] = {}
         self._presence_cache_ts: float = 0.0
@@ -1063,6 +1064,15 @@ class VisionPresenceManager:
                 "recent_transitions": self.get_transition_history(5),
             }
             self.hass.states.async_set("sensor.otis_spatial_migration", state_val, attrs)
+
+        # Trigger soft pre-conditioning actions in macro_manager
+        if getattr(self, "macro_manager", None):
+            try:
+                await self.macro_manager.async_process_spatial_migration(
+                    intent, occupied_areas=presence_data.get("occupied_areas")
+                )
+            except Exception as mm_err:
+                _LOGGER.debug("Error processing spatial migration in macro_manager: %s", mm_err)
 
         return intent
 
