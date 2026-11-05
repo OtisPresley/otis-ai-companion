@@ -38,15 +38,20 @@ SAFE_DOMAINS = {
 class MacroManager:
     """Orchestrates multi-step smart home macros with atomic snapshots and rollback."""
 
-    def __init__(self, hass: HomeAssistant, audio_manager: Any = None) -> None:
+    def __init__(self, hass: HomeAssistant, audio_manager: Any = None, rules_manager: Any = None) -> None:
         """Initialize the macro manager."""
         self.hass = hass
         self.audio_manager = audio_manager
+        self.rules_manager = rules_manager
         self._history: list[dict[str, Any]] = []
         self._pending_macros: dict[str, dict[str, Any]] = {}
         self._active_preconditioning: dict[str, Any] | None = None
         self._watchdog_task: asyncio.Task | None = None
         self._migration_unsub: Any = None
+
+    def set_rules_manager(self, rules_manager: Any) -> None:
+        """Set the behavioral rules manager."""
+        self.rules_manager = rules_manager
 
     def set_audio_manager(self, audio_manager: Any) -> None:
         """Set the audio handoff manager."""
@@ -68,9 +73,14 @@ class MacroManager:
         return False
 
     def inspect_safety(self, steps: list[dict[str, Any]]) -> dict[str, Any]:
-        """Perform pre-flight safety check on proposed macro steps."""
+        """Perform pre-flight safety check on proposed macro steps respecting user behavioral rules."""
         critical_steps: list[dict[str, Any]] = []
         warnings: list[str] = []
+
+        rules = self.rules_manager.get_rules() if getattr(self, "rules_manager", None) else {}
+        autonomy = str(rules.get("autonomy_level", "balanced")).lower()
+        require_lock = rules.get("require_lock_confirmation", True)
+        require_sec = rules.get("require_security_confirmation", True)
 
         for idx, step in enumerate(steps, start=1):
             domain = step.get("domain", "")
@@ -78,16 +88,35 @@ class MacroManager:
             full_call = f"{domain}.{service}".lower()
             label = step.get("name") or step.get("label") or f"{full_call} step {idx}"
 
-            if full_call in CRITICAL_SERVICES:
-                critical_steps.append({"step_index": idx, "label": label, "call": full_call})
-                if full_call == "lock.unlock":
+            is_critical = False
+            if full_call == "lock.unlock":
+                if require_lock or autonomy == "strict":
                     warnings.append(f"⚠️ Step {idx} unlocks physical entry deadbolt(s).")
-                elif full_call == "alarm_control_panel.alarm_disarm":
-                    warnings.append(f"⚠️ Step {idx} disarms the security alarm system.")
-                elif full_call == "cover.open_cover":
-                    warnings.append(f"⚠️ Step {idx} opens exterior barrier/garage covers.")
+                    is_critical = True
+            elif full_call in ("alarm_control_panel.alarm_disarm", "alarm_control_panel.alarm_arm_home", "alarm_control_panel.alarm_arm_away"):
+                if require_sec or autonomy == "strict":
+                    warnings.append(f"⚠️ Step {idx} disarms or changes the security alarm system.")
+                    is_critical = True
+            elif full_call in CRITICAL_SERVICES:
+                if autonomy != "high":
+                    warnings.append(f"⚠️ Step {idx} executes critical service: {full_call}.")
+                    is_critical = True
+            elif autonomy == "strict":
+                warnings.append(f"⚠️ Step {idx} executes state change: {full_call}.")
+                is_critical = True
 
-        requires_confirmation = len(critical_steps) > 0
+            if is_critical:
+                critical_steps.append({"step_index": idx, "label": label, "call": full_call})
+
+        if autonomy == "high":
+            requires_confirmation = any(
+                (c["call"] == "lock.unlock" and require_lock) or
+                ("alarm" in c["call"] and require_sec)
+                for c in critical_steps
+            )
+        else:
+            requires_confirmation = len(critical_steps) > 0
+
         return {
             "requires_confirmation": requires_confirmation,
             "critical_steps": critical_steps,

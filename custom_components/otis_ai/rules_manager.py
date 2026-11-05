@@ -51,6 +51,7 @@ DEFAULT_RULES: dict[str, Any] = {
     "voice_announcements_enabled": True,
     "voice_filter_passersby": True,
     "person_profiles": {},
+    "reasoning_timeout": 60,
 }
 
 
@@ -104,6 +105,17 @@ class BehavioralRulesManager:
         # Ensure valid types
         if "audio_follow_enabled" in merged:
             merged["audio_follow_enabled"] = bool(merged["audio_follow_enabled"])
+        if "voice_announcements_enabled" in merged:
+            merged["voice_announcements_enabled"] = bool(merged["voice_announcements_enabled"])
+        if "voice_filter_passersby" in merged:
+            merged["voice_filter_passersby"] = bool(merged["voice_filter_passersby"])
+        if "presence_room_cards" in merged:
+            merged["presence_room_cards"] = bool(merged["presence_room_cards"])
+        if "reasoning_timeout" in merged:
+            try:
+                merged["reasoning_timeout"] = max(10, min(300, int(merged["reasoning_timeout"])))
+            except (ValueError, TypeError):
+                merged["reasoning_timeout"] = 60
         if "onboarding_completed" in merged:
             merged["onboarding_completed"] = bool(merged["onboarding_completed"])
         if "require_lock_confirmation" in merged:

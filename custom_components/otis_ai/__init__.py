@@ -457,7 +457,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     rag_manager = RAGKnowledgeManager(hass, local_llm_manager=local_llm_manager)
     local_llm_manager.rag_manager = rag_manager
     sentinel_manager = SentinelManager(hass, local_llm_manager=local_llm_manager)
-    macro_manager = MacroManager(hass)
+    macro_manager = MacroManager(hass, rules_manager=rules_manager)
     audio_manager = AudioHandoffManager(hass, spatial_manager=spatial_manager, rules_manager=rules_manager)
     macro_manager.set_audio_manager(audio_manager)
     macro_manager.async_start_migration_listener()
@@ -492,6 +492,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         sentinel_manager=sentinel_manager,
         energy_manager=energy_manager,
         habit_manager=habit_manager,
+        rules_manager=rules_manager,
     )
     await asyncio.gather(
         spatial_manager.async_load(),
@@ -2064,6 +2065,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         updated = await rm.async_save(rules_payload)
         if hasattr(eng, "invalidate_cache"):
             eng.invalidate_cache()
+        if "reasoning_timeout" in updated and hasattr(hass, "config_entries") and hasattr(hass.config_entries, "async_update_entry"):
+            try:
+                new_timeout = updated["reasoning_timeout"]
+                if entry.options.get(CONF_REASONING_TIMEOUT) != new_timeout:
+                    hass.config_entries.async_update_entry(
+                        entry,
+                        options={**entry.options, CONF_REASONING_TIMEOUT: new_timeout},
+                    )
+            except Exception as opt_err:
+                _LOGGER.debug("Could not update config entry reasoning_timeout: %s", opt_err)
         if hasattr(hass, "bus") and hasattr(hass.bus, "async_fire"):
             try:
                 hass.bus.async_fire("otis_ai_rules_updated", {"rules": updated})
@@ -3464,18 +3475,20 @@ class OtisAIConversationAgent(AbstractAgent):
             )
             return self._create_response(user_input, speech)
 
-        # Check for direct multi-step macro trigger phrases
+        # Check for direct multi-step macro trigger phrases (only when not asking to create/build an automation)
+        is_auto_or_script_request = any(w in user_text for w in ("create", "automate", "new automation", "build automation", "automation")) and not any(w in user_text for w in ("run", "start", "prep", "activate"))
         macro_template_target = None
-        if any(w in user_text for w in ("prep movie night", "movie night", "start movie night", "cinema mode", "film mode", "theater mode")):
-            macro_template_target = "movie_night"
-        elif any(w in user_text for w in ("bedtime routine", "goodnight routine", "goodnight mode", "time for bed", "go to sleep", "sleep mode", "goodnight")):
-            macro_template_target = "goodnight"
-        elif any(w in user_text for w in ("party mode", "entertain mode", "party time", "entertainment mode")):
-            macro_template_target = "party_mode"
-        elif any(w in user_text for w in ("lockdown home", "lock down home", "lockdown house", "away mode", "leaving home", "leaving house", "secure home")):
-            macro_template_target = "away_mode"
-        elif any(w in user_text for w in ("welcome home", "arriving home", "arrived home", "i'm home", "im home")):
-            macro_template_target = "welcome_home"
+        if not is_auto_or_script_request:
+            if any(w in user_text for w in ("prep movie night", "movie night", "start movie night", "cinema mode", "film mode", "theater mode")):
+                macro_template_target = "movie_night"
+            elif any(w in user_text for w in ("bedtime routine", "goodnight routine", "goodnight mode", "time for bed", "go to sleep", "sleep mode", "goodnight")):
+                macro_template_target = "goodnight"
+            elif any(w in user_text for w in ("party mode", "entertain mode", "party time", "entertainment mode")):
+                macro_template_target = "party_mode"
+            elif any(w in user_text for w in ("lockdown home", "lock down home", "lockdown house", "away mode", "leaving home", "leaving house", "secure home")):
+                macro_template_target = "away_mode"
+            elif any(w in user_text for w in ("welcome home", "arriving home", "arrived home", "i'm home", "im home")):
+                macro_template_target = "welcome_home"
 
         if macro_template_target and self.macro_manager:
             cap_map = await self.engine.async_build_capability_map()
@@ -4137,6 +4150,150 @@ class OtisAIConversationAgent(AbstractAgent):
                 role_str = f" [{n.get('role', 'satellite').upper()}]" if n.get("role") else ""
                 lines.append(f"• {stat_icon} **{n.get('name')}** (`{n.get('node_id')}`){role_str}: {n.get('status')}, {n.get('latency_ms', 0)}ms, v{n.get('remote_version', 'unknown')}")
             return self._create_response(user_input, "\n".join(lines))
+
+        # Check for Proactive Suggestions & Automation parity commands
+        is_reset_recs = any(w in user_lower for w in (
+            "reset dismissed", "restore dismissed", "reset ignored", "restore ignored", "clear dismissed recommendations"
+        ))
+        if is_reset_recs and getattr(self, "rules_manager", None):
+            await self.rules_manager.async_reset_dismissed_recommendations()
+            if hasattr(self.engine, "invalidate_cache"):
+                self.engine.invalidate_cache()
+            return self._create_response(user_input, "✨ All dismissed recommendations and suggestions have been restored to your feed.")
+
+        is_list_recs = any(w in user_lower for w in (
+            "what suggestions", "what recommendations", "show suggestions", "show recommendations",
+            "list suggestions", "list recommendations", "available recommendations", "recommended automations",
+            "suggested automations", "proactive suggestions", "proactive recommendations"
+        ))
+        if is_list_recs:
+            fire_progress("domain", "Querying Recommendations", "Auditing active proactive suggestions and automation proposals")
+            cap_map = await self.engine.async_build_capability_map()
+            all_suggs = list(cap_map.get("proactive_suggestions", []))
+            dismissed = set(self.rules_manager.get_dismissed_recommendations()) if getattr(self, "rules_manager", None) else set()
+            active_suggs = [s for s in all_suggs if s.get("id") not in dismissed]
+            if not active_suggs:
+                return self._create_response(
+                    user_input,
+                    "✨ No proactive recommendations pending right now! Your smart home is fully optimized."
+                )
+            session_data["last_listed_suggestions"] = [s.get("id") for s in active_suggs]
+            lines = [f"💡 **Proactive Recommendations & Automation Suggestions ({len(active_suggs)} active):**\n"]
+            for s_idx, s in enumerate(active_suggs[:6], 1):
+                lines.append(f"{s_idx}. **{s.get('title')}** (`{s.get('id')}`)\n   {s.get('description')}")
+            lines.append("\n*(Say 'apply 1' or 'apply <id>' to create and enable any automation immediately)*")
+            return self._create_response(user_input, "\n".join(lines))
+
+        # Check for applying or dismissing a recommendation
+        is_apply_rec = any(user_lower.startswith(p) for p in (
+            "apply suggestion", "apply recommendation", "apply proactive", "deploy suggestion", "deploy recommendation",
+            "install suggestion", "install recommendation"
+        )) or (
+            any(w in user_lower for w in ("apply ", "deploy ", "install ", "enable ")) and
+            any(t in user_lower for t in ("suggestion", "recommendation"))
+        ) or (
+            re.match(r"^apply\s+\d+$", user_lower) is not None
+            and session_data.get("last_listed_suggestions")
+        )
+
+        is_dismiss_rec = any(user_lower.startswith(p) for p in (
+            "dismiss suggestion", "dismiss recommendation", "ignore suggestion", "ignore recommendation",
+            "hide suggestion", "hide recommendation", "mute suggestion", "mute recommendation"
+        )) or (
+            any(w in user_lower for w in ("dismiss ", "ignore ", "hide ", "mute ")) and
+            any(t in user_lower for t in ("suggestion", "recommendation"))
+        )
+
+        # Check for creating an automation that matches an existing vetted suggestion
+        is_create_auto_intent = (
+            any(w in user_lower for w in ("create automation", "new automation", "set up automation", "add automation", "create an automation"))
+            or (
+                any(verb in user_lower for verb in ("create", "make", "set up", "setup", "add", "build", "generate", "write", "automate"))
+                and any(noun in user_lower for noun in ("automation", "automations", "routine", "routines", "rule", "rules"))
+            )
+        )
+
+        if is_apply_rec or is_dismiss_rec or is_create_auto_intent:
+            cap_map = await self.engine.async_build_capability_map()
+            all_suggs = list(cap_map.get("proactive_suggestions", []))
+            target_sugg = None
+
+            # 1. Number index match e.g. "apply 1" or "apply suggestion 1"
+            num_match = re.search(r"\b(?:suggestion|recommendation)?\s*(\d+)\b", user_lower)
+            if num_match and session_data.get("last_listed_suggestions"):
+                idx = int(num_match.group(1)) - 1
+                rec_ids = session_data["last_listed_suggestions"]
+                if 0 <= idx < len(rec_ids):
+                    target_id = rec_ids[idx]
+                    target_sugg = next((s for s in all_suggs if s.get("id") == target_id), None)
+
+            # 2. Exact or slug ID match
+            if not target_sugg:
+                for s in all_suggs:
+                    s_id = s.get("id", "").lower()
+                    if s_id and s_id in user_lower:
+                        target_sugg = s
+                        break
+
+            # 3. Fuzzy title match or keyword match
+            if not target_sugg:
+                for s in all_suggs:
+                    s_title = s.get("title", "").lower()
+                    s_words = [w for w in re.split(r"\W+", s_title) if len(w) > 3]
+                    matched_words = [w for w in s_words if w in user_lower]
+                    if len(matched_words) >= 2 or (len(s_words) == 1 and s_words[0] in user_lower):
+                        target_sugg = s
+                        break
+
+            if is_dismiss_rec and target_sugg:
+                if getattr(self, "rules_manager", None):
+                    await self.rules_manager.async_dismiss_recommendation(target_sugg["id"])
+                    if hasattr(self.engine, "invalidate_cache"):
+                        self.engine.invalidate_cache()
+                return self._create_response(
+                    user_input,
+                    f"🗑️ Ignored recommendation **{target_sugg.get('title')}** (`{target_sugg.get('id')}`). It will be hidden from your Command Center and feed."
+                )
+
+            if target_sugg and target_sugg.get("action_type") == "create_automation":
+                auto_payload = dict(target_sugg.get("action_payload", {}))
+                rules = self.rules_manager.get_rules() if getattr(self, "rules_manager", None) else {}
+                autonomy = rules.get("autonomy_level", "balanced")
+                is_explicit_apply = is_apply_rec or any(w in user_lower for w in ("apply", "deploy", "install", "enable"))
+
+                if autonomy == "high" or is_explicit_apply:
+                    auto_id = await self.automation_manager.async_write_automation(auto_payload)
+                    await self.automation_manager.async_reload_automations()
+                    if hasattr(self.engine, "invalidate_cache"):
+                        self.engine.invalidate_cache()
+                    if getattr(self, "rules_manager", None):
+                        await self.rules_manager.async_dismiss_recommendation(target_sugg["id"])
+                    speech = (
+                        f"🚀 **Automation Created and Enabled!**\n\n"
+                        f"I have successfully created and enabled the automation '**{auto_payload.get('alias', auto_id)}**' in your Home Assistant.\n\n"
+                        f"• **Trigger:** {len(auto_payload.get('trigger', []))} condition/state trigger(s)\n"
+                        f"• **Actions:** {len(auto_payload.get('action', []))} action step(s)\n"
+                        f"• **Mode:** `{auto_payload.get('mode', 'single')}`\n\n"
+                        f"*(This matches the proactive recommendation in your Command Center card)*"
+                    )
+                    self._record_turn(session_data, user_input.text, speech)
+                    return self._create_response(user_input, speech)
+                else:
+                    session_data["pending_items"] = [{
+                        "type": "automation",
+                        "name": auto_payload.get("alias", "Proposed Automation"),
+                        "yaml_data": auto_payload,
+                    }]
+                    import yaml
+                    dumped_yaml = yaml.dump(auto_payload, sort_keys=False)
+                    speech = (
+                        f"Here is the proposed automation for **{target_sugg.get('title')}**:\n\n"
+                        f"```yaml\n{dumped_yaml}```\n\n"
+                        f"Would you like me to create and enable this automation '{auto_payload.get('alias')}' in your Home Assistant? "
+                        "Say 'yes' or 'apply' to confirm, or 'no' to cancel."
+                    )
+                    self._record_turn(session_data, user_input.text, speech)
+                    return self._create_response(user_input, speech)
 
         # 1. Resolve prioritized AI agent cascade (Primary + Fallbacks)
         options = self.entry.options

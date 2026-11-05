@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.44";
+const CARD_VERSION = "0.1.45";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -7797,6 +7797,14 @@ class OtisCompanionCard extends HTMLElement {
           </select>
         </div>
 
+        <div class="rules-setting-row" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--otis-surface-border); border-radius: 8px;">
+          <div>
+            <div class="rules-setting-label">Contextual Room Occupancy Cards</div>
+            <div class="rules-setting-desc">Display dynamic room presence & activity cards in Command Center when areas are occupied.</div>
+          </div>
+          <input type="checkbox" id="rules-input-presence-room-cards" ${rules.presence_room_cards !== false ? "checked" : ""} style="cursor: pointer; width: 18px; height: 18px; accent-color: var(--otis-primary);">
+        </div>
+
         <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 6px;">Proactive Recommendations & Feed:</div>
         <div class="rules-setting-row" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--otis-surface-border); border-radius: 8px;">
           <div>
@@ -7988,10 +7996,30 @@ class OtisCompanionCard extends HTMLElement {
     const quietVol = rules.quiet_hours_volume !== undefined ? rules.quiet_hours_volume : 25;
     const preferredSpeaker = rules.preferred_speaker || "";
     const audioFollowEnabled = rules.audio_follow_enabled !== false;
+    const voiceAnnouncementsEnabled = rules.voice_announcements_enabled !== false;
+    const voiceFilterPassersby = rules.voice_filter_passersby !== false;
 
     return `
       <div style="display: flex; flex-direction: column; gap: 14px;">
-        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">Spatial Audio Follow-Me:</div>
+        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">Proactive Voice Announcements & Camera Intelligence:</div>
+
+        <label class="rules-setting-row" style="cursor: pointer;">
+          <div>
+            <div class="rules-setting-label">Proactive Voice Announcements</div>
+            <div class="rules-setting-desc">Spoken alerts on speakers for arriving visitors, perimeter security alerts, and door opening events.</div>
+          </div>
+          <input type="checkbox" id="rules-input-voice-announcements-enabled" ${voiceAnnouncementsEnabled ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
+        </label>
+
+        <label class="rules-setting-row" style="cursor: pointer;">
+          <div>
+            <div class="rules-setting-label">Filter Sidewalk & Street Passersby</div>
+            <div class="rules-setting-desc">Suppress voice announcements for pedestrian tracks moving across perimeter cameras without lingering or entering.</div>
+          </div>
+          <input type="checkbox" id="rules-input-voice-filter-passersby" ${voiceFilterPassersby ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
+        </label>
+
+        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 4px;">Spatial Audio Follow-Me:</div>
 
         <label class="rules-setting-row" style="cursor: pointer;">
           <div>
@@ -9431,6 +9459,28 @@ class OtisCompanionCard extends HTMLElement {
         };
       }
 
+      // Voice Announcements Toggles
+      const voiceAnnouncementsToggle = root.querySelector("#rules-input-voice-announcements-enabled");
+      if (voiceAnnouncementsToggle) {
+        voiceAnnouncementsToggle.onchange = () => {
+          this._rulesDraft = { ...(this._rulesDraft || {}), voice_announcements_enabled: voiceAnnouncementsToggle.checked };
+        };
+      }
+      const voiceFilterToggle = root.querySelector("#rules-input-voice-filter-passersby");
+      if (voiceFilterToggle) {
+        voiceFilterToggle.onchange = () => {
+          this._rulesDraft = { ...(this._rulesDraft || {}), voice_filter_passersby: voiceFilterToggle.checked };
+        };
+      }
+
+      // Presence Room Cards Toggle
+      const presenceCardsToggle = root.querySelector("#rules-input-presence-room-cards");
+      if (presenceCardsToggle) {
+        presenceCardsToggle.onchange = () => {
+          this._rulesDraft = { ...(this._rulesDraft || {}), presence_room_cards: presenceCardsToggle.checked };
+        };
+      }
+
       // Quiet Hours Controls
       const quietToggle = root.querySelector("#rules-input-quiet-enabled");
       if (quietToggle) {
@@ -9536,6 +9586,12 @@ class OtisCompanionCard extends HTMLElement {
             if (speakerInput) draft.preferred_speaker = speakerInput.value.trim();
             const audioFollowToggle = root.querySelector("#rules-input-audio-follow-enabled");
             if (audioFollowToggle) draft.audio_follow_enabled = audioFollowToggle.checked;
+            const voiceAnnouncementsToggle = root.querySelector("#rules-input-voice-announcements-enabled");
+            if (voiceAnnouncementsToggle) draft.voice_announcements_enabled = voiceAnnouncementsToggle.checked;
+            const voiceFilterToggle = root.querySelector("#rules-input-voice-filter-passersby");
+            if (voiceFilterToggle) draft.voice_filter_passersby = voiceFilterToggle.checked;
+            const presenceCardsToggle = root.querySelector("#rules-input-presence-room-cards");
+            if (presenceCardsToggle) draft.presence_room_cards = presenceCardsToggle.checked;
             if (showIgnoredCheck) draft.show_ignored_recommendations = showIgnoredCheck.checked;
             const timeoutInput = root.querySelector("#rules-input-reasoning-timeout");
             if (timeoutInput && timeoutInput.value) draft.reasoning_timeout = parseInt(timeoutInput.value, 10);

@@ -149,6 +149,7 @@ class MultiAgentOrchestrator:
         sentinel_manager: Any = None,
         energy_manager: Any = None,
         habit_manager: Any = None,
+        rules_manager: Any = None,
         storage_key: str = STORAGE_KEY,
     ) -> None:
         """Initialize the Multi-Agent Orchestrator."""
@@ -160,6 +161,7 @@ class MultiAgentOrchestrator:
         self.sentinel_manager = sentinel_manager
         self.energy_manager = energy_manager
         self.habit_manager = habit_manager
+        self.rules_manager = rules_manager
 
         self._store = Store(hass, STORAGE_VERSION, storage_key)
         self._satellite_configs: dict[str, dict[str, Any]] = {}
@@ -395,9 +397,11 @@ class MultiAgentOrchestrator:
         # Generate response using local LLM if available, otherwise domain-grounded synthesis
         if self.local_llm_manager and getattr(self.local_llm_manager, "model", None):
             try:
+                rules_snip = self.rules_manager.get_system_prompt_snippet() if self.rules_manager else ""
                 system_prompt = (
                     f"{spec['system_prompt']} "
                     f"Relevant telemetry: {' '.join(domain_insights)} "
+                    f"{rules_snip} "
                     "Respond concisely and actionably in 1-2 sentences."
                 )
                 res = await self.local_llm_manager.async_generate(

@@ -7,6 +7,26 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.45] - 2026-11-04
+
+### Added & Improved
+- **Post-Phase 10 Polish & Assist Co-Pilot Automation Parity**:
+  - **Full Automation Parity Between Lovelace Card & Assist Co-Pilot**:
+    - Connected proactive recommendations and vetted automation proposals to Assist Co-Pilot conversational flow (`OtisAIConversationAgent.async_process`).
+    - Added natural language intent matching for proactive suggestions (e.g., "list recommendations", "show suggestions", "apply suggestion <id/index>", "dismiss suggestion <id/index>").
+    - Synchronized automation creation so requesting automations conversationally applies the exact same vetted Home Assistant YAML triggers, conditions, and actions created when clicking "Apply" on the Command Center card.
+    - Added high autonomy mode auto-apply: when `autonomy_level == "high"` or explicit "apply/deploy" is requested, automations are written and reloaded immediately; in balanced/strict mode, vetted YAML is presented with interactive confirmation prompts.
+  - **Dynamic Behavioral Rules & Immediate Propagation**:
+    - Added `reasoning_timeout` to `DEFAULT_RULES` and validation (10–300s), dynamically updating config entry options on `set_user_rules`.
+    - Connected `rules_manager` to `MacroManager`: `inspect_safety` now dynamically honors user autonomy policies (`high`, `balanced`, `strict`), `require_lock_confirmation`, and `require_security_confirmation`.
+    - Connected `rules_manager` to `MultiAgentOrchestrator`: multi-agent specialist sub-agents now ground their prompts in user personas, tone, quiet hours, and household instructions.
+  - **Rules Modal UI & Controls**:
+    - Added missing toggles in Lovelace `otis-companion-card.js` Rules Modal:
+      - `voice_announcements_enabled`: Master proactive voice announcements switch.
+      - `voice_filter_passersby`: Filter pedestrian sidewalk and street passerby movements.
+      - `presence_room_cards`: Contextual room presence & activity cards toggle in Command Center.
+    - Bumped Lovelace card version to v0.1.45.
+
 ## [0.1.44] - 2026-11-04
 
 ### Added
