@@ -207,12 +207,14 @@ def get_agent_display_name(hass: HomeAssistant, agent_id: str | None) -> str:
 
 
 
+MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024  # 100 MB upload limit
+
+
 class OtisWalkthroughUploadView(HomeAssistantView):
     """HTTP view to accept video walkthrough uploads and trigger floor plan parsing."""
 
     url = "/api/otis_ai/upload_walkthrough"
     name = "api:otis_ai:upload_walkthrough"
-    requires_auth = False
 
     def __init__(
         self,
@@ -220,12 +222,14 @@ class OtisWalkthroughUploadView(HomeAssistantView):
         floorplan_parser: FloorplanParser,
         engine: Any,
         spatial_manager: SpatialGraphManager | None = None,
+        media_dir: str | None = None,
     ) -> None:
         """Initialize the upload view."""
         self.hass = hass
         self.floorplan_parser = floorplan_parser
         self.engine = engine
         self.spatial_manager = spatial_manager or getattr(engine, "spatial_manager", None)
+        self.media_dir = media_dir or hass.config.path(".storage", DOMAIN, "media")
         self._active: bool = False
         self._stage: str = "Idle"
         self._discovered_areas: list[str] = []
@@ -248,7 +252,18 @@ class OtisWalkthroughUploadView(HomeAssistantView):
     async def post(self, request: web.Request) -> web.Response:
         """Handle uploaded video file(s), overwriting previous uploads to manage disk space."""
         _LOGGER.info("Received video walkthrough upload request")
-        upload_dir = self.hass.config.path("www")
+        if request.content_length and request.content_length > MAX_UPLOAD_SIZE_BYTES:
+            _LOGGER.warning(
+                "Walkthrough upload rejected: Content-Length %d exceeds limit of %d bytes",
+                request.content_length,
+                MAX_UPLOAD_SIZE_BYTES,
+            )
+            return web.Response(
+                status=413,
+                text=f"Upload payload too large. Maximum allowed size is {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)}MB.",
+            )
+
+        upload_dir = self.media_dir
         await self.hass.async_add_executor_job(partial(os.makedirs, upload_dir, exist_ok=True))
         self._set_progress("Uploading videos", [], active=True)
 
@@ -287,6 +302,15 @@ class OtisWalkthroughUploadView(HomeAssistantView):
                             if not chunk:
                                 break
                             file_bytes += len(chunk)
+                            if file_bytes > MAX_UPLOAD_SIZE_BYTES:
+                                _LOGGER.warning(
+                                    "Walkthrough upload stream exceeded max size %d bytes",
+                                    MAX_UPLOAD_SIZE_BYTES,
+                                )
+                                return web.Response(
+                                    status=413,
+                                    text=f"Upload stream exceeded limit of {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)}MB.",
+                                )
                             await self.hass.async_add_executor_job(_append_chunk, v_dest, chunk, "ab")
                         saved_videos.append(v_dest)
                         _LOGGER.info(
@@ -300,6 +324,15 @@ class OtisWalkthroughUploadView(HomeAssistantView):
             else:
                 v_dest = os.path.join(upload_dir, "walkthrough_upload.mp4")
                 data = await request.read()
+                if len(data) > MAX_UPLOAD_SIZE_BYTES:
+                    _LOGGER.warning(
+                        "Walkthrough upload body exceeded max size %d bytes",
+                        MAX_UPLOAD_SIZE_BYTES,
+                    )
+                    return web.Response(
+                        status=413,
+                        text=f"Upload body exceeded limit of {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)}MB.",
+                    )
                 await self.hass.async_add_executor_job(_append_chunk, v_dest, data, "wb")
                 saved_videos.append(v_dest)
                 _LOGGER.info(
@@ -395,6 +428,54 @@ class OtisWalkthroughUploadView(HomeAssistantView):
             _LOGGER.error("Failed to process walkthrough video: %s", err)
             return web.json_response({"success": False, "error": str(err)}, status=500)
 
+
+class OtisMediaView(HomeAssistantView):
+    """Authenticated HTTP view to serve private Otis media (floor plan SVGs, uploads)."""
+
+    url = "/api/otis_ai/media/{filename}"
+    name = "api:otis_ai:media"
+    requires_auth = True
+
+    def __init__(self, hass: HomeAssistant, media_dir: str) -> None:
+        """Initialize the media view."""
+        self.hass = hass
+        self.media_dir = media_dir
+
+    async def get(self, request: web.Request, filename: str) -> web.Response:
+        """Serve media file securely with MIME detection and path traversal guards."""
+        safe_name = os.path.basename(filename)
+        if not safe_name or safe_name != filename or ".." in filename or "/" in filename or "\\" in filename:
+            return web.Response(status=400, text="Invalid filename")
+
+        file_path = os.path.join(self.media_dir, safe_name)
+        file_exists = await self.hass.async_add_executor_job(os.path.isfile, file_path)
+        if not file_exists:
+            return web.Response(status=404, text="Media not found")
+
+        ext = os.path.splitext(safe_name)[1].lower()
+        content_type_map = {
+            ".svg": "image/svg+xml; charset=utf-8",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".mp4": "video/mp4",
+            ".webm": "video/webm",
+            ".json": "application/json",
+        }
+        content_type = content_type_map.get(ext, "application/octet-stream")
+
+        def _read_bytes() -> bytes:
+            with open(file_path, "rb") as f:
+                return f.read()
+
+        content = await self.hass.async_add_executor_job(_read_bytes)
+        return web.Response(
+            body=content,
+            content_type=content_type,
+            headers={
+                "Cache-Control": "no-cache, must-revalidate",
+            },
+        )
 
 
 async def async_register_frontend_paths(hass: HomeAssistant) -> None:
@@ -556,14 +637,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not isinstance(dash_task, asyncio.Task) and asyncio.iscoroutine(dash_coro):
         dash_coro.close()
 
-    # Register Walkthrough Upload View
+    # Register Walkthrough Upload View & Media View
+    media_dir = hass.config.path(".storage", DOMAIN, "media")
+    await hass.async_add_executor_job(partial(os.makedirs, media_dir, exist_ok=True))
+
+    def _migrate_media_if_needed(w_dir: str, t_dir: str) -> None:
+        for fname in ("otis_floorplan.svg", "otis_floorplan_3d.svg"):
+            old_f = os.path.join(w_dir, fname)
+            new_f = os.path.join(t_dir, fname)
+            if os.path.isfile(old_f) and not os.path.isfile(new_f):
+                try:
+                    import shutil
+                    shutil.copy2(old_f, new_f)
+                except Exception:
+                    pass
+
+    www_dir = hass.config.path("www")
+    await hass.async_add_executor_job(_migrate_media_if_needed, www_dir, media_dir)
+
     if hasattr(hass, "http"):
         try:
             hass.http.register_view(
-                OtisWalkthroughUploadView(hass, floorplan_parser, engine, spatial_manager=spatial_manager)
+                OtisWalkthroughUploadView(
+                    hass,
+                    floorplan_parser,
+                    engine,
+                    spatial_manager=spatial_manager,
+                    media_dir=media_dir,
+                )
             )
+            hass.http.register_view(OtisMediaView(hass, media_dir))
         except Exception as err:
-            _LOGGER.debug("Could not register walkthrough upload view: %s", err)
+            _LOGGER.debug("Could not register walkthrough upload view or media view: %s", err)
 
     # Register the conversation agent
     agent = OtisAIConversationAgent(
@@ -5310,8 +5415,8 @@ class DiscoveryEngine:
             "floorplan": {
                 "exists": has_floorplan,
                 "walkthrough_completed": has_walkthrough,
-                "url": "/local/otis_floorplan.svg" if has_floorplan else None,
-                "url_3d": "/local/otis_floorplan_3d.svg" if has_floorplan else None,
+                "url": "/api/otis_ai/media/otis_floorplan.svg" if has_floorplan else None,
+                "url_3d": "/api/otis_ai/media/otis_floorplan_3d.svg" if has_floorplan else None,
                 "has_3d_view": has_floorplan,
                 "lovelace_yaml": self.floorplan_parser.get_lovelace_yaml() if has_floorplan else None,
                 "custom_layout": getattr(self.floorplan_parser, "_metadata", {}).get("custom_layout", {}),

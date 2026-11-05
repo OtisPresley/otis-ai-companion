@@ -9,9 +9,15 @@ from typing import Any
 
 import yaml
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 from homeassistant.util import yaml as yaml_util
 
 _LOGGER = logging.getLogger(__name__)
+
+STORAGE_VERSION = 1
+STORAGE_KEY_AUTOMATIONS = "otis_ai_automations"
+STORAGE_KEY_SCRIPTS = "otis_ai_scripts"
+STORAGE_KEY_BLUEPRINTS = "otis_ai_blueprints"
 
 
 def _read_blueprint_snippet(full_path: str, max_lines: int = 120) -> str | None:
@@ -31,58 +37,92 @@ def _read_blueprint_snippet(full_path: str, max_lines: int = 120) -> str | None:
 
 
 class AutomationManager:
-    """Manages reading and writing to automations.yaml and scripts.yaml."""
+    """Manages reading user automations/scripts and managing integration configurations via .storage."""
 
     def __init__(self, hass: HomeAssistant) -> None:
         """Initialize the manager."""
         self.hass = hass
         self.automations_path = hass.config.path("automations.yaml")
         self.scripts_path = hass.config.path("scripts.yaml")
+        self._auto_store: Store[list[dict[str, Any]]] = Store(
+            hass, STORAGE_VERSION, STORAGE_KEY_AUTOMATIONS
+        )
+        self._script_store: Store[dict[str, Any]] = Store(
+            hass, STORAGE_VERSION, STORAGE_KEY_SCRIPTS
+        )
+        self._bp_store: Store[dict[str, Any]] = Store(
+            hass, STORAGE_VERSION, STORAGE_KEY_BLUEPRINTS
+        )
 
     def _read_yaml_file(self, path: str) -> Any:
-        """Read a YAML file from disk (blocking)."""
+        """Read a YAML file from disk (blocking, read-only)."""
         if not os.path.exists(path):
             return [] if "automations" in path else {}
         try:
-            return yaml_util.load_yaml(path)
+            res = yaml_util.load_yaml(path)
+            if isinstance(res, (list, dict)):
+                return res
+        except Exception as err:
+            _LOGGER.debug("Error loading YAML via yaml_util %s: %s", path, err)
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                res = yaml.safe_load(f)
+                if isinstance(res, (list, dict)):
+                    return res
         except Exception as err:
             _LOGGER.error("Error reading YAML file %s: %s", path, err)
-            return [] if "automations" in path else {}
-
-    def _write_yaml_file(self, path: str, data: Any) -> None:
-        """Write a YAML file to disk (blocking)."""
-        try:
-            yaml_util.save_yaml(path, data)
-        except Exception as err:
-            _LOGGER.error("Error writing YAML file %s: %s", path, err)
-            raise
+        return [] if "automations" in path else {}
 
     async def async_read_automations(self) -> list[dict[str, Any]]:
-        """Read all automations from automations.yaml."""
-        res = await self.hass.async_add_executor_job(self._read_yaml_file, self.automations_path)
-        if not isinstance(res, list):
-            return []
-        return res
+        """Read all automations from automations.yaml and Otis managed store."""
+        user_autos = await self.hass.async_add_executor_job(self._read_yaml_file, self.automations_path)
+        if not isinstance(user_autos, list):
+            user_autos = []
+        try:
+            stored_autos = await self._auto_store.async_load()
+        except Exception as err:
+            _LOGGER.debug("Could not load stored automations: %s", err)
+            stored_autos = []
+        if not isinstance(stored_autos, list):
+            stored_autos = []
+
+        merged = list(user_autos)
+        user_ids = {str(a.get("id")) for a in user_autos if isinstance(a, dict) and a.get("id")}
+        for sa in stored_autos:
+            if isinstance(sa, dict) and str(sa.get("id")) not in user_ids:
+                merged.append(sa)
+        return merged
 
     async def async_read_scripts(self) -> dict[str, Any]:
-        """Read all scripts from scripts.yaml."""
-        res = await self.hass.async_add_executor_job(self._read_yaml_file, self.scripts_path)
-        if not isinstance(res, dict):
-            return {}
-        return res
+        """Read all scripts from scripts.yaml and Otis managed store."""
+        user_scripts = await self.hass.async_add_executor_job(self._read_yaml_file, self.scripts_path)
+        if not isinstance(user_scripts, dict):
+            user_scripts = {}
+        try:
+            stored_scripts = await self._script_store.async_load()
+        except Exception as err:
+            _LOGGER.debug("Could not load stored scripts: %s", err)
+            stored_scripts = {}
+        if isinstance(stored_scripts, dict):
+            merged = dict(user_scripts)
+            merged.update(stored_scripts)
+            return merged
+        return user_scripts
 
     async def async_write_automation(self, automation_data: dict[str, Any]) -> str:
-        """Add or update an automation in automations.yaml."""
-        automations = await self.async_read_automations()
-        
+        """Add or update an integration-managed automation in the otis_ai_automations store (zero user YAML writes)."""
         # Clean temporary internal keys
         clean_data = {k: v for k, v in automation_data.items() if not str(k).startswith("_")}
         target_id = clean_data.get("id")
         target_alias = clean_data.get("alias")
 
-        # Find existing automation by ID or by exact alias
+        stored_autos = await self._auto_store.async_load()
+        if not isinstance(stored_autos, list):
+            stored_autos = []
+
+        # Find existing automation by ID or by exact alias in store
         index = -1
-        for i, auto in enumerate(automations):
+        for i, auto in enumerate(stored_autos):
             if not isinstance(auto, dict):
                 continue
             if target_id and str(auto.get("id")) == str(target_id):
@@ -96,7 +136,8 @@ class AutomationManager:
                 break
 
         if not target_id:
-            existing_ids = {str(a.get("id")) for a in automations if isinstance(a, dict) and a.get("id")}
+            all_known = await self.async_read_automations()
+            existing_ids = {str(a.get("id")) for a in all_known if isinstance(a, dict) and a.get("id")}
             base_id = str(int(time.time()))
             candidate_id = base_id
             suffix = 1
@@ -111,45 +152,39 @@ class AutomationManager:
             automation_data["id"] = target_id
 
         if index >= 0:
-            automations[index] = clean_data
-            _LOGGER.debug("Updated existing automation %s ('%s')", target_id, target_alias)
+            stored_autos[index] = clean_data
+            _LOGGER.debug("Updated existing stored automation %s ('%s')", target_id, target_alias)
         else:
-            automations.append(clean_data)
-            _LOGGER.debug("Appended new automation %s ('%s')", target_id, target_alias)
+            stored_autos.append(clean_data)
+            _LOGGER.debug("Appended new stored automation %s ('%s')", target_id, target_alias)
 
-        await self.hass.async_add_executor_job(self._write_yaml_file, self.automations_path, automations)
+        await self._auto_store.async_save(stored_autos)
+        _LOGGER.info("Saved automation %s to otis_ai_automations store (zero user YAML writes)", target_id)
         return str(target_id)
 
     async def async_write_script(self, script_key: str, script_data: dict[str, Any]) -> None:
-        """Add or update a script in scripts.yaml."""
-        scripts = await self.async_read_scripts()
-        scripts[script_key] = script_data
-        _LOGGER.debug("Updated script %s", script_key)
-        await self.hass.async_add_executor_job(self._write_yaml_file, self.scripts_path, scripts)
+        """Add or update an integration-managed script in the otis_ai_scripts store (zero user YAML writes)."""
+        stored_scripts = await self._script_store.async_load()
+        if not isinstance(stored_scripts, dict):
+            stored_scripts = {}
+        clean_data = {k: v for k, v in script_data.items() if not str(k).startswith("_")}
+        stored_scripts[script_key] = clean_data
+        await self._script_store.async_save(stored_scripts)
+        _LOGGER.info("Saved script %s to otis_ai_scripts store (zero user YAML writes)", script_key)
 
     async def async_write_blueprint(self, blueprint_subpath: str, blueprint_content: str | dict[str, Any]) -> str:
-        """Write or update a blueprint in /config/blueprints/automation/<blueprint_subpath>."""
-        if not hasattr(self.hass, "config") or not hasattr(self.hass.config, "path"):
-            raise ValueError("Home Assistant config path is not available")
-
+        """Add or update an integration-managed blueprint in the otis_ai_blueprints store (zero user YAML writes)."""
         # Sanitize path to prevent directory traversal
         clean_subpath = os.path.normpath(blueprint_subpath.lstrip("/")).replace("\\", "/")
         if clean_subpath.startswith("../") or clean_subpath.startswith("..") or clean_subpath.startswith("/"):
             raise ValueError(f"Invalid blueprint path: {blueprint_subpath}")
 
-        bp_full_path = self.hass.config.path("blueprints", "automation", clean_subpath)
-
-        def _write_bp() -> None:
-            os.makedirs(os.path.dirname(bp_full_path), exist_ok=True)
-            if isinstance(blueprint_content, str):
-                with open(bp_full_path, "w", encoding="utf-8") as f:
-                    f.write(blueprint_content)
-            else:
-                with open(bp_full_path, "w", encoding="utf-8") as f:
-                    yaml.dump(blueprint_content, f, default_flow_style=False, sort_keys=False)
-
-        await self.hass.async_add_executor_job(_write_bp)
-        _LOGGER.info("Successfully wrote blueprint file: %s", bp_full_path)
+        stored_bps = await self._bp_store.async_load()
+        if not isinstance(stored_bps, dict):
+            stored_bps = {}
+        stored_bps[clean_subpath] = blueprint_content
+        await self._bp_store.async_save(stored_bps)
+        _LOGGER.info("Saved blueprint %s to otis_ai_blueprints store (zero user YAML writes)", clean_subpath)
         return clean_subpath
 
     async def async_reload_automations(self) -> bool:
@@ -401,15 +436,14 @@ class AutomationManager:
         return {"matches": top_matches, "recent_log_errors": recent_log_errors}
 
     async def async_improve_automation(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Improve or patch an existing automation in automations.yaml while preserving !include/structure."""
+        """Generate improved automation YAML without modifying user YAML files on disk."""
         target_id = str(payload.get("automation_id") or "")
         target_alias = str(payload.get("alias") or "")
         new_mode = payload.get("mode")
         replace_map: dict[str, str] = payload.get("replace_map") or {}
         replacement_auto = payload.get("replacement_automation")
 
-        def _apply_replace_in_node(node: Any, replace_map: dict[str, str], parent_key: str = "") -> Any:
-            """Recursively apply replace_map only to safe values within a single automation."""
+        def _apply_replace_in_node(node: Any, r_map: dict[str, str], parent_key: str = "") -> Any:
             protected_keys = {"path", "action", "service", "platform", "domain", "type", "subtype", "id"}
             if isinstance(node, dict):
                 out = {}
@@ -417,168 +451,125 @@ class AutomationManager:
                     if k == "use_blueprint" and isinstance(v, dict):
                         bp = dict(v)
                         if "input" in bp:
-                            bp["input"] = _apply_replace_in_node(bp["input"], replace_map, "input")
+                            bp["input"] = _apply_replace_in_node(bp["input"], r_map, "input")
                         out[k] = bp
                     elif k in protected_keys and isinstance(v, str):
                         out[k] = v
                     else:
-                        out[k] = _apply_replace_in_node(v, replace_map, k)
+                        out[k] = _apply_replace_in_node(v, r_map, k)
                 return out
             if isinstance(node, list):
-                return [_apply_replace_in_node(item, replace_map, parent_key) for item in node]
+                return [_apply_replace_in_node(item, r_map, parent_key) for item in node]
             if isinstance(node, str):
                 updated = node
-                for old_str, new_str in replace_map.items():
+                for old_str, new_str in r_map.items():
                     if old_str and old_str in updated:
                         updated = updated.replace(old_str, new_str)
                 return updated
             return node
 
-        def _patch_sync() -> tuple[bool, str]:
-            if not os.path.exists(self.automations_path):
-                return False, "automations.yaml not found"
+        automations = await self.async_read_automations()
+        matched = None
+        for auto in automations:
+            if not isinstance(auto, dict):
+                continue
+            if (target_id and str(auto.get("id")) == target_id) or (
+                target_alias and str(auto.get("alias", "")).lower() == target_alias.lower()
+            ):
+                matched = dict(auto)
+                break
 
-            # Apply replace_map scoped strictly to the target automation block and safe lines only
+        if not matched and not replacement_auto:
+            return {
+                "success": False,
+                "error": f"Automation '{target_alias or target_id}' not found",
+            }
+
+        label = (
+            (matched.get("alias") if matched else None)
+            or (matched.get("id") if matched else None)
+            or target_alias
+            or target_id
+            or "Automation"
+        )
+        if isinstance(replacement_auto, dict):
+            final_auto = dict(replacement_auto)
+            if matched and matched.get("id") and not final_auto.get("id"):
+                final_auto["id"] = matched["id"]
+        else:
+            final_auto = dict(matched) if matched else {}
             if replace_map:
-                with open(self.automations_path, "r", encoding="utf-8") as f:
-                    raw_text = f.read()
-                lines = raw_text.splitlines(keepends=True)
-                starts = [idx for idx, ln in enumerate(lines) if ln.startswith("- id:")]
-                block_range: tuple[int, int] | None = None
-                if starts and (target_id or target_alias):
-                    for pos, s_idx in enumerate(starts):
-                        e_idx = starts[pos + 1] if pos + 1 < len(starts) else len(lines)
-                        block_str = "".join(lines[s_idx:e_idx])
-                        if (
-                            target_id
-                            and (
-                                f"- id: '{target_id}'" in lines[s_idx]
-                                or f'- id: "{target_id}"' in lines[s_idx]
-                                or f"- id: {target_id}" in lines[s_idx]
-                            )
-                        ) or (target_alias and f"alias: {target_alias}" in block_str):
-                            block_range = (s_idx, e_idx)
-                            break
-                s_bound, e_bound = block_range if block_range else (0, len(lines))
-                protected_prefixes = ("path:", "action:", "service:", "trigger:", "- trigger:", "condition:", "- condition:")
-                changed = False
-                for idx in range(s_bound, e_bound):
-                    stripped = lines[idx].strip()
-                    if any(stripped.startswith(p) for p in protected_prefixes):
-                        continue
-                    new_line = lines[idx]
-                    for old_str, new_str in replace_map.items():
-                        if old_str and old_str in new_line:
-                            new_line = new_line.replace(old_str, new_str)
-                    if new_line != lines[idx]:
-                        lines[idx] = new_line
-                        changed = True
-                # Also handle multi-line wrapped strings inside the block (e.g. 'Loading\n        ...')
-                block_text = "".join(lines[s_bound:e_bound])
-                new_block_text = block_text
-                for old_str, new_str in replace_map.items():
-                    parts = old_str.split()
-                    if len(parts) >= 2:
-                        pat = r"\s+".join(re.escape(p) for p in parts)
-                        new_block_text = re.sub(pat, new_str, new_block_text)
-                if new_block_text != block_text:
-                    lines[s_bound:e_bound] = new_block_text.splitlines(keepends=True)
-                    changed = True
-                if changed:
-                    with open(self.automations_path, "w", encoding="utf-8") as f:
-                        f.writelines(lines)
-                if not new_mode and not isinstance(replacement_auto, dict):
-                    return True, target_alias or target_id
+                final_auto = _apply_replace_in_node(final_auto, replace_map)
+            if new_mode and "use_blueprint" not in final_auto:
+                final_auto["mode"] = new_mode
+                if new_mode in ("queued", "parallel") and "max" not in final_auto:
+                    final_auto["max"] = 10
 
-            automations = self._read_yaml_file(self.automations_path)
-            if not isinstance(automations, list):
-                return bool(replace_map), target_alias or target_id
+        # Generate clean YAML formatted string for user review / GUI application
+        formatted_yaml = yaml.dump(final_auto, default_flow_style=False, sort_keys=False)
 
-            matched_idx = -1
-            for i, auto in enumerate(automations):
-                if not isinstance(auto, dict):
-                    continue
-                if (target_id and str(auto.get("id")) == target_id) or (
-                    target_alias and str(auto.get("alias", "")).lower() == target_alias.lower()
-                ):
-                    matched_idx = i
-                    break
+        # Update integration store if this automation exists in otis_ai_automations
+        try:
+            stored_autos = await self._auto_store.async_load()
+            if isinstance(stored_autos, list):
+                for i, sa in enumerate(stored_autos):
+                    if isinstance(sa, dict) and (
+                        (target_id and str(sa.get("id")) == target_id)
+                        or (target_alias and str(sa.get("alias", "")).lower() == target_alias.lower())
+                    ):
+                        stored_autos[i] = final_auto
+                        await self._auto_store.async_save(stored_autos)
+                        break
+        except Exception as store_err:
+            _LOGGER.debug("Could not update store for improved automation: %s", store_err)
 
-            if matched_idx < 0:
-                if replace_map:
-                    return True, target_alias or target_id
-                return False, f"Automation '{target_alias or target_id}' not found"
-
-            current = automations[matched_idx]
-            label = current.get("alias") or current.get("id") or target_id
-            if isinstance(replacement_auto, dict):
-                merged = dict(replacement_auto)
-                if current.get("id"):
-                    merged["id"] = current["id"]
-                automations[matched_idx] = merged
-            else:
-                if replace_map:
-                    current = _apply_replace_in_node(current, replace_map)
-                if new_mode and "use_blueprint" not in current:
-                    current["mode"] = new_mode
-                    if new_mode in ("queued", "parallel") and "max" not in current:
-                        current["max"] = 10
-                automations[matched_idx] = current
-
-            self._write_yaml_file(self.automations_path, automations)
-            return True, str(label)
-
-        ok, msg = await self.hass.async_add_executor_job(_patch_sync)
-        if ok:
-            await self.async_reload_automations()
-            return {"success": True, "message": f"Improved automation '{msg}' and reloaded automations!"}
-        return {"success": False, "error": msg}
+        return {
+            "success": True,
+            "action": "show_yaml",
+            "title": f"Improved Automation: {label}",
+            "message": f"Generated improved configuration for '{label}'. Copy this YAML into your Home Assistant Automation Editor (Settings -> Automations & Scenes).",
+            "yaml": formatted_yaml,
+            "automation": final_auto,
+        }
 
     async def async_optimize_system_config(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Safely patch configuration.yaml (preserving !secret and !include tags) and apply runtime settings."""
-        config_path = self.hass.config.path("configuration.yaml")
+        """Provide safe system configuration optimization recommendations without modifying configuration.yaml."""
         opt_type = payload.get("optimization_type", "recorder_commit_interval")
 
-        def _patch_config_sync() -> tuple[bool, str]:
-            if not os.path.exists(config_path):
-                return False, "configuration.yaml not found"
-            with open(config_path, "r", encoding="utf-8") as f:
-                content = f.read()
+        if opt_type == "recorder_commit_interval":
+            snippet = (
+                "recorder:\n"
+                "  commit_interval: 30        # batch DB writes every 30s to reduce disk I/O & lock contention\n"
+                "  purge_keep_days: 10\n"
+                "  auto_purge: true\n"
+            )
+            return {
+                "success": True,
+                "action": "show_yaml",
+                "title": "Recorder Commit Interval Optimization",
+                "message": "Add this snippet to your configuration.yaml to batch SQLite/PostgreSQL writes every 30s and reduce disk I/O.",
+                "yaml": snippet,
+                "instructions": "Copy and add this block under configuration.yaml, then restart Home Assistant.",
+            }
 
-            if opt_type == "recorder_commit_interval":
-                if "commit_interval:" in content:
-                    return True, "recorder.commit_interval is already configured in configuration.yaml"
-                if "recorder:" in content:
-                    updated = content.replace(
-                        "recorder:\n",
-                        "recorder:\n  commit_interval: 30        # batch DB writes every 30s to reduce I/O & lock contention\n",
-                        1,
-                    )
-                else:
-                    updated = (
-                        content.rstrip()
-                        + "\n\nrecorder:\n  commit_interval: 30\n  purge_keep_days: 10\n  auto_purge: true\n"
-                    )
-                with open(config_path, "w", encoding="utf-8") as f:
-                    f.write(updated)
-                return True, "Added 'commit_interval: 30' to recorder in configuration.yaml!"
+        if opt_type == "suppress_recorder_32kb_log_filter":
+            snippet = (
+                "logger:\n"
+                "  default: info\n"
+                "  filters:\n"
+                "    homeassistant.components.recorder.db_schema:\n"
+                '      - "Event data for call_service exceed maximum size"\n'
+            )
+            return {
+                "success": True,
+                "action": "show_yaml",
+                "title": "Suppress Recorder 32KB Log Warnings",
+                "message": "Add this logger filter to your configuration.yaml to suppress noisy 32KB call_service warnings in the log.",
+                "yaml": snippet,
+                "instructions": "Copy and add this block under logger in configuration.yaml, then reload logger settings or restart.",
+            }
 
-            if opt_type == "suppress_recorder_32kb_log_filter":
-                filter_line = '      - "Event data for call_service exceed maximum size"'
-                if "Event data for call_service exceed maximum size" in content:
-                    return True, "Recorder 32KB log filter is already present in configuration.yaml"
-                if "  filters:\n" in content:
-                    updated = content.replace(
-                        "  filters:\n",
-                        "  filters:\n    homeassistant.components.recorder.db_schema:\n"
-                        + filter_line
-                        + "\n",
-                        1,
-                    )
-                    with open(config_path, "w", encoding="utf-8") as f:
-                        f.write(updated)
-                    return True, "Added recorder.db_schema 32KB warning filter to logger in configuration.yaml!"
-            return False, f"Unknown optimization_type: {opt_type}"
-
-        ok, msg = await self.hass.async_add_executor_job(_patch_config_sync)
-        return {"success": ok, "message": msg if ok else None, "error": None if ok else msg}
+        return {
+            "success": False,
+            "error": f"Unknown optimization_type: {opt_type}",
+        }

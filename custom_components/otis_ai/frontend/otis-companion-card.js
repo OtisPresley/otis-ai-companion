@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.45";
+const CARD_VERSION = "0.1.46";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -571,7 +571,10 @@ class OtisCompanionCard extends HTMLElement {
     this._loadingFloorplan = true;
     try {
       const fetchUrl = url + (url.includes("?") ? "&" : "?") + "t=" + Date.now();
-      const resp = await fetch(fetchUrl);
+      const resp =
+        this._hass && typeof this._hass.fetchWithAuth === "function"
+          ? await this._hass.fetchWithAuth(fetchUrl)
+          : await fetch(fetchUrl);
       if (resp.ok) {
         let rawSvg = await resp.text();
         // Client-side sanitizer for any corrupted <text> elements where attributes leaked into text content
@@ -675,7 +678,10 @@ class OtisCompanionCard extends HTMLElement {
     const shownSet = new Set();
     const pollTimer = setInterval(async () => {
       try {
-        const stResp = await fetch("/api/otis_ai/upload_walkthrough", { method: "GET" });
+        const stResp =
+          this._hass && typeof this._hass.fetchWithAuth === "function"
+            ? await this._hass.fetchWithAuth("/api/otis_ai/upload_walkthrough", { method: "GET" })
+            : await fetch("/api/otis_ai/upload_walkthrough", { method: "GET" });
         if (stResp.ok) {
           const st = await stResp.json();
           if (Array.isArray(st.discovered_areas)) {
@@ -699,10 +705,16 @@ class OtisCompanionCard extends HTMLElement {
         formData.append("spoken_order", spokenOrder.trim());
       }
 
-      const resp = await fetch("/api/otis_ai/upload_walkthrough", {
-        method: "POST",
-        body: formData,
-      });
+      const resp =
+        this._hass && typeof this._hass.fetchWithAuth === "function"
+          ? await this._hass.fetchWithAuth("/api/otis_ai/upload_walkthrough", {
+              method: "POST",
+              body: formData,
+            })
+          : await fetch("/api/otis_ai/upload_walkthrough", {
+              method: "POST",
+              body: formData,
+            });
 
       clearInterval(pollTimer);
       const data = await resp.json();
@@ -762,7 +774,7 @@ class OtisCompanionCard extends HTMLElement {
     try {
       const res = await this._hass.callService("otis_ai", "generate_floorplan", {}, undefined, true, true);
       const data = res?.response || res || {};
-      const yaml = data.lovelace_yaml || "type: picture-elements\nimage: /local/otis_floorplan.svg\nelements: []\n";
+      const yaml = data.lovelace_yaml || "type: picture-elements\nimage: /api/otis_ai/media/otis_floorplan.svg\nelements: []\n";
       await navigator.clipboard.writeText(yaml);
       this._showToast("Lovelace YAML copied to clipboard!");
     } catch (err) {
@@ -839,6 +851,15 @@ class OtisCompanionCard extends HTMLElement {
             }
           }
         }, 100);
+      } else if (data.action === "show_yaml" || data.yaml) {
+        if (data.yaml && navigator.clipboard) {
+          try {
+            await navigator.clipboard.writeText(data.yaml);
+          } catch (_) {}
+        }
+        this._showToast(data.message || "YAML copied to clipboard!");
+        this._dismissedIds.add(sId);
+        await this._fetchData();
       } else if (data.success !== false) {
         this._showToast(data.message || `Applied "${suggestion.title}" successfully!`);
         this._dismissedIds.add(sId);

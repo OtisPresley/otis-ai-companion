@@ -562,10 +562,9 @@ class TestOtisAICore(unittest.TestCase):
         self.hass.config.path = MagicMock(side_effect=lambda x: f"/config/{x}")
         manager = AutomationManager(self.hass)
         
-        # Mock load_yaml and save_yaml
-        import custom_components.otis_ai.automation_manager as am
-        am.yaml_util.load_yaml = MagicMock(return_value=[])
-        am.yaml_util.save_yaml = MagicMock()
+        # Test writing automation into store (zero user YAML writes)
+        manager._auto_store.async_load = AsyncMock(return_value=[])
+        manager._auto_store.async_save = AsyncMock()
         
         # Test writing automation
         import asyncio
@@ -574,7 +573,7 @@ class TestOtisAICore(unittest.TestCase):
         
         self.assertIsNotNone(auto_id)
         self.assertEqual(auto_data["id"], auto_id)
-        am.yaml_util.save_yaml.assert_called_once()
+        manager._auto_store.async_save.assert_called_once()
         
         # Test reloading
         self.hass.services.async_call = AsyncMock()
@@ -2287,19 +2286,16 @@ class TestFloorplanParser(unittest.TestCase):
             })
         )
         self.assertTrue(res1["success"])
-        with open(autos_yaml, "r", encoding="utf-8") as f:
-            updated_autos = f.read()
-            self.assertNotIn("matrix_amp_1_sstudy", updated_autos)
-            self.assertIn("climate/climate.yaml", updated_autos)
-            self.assertIn("media_player.play_media", updated_autos)
-            self.assertIn("light.turned_on", updated_autos)
+        self.assertEqual(res1["action"], "show_yaml")
+        self.assertIn("media_player.matrix_amp_1_study", res1["yaml"])
+        self.assertNotIn("media_player.matrix_amp_1_sstudy", res1["yaml"])
 
         res2 = asyncio.run(
             a_mgr.async_optimize_system_config({"optimization_type": "recorder_commit_interval"})
         )
         self.assertTrue(res2["success"])
-        with open(config_yaml, "r", encoding="utf-8") as f:
-            self.assertIn("commit_interval: 30", f.read())
+        self.assertEqual(res2["action"], "show_yaml")
+        self.assertIn("commit_interval: 30", res2["yaml"])
 
         for fpath in (autos_yaml, scripts_yaml, config_yaml):
             if os.path.exists(fpath):
@@ -4711,13 +4707,14 @@ class TestModernSectionsDashboardGeneration(unittest.TestCase):
 
     def test_async_write_blueprint_and_reload(self):
         """Test writing and reloading automation blueprints in AutomationManager."""
-        import yaml
         from custom_components.otis_ai.automation_manager import AutomationManager
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             self.hass.config.path = lambda *args: os.path.join(tmp_dir, *args)
             self.hass.async_add_executor_job = AsyncMock(side_effect=lambda func, *args: func(*args))
             mgr = AutomationManager(self.hass)
+            mgr._bp_store.async_load = AsyncMock(return_value={})
+            mgr._bp_store.async_save = AsyncMock()
 
             bp_subpath = "lighting/test_adaptive_lighting.yaml"
             bp_content = {
@@ -4733,13 +4730,9 @@ class TestModernSectionsDashboardGeneration(unittest.TestCase):
 
             written_path = asyncio.run(mgr.async_write_blueprint(bp_subpath, bp_content))
             self.assertEqual(written_path, bp_subpath)
-
-            full_path = os.path.join(tmp_dir, "blueprints", "automation", bp_subpath)
-            self.assertTrue(os.path.exists(full_path))
-
-            with open(full_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f)
-            self.assertEqual(data["blueprint"]["name"], "Test Adaptive Lights")
+            mgr._bp_store.async_save.assert_called_once()
+            saved_dict = mgr._bp_store.async_save.call_args[0][0]
+            self.assertEqual(saved_dict[bp_subpath]["blueprint"]["name"], "Test Adaptive Lights")
 
             # Traversal attempt should raise ValueError
             with self.assertRaises(ValueError):

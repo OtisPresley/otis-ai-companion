@@ -28,7 +28,7 @@ _LOGGER = logging.getLogger(__name__)
 
 STORAGE_KEY = "otis_ai_floorplan"
 STORAGE_VERSION = 1
-DEFAULT_OUTPUT_SVG_PATH = "www/otis_floorplan.svg"
+DEFAULT_OUTPUT_SVG_PATH = ".storage/otis_ai/media/otis_floorplan.svg"
 
 # Area keywords for floor & outdoor classification
 OUTDOOR_KEYWORDS = {
@@ -1436,8 +1436,8 @@ class FloorplanParser:
             "success": True,
             "svg_path": output_relative_path,
             "svg_path_3d": output_3d_rel,
-            "url": f"/local/{os.path.basename(output_relative_path)}",
-            "url_3d": f"/local/{os.path.basename(output_3d_rel)}",
+            "url": f"/api/otis_ai/media/{os.path.basename(output_relative_path)}",
+            "url_3d": f"/api/otis_ai/media/{os.path.basename(output_3d_rel)}",
             "room_count": len(areas_map),
             "zones": meta["zones"],
             "walkthrough_completed": is_walkthrough,
@@ -1451,7 +1451,7 @@ class FloorplanParser:
         badges: list[dict[str, Any]] | None = None,
         rooms: list[dict[str, Any]] | None = None,
         deleted_rooms: list[str] | None = None,
-        svg_relative_path: str = "www/otis_floorplan.svg",
+        svg_relative_path: str = DEFAULT_OUTPUT_SVG_PATH,
     ) -> dict[str, Any]:
         """Update SVG floorplan device marker coordinates and area boundary geometry, or delete rooms."""
         if os.path.isabs(svg_relative_path):
@@ -1725,7 +1725,7 @@ class FloorplanParser:
             "success": True,
             "message": f"Updated floor plan layout ({updated_badges} badges, {updated_rooms} rooms, {deleted_rooms_count} deleted)",
             "svg_path": svg_relative_path,
-            "url": f"/local/{os.path.basename(svg_relative_path)}?v={int(time.time())}",
+            "url": f"/api/otis_ai/media/{os.path.basename(svg_relative_path)}?v={int(time.time())}",
             "updated_badges": updated_badges,
             "updated_rooms": updated_rooms,
             "deleted_rooms": deleted_rooms_count,
@@ -2854,7 +2854,7 @@ class FloorplanParser:
         """Generate ready-to-use Lovelace picture-elements YAML configuration."""
         card_def = {
             "type": "picture-elements",
-            "image": f"/local/{os.path.basename(svg_relative_path)}?v={int(time.time())}",
+            "image": f"/api/otis_ai/media/{os.path.basename(svg_relative_path)}?v={int(time.time())}",
             "title": "Interactive Home Floor Plan",
             "elements": [],
         }

@@ -7,6 +7,23 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.46] - 2026-11-05
+
+### Security & Compliance
+- **HACS Default Catalog Compliance & Security Hardening**:
+  - **Authenticated Walkthrough Uploads & Stream Limits**:
+    - Removed `requires_auth = False` from `OtisWalkthroughUploadView` (`/api/otis_ai/upload_walkthrough`), enforcing native Home Assistant authentication across all video uploads.
+    - Added strict 100MB (`MAX_UPLOAD_SIZE_BYTES`) payload stream and content-length cap, rejecting oversized requests with HTTP 413 Payload Too Large to prevent resource exhaustion.
+    - Updated `otis-companion-card.js` to upload walkthroughs and poll processing status via authenticated `hass.fetchWithAuth(...)`.
+  - **Private Media Isolation & Authenticated Media Endpoint**:
+    - Moved walkthrough uploads and generated floor plan SVGs out of unauthenticated `/config/www` into private storage under `/config/.storage/otis_ai/media/`.
+    - Added authenticated `OtisMediaView` (`/api/otis_ai/media/{filename}`) requiring active Home Assistant credentials, with strict directory traversal validation and MIME detection.
+    - Updated dashboard manager, capability map, and Lovelace card to resolve floor plans via `/api/otis_ai/media/otis_floorplan.svg`.
+  - **Eliminated Raw User YAML File Writes**:
+    - Dropped all raw file writes to `configuration.yaml`, `automations.yaml`, `scripts.yaml`, and user blueprints under `/config/blueprints/`.
+    - Integrated persistent Home Assistant `.storage` registries (`Store`) for integration-managed automations (`otis_ai_automations`), scripts (`otis_ai_scripts`), and blueprints (`otis_ai_blueprints`).
+    - Upgraded `async_improve_automation` and `async_optimize_system_config` to present clean, GUI-ready YAML blocks for user review and 1-click clipboard copy into the Home Assistant UI.
+
 ## [0.1.45] - 2026-11-04
 
 ### Added & Improved

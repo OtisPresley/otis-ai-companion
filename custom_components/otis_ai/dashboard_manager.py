@@ -1800,11 +1800,11 @@ class DashboardManager:
         self, capability_map: dict[str, Any] | None, dashboard_url_path: str = "otis-ai"
     ) -> list[dict[str, Any]]:
         """Build interactive picture-elements view cards for Floor Plan subview."""
-        # 1. Determine if SVG floor plan exists in www/ and record mtime for cache busting
+        # 1. Determine if SVG floor plan exists in .storage/otis_ai/media/ and record mtime for cache busting
         svg_exists = False
         svg_mtime = 0
         if hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
-            svg_path = self.hass.config.path("www/otis_floorplan.svg")
+            svg_path = self.hass.config.path(f".storage/{DOMAIN}/media/otis_floorplan.svg")
             if os.path.exists(svg_path):
                 svg_exists = True
                 try:
@@ -2064,7 +2064,7 @@ class DashboardManager:
                 card_cfg["floorplan_wall_height"] = user_rules["floorplan_wall_height"]
             return [card_cfg]
 
-        image_url = f"/local/otis_floorplan.svg?v={svg_mtime}" if svg_mtime else "/local/otis_floorplan.svg"
+        image_url = f"/api/otis_ai/media/otis_floorplan.svg?v={svg_mtime}" if svg_mtime else "/api/otis_ai/media/otis_floorplan.svg"
         return [
             {
                 "type": "picture-elements",
