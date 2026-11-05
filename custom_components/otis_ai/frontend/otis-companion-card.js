@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.53";
+const CARD_VERSION = "0.1.54";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -4349,21 +4349,48 @@ class OtisCompanionCard extends HTMLElement {
         }
 
         .floorplan-svg-viewport svg .room-group,
-        .floorplan-svg-viewport svg .room-box {
+        .floorplan-svg-viewport svg .room-box,
+        .floorplan-svg-viewport svg .room-rect,
+        .floorplan-svg-viewport svg .room-polygon {
           cursor: pointer !important;
           pointer-events: auto !important;
         }
 
         .floorplan-svg-viewport svg .room-group:hover .room-box,
-        .floorplan-svg-viewport svg .room-box:hover {
+        .floorplan-svg-viewport svg .room-group:hover .room-rect,
+        .floorplan-svg-viewport svg .room-group:hover .room-polygon,
+        .floorplan-svg-viewport svg .room-box:hover,
+        .floorplan-svg-viewport svg .room-rect:hover,
+        .floorplan-svg-viewport svg .room-polygon:hover {
           fill-opacity: 1 !important;
           stroke: var(--otis-primary, #38bdf8) !important;
           filter: drop-shadow(0 0 14px var(--otis-primary, #38bdf8)) !important;
         }
 
         .floorplan-svg-viewport.view-3d-active svg .room-group:hover,
-        .floorplan-svg-viewport.view-3d-active svg .room-box:hover {
+        .floorplan-svg-viewport.view-3d-active svg .room-box:hover,
+        .floorplan-svg-viewport.view-3d-active svg .room-rect:hover,
+        .floorplan-svg-viewport.view-3d-active svg .room-polygon:hover {
           cursor: pointer !important;
+        }
+
+        .floorplan-svg-viewport svg .plan-frame,
+        .floorplan-svg-viewport svg .container-shell,
+        .floorplan-svg-viewport svg .container-banner,
+        .floorplan-svg-viewport svg .zone-title,
+        .floorplan-svg-viewport svg .zone-subtitle,
+        .floorplan-svg-viewport svg .subzone-pill,
+        .floorplan-svg-viewport svg .door-cut,
+        .floorplan-svg-viewport svg .door-leaf,
+        .floorplan-svg-viewport svg .door-swing,
+        .floorplan-svg-viewport svg .door-garage,
+        .floorplan-svg-viewport svg .door-sliding,
+        .floorplan-svg-viewport svg .window-cut,
+        .floorplan-svg-viewport svg .window-sill,
+        .floorplan-svg-viewport svg .window-pane,
+        .floorplan-svg-viewport svg .window-cap,
+        .floorplan-svg-viewport svg .stairs-step {
+          pointer-events: none !important;
         }
 
         /* 3D Stage & Canvas Projection */
@@ -4393,11 +4420,6 @@ class OtisCompanionCard extends HTMLElement {
         }
 
         /* 3D Raised Transparent Walls - Illuminated Architectural Glass */
-        .floorplan-walls-overlay,
-        .floorplan-walls-overlay * {
-          pointer-events: none !important;
-        }
-
         .floorplan-walls-overlay {
           position: absolute;
           top: 0;
@@ -4411,24 +4433,21 @@ class OtisCompanionCard extends HTMLElement {
           -webkit-backface-visibility: visible;
         }
 
-        .floorplan-3d-room-shell,
-        .floorplan-3d-room-shell * {
-          pointer-events: none !important;
-        }
-
         .floorplan-3d-room-shell {
           position: absolute;
           transform-style: preserve-3d;
-          pointer-events: none !important;
+          pointer-events: auto !important;
+          cursor: pointer !important;
           background: rgba(14, 165, 233, 0.04);
-          transition: opacity 0.2s ease;
+          transition: background 0.2s ease, opacity 0.2s ease;
           backface-visibility: visible;
           -webkit-backface-visibility: visible;
         }
 
         .floorplan-3d-wall {
           position: absolute;
-          pointer-events: none !important;
+          pointer-events: auto !important;
+          cursor: pointer !important;
           background: linear-gradient(to top, rgba(14, 165, 233, 0.15) 0%, rgba(56, 189, 248, 0.38) 60%, rgba(56, 189, 248, 0.75) 100%);
           border-left: 2px solid rgba(56, 189, 248, 0.85);
           border-right: 2px solid rgba(56, 189, 248, 0.85);
@@ -4436,6 +4455,14 @@ class OtisCompanionCard extends HTMLElement {
           transform-style: preserve-3d;
           backface-visibility: visible !important;
           -webkit-backface-visibility: visible !important;
+          transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .floorplan-3d-room-shell:hover .floorplan-3d-wall,
+        .floorplan-3d-wall:hover {
+          background: linear-gradient(to top, rgba(56, 189, 248, 0.35) 0%, rgba(56, 189, 248, 0.70) 60%, rgba(56, 189, 248, 1.0) 100%) !important;
+          border-color: #38bdf8 !important;
+          box-shadow: 0 0 22px #38bdf8, inset 0 0 14px rgba(56, 189, 248, 0.5) !important;
         }
 
         .door-cut,
@@ -10875,9 +10902,12 @@ class OtisCompanionCard extends HTMLElement {
         const moveDist = Math.hypot(e.clientX - startX, e.clientY - startY);
         if (moveDist < 6) {
           const hitTarget = initialHitTarget || e.target;
-          const roomGrp = hitTarget && hitTarget.closest ? hitTarget.closest(".room-group, .floorplan-3d-room-shell") : null;
+          const roomGrp = hitTarget && hitTarget.closest ? hitTarget.closest(".room-group, .floorplan-3d-room-shell, .floorplan-3d-wall") : null;
           if (roomGrp) {
-            const areaId = roomGrp.getAttribute("data-area-id") || roomGrp.getAttribute("data-room-id");
+            const shell = roomGrp.closest(".floorplan-3d-room-shell") || (roomGrp.classList.contains("floorplan-3d-room-shell") ? roomGrp : null);
+            const areaId = (shell ? (shell.getAttribute("data-room-id") || shell.getAttribute("data-area-id")) : null) ||
+                           roomGrp.getAttribute("data-area-id") ||
+                           roomGrp.getAttribute("data-room-id");
             if (areaId) {
               const area = this._capabilityMap?.areas?.[areaId];
               const slug = areaId.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "room";
@@ -10885,7 +10915,7 @@ class OtisCompanionCard extends HTMLElement {
                 areaId,
                 name: area?.name || areaId,
                 slug,
-                zone: roomGrp.getAttribute("data-zone") || "indoor",
+                zone: (shell ? shell.getAttribute("data-zone") : null) || roomGrp.getAttribute("data-zone") || "indoor",
                 entities: area?.entities || [],
               };
               this._render();

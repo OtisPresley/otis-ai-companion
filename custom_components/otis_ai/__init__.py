@@ -4797,6 +4797,12 @@ CONVERSATION DISCIPLINE & FOCUS:
 - Follow up directly on what was discussed in the Recent Conversation History.
 - If real automations or scripts are cross-referenced below, inspect their exact triggers, conditions, and actions rather than guessing or hallucinating their logic!
 
+HOME ASSISTANT ARCHITECTURAL GROUNDING:
+- Voice Satellites & Assist: Hardware voice satellites (e.g., ESP32-S3 Box, Atom Echo, Wyoming Satellite) connect via the native ESPHome or Wyoming Protocol integrations. Home Assistant DOES NOT have an integration named "Assist Satellite". Pipelines (Wake word, STT, LLM, TTS) are configured in Settings → Voice Assistants. Hardware satellites provide entities in the assist_satellite domain (e.g., assist_satellite.<area>_assistant).
+- Polling Anti-Pattern Prohibition: NEVER create or recommend automations with platform: time_pattern (e.g. minutes: "/5") to check volume or quiet hours! Always use discrete platform: time triggers (e.g., at: "22:00:00" and at: "08:00:00") or entity state triggers to protect the Home Assistant asyncio event loop.
+- Clean System Configuration: NEVER tell the user to create README.md notes, markdown files, or arbitrary files in /config.
+- Automation Delivery: Supply clean, ready-to-paste Home Assistant YAML for the UI automation editor (Settings → Automations & Scenes → Create Automation → Edit in YAML).
+
 {rules_snippet}
 
 {history_snippet}{matched_yaml_context}{rag_context}Here is the current capability and architecture map of the home:
@@ -4897,6 +4903,8 @@ User: {user_input.text}
                             "Analyze the home's active state and respond concisely and actionably. "
                             "You have access to smart home tools to pin devices on the floorplan, run sentinel audits, "
                             "heal network nodes, and control entities. When asked to take action, call the appropriate tool. "
+                            "Home Assistant Grounding: Voice satellites connect via ESPHome or Wyoming Protocol under Settings → Voice Assistants (never an imaginary 'Assist Satellite' integration). "
+                            "Never use platform: time_pattern for polling quiet hours; use discrete time triggers. Never tell user to create README.md in /config. "
                             "Provide automations strictly in Home Assistant GUI YAML format (clean top-level dict starting with alias:, description:, triggers:, conditions:, actions:, mode: without - id: or leading dashes). "
                             "Never tell the user to edit automations.yaml themselves; always offer to deploy and enable it for them."
                         ),
@@ -4955,6 +4963,7 @@ User: {user_input.text}
                     if is_groq and len(prompt) > 6000:
                         agent_prompt = f"""You are Otis AI, the smart home co-pilot and butler.
 Respond concisely and actionably to the user.
+Note: Voice satellites use ESPHome or Wyoming under Settings → Voice Assistants. Never use time_pattern polling automations or advise creating README.md in /config.
 {rules_snippet}
 
 System State:

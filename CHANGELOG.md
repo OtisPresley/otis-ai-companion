@@ -7,6 +7,19 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.54] - 2026-11-05
+
+### Fixed & Enhanced
+- **Floor Plan 3D & 2D Wall Hover and Click Interaction**:
+  - Restored interactive pointer events and hover states on `.floorplan-3d-wall` and `.floorplan-3d-room-shell` while keeping `.floorplan-walls-overlay` transparent.
+  - Hovering over any 3D architectural wall now illuminates the room with bright cyan glow and clicking immediately opens the room's controls and device inspector.
+  - Added strict `pointer-events: none !important;` to SVG frame borders (`.plan-frame`), blueprint grid textures, and container shells, preventing background geometry from intercepting clicks near perimeter walls.
+  - Added `pointer-events: all;` and unified hover drop-shadow filters across all 2D room polygons (`.room-box`, `.room-rect`, `.room-polygon`).
+- **Assist Co-Pilot Architectural Grounding**:
+  - Injected strict Home Assistant architecture rules into Co-Pilot system prompts: hardware voice satellites connect via native ESPHome or Wyoming Protocol integrations under Settings → Voice Assistants (eliminating hallucinated "Assist Satellite" integration menus and onboarding steps).
+  - Explicitly prohibited `platform: time_pattern` polling automations for quiet hours volume caps in favor of discrete `platform: time` triggers to protect the asyncio event loop.
+  - Forbade instructing users to create `README.md` notes or markdown files in `/config`.
+
 ## [0.1.53] - 2026-11-05
 
 ### Fixed & Enhanced

@@ -2361,6 +2361,7 @@ class FloorplanParser:
         stroke: rgba(56, 189, 248, 0.24);
         stroke-width: 1.5;
         rx: 14px;
+        pointer-events: none;
       }}
       .room-box {{
         fill: {card_bg};
@@ -2370,6 +2371,7 @@ class FloorplanParser:
         rx: 3px;
         transition: all 0.25s ease;
         cursor: pointer;
+        pointer-events: all;
       }}
       .room-box.outdoor-box {{
         fill: rgba(6, 78, 59, 0.28);
@@ -2539,11 +2541,11 @@ class FloorplanParser:
   </defs>
 
   <!-- Architectural Blueprint Grid Texture -->
-  <g opacity="0.10">
+  <g opacity="0.10" style="pointer-events: none;">
     <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
       <path d="M 30 0 L 0 0 0 30" fill="none" stroke="{accent_color}" stroke-width="0.8" />
     </pattern>
-    <rect width="1300" height="{canvas_height}" fill="url(#grid)" />
+    <rect width="1300" height="{canvas_height}" fill="url(#grid)" style="pointer-events: none;" />
   </g>
 '''
         ]
@@ -2696,7 +2698,7 @@ class FloorplanParser:
             sx = x + w - 58
             sy = y + h - 42
             parts.append(
-                f'    <rect x="{sx}" y="{sy}" width="44" height="28" fill="rgba(56, 189, 248, 0.12)" stroke="#38bdf8" stroke-width="1" rx="2" />\n'
+                f'    <rect x="{sx}" y="{sy}" width="44" height="28" fill="rgba(56, 189, 248, 0.12)" stroke="#38bdf8" stroke-width="1" rx="2" class="stairs-step" />\n'
             )
             for step_i in range(1, 5):
                 lx = sx + step_i * 9
