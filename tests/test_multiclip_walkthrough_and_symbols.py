@@ -221,7 +221,8 @@ class TestMulticlipWalkthroughAndSymbols(unittest.TestCase):
         }
 
         async def _mock_analyze(audio_path, areas, frame_paths=None):
-            if "clip_1" in audio_path or "clip1" in audio_path:
+            audio_name = os.path.basename(audio_path)
+            if "clip_1" in audio_name or "clip1" in audio_name:
                 return clip1_analysis
             return clip2_analysis
 
