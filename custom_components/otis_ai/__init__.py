@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 from functools import partial
 import json
 import logging
@@ -454,7 +455,7 @@ class OtisMediaView(HomeAssistantView):
 
         ext = os.path.splitext(safe_name)[1].lower()
         content_type_map = {
-            ".svg": "image/svg+xml; charset=utf-8",
+            ".svg": "image/svg+xml",
             ".png": "image/png",
             ".jpg": "image/jpeg",
             ".jpeg": "image/jpeg",
@@ -5401,8 +5402,16 @@ class DiscoveryEngine:
             "floorplan": {
                 "exists": has_floorplan,
                 "walkthrough_completed": has_walkthrough,
-                "url": "/api/otis_ai/media/otis_floorplan.svg" if has_floorplan else None,
-                "url_3d": "/api/otis_ai/media/otis_floorplan_3d.svg" if has_floorplan else None,
+                "url": (
+                    self.hass.http.async_sign_path("/api/otis_ai/media/otis_floorplan.svg", timedelta(days=365))
+                    if has_floorplan and hasattr(self.hass, "http") and hasattr(self.hass.http, "async_sign_path")
+                    else ("/api/otis_ai/media/otis_floorplan.svg" if has_floorplan else None)
+                ),
+                "url_3d": (
+                    self.hass.http.async_sign_path("/api/otis_ai/media/otis_floorplan_3d.svg", timedelta(days=365))
+                    if has_floorplan and hasattr(self.hass, "http") and hasattr(self.hass.http, "async_sign_path")
+                    else ("/api/otis_ai/media/otis_floorplan_3d.svg" if has_floorplan else None)
+                ),
                 "has_3d_view": has_floorplan,
                 "lovelace_yaml": self.floorplan_parser.get_lovelace_yaml() if has_floorplan else None,
                 "custom_layout": getattr(self.floorplan_parser, "_metadata", {}).get("custom_layout", {}),

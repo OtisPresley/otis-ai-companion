@@ -17,19 +17,19 @@ class TestFloorplan3DOrbitAndControls(unittest.TestCase):
         )
         self.changelog_path = os.path.join(self.root_dir, "CHANGELOG.md")
 
-    def test_version_synchronization_v0_1_47(self) -> None:
-        """Verify manifest.json, otis-companion-card.js, and CHANGELOG.md are synced to v0.1.47."""
+    def test_version_synchronization_v0_1_49(self) -> None:
+        """Verify manifest.json, otis-companion-card.js, and CHANGELOG.md are synced to v0.1.49."""
         with open(self.manifest_path, "r", encoding="utf-8") as f:
             manifest = json.load(f)
-        self.assertEqual(manifest["version"], "0.1.47")
+        self.assertEqual(manifest["version"], "0.1.49")
 
         with open(self.card_path, "r", encoding="utf-8") as f:
             card_content = f.read()
-        self.assertIn('const CARD_VERSION = "0.1.47";', card_content)
+        self.assertIn('const CARD_VERSION = "0.1.49";', card_content)
 
         with open(self.changelog_path, "r", encoding="utf-8") as f:
             changelog_content = f.read()
-        self.assertIn("## [0.1.47] - 2026-11-05", changelog_content)
+        self.assertIn("## [0.1.49] - 2026-11-05", changelog_content)
 
     def test_card_3d_orbit_and_pitch_elements(self) -> None:
         """Verify that otis-companion-card.js contains Phase 3 3D orbit, pitch, and raised glass wall components."""

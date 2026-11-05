@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.47";
+const CARD_VERSION = "0.1.49";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -550,7 +550,7 @@ class OtisCompanionCard extends HTMLElement {
 
       // Load floorplan SVG if exists
       if (capMap.floorplan?.exists && !this._floorplanSvg && !this._loadingFloorplan) {
-        this._loadFloorplanSvg(capMap.floorplan.url);
+        await this._loadFloorplanSvg(capMap.floorplan.url);
       }
     } catch (err) {
       console.warn("Otis Companion Card: Could not fetch capability map directly, attempting get_suggestions:", err);
@@ -567,15 +567,18 @@ class OtisCompanionCard extends HTMLElement {
   }
 
   async _loadFloorplanSvg(url) {
-    if (!url) return;
+    if (!url) url = "/api/otis_ai/media/otis_floorplan.svg";
+    if (this._loadingFloorplan) return;
     this._loadingFloorplan = true;
     try {
       const fetchUrl = url + (url.includes("?") ? "&" : "?") + "t=" + Date.now();
-      const resp =
-        this._hass && typeof this._hass.fetchWithAuth === "function"
-          ? await this._hass.fetchWithAuth(fetchUrl)
-          : await fetch(fetchUrl);
-      if (resp.ok) {
+      let resp;
+      if (this._hass && typeof this._hass.fetchWithAuth === "function") {
+        resp = await this._hass.fetchWithAuth(fetchUrl);
+      } else {
+        resp = await fetch(fetchUrl);
+      }
+      if (resp && resp.ok) {
         let rawSvg = await resp.text();
         // Client-side sanitizer for any corrupted <text> elements where attributes leaked into text content
         rawSvg = rawSvg.replace(
@@ -596,8 +599,13 @@ class OtisCompanionCard extends HTMLElement {
         rawSvg = rawSvg.replace(/(<svg\b[^>]*)\bwidth="[0-9.]+"\s*/i, "$1 ");
         rawSvg = rawSvg.replace(/(<svg\b[^>]*)\bheight="[0-9.]+"\s*/i, "$1 ");
         this._floorplanSvg = rawSvg;
+        this._floorplanLoadFailed = false;
+      } else {
+        this._floorplanLoadFailed = true;
+        console.warn("Could not load floorplan SVG, status:", resp?.status);
       }
     } catch (err) {
+      this._floorplanLoadFailed = true;
       console.warn("Could not load floorplan SVG:", err);
     } finally {
       this._loadingFloorplan = false;
@@ -6504,6 +6512,10 @@ class OtisCompanionCard extends HTMLElement {
   _renderFloorplanTab() {
     const isControlOnly = this._config.mode === "floorplan_control";
     const isAdmin = Boolean(this._hass?.user?.is_admin || this._hass?.user?.is_owner);
+
+    if (!this._floorplanSvg && !this._loadingFloorplan && !this._floorplanLoadFailed) {
+      setTimeout(() => this._loadFloorplanSvg(this._capabilityMap?.floorplan?.url), 0);
+    }
 
     return `
       <div class="floorplan-panel">

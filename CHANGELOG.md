@@ -7,6 +7,22 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.49] - 2026-11-05
+
+### Fixed
+- **Signed Media URLs & Synchronous Floorplan Fetching**:
+  - Enhanced capability map with temporary signed URLs (`async_sign_path`) for floor plan SVG assets, allowing seamless image loading across both authenticated card fetchers and standard dashboard image renderers.
+  - Added synchronous `await` in `_fetchData` for initial floor plan SVG retrieval prior to render pass.
+  - Added `_floorplanLoadFailed` guard to prevent render thrashing on network anomalies.
+
+## [0.1.48] - 2026-11-05
+
+### Fixed
+- **OtisMediaView Response Formatting & Auto Floorplan Fetch**:
+  - Fixed aiohttp `web.Response` `content_type` exception in `OtisMediaView` by setting `content_type="image/svg+xml"` (removing invalid charset string).
+  - Enhanced Companion Card `_loadFloorplanSvg` with automatic fallback endpoint resolution (`/api/otis_ai/media/otis_floorplan.svg`) and response status logging.
+  - Added self-healing floor plan loader trigger inside `_renderFloorplanTab` ensuring SVG immediately fetches upon tab display.
+
 ## [0.1.47] - 2026-11-05
 
 ### Fixed
