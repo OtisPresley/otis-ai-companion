@@ -1577,6 +1577,51 @@ confirm_person_identity:
       selector:
         boolean:
 
+update_person_profile:
+  name: Update Person Profile
+  description: Update or create a managed person or pet profile classification and training toggle.
+  fields:
+    person_id:
+      name: Person Entity ID
+      description: The Home Assistant person entity ID (e.g. person.resident).
+      required: true
+      selector:
+        text:
+    label:
+      name: Label / Name
+      description: Display name of the person or pet.
+      required: false
+      selector:
+        text:
+    entity_type:
+      name: Entity Type
+      description: Classification of the entity (resident, pet, guest, ignored).
+      required: false
+      selector:
+        select:
+          options:
+            - resident
+            - pet
+            - guest
+            - ignored
+    training_enabled:
+      name: Training Enabled
+      description: Whether recognition training is enabled for this profile.
+      required: false
+      selector:
+        boolean:
+
+remove_person_profile:
+  name: Remove Person Profile
+  description: Remove a person or pet profile from recognition training.
+  fields:
+    person_id:
+      name: Person Entity ID
+      description: The Home Assistant person entity ID to remove.
+      required: true
+      selector:
+        text:
+
 audit_mesh_health:
   name: Audit Mesh Health
   description: Non-blocking comprehensive health audit across Zigbee (ZHA / Zigbee2MQTT), Z-Wave JS, and Thread mesh networks.

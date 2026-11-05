@@ -1019,7 +1019,7 @@ class DashboardManager:
                     new_views[0] = existing_views[0]
                 elif dash_id == COMMAND_CENTER_DASHBOARD_ID and len(new_views) > 0 and len(existing_views) > 0:
                     # Preserve any non-core custom cards the user manually added to the Home view
-                    core_titles = {"Studios", "Glance & Schedule", "Rooms"}
+                    core_titles = {"Studios", "Glance & Schedule", "Rooms", "Active Rooms"}
                     ex_home = existing_views[0]
                     custom_cards = [
                         c for c in ex_home.get("cards", [])
@@ -1116,7 +1116,7 @@ class DashboardManager:
                         c_title = ex_card.get("title")
                         if c_title in ("Glance & Schedule", "Rooms") and c_title not in fresh_titles:
                             merged_home_cards.append(ex_card)
-                        elif c_title not in ("Studios", "Glance & Schedule", "Rooms"):
+                        elif c_title not in ("Studios", "Glance & Schedule", "Rooms", "Active Rooms"):
                             if not (ex_card.get("type") == "markdown" and "Home Command Center" in str(ex_card.get("content", ""))):
                                 if not (ex_card.get("type") == "grid" and any(b.get("name") == "Floor Plan" for b in ex_card.get("cards", []))):
                                     merged_home_cards.append(ex_card)
@@ -2625,7 +2625,7 @@ class DashboardManager:
                         {
                             "entity": "switch.otis_audio_follow",
                             "name": "Room-to-Room Audio Follow-Me",
-                            "icon": "mdi:music-note-sync",
+                            "icon": "mdi:cast-connected",
                         },
                         {
                             "entity": "sensor.otis_spatial_migration",
@@ -2704,7 +2704,7 @@ class DashboardManager:
                     {
                         "entity": "switch.otis_audio_follow",
                         "name": "Room-to-Room Audio Follow-Me",
-                        "icon": "mdi:music-note-sync",
+                        "icon": "mdi:cast-connected",
                     },
                     {
                         "entity": "sensor.otis_spatial_migration",

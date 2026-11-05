@@ -7,6 +7,27 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.52] - 2026-11-05
+
+### Added & Enhanced
+- **Household Rules Wizard State Persistence**:
+  - Added dedicated `wizard_state` storage schema to `BehavioralRulesManager`, permanently persisting all step answers (household residents, work-from-home routines, sleep preferences, guest codes, security thresholds) across reboots and dashboard refreshes.
+  - Added automatic legacy recovery parsing from existing `custom_instructions` into structured `wizard_state`.
+  - Added interactive multi-select chip selector for Primary Residents in Step 1, letting users toggle active household members directly from existing Home Assistant `person` entities and registered accounts.
+- **People & Pets Recognition Management Studio**:
+  - Added dedicated `👥 People & Pets` tab in the Rules modal, giving users full granular control over all vision-recognized profiles.
+  - Provides per-profile classification selector (`👤 Primary Resident`, `🐾 Pet / Domestic Animal`, `👥 Guest / Visitor`, `🚫 Exclude / Do Not Track`), individual training toggle switches, and one-click profile removal (`🗑️ Remove`).
+  - Added backend services `otis_ai.update_person_profile` and `otis_ai.remove_person_profile`.
+- **Command Center Floor Plan Hover & Click-Through Fixes**:
+  - Fixed 3D orbit pointer capture: disambiguates orbit drag from room clicks (`moveDist < 6px`), restoring instant room inspection popup triggers in 3D perspective.
+  - Dynamically computes dashboard URL path prefix (`dashPrefix`), ensuring "Open Room Controls →" and room headers navigate reliably to `/{dashboard_url_path}/area_{slug}` on both the Command Center and custom dashboards.
+  - Added explicit SVG room group hover glow (`var(--otis-primary)`) and pointer cursor rules in Shadow DOM.
+- **Media Studio Valid MDI Icon**:
+  - Replaced invalid MDI icon `mdi:music-note-sync` with valid `mdi:cast-connected` for `switch.otis_audio_follow` in both entities cards and Home Assistant state publication.
+- **Contextual EV & Energy Studio Optimization**:
+  - Added smart EV topology detection: automatically suppresses EV charging recommendations and EV-specific cards when no EV charger or vehicle is integrated in Home Assistant.
+  - Fixed Command Center home view card preservation: added `"Active Rooms"` to core titles, preventing exponential card duplication on dashboard regenerations.
+
 ## [0.1.51] - 2026-11-05
 
 ### Added & Enhanced

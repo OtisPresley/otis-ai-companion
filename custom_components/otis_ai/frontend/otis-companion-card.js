@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.51";
+const CARD_VERSION = "0.1.52";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -520,6 +520,9 @@ class OtisCompanionCard extends HTMLElement {
         this._conversationAgentId = capMap.conversation_agent_id;
       }
       this._userRules = capMap.user_rules || {};
+      if (this._userRules.wizard_state && typeof this._userRules.wizard_state === "object") {
+        this._wizardState = { ...this._wizardState, ...this._userRules.wizard_state };
+      }
       if (!this._rulesDraft) {
         this._rulesDraft = { ...this._userRules };
       }
@@ -4345,6 +4348,24 @@ class OtisCompanionCard extends HTMLElement {
           display: none !important;
         }
 
+        .floorplan-svg-viewport svg .room-group,
+        .floorplan-svg-viewport svg .room-box {
+          cursor: pointer !important;
+          pointer-events: auto !important;
+        }
+
+        .floorplan-svg-viewport svg .room-group:hover .room-box,
+        .floorplan-svg-viewport svg .room-box:hover {
+          fill-opacity: 1 !important;
+          stroke: var(--otis-primary, #38bdf8) !important;
+          filter: drop-shadow(0 0 14px var(--otis-primary, #38bdf8)) !important;
+        }
+
+        .floorplan-svg-viewport.view-3d-active svg .room-group:hover,
+        .floorplan-svg-viewport.view-3d-active svg .room-box:hover {
+          cursor: pointer !important;
+        }
+
         /* 3D Stage & Canvas Projection */
         .floorplan-3d-stage {
           perspective: 1200px;
@@ -6699,11 +6720,16 @@ class OtisCompanionCard extends HTMLElement {
                     </div>
                   </div>
                   <div style="display: flex; gap: 8px;">
-                    ${this._selectedRoomInfo.slug ? `
-                    <button type="button" class="btn-toolbar btn-nav-room" data-room-path="/otis-ai/area_${this._selectedRoomInfo.slug}" style="padding: 4px 10px; font-size: 0.75rem;">
-                      Open Room Controls →
-                    </button>
-                    ` : ""}
+                    ${this._selectedRoomInfo.slug ? (() => {
+                      const curPath = typeof window !== "undefined" ? window.location.pathname : "";
+                      const seg = curPath.split("/").filter(Boolean)[0] || "command-center";
+                      const navPath = `/${seg}/area_${this._selectedRoomInfo.slug}`;
+                      return `
+                      <button type="button" class="btn-toolbar btn-nav-room" data-room-path="${navPath}" style="padding: 4px 10px; font-size: 0.75rem;">
+                        Open Room Controls →
+                      </button>
+                      `;
+                    })() : ""}
                     <button type="button" class="btn-toolbar" id="btn-close-room-info" style="padding: 4px 8px;">✕</button>
                   </div>
                 </div>
@@ -7735,6 +7761,7 @@ class OtisCompanionCard extends HTMLElement {
             <button type="button" class="tab-btn ${activeTab === "persona" ? "active" : ""}" id="rules-tab-persona" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">🎭 Persona & Tone</button>
             <button type="button" class="tab-btn ${activeTab === "safety" ? "active" : ""}" id="rules-tab-safety" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">🛡️ Autonomy & Safety</button>
             <button type="button" class="tab-btn ${activeTab === "voice" ? "active" : ""}" id="rules-tab-voice" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">🔊 Voice & Quiet Hours</button>
+            <button type="button" class="tab-btn ${activeTab === "people" ? "active" : ""}" id="rules-tab-people" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">👥 People & Pets</button>
             <button type="button" class="tab-btn ${activeTab === "instructions" ? "active" : ""}" id="rules-tab-instructions" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">📝 Custom Instructions</button>
           </div>
 
@@ -7745,6 +7772,7 @@ class OtisCompanionCard extends HTMLElement {
             ${activeTab === "persona" ? this._renderRulesPersonaTab(rules) : ""}
             ${activeTab === "safety" ? this._renderRulesSafetyTab(rules) : ""}
             ${activeTab === "voice" ? this._renderRulesVoiceTab(rules) : ""}
+            ${activeTab === "people" ? this._renderRulesPeopleTab(rules) : ""}
             ${activeTab === "instructions" ? this._renderRulesInstructionsTab(rules) : ""}
           </div>
 
@@ -8241,9 +8269,27 @@ class OtisCompanionCard extends HTMLElement {
             <div style="font-size: 0.88rem; font-weight: 700; color: var(--otis-primary);">Step 1: Household Members & Daily Habits</div>
             <div style="font-size: 0.75rem; color: var(--otis-text-muted);">Define who lives in the home and their primary schedules so Otis can coordinate rooms and routines contextually.</div>
 
-            <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+            <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 8px;">
               <div class="rules-setting-label">Primary Residents / Household Members:</div>
-              <input type="text" id="wiz-residents" value="${this._escapeHtml(w.residents || "")}" placeholder="e.g. Alex, Jordan" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+              <div style="font-size: 0.72rem; color: var(--otis-text-muted);">Select active residents from Home Assistant users or enter names below:</div>
+              <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                ${(() => {
+                  const avail = this._getAvailableUsers();
+                  const curRes = (w.residents || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+                  return avail
+                    .map((u) => {
+                      const cleanName = u.name || u.id;
+                      const isSel = curRes.some(r => r === cleanName.toLowerCase() || r === u.id.toLowerCase() || cleanName.toLowerCase().includes(r) || r.includes(cleanName.toLowerCase()));
+                      return `
+                        <button type="button" class="subview-chip wiz-resident-chip ${isSel ? 'active' : ''}" data-user-name="${this._escapeHtml(cleanName)}" style="padding: 4px 10px; font-size: 0.75rem; border-radius: 16px; cursor: pointer; ${isSel ? 'background: var(--otis-primary); color: #fff; border-color: var(--otis-primary);' : ''}">
+                          ${isSel ? '✓ ' : '+ '}👤 ${this._escapeHtml(cleanName)}
+                        </button>
+                      `;
+                    })
+                    .join("");
+                })()}
+              </div>
+              <input type="text" id="wiz-residents" value="${this._escapeHtml(w.residents || "")}" placeholder="e.g. Jamie, Amy" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
             </div>
 
             <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
@@ -8428,6 +8474,90 @@ class OtisCompanionCard extends HTMLElement {
                 : ""
             }
           </div>
+        </div>
+      </div>
+    `;
+  }
+
+  _renderRulesPeopleTab(rules) {
+    const profiles = { ...(this._userRules?.person_profiles || {}) };
+    const availUsers = this._getAvailableUsers();
+
+    // Ensure registered person entities from Home Assistant are represented
+    availUsers.forEach((u) => {
+      const pid = u.id.toLowerCase();
+      if (!profiles[pid]) {
+        profiles[pid] = {
+          person_id: pid,
+          label: u.name,
+          confidence: 0.50,
+          samples: 0,
+          entity_type: /dexter|charles|dog|cat|pet/i.test(u.name) ? "pet" : (/guest/i.test(u.name) ? "guest" : "resident"),
+          training_enabled: true,
+          tracks: [],
+          features: {},
+        };
+      }
+    });
+
+    const profileList = Object.values(profiles);
+
+    return `
+      <div style="display: flex; flex-direction: column; gap: 14px;">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;">
+          <div>
+            <div style="font-size: 0.88rem; font-weight: 700; color: var(--otis-primary);">👥 Recognized Household Members, Pets &amp; Guests</div>
+            <div style="font-size: 0.75rem; color: var(--otis-text-muted);">Manage who Otis identifies across cameras, smart locks, and spatial audio. Classify residents versus pets, enable/disable recognition training, or remove profiles.</div>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          ${profileList.map((p) => {
+            const pid = p.person_id;
+            const pType = p.entity_type || (/dexter|charles|pet|dog|cat/i.test(p.label || pid) ? "pet" : (/guest/i.test(p.label || pid) ? "guest" : "resident"));
+            const typeIcon = pType === "pet" ? "🐾" : (pType === "guest" ? "👥" : (pType === "ignored" ? "🚫" : "👤"));
+            const confPct = Math.round((p.confidence || 0.50) * 100);
+            const isTraining = p.training_enabled !== false && pType !== "ignored";
+
+            return `
+              <div class="rules-setting-row" style="padding: 10px 14px; border-radius: 8px; background: rgba(0,0,0,0.18); border: 1px solid var(--otis-surface-border); display: flex; flex-direction: column; gap: 8px;" data-profile-card="${this._escapeHtml(pid)}">
+                <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-wrap: wrap; gap: 8px;">
+                  <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 1.3rem;">${typeIcon}</span>
+                    <div>
+                      <div style="font-weight: 700; font-size: 0.85rem; color: var(--otis-text);">${this._escapeHtml(p.label || pid)}</div>
+                      <div style="font-size: 0.70rem; color: var(--otis-text-muted); font-family: monospace;">${this._escapeHtml(pid)}</div>
+                    </div>
+                  </div>
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; background: ${confPct >= 80 ? 'rgba(16,185,129,0.2)' : 'rgba(56,189,248,0.2)'}; color: ${confPct >= 80 ? '#10b981' : 'var(--otis-primary)'}; font-weight: 600;">
+                      ${confPct}% Confidence • ${p.samples || 0} sample(s)
+                    </span>
+                    <button type="button" class="btn-toolbar btn-delete-profile" data-del-person="${this._escapeHtml(pid)}" style="padding: 3px 8px; font-size: 0.72rem; color: #ef4444; border-color: rgba(239,68,68,0.3);" title="Remove profile from Otis recognition">
+                      🗑️
+                    </button>
+                  </div>
+                </div>
+
+                <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px; gap: 12px; flex-wrap: wrap;">
+                  <div style="display: flex; align-items: center; gap: 8px;">
+                    <span style="font-size: 0.74rem; color: var(--otis-text-muted);">Classification:</span>
+                    <select class="profile-type-select" data-person-id="${this._escapeHtml(pid)}" style="background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); border-radius: 6px; padding: 3px 8px; font-size: 0.74rem;">
+                      <option value="resident" ${pType === "resident" ? "selected" : ""}>👤 Primary Resident</option>
+                      <option value="pet" ${pType === "pet" ? "selected" : ""}>🐾 Pet / Domestic Animal</option>
+                      <option value="guest" ${pType === "guest" ? "selected" : ""}>👥 Guest / Visitor</option>
+                      <option value="ignored" ${pType === "ignored" ? "selected" : ""}>🚫 Exclude / Do Not Track</option>
+                    </select>
+                  </div>
+
+                  <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin: 0;">
+                    <span style="font-size: 0.74rem; color: var(--otis-text-muted);">Recognition Training:</span>
+                    <input type="checkbox" class="profile-training-toggle" data-person-id="${this._escapeHtml(pid)}" ${isTraining ? "checked" : ""} style="width: 16px; height: 16px; cursor: pointer;" />
+                  </label>
+                </div>
+              </div>
+            `;
+          }).join("")}
         </div>
       </div>
     `;
@@ -9378,11 +9508,13 @@ class OtisCompanionCard extends HTMLElement {
           if (w.quietVolume !== undefined) draft.quiet_hours_volume = w.quietVolume;
         }
 
+        draft.wizard_state = { ...(this._wizardState || {}) };
+        draft.person_profiles = { ...(this._userRules?.person_profiles || {}) };
         this._rulesDraft = draft;
         return draft;
       };
 
-      ["wizard", "dashboard", "persona", "safety", "voice", "instructions"].forEach((tab) => {
+      ["wizard", "dashboard", "persona", "safety", "voice", "people", "instructions"].forEach((tab) => {
         const tabBtn = root.querySelector(`#rules-tab-${tab}`);
         if (tabBtn) {
           tabBtn.onclick = () => {
@@ -9695,6 +9827,92 @@ class OtisCompanionCard extends HTMLElement {
           }
         };
       }
+
+      // Wizard resident chips
+      root.querySelectorAll(".wiz-resident-chip").forEach((chip) => {
+        chip.onclick = () => {
+          const uName = chip.getAttribute("data-user-name");
+          if (!uName) return;
+          const curRes = (this._wizardState?.residents || "")
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const idx = curRes.findIndex((r) => r.toLowerCase() === uName.toLowerCase());
+          if (idx >= 0) {
+            curRes.splice(idx, 1);
+          } else {
+            curRes.push(uName);
+          }
+          const updated = curRes.join(", ");
+          this._wizardState = { ...(this._wizardState || {}), residents: updated };
+          const resInput = root.querySelector("#wiz-residents");
+          if (resInput) resInput.value = updated;
+          chip.classList.toggle("active", idx < 0);
+          chip.innerHTML = `${idx < 0 ? "✓ " : "+ "}👤 ${this._escapeHtml(uName)}`;
+          if (idx < 0) {
+            chip.style.background = "var(--otis-primary)";
+            chip.style.color = "#fff";
+            chip.style.borderColor = "var(--otis-primary)";
+          } else {
+            chip.style.background = "";
+            chip.style.color = "";
+            chip.style.borderColor = "";
+          }
+        };
+      });
+
+      // People & Pets Classification Dropdown
+      root.querySelectorAll(".profile-type-select").forEach((sel) => {
+        sel.onchange = async () => {
+          const pid = sel.getAttribute("data-person-id");
+          if (!pid || !this._hass) return;
+          try {
+            await this._hass.callService("otis_ai", "update_person_profile", {
+              person_id: pid,
+              entity_type: sel.value,
+            });
+            this._showToast(`Updated classification for ${pid}`);
+            await this._fetchData();
+          } catch (err) {
+            this._showToast(`Failed to update profile: ${err.message || err}`, true);
+          }
+        };
+      });
+
+      // People & Pets Training Toggle
+      root.querySelectorAll(".profile-training-toggle").forEach((chk) => {
+        chk.onchange = async () => {
+          const pid = chk.getAttribute("data-person-id");
+          if (!pid || !this._hass) return;
+          try {
+            await this._hass.callService("otis_ai", "update_person_profile", {
+              person_id: pid,
+              training_enabled: chk.checked,
+            });
+            this._showToast(`Recognition training ${chk.checked ? "enabled" : "disabled"} for ${pid}`);
+            await this._fetchData();
+          } catch (err) {
+            this._showToast(`Failed to update training: ${err.message || err}`, true);
+          }
+        };
+      });
+
+      // People & Pets Delete Profile
+      root.querySelectorAll(".btn-delete-profile").forEach((btn) => {
+        btn.onclick = async () => {
+          const pid = btn.getAttribute("data-del-person");
+          if (!pid || !this._hass) return;
+          try {
+            await this._hass.callService("otis_ai", "remove_person_profile", {
+              person_id: pid,
+            });
+            this._showToast(`Removed profile for ${pid}`);
+            await this._fetchData();
+          } catch (err) {
+            this._showToast(`Failed to delete profile: ${err.message || err}`, true);
+          }
+        };
+      });
 
       // Save Rules Button
       const saveBtn = root.querySelector("#rules-btn-save");
@@ -10586,6 +10804,7 @@ class OtisCompanionCard extends HTMLElement {
     // 3D Canvas Drag-to-Orbit Pointer Interaction
     if (floorplanViewport && this._floorplanViewMode === "3d" && !this._editorActive) {
       let isOrbiting = false;
+      let initialHitTarget = null;
       let startX = 0;
       let startY = 0;
       let startAz = this._floorplanAzimuth;
@@ -10597,6 +10816,7 @@ class OtisCompanionCard extends HTMLElement {
           return;
         }
         isOrbiting = true;
+        initialHitTarget = e.target;
         startX = e.clientX;
         startY = e.clientY;
         startAz = this._floorplanAzimuth;
@@ -10637,6 +10857,29 @@ class OtisCompanionCard extends HTMLElement {
           localStorage.setItem("otis_floorplan_orbit_azimuth", String(this._floorplanAzimuth));
           localStorage.setItem("otis_floorplan_pitch_incline", String(this._floorplanPitch));
         } catch (_) {}
+
+        // Disambiguate Tap / Click from Orbit Drag:
+        const moveDist = Math.hypot(e.clientX - startX, e.clientY - startY);
+        if (moveDist < 6) {
+          const hitTarget = initialHitTarget || e.target;
+          const roomGrp = hitTarget && hitTarget.closest ? hitTarget.closest(".room-group, .floorplan-3d-room-shell") : null;
+          if (roomGrp) {
+            const areaId = roomGrp.getAttribute("data-area-id") || roomGrp.getAttribute("data-room-id");
+            if (areaId) {
+              const area = this._capabilityMap?.areas?.[areaId];
+              const slug = areaId.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "room";
+              this._selectedRoomInfo = {
+                areaId,
+                name: area?.name || areaId,
+                slug,
+                zone: roomGrp.getAttribute("data-zone") || "indoor",
+                entities: area?.entities || [],
+              };
+              this._render();
+            }
+          }
+        }
+        initialHitTarget = null;
       };
 
       floorplanViewport.onpointerup = finishOrbit;
@@ -11514,7 +11757,9 @@ class OtisCompanionCard extends HTMLElement {
             const areaId = grp?.getAttribute("data-area-id");
             if (areaId) {
               const slug = areaId.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "room";
-              const path = `/otis-ai/area_${slug}`;
+              const curPath = typeof window !== "undefined" ? window.location.pathname : "";
+              const seg = curPath.split("/").filter(Boolean)[0] || "command-center";
+              const path = `/${seg}/area_${slug}`;
               window.history.pushState(null, "", path);
               window.dispatchEvent(new CustomEvent("location-changed"));
             }

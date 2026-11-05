@@ -382,7 +382,7 @@ def test_audio_follow_toggle_service_and_rules():
             "on",
             {
                 "friendly_name": "Otis Audio Follow-Me",
-                "icon": "mdi:music-note-sync",
+                "icon": "mdi:cast-connected",
                 "assumed_state": False,
                 "description": "Enables or disables autonomous room-to-room audio migration.",
             },
@@ -396,7 +396,7 @@ def test_audio_follow_toggle_service_and_rules():
             "off",
             {
                 "friendly_name": "Otis Audio Follow-Me",
-                "icon": "mdi:music-note-sync",
+                "icon": "mdi:cast-connected",
                 "assumed_state": False,
                 "description": "Enables or disables autonomous room-to-room audio migration.",
             },

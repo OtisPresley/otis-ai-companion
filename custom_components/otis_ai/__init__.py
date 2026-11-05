@@ -117,6 +117,8 @@ from .const import (
     SERVICE_TOGGLE_AUDIO_FOLLOW,
     SERVICE_TOGGLE_VOICE_ANNOUNCEMENTS,
     SERVICE_CONFIRM_PERSON_IDENTITY,
+    SERVICE_UPDATE_PERSON_PROFILE,
+    SERVICE_REMOVE_PERSON_PROFILE,
     SERVICE_AUDIT_MESH_HEALTH,
     SERVICE_HEAL_MESH_NODE,
     SERVICE_OPTIMIZE_BATTERY_SCHEDULE,
@@ -2475,6 +2477,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             visual_features=features,
         )
 
+    async def handle_update_person_profile(call) -> ServiceResponse:
+        """Handle service call to update person or pet profile classification and training toggle."""
+        _LOGGER.debug("Service 'update_person_profile' triggered with: %s", call.data)
+        entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        rm_rules = entry_store.get("rules_manager", rules_manager)
+        person_id = call.data.get("person_id")
+        if not person_id:
+            return {"success": False, "error": "person_id is required"}
+        label = call.data.get("label")
+        entity_type = call.data.get("entity_type", "resident")
+        training_enabled = bool(call.data.get("training_enabled", True))
+        return await rm_rules.async_update_person_profile(
+            person_id=person_id,
+            label=label,
+            entity_type=entity_type,
+            training_enabled=training_enabled,
+        )
+
+    async def handle_remove_person_profile(call) -> ServiceResponse:
+        """Handle service call to remove a person or pet profile."""
+        _LOGGER.debug("Service 'remove_person_profile' triggered with: %s", call.data)
+        entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        rm_rules = entry_store.get("rules_manager", rules_manager)
+        person_id = call.data.get("person_id")
+        if not person_id:
+            return {"success": False, "error": "person_id is required"}
+        return await rm_rules.async_remove_person_profile(person_id=person_id)
+
     async def handle_audit_mesh_health(call) -> ServiceResponse:
         """Handle service call to audit Zigbee/Z-Wave/Thread mesh topology and health."""
         _LOGGER.debug("Service 'audit_mesh_health' triggered")
@@ -3012,6 +3042,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         DOMAIN,
         SERVICE_CONFIRM_PERSON_IDENTITY,
         handle_confirm_person_identity,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_UPDATE_PERSON_PROFILE,
+        handle_update_person_profile,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_REMOVE_PERSON_PROFILE,
+        handle_remove_person_profile,
         supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
@@ -6741,19 +6783,37 @@ class DiscoveryEngine:
                         "action_payload": {"strategy": "negative_pricing_dispatch"},
                     })
                 elif current_tariff == "off_peak":
-                    suggestions.append({
-                        "id": "off_peak_energy_arbitrage_window",
-                        "title": "🌙 Off-Peak TOU Tariff Window Active: Schedule Heavy Loads",
-                        "category": "energy",
-                        "priority": "low",
-                        "icon": "mdi:clock-check-outline",
-                        "description": (
-                            "Your electric utility is in super off-peak hours. Otis can co-optimize your EV charging "
-                            "and discretionary appliances before on-peak rates resume."
-                        ),
-                        "action_type": "schedule_ev_charging",
-                        "action_payload": {"mode": "off_peak_fast"},
-                    })
+                    # Check whether home has EV chargers/vehicles or just discretionary appliances
+                    topo = await self.energy_manager.async_discover_energy_topology()
+                    has_ev = bool(topo.get("ev_chargers") or topo.get("ev_vehicles"))
+                    if has_ev:
+                        suggestions.append({
+                            "id": "off_peak_energy_arbitrage_window",
+                            "title": "🌙 Off-Peak TOU Tariff Window Active: Schedule Heavy Loads",
+                            "category": "energy",
+                            "priority": "low",
+                            "icon": "mdi:clock-check-outline",
+                            "description": (
+                                "Your electric utility is in super off-peak hours. Otis can co-optimize your EV charging "
+                                "and discretionary appliances before on-peak rates resume."
+                            ),
+                            "action_type": "schedule_ev_charging",
+                            "action_payload": {"mode": "off_peak_fast"},
+                        })
+                    else:
+                        suggestions.append({
+                            "id": "off_peak_energy_arbitrage_window",
+                            "title": "🌙 Off-Peak TOU Tariff Window Active: Shift Discretionary Loads",
+                            "category": "energy",
+                            "priority": "low",
+                            "icon": "mdi:clock-check-outline",
+                            "description": (
+                                "Your electric utility is in off-peak hours. Otis can co-optimize your pool pumps, "
+                                "water heating, and discretionary sub-circuits before on-peak rates resume."
+                            ),
+                            "action_type": "execute_energy_arbitrage",
+                            "action_payload": {"strategy": "off_peak_dispatch"},
+                        })
             except Exception as err:
                 _LOGGER.debug("Error checking energy manager for suggestions: %s", err)
 
@@ -8152,6 +8212,8 @@ class DiscoveryEngine:
                     pid = pe["entity_id"]
                     p_name = pe.get("name") or pid.replace("person.", "").title()
                     prof = profiles.get(pid, {})
+                    if prof.get("training_enabled") is False or prof.get("entity_type") == "ignored":
+                        continue
                     conf = prof.get("confidence", 0.50)
                     samples = prof.get("samples", 0)
                     if samples < 3 or conf < 0.80:

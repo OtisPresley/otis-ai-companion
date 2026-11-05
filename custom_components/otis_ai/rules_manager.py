@@ -51,6 +51,7 @@ DEFAULT_RULES: dict[str, Any] = {
     "voice_announcements_enabled": True,
     "voice_filter_passersby": True,
     "person_profiles": {},
+    "wizard_state": {},
     "reasoning_timeout": 60,
 }
 
@@ -87,6 +88,40 @@ class BehavioralRulesManager:
             self._rules = dict(DEFAULT_RULES)
         finally:
             self._loaded = True
+            # Auto-recover wizard_state if missing from legacy custom_instructions
+            if not self._rules.get("wizard_state") and self._rules.get("custom_instructions"):
+                try:
+                    import re
+                    ci = str(self._rules.get("custom_instructions") or "")
+                    w: dict[str, Any] = {}
+                    m_res = re.search(r"Primary Residents:\s*([^\.\n]+)", ci)
+                    if m_res:
+                        w["residents"] = m_res.group(1).strip()
+                    m_work = re.search(r"Work-from-Home Routine:\s*([^\n]+)", ci)
+                    if m_work:
+                        w["workHours"] = m_work.group(1).strip().rstrip(".")
+                    m_sleep = re.search(r"Sleep & Bed Navigation:\s*([^\n]+)", ci)
+                    if m_sleep:
+                        w["sleepHabits"] = m_sleep.group(1).strip().rstrip(".")
+                    m_code = re.search(r"(?:code|temporary code)\s*['\"]?([0-9A-Za-z]+)['\"]?", ci)
+                    if m_code:
+                        w["guestLockCode"] = m_code.group(1).strip()
+                    if w:
+                        w.setdefault("guestDelayedOff", "00:00:00")
+                        w.setdefault("guestClimateComfort", True)
+                        w.setdefault("holidaySwitches", True)
+                        w.setdefault("requireDeadboltConfirm", self._rules.get("require_lock_confirmation", True))
+                        w.setdefault("requireAlarmConfirm", self._rules.get("require_security_confirmation", True))
+                        w.setdefault("garageAlertMinutes", 15)
+                        w.setdefault("perimeterCameraAlerts", True)
+                        w.setdefault("matrixRouting", True)
+                        w.setdefault("voiceDucking", True)
+                        w.setdefault("quietHoursStart", self._rules.get("quiet_hours_start", "22:00"))
+                        w.setdefault("quietHoursEnd", self._rules.get("quiet_hours_end", "07:00"))
+                        w.setdefault("quietVolume", self._rules.get("quiet_hours_volume", 25))
+                        self._rules["wizard_state"] = w
+                except Exception as rec_err:
+                    _LOGGER.debug("Could not recover wizard_state: %s", rec_err)
             self._sync_audio_follow_switch()
             self._sync_voice_announcements_switch()
 
@@ -166,6 +201,11 @@ class BehavioralRulesManager:
             else:
                 merged["dismissed_recommendation_ids"] = []
 
+        if "wizard_state" in new_rules and isinstance(new_rules["wizard_state"], dict):
+            merged["wizard_state"] = dict(new_rules["wizard_state"])
+        if "person_profiles" in new_rules and isinstance(new_rules["person_profiles"], dict):
+            merged["person_profiles"] = dict(new_rules["person_profiles"])
+
         self._rules = merged
         await self._store.async_save(self._rules)
         self._sync_audio_follow_switch()
@@ -228,7 +268,7 @@ class BehavioralRulesManager:
                 "on" if enabled else "off",
                 {
                     "friendly_name": "Otis Audio Follow-Me",
-                    "icon": "mdi:music-note-sync",
+                    "icon": "mdi:cast-connected",
                     "assumed_state": False,
                     "description": "Enables or disables autonomous room-to-room audio migration.",
                 },
@@ -248,6 +288,58 @@ class BehavioralRulesManager:
                     "description": "Enables or disables proactive spoken voice announcements for security and camera events.",
                 },
             )
+
+    async def async_update_person_profile(
+        self,
+        person_id: str,
+        label: str | None = None,
+        entity_type: str = "resident",  # resident, pet, guest, ignored
+        training_enabled: bool = True,
+    ) -> dict[str, Any]:
+        """Update or create a managed person/pet profile."""
+        if not self._loaded:
+            await self.async_load()
+
+        profiles = dict(self._rules.get("person_profiles") or {})
+        clean_pid = str(person_id).strip().lower()
+        profile = profiles.get(clean_pid, {
+            "person_id": clean_pid,
+            "label": label or clean_pid.replace("person.", "").title(),
+            "confidence": 0.50,
+            "samples": 0,
+            "tracks": [],
+            "features": {},
+        })
+        if label:
+            profile["label"] = str(label).strip()
+        profile["entity_type"] = entity_type
+        profile["training_enabled"] = bool(training_enabled)
+
+        profiles[clean_pid] = profile
+        self._rules["person_profiles"] = profiles
+        await self._store.async_save(self._rules)
+        _LOGGER.info(
+            "Otis AI: Updated person/pet profile %s (type: %s, training: %s)",
+            clean_pid,
+            entity_type,
+            training_enabled,
+        )
+        return {"success": True, "person_id": clean_pid, "profile": profile}
+
+    async def async_remove_person_profile(self, person_id: str) -> dict[str, Any]:
+        """Remove a person/pet profile from recognition training."""
+        if not self._loaded:
+            await self.async_load()
+
+        profiles = dict(self._rules.get("person_profiles") or {})
+        clean_pid = str(person_id).strip().lower()
+        if clean_pid in profiles:
+            del profiles[clean_pid]
+            self._rules["person_profiles"] = profiles
+            await self._store.async_save(self._rules)
+            _LOGGER.info("Otis AI: Removed person profile %s", clean_pid)
+            return {"success": True, "person_id": clean_pid}
+        return {"success": False, "error": f"Profile {clean_pid} not found"}
 
     async def async_confirm_person_identity(
         self,
