@@ -192,21 +192,34 @@ def get_agent_display_name(hass: HomeAssistant, agent_id: str | None) -> str:
     if not agent_id:
         return "Default Agent"
     from .config_flow import _get_agents
+    agent_name: str | None = None
     try:
         agents = _get_agents(hass)
         for a in agents:
             if getattr(a, "id", None) == agent_id:
-                return getattr(a, "name", str(a))
+                agent_name = str(getattr(a, "name", str(a)))
+                break
     except Exception:
         pass
+    c_entry, _, _, _ = _resolve_agent_config_entry(hass, str(agent_id))
+    entry_title = str(getattr(c_entry, "title", "") or "").strip() if c_entry is not None else ""
+    if agent_name:
+        if agent_name.lower() in ("assist", "conversation", "text generation assist") and entry_title:
+            return entry_title
+        return agent_name
+    if entry_title:
+        return entry_title
     if agent_id.startswith("conversation."):
         part = agent_id.split(".", 1)[1]
         return part.replace("_", " ").title()
-    if hass and hasattr(hass, "config_entries"):
-        c_entry = hass.config_entries.async_get_entry(agent_id)
-        if c_entry:
-            return c_entry.title
     return agent_id
+
+
+class _NoAliasSafeDumper(yaml.SafeDumper):
+    """YAML SafeDumper that never emits &id001 / *id001 anchors or aliases."""
+
+    def ignore_aliases(self, data: Any) -> bool:
+        return True
 
 
 
@@ -625,10 +638,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     lambda _: start_event.set(),
                 )
                 try:
-                    await asyncio.wait_for(start_event.wait(), timeout=30.0)
+                    await asyncio.wait_for(start_event.wait(), timeout=120.0)
                 except asyncio.TimeoutError:
                     pass
             await asyncio.sleep(0.5)
+            engine.invalidate_cache()
             cap_map = await engine.async_build_capability_map(force_refresh=True)
             await dashboard_manager.async_ensure_admin_companion_dashboard(cap_map)
             await dashboard_manager.async_ensure_user_command_center_dashboard(cap_map)
@@ -1334,14 +1348,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 resp_dict = resp.as_dict()
                 speech = resp_dict.get("speech", {}).get("plain", {}).get("speech", "")
 
-        ret_conv_id = getattr(result, "conversation_id", None) or conv_id
+        ret_conv_id = getattr(result, "conversation_id", None) or conv_id or "default"
         r_timeout = float(
             entry.options.get(CONF_REASONING_TIMEOUT)
             or entry.data.get(CONF_REASONING_TIMEOUT)
             or DEFAULT_REASONING_TIMEOUT
         )
         sessions = hass.data.get(DOMAIN, {}).get("sessions", {})
-        session_info = sessions.get(ret_conv_id or conv_id, {})
+        session_info = sessions.get(ret_conv_id, {}) or sessions.get("default", {})
         resolved_agent = session_info.get("last_resolved_agent") or "Primary Cloud AI"
         failover_occurred = session_info.get("last_failover_occurred", False)
 
@@ -3264,23 +3278,24 @@ class OtisAIConversationAgent(AbstractAgent):
         speech: str,
     ) -> conversation.ConversationResult:
         """Create a ConversationResult with a properly initialized IntentResponse."""
+        cid = getattr(user_input, "conversation_id", None) or "default"
         if hasattr(user_input, "create_response"):
             return conversation.ConversationResult(
                 response=user_input.create_response(intent_response=None, speech=speech),
-                conversation_id=user_input.conversation_id,
+                conversation_id=cid,
             )
         try:
             intent_response = intent.IntentResponse(language=getattr(user_input, "language", "en"))
             intent_response.async_set_speech(speech)
             return conversation.ConversationResult(
                 response=intent_response,
-                conversation_id=user_input.conversation_id,
+                conversation_id=cid,
             )
         except Exception as err:
             _LOGGER.error("Failed to construct intent response: %s", err)
             return conversation.ConversationResult(
                 response=None,
-                conversation_id=getattr(user_input, "conversation_id", None),
+                conversation_id=cid,
             )
 
     def _record_turn(
@@ -3442,6 +3457,8 @@ class OtisAIConversationAgent(AbstractAgent):
 
         if pending_items:
             patterns_to_remove = [
+                r"(?is)to\s+deploy\s+this\s+automation,\s+you\s+can\s+follow\s+these\s+steps:.*?(?=\n\nWould you like|\Z)",
+                r"(?im)^\s*\d+\.\s*(?:open|add|save|paste|copy|reload|restart)\s+[^\n]*(?:automations\.yaml|home assistant|file)[^\n]*\n?",
                 r"(?i)(?:to\s+(?:add|use|install|implement|deploy)\s+this(?:\s+automation)?,\s+)?(?:open|paste|add|copy)\s+(?:the\s+following(?:\s+code|\s+yaml)?\s+(?:in|into|to)\s+)?(?:your\s+)?(?:/config/)?automations\.yaml(?:\s+file)?(?:\s+and\s+(?:reload|restart)[^.\n]*)?[.]?",
                 r"(?i)you\s+(?:can|will\s+need\s+to|must)\s+(?:add|paste|put)\s+this\s+(?:in|into|to)\s+(?:your\s+)?(?:/config/)?automations\.yaml[^.\n]*[.]?",
                 r"(?i)(?:i\s+cannot|i'm\s+unable\s+to|i\s+am\s+unable\s+to)\s+(?:directly\s+)?deploy[^.\n]*[.]?",
@@ -4469,8 +4486,7 @@ class OtisAIConversationAgent(AbstractAgent):
                         "name": auto_payload.get("alias", "Proposed Automation"),
                         "yaml_data": auto_payload,
                     }]
-                    import yaml
-                    dumped_yaml = yaml.dump(auto_payload, sort_keys=False)
+                    dumped_yaml = yaml.dump(auto_payload, Dumper=_NoAliasSafeDumper, sort_keys=False)
                     speech = (
                         f"Here is the proposed automation for **{target_sugg.get('title')}**:\n\n"
                         f"```yaml\n{dumped_yaml}```\n\n"
@@ -4500,9 +4516,412 @@ class OtisAIConversationAgent(AbstractAgent):
             self._record_turn(session_data, user_input.text, msg)
             return self._create_response(user_input, msg)
 
+        # Resolve active conversation agent label for reasoning trace & session attribution
+        health_metrics_pre = (
+            self.rules_manager.get_agent_health_metrics()
+            if getattr(self, "rules_manager", None) and hasattr(self.rules_manager, "get_agent_health_metrics")
+            else {}
+        )
+        active_agent_display = "Otis Grounded Engine"
+        active_agent_id = "otis_grounded_engine"
+        if prioritized_agents:
+            top_aid = prioritized_agents[0]
+            top_info = classify_and_score_agent(self.hass, str(top_aid), health_metrics_pre)
+            top_degraded = top_info["consecutive_failures"] >= 2 and (time.time() - top_info["last_error_ts"]) < 600
+            if (top_info["tier"] == "free_restricted" or top_degraded) and local_enabled and self.local_llm_manager:
+                active_agent_display = f"Local Edge ({self.local_llm_manager.model})"
+                active_agent_id = f"local_llm:{self.local_llm_manager.model}"
+            else:
+                active_agent_display = get_agent_display_name(self.hass, top_aid)
+                active_agent_id = str(top_aid)
+        elif local_enabled and self.local_llm_manager:
+            active_agent_display = f"Local Edge ({self.local_llm_manager.model})"
+            active_agent_id = f"local_llm:{self.local_llm_manager.model}"
+
         # 2. Build the capability map
         fire_progress("topology", "Querying Topology", "Inspecting spatial adjacency graph & active entities")
         capability_map = await self.engine.async_build_capability_map()
+
+        # 2.1 Fast Grounded Pre-Checks: Anti-Hallucination Trap, Exact Room Status, & Ambiguous Room Clarification
+        areas_dict = capability_map.get("areas", {}) or {}
+        entities_list_all = capability_map.get("entities", []) or []
+        entity_by_id: dict[str, dict[str, Any]] = {
+            str(e.get("entity_id", "")).lower(): e
+            for e in entities_list_all
+            if e.get("entity_id")
+        }
+        state_ids_set: set[str] = set(entity_by_id.keys())
+        if hasattr(self.hass, "states") and hasattr(self.hass.states, "async_entity_ids"):
+            try:
+                raw_sids = self.hass.states.async_entity_ids()
+                if isinstance(raw_sids, (list, tuple, set)):
+                    state_ids_set.update(str(sid).lower() for sid in raw_sids)
+            except Exception:
+                pass
+
+        # Identify which rooms from areas_dict are explicitly mentioned in user_input.text
+        matched_rooms: list[tuple[str, str, dict[str, Any]]] = []
+        for aid, ainfo in sorted(areas_dict.items(), key=lambda x: len(str(x[1].get("name", x[0]))), reverse=True):
+            aname = str(ainfo.get("name") or aid)
+            aname_low = aname.lower()
+            aid_low = str(aid).lower()
+            aid_space = aid_low.replace("_", " ")
+            if (
+                re.search(rf"\b{re.escape(aname_low)}\b", user_lower)
+                or re.search(rf"\b{re.escape(aid_low)}\b", user_lower)
+                or (aid_space and re.search(rf"\b{re.escape(aid_space)}\b", user_lower))
+            ):
+                if not any(r[0] == aid for r in matched_rooms):
+                    matched_rooms.append((aid, aname, ainfo))
+        matched_rooms.sort(key=lambda r: user_lower.find(r[1].lower()) if r[1].lower() in user_lower else 999)
+
+        # A. Check for explicit domain.object_id entity references in user_input.text that do NOT exist
+        entity_domains_check = {
+            "light", "switch", "climate", "media_player", "lock", "cover",
+            "binary_sensor", "sensor", "alarm_control_panel", "camera", "fan",
+            "vacuum", "siren", "person", "input_boolean",
+        }
+        service_verbs_ignore = {
+            "turn_on", "turn_off", "toggle", "set_temperature", "set_hvac_mode",
+            "select_source", "volume_set", "media_play", "media_pause", "media_stop",
+            "lock", "unlock", "open_cover", "close_cover", "stop_cover",
+            "arm_away", "arm_home", "arm_night", "disarm", "speak", "create",
+            "reload", "yaml", "json", "state",
+        }
+        mentioned_eids = re.findall(r"\b([a-z_]+)\.([a-z0-9_]+)\b", user_lower)
+        nonexistent_user_eids: list[str] = []
+        existing_user_eids: list[str] = []
+        if state_ids_set:
+            for dom, obj_id in mentioned_eids:
+                if dom in entity_domains_check and obj_id not in service_verbs_ignore:
+                    full_eid = f"{dom}.{obj_id}"
+                    if full_eid not in state_ids_set:
+                        if full_eid not in nonexistent_user_eids:
+                            nonexistent_user_eids.append(full_eid)
+                    else:
+                        if full_eid not in existing_user_eids:
+                            existing_user_eids.append(full_eid)
+
+        if nonexistent_user_eids:
+            fire_progress("synthesizing", "Verifying Entity Registry", f"Detected {len(nonexistent_user_eids)} non-existent entity ID(s)")
+            session_data.pop("pending_items", None)
+            session_data.pop("pending_yaml", None)
+            missing_bullets = "\n".join(f"• `{eid}` — **Does not exist** in your Home Assistant state or entity registry." for eid in nonexistent_user_eids)
+            sample_real = [
+                e["entity_id"]
+                for e in entities_list_all
+                if e.get("domain") in ("sensor", "binary_sensor", "switch", "light", "climate")
+            ][:6]
+            sample_str = ", ".join(f"`{e}`" for e in sample_real) if sample_real else "your registered room entities"
+            speech = (
+                "🛡️ **Otis Anti-Hallucination Verification**\n\n"
+                "I checked your live Home Assistant entity and state registries, and the following entity ID(s) **do not exist** on your system:\n"
+                f"{missing_bullets}\n\n"
+                "Because these entities are not registered in your Home Assistant instance:\n"
+                "1. I cannot report a live state or temperature for non-existent sensors.\n"
+                "2. I will **not** generate or offer to deploy an automation referencing imaginary triggers or actions.\n\n"
+                f"If you would like to build an automation using your real devices (such as {sample_str}), tell me which room or device you want to use!"
+            )
+            session_data["last_resolved_agent"] = active_agent_display
+            session_data["last_resolved_agent_id"] = active_agent_id
+            session_data["last_failover_occurred"] = False
+            fire_progress(
+                "agent_resolution",
+                f"Resolved by {active_agent_display}",
+                f"Verified against live Home Assistant entity registry ({active_agent_display})",
+            )
+            self._record_turn(session_data, user_input.text, speech)
+            return self._create_response(user_input, speech)
+
+        # B. Exact Room Status Check Queries (e.g. "Give me an exact status check of the Great Room and Study right now...")
+        is_room_status_query = (
+            bool(matched_rooms)
+            and not is_create_auto_intent
+            and (
+                any(p in user_lower for p in (
+                    "status check", "exact status", "current state", "list the exact entity_id",
+                    "do not guess any values", "what is the status of", "status of the",
+                ))
+                or (
+                    any(k in user_lower for k in ("status", "state", "states"))
+                    and any(k in user_lower for k in ("occupancy", "motion", "light", "lights", "climate", "temperature", "sensor", "sensors"))
+                )
+            )
+        )
+        if is_room_status_query:
+            fire_progress("domain", "Live Room Telemetry Audit", f"Querying exact states for {len(matched_rooms)} room(s)")
+            climate_topo_check = capability_map.get("climate_topology", {}) or {}
+            area_to_thermo_check = climate_topo_check.get("area_to_thermostat", {}) or {}
+            area_to_floor_check = climate_topo_check.get("area_to_floor", {}) or {}
+
+            report_sections: list[str] = [
+                "📊 **Otis Live Room Telemetry & Exact State Report** *(100% live from Home Assistant state registry — zero guessed values)*:"
+            ]
+            for r_id, r_name, r_info in matched_rooms:
+                r_eids = list(r_info.get("entities") or [])
+                # Also match any entities in entities_list_all whose area_id == r_id or whose entity_id contains the room slug
+                r_slug = str(r_id).lower()
+                for e_obj in entities_list_all:
+                    eid_c = str(e_obj.get("entity_id") or "")
+                    if not eid_c:
+                        continue
+                    if (e_obj.get("area_id") == r_id or f".{r_slug}_" in eid_c.lower() or eid_c.lower().endswith(f"_{r_slug}")) and eid_c not in r_eids:
+                        r_eids.append(eid_c)
+
+                def _fmt_entity_line(eid_str: str) -> str:
+                    st_obj = self.hass.states.get(eid_str) if hasattr(self.hass, "states") else None
+                    e_meta = entity_by_id.get(eid_str.lower(), {})
+                    st_val = st_obj.state if st_obj is not None else e_meta.get("state", "unknown")
+                    attrs = dict(getattr(st_obj, "attributes", {}) or {}) if st_obj is not None else dict(e_meta.get("attributes") or {})
+                    unit = attrs.get("unit_of_measurement")
+                    val_str = f"{st_val} {unit}".strip() if unit and st_val not in ("unknown", "unavailable") else str(st_val)
+                    extra_parts: list[str] = []
+                    if attrs.get("current_temperature") is not None:
+                        extra_parts.append(f"current_temperature: {attrs['current_temperature']}°F")
+                    if attrs.get("temperature") is not None:
+                        extra_parts.append(f"target: {attrs['temperature']}°F")
+                    elif attrs.get("target_temp_low") is not None and attrs.get("target_temp_high") is not None:
+                        extra_parts.append(f"target: {attrs['target_temp_low']}°F–{attrs['target_temp_high']}°F")
+                    if attrs.get("hvac_action"):
+                        extra_parts.append(f"hvac_action: {attrs['hvac_action']}")
+                    extra_str = f" ({', '.join(extra_parts)})" if extra_parts else ""
+                    fname = attrs.get("friendly_name") or e_meta.get("name") or eid_str
+                    return f"  - `{eid_str}` ({fname}): **`{val_str}`**{extra_str}"
+
+                occ_motion_eids = sorted([
+                    e for e in r_eids
+                    if e.startswith("binary_sensor.")
+                    and any(k in e.lower() for k in ("motion", "occupancy", "presence", "person", "pir", "mmwave", "radar"))
+                ])
+                light_eids = sorted([e for e in r_eids if e.startswith("light.")])
+                climate_temp_eids = sorted([
+                    e for e in r_eids
+                    if e.startswith("climate.")
+                    or (
+                        e.startswith("sensor.")
+                        and any(k in e.lower() for k in ("temp", "temperature", "humidity", "climate", "thermostat"))
+                    )
+                ])
+                zone_thermo = area_to_thermo_check.get(r_id)
+                if zone_thermo and zone_thermo not in climate_temp_eids:
+                    climate_temp_eids.insert(0, zone_thermo)
+
+                floor_label = area_to_floor_check.get(r_id, "Ground Floor")
+                sec_lines = [f"\n### 🏠 {r_name} (`{r_id}` — {floor_label})"]
+                sec_lines.append("**Occupancy & Motion Sensors:**")
+                if occ_motion_eids:
+                    sec_lines.extend(_fmt_entity_line(e) for e in occ_motion_eids)
+                else:
+                    sec_lines.append("  - None registered in this room.")
+
+                sec_lines.append("**Lights:**")
+                if light_eids:
+                    sec_lines.extend(_fmt_entity_line(e) for e in light_eids)
+                else:
+                    sec_lines.append("  - None registered in this room.")
+
+                sec_lines.append("**Climate & Temperature Sensors:**")
+                if climate_temp_eids:
+                    for ce in climate_temp_eids:
+                        line = _fmt_entity_line(ce)
+                        if ce == zone_thermo and ce not in (r_info.get("entities") or []):
+                            line += f" *(Zone thermostat covering {r_name} / {floor_label})*"
+                        sec_lines.append(line)
+                else:
+                    sec_lines.append("  - No dedicated room temperature sensor or thermostat registered.")
+
+                report_sections.append("\n".join(sec_lines))
+
+            speech = "\n".join(report_sections)
+            session_data["last_resolved_agent"] = active_agent_display
+            session_data["last_resolved_agent_id"] = active_agent_id
+            session_data["last_failover_occurred"] = False
+            fire_progress(
+                "agent_resolution",
+                f"Resolved by {active_agent_display}",
+                f"Live state inspection completed with {active_agent_display}",
+            )
+            self._record_turn(session_data, user_input.text, speech)
+            return self._create_response(user_input, speech)
+
+        # C. Ambiguous Room Request Clarification (e.g. "Turn on the light when I walk in.")
+        is_ambiguous_walk_in = (
+            not matched_rooms
+            and not existing_user_eids
+            and len(areas_dict) > 1
+            and any(p in user_lower for p in (
+                "when i walk in", "when i enter", "when someone walks in",
+                "when someone enters", "walk into the room", "enter the room",
+            ))
+            and any(d in user_lower for d in ("the light", "the lights", "a light", "lights", "the fan", "the switch"))
+        )
+        if is_ambiguous_walk_in:
+            room_names_sorted = sorted(str(a.get("name") or k) for k, a in areas_dict.items())
+            rooms_preview = ", ".join(f"**{rn}**" for rn in room_names_sorted[:12])
+            speech = (
+                "Which room would you like me to configure this automation for?\n\n"
+                f"You have multiple rooms with lighting and occupancy/motion sensors ({rooms_preview}). "
+                "Let me know the room (and whether you want it active all day or only after sunset, plus any auto-off timeout), "
+                "and I will generate the exact Home Assistant automation using that room's real entity IDs!"
+            )
+            session_data["last_resolved_agent"] = active_agent_display
+            session_data["last_resolved_agent_id"] = active_agent_id
+            session_data["last_failover_occurred"] = False
+            fire_progress(
+                "agent_resolution",
+                f"Resolved by {active_agent_display}",
+                f"Clarification prompt generated by {active_agent_display}",
+            )
+            self._record_turn(session_data, user_input.text, speech)
+            return self._create_response(user_input, speech)
+
+        # D. Grounded Room Automation Synthesis for Explicit Single-Room Motion/Occupancy + Light Automations
+        # (e.g., "Write a Home Assistant automation YAML that turns on the Foyer light when motion or person occupancy is detected in the Foyer after sunset, and turns it off after 10 minutes of no motion. Use only my real Foyer entity IDs.")
+        if (
+            len(matched_rooms) == 1
+            and is_create_auto_intent
+            and any(k in user_lower for k in ("motion", "occupancy", "person", "presence"))
+            and any(k in user_lower for k in ("light", "lights", "lamp"))
+        ):
+            r_id, r_name, r_info = matched_rooms[0]
+            r_slug = str(r_id).lower()
+            r_eids = list(r_info.get("entities") or [])
+            for e_obj in entities_list_all:
+                eid_c = str(e_obj.get("entity_id") or "")
+                if eid_c and (e_obj.get("area_id") == r_id or f".{r_slug}_" in eid_c.lower() or eid_c.lower().endswith(f"_{r_slug}")) and eid_c not in r_eids:
+                    r_eids.append(eid_c)
+
+            all_room_lights = sorted([e for e in r_eids if e.startswith("light.")])
+            # Filter out hardware indicator LEDs (e.g. UniFi AP LEDs) and tablet screens when real illumination lights exist
+            illum_lights = [
+                e for e in all_room_lights
+                if not any(sfx in e.lower() for sfx in ("_led", "_screen", "_indicator", "_nightlight"))
+            ] or all_room_lights
+            # For indoor rooms, prefer indoor room lights over driveway/floodlight exterior fixtures unless requested
+            is_outdoor_room = classify_area_floor(str(r_id), str(r_name)) == "Outdoor"
+            if not is_outdoor_room and not any(k in user_lower for k in ("floodlight", "driveway", "porch", "exterior", "outside")):
+                indoor_lights = [
+                    e for e in illum_lights
+                    if not any(ext_k in e.lower() for ext_k in ("driveway", "floodlight"))
+                ]
+                room_lights = indoor_lights or illum_lights
+            else:
+                room_lights = illum_lights
+
+            room_occ_sensors = sorted([
+                e for e in r_eids
+                if e.startswith("binary_sensor.")
+                and any(k in e.lower() for k in ("motion", "occupancy", "person", "presence", "pir", "mmwave"))
+            ])
+            if room_lights and room_occ_sensors:
+                fire_progress("synthesizing", f"Synthesizing {r_name} Automation", f"Binding real {r_name} entities: {room_lights} & {room_occ_sensors}")
+                wants_after_sunset = any(k in user_lower for k in ("after sunset", "sunset", "night", "dark", "below_horizon"))
+                off_mins_match = re.search(r"(\d+)\s*(?:minute|minutes|min|mins)\b", user_lower)
+                off_minutes = int(off_mins_match.group(1)) if off_mins_match else None
+
+                on_trigger: dict[str, Any] = {
+                    "trigger": "state",
+                    "entity_id": list(room_occ_sensors) if len(room_occ_sensors) > 1 else room_occ_sensors[0],
+                    "to": "on",
+                    "id": "motion_detected",
+                }
+                triggers_list: list[dict[str, Any]] = [on_trigger]
+                if off_minutes is not None:
+                    triggers_list.append({
+                        "trigger": "state",
+                        "entity_id": list(room_occ_sensors) if len(room_occ_sensors) > 1 else room_occ_sensors[0],
+                        "to": "off",
+                        "for": {"minutes": off_minutes},
+                        "id": "motion_cleared",
+                    })
+
+                conditions_list: list[dict[str, Any]] = []
+                if wants_after_sunset and off_minutes is None:
+                    conditions_list.append({
+                        "condition": "sun",
+                        "after": "sunset",
+                    })
+
+                target_lights_val = list(room_lights) if len(room_lights) > 1 else room_lights[0]
+                if off_minutes is not None:
+                    on_conds: list[dict[str, Any]] = [{"condition": "trigger", "id": "motion_detected"}]
+                    if wants_after_sunset:
+                        on_conds.append({"condition": "sun", "after": "sunset"})
+                    actions_list: list[dict[str, Any]] = [
+                        {
+                            "choose": [
+                                {
+                                    "conditions": on_conds,
+                                    "sequence": [
+                                        {
+                                            "action": "light.turn_on",
+                                            "target": {"entity_id": list(room_lights) if len(room_lights) > 1 else room_lights[0]},
+                                        }
+                                    ],
+                                },
+                                {
+                                    "conditions": [{"condition": "trigger", "id": "motion_cleared"}],
+                                    "sequence": [
+                                        {
+                                            "action": "light.turn_off",
+                                            "target": {"entity_id": list(room_lights) if len(room_lights) > 1 else room_lights[0]},
+                                        }
+                                    ],
+                                },
+                            ]
+                        }
+                    ]
+                else:
+                    actions_list = [
+                        {
+                            "action": "light.turn_on",
+                            "target": {"entity_id": target_lights_val},
+                        }
+                    ]
+
+                alias_str = f"{r_name}: Motion & Occupancy Lighting" + (" After Sunset" if wants_after_sunset else "")
+                desc_parts = [f"Turns on {r_name} light ({', '.join(room_lights)}) when motion or person occupancy ({', '.join(room_occ_sensors)}) is detected"]
+                if wants_after_sunset:
+                    desc_parts.append("after sunset")
+                if off_minutes is not None:
+                    desc_parts.append(f"and turns it off after {off_minutes} minutes of no motion")
+                desc_str = " ".join(desc_parts) + "."
+
+                auto_yaml_dict: dict[str, Any] = {
+                    "alias": alias_str,
+                    "description": desc_str,
+                    "triggers": triggers_list,
+                    "conditions": conditions_list,
+                    "actions": actions_list,
+                    "mode": "restart",
+                }
+                dumped_yaml = yaml.dump(auto_yaml_dict, Dumper=_NoAliasSafeDumper, sort_keys=False).strip()
+                session_data["pending_items"] = [{
+                    "type": "automation",
+                    "name": alias_str,
+                    "yaml_data": auto_yaml_dict,
+                }]
+                session_data["pending_yaml"] = session_data["pending_items"][0]
+
+                sensors_bullets = ", ".join(f"`{s}`" for s in room_occ_sensors)
+                lights_bullets = ", ".join(f"`{lt}`" for lt in room_lights)
+                speech = (
+                    f"Here is the Home Assistant automation for the **{r_name}** using only your verified **{r_name}** entity IDs "
+                    f"(Sensors: {sensors_bullets} | Lights: {lights_bullets}):\n\n"
+                    f"```yaml\n{dumped_yaml}\n```\n\n"
+                    f"Would you like me to create and enable this automation '{alias_str}' in your Home Assistant? "
+                    "Say 'yes' or 'apply' to confirm, or 'no' to cancel."
+                )
+                session_data["last_resolved_agent"] = active_agent_display
+                session_data["last_resolved_agent_id"] = active_agent_id
+                session_data["last_failover_occurred"] = False
+                fire_progress(
+                    "agent_resolution",
+                    f"Resolved by {active_agent_display}",
+                    f"Synthesized verified {r_name} automation with {active_agent_display}",
+                )
+                self._record_turn(session_data, user_input.text, speech)
+                return self._create_response(user_input, speech)
 
         fire_progress("domain", "Domain Inspection", "Evaluating active audio zones, security perimeter & state history")
         # Summarize active entities by domain
@@ -4888,6 +5307,25 @@ CRITICAL INSTRUCTIONS FOR AUTOMATIONS & SCRIPTS:
 User: {user_input.text}
 """
 
+        compact_prompt = f"""You are Otis AI, the smart home co-pilot and butler on Home Assistant {ha_version}.
+Respond concisely and actionably to the user. Ask a clarifying question if any detail is ambiguous.
+ZERO HALLUCINATION RULE: Never invent or guess entity IDs or rooms not listed below.
+Note: Voice satellites use ESPHome or Wyoming under Settings → Voice Assistants. Never instruct the user to run Linux shell commands (git pull, pip install) or invent voice: YAML keys. Never use time_pattern polling automations or advise creating README.md in /config.
+Provide automations strictly in modern Home Assistant {ha_version} GUI YAML format (clean top-level dict starting with alias:, description:, triggers:, conditions:, actions:, mode: using trigger: state and action: domain.service, without - id: or leading dashes, and never tell the user to manually edit automations.yaml).
+{rules_snippet}
+
+System State:
+- Notable Integrations: {notable_integrations[:15]}
+- Spatial Adjacency: {spatial_summary}
+- Climate Architecture:
+{climate_summary}
+- Room Breakdown:
+{area_breakdown_summary}
+- Active Entities: {entity_summary}
+- Actionable Control Devices: {detailed_entities[:20]}
+
+{history_snippet}{matched_yaml_context}User Request: {user_input.text}"""
+
         # 4. Delegate to prioritized AI agent pool (Paid Cloud -> Healthy Standard Cloud -> Local Qwen -> Restricted Free Tier)
         result = None
         last_error_msg = None
@@ -4899,6 +5337,7 @@ User: {user_input.text}
         local_enabled = getattr(self, "entry", None) is not None and (
             self.entry.options.get(CONF_LOCAL_LLM_ENABLED, self.entry.data.get(CONF_LOCAL_LLM_ENABLED, True))
         )
+        has_fallback_agents = (len(prioritized_agents) > 1) or bool(local_enabled and self.local_llm_manager)
 
         async def _try_local_llm() -> bool:
             nonlocal result, resolved_agent_id, resolved_agent_name, failover_occurred, last_error_msg
@@ -4915,7 +5354,7 @@ User: {user_input.text}
                         f"Reasoning locally via {health.get('provider')} ({self.local_llm_manager.model})",
                     )
                     local_res = await self.local_llm_manager.async_chat_with_tools(
-                        prompt=prompt,
+                        prompt=compact_prompt,
                         system_prompt=(
                             f"You are Otis AI, the ultimate proactive smart home companion and butler running on Home Assistant {ha_version}. "
                             "Analyze the home's active state and respond concisely and actionably. "
@@ -4927,7 +5366,8 @@ User: {user_input.text}
                             "Provide automations strictly in modern Home Assistant GUI YAML format (clean top-level dict starting with alias:, description:, triggers:, conditions:, actions:, mode: using trigger: and action: keys, without - id: or leading dashes). "
                             "Never tell the user to edit automations.yaml themselves; always offer to deploy and enable it for them."
                         ),
-                        timeout=reasoning_timeout,
+                        max_iterations=2,
+                        timeout=min(reasoning_timeout, 45.0),
                     )
                     if local_res.get("success") and (local_res.get("response") or local_res.get("executed_tools")):
                         resp_text = local_res.get("response", "")
@@ -4983,7 +5423,12 @@ User: {user_input.text}
 
                 is_primary = (idx == 0)
                 role_label = "Primary" if is_primary else f"Failover #{idx}"
-                agent_timeout = min(reasoning_timeout, 35.0) if is_free_restricted else reasoning_timeout
+                if is_free_restricted:
+                    agent_timeout = min(reasoning_timeout, 25.0)
+                elif has_fallback_agents and agent_tier != "paid":
+                    agent_timeout = min(reasoning_timeout, 30.0)
+                else:
+                    agent_timeout = reasoning_timeout
                 _LOGGER.debug(
                     "Attempting conversation with %s AI agent: %s (%s, tier=%s, score=%s, timeout=%ss)",
                     role_label, agent_display, agent_id, agent_tier, agent_info["score"], agent_timeout
@@ -4992,21 +5437,11 @@ User: {user_input.text}
 
                 attempt_start_ts = time.monotonic()
                 try:
-                    # For agents with strict payload/token constraints (e.g. Groq with HTTP 413) or if prompt is overly large
+                    # For agents with strict payload/token constraints (e.g. Groq with HTTP 413 or free restricted tiers)
                     agent_prompt = prompt
                     is_groq = agent_info["domain"] == "groq" or "groq" in str(agent_id).lower() or "groq" in agent_display.lower()
-                    if is_groq and len(prompt) > 5500:
-                        agent_prompt = f"""You are Otis AI, the smart home co-pilot and butler on Home Assistant {ha_version}.
-Respond concisely and actionably to the user. Ask a clarifying question if any detail is ambiguous.
-Note: Voice satellites use ESPHome or Wyoming under Settings → Voice Assistants. Never instruct the user to run Linux shell commands (git pull, pip install) or invent voice: YAML keys. Never use time_pattern polling automations or advise creating README.md in /config. Use modern triggers:/actions: YAML syntax.
-{rules_snippet}
-
-System State:
-- Notable Integrations: {notable_integrations[:15]}
-- Active Entities: {entity_summary}
-- Actionable Control Devices: {detailed_entities[:15]}
-
-{history_snippet}User Request: {user_input.text}"""
+                    if (is_groq or is_free_restricted) and len(prompt) > 5500:
+                        agent_prompt = compact_prompt
 
                     converse_coro = conversation.async_converse(
                         hass=self.hass,
@@ -5316,20 +5751,45 @@ def validate_and_upgrade_assistant_response(
     penalty = 0
     upgraded = speech
 
-    # 1. Auto-upgrade deprecated YAML keys inside ```yaml ... ``` blocks
+    # 1. Auto-upgrade deprecated YAML keys & unwrap nested automation:/script: inside ```yaml ... ``` blocks
     def _upgrade_yaml_block(match: re.Match) -> str:
         nonlocal penalty
         block = match.group(1)
         orig_block = block
+        # Unwrap top-level automation: or script: wrapper if present
+        if re.match(r"^\s*(?:automation|automations|script|scripts):\s*\n", block):
+            lines_in = block.splitlines()
+            unwrapped_lines: list[str] = []
+            in_wrapper = False
+            for ln in lines_in:
+                if re.match(r"^\s*(?:automation|automations|script|scripts):\s*$", ln):
+                    in_wrapper = True
+                    continue
+                if in_wrapper:
+                    unwrapped_lines.append(re.sub(r"^  ", "", ln))
+                else:
+                    unwrapped_lines.append(ln)
+            block = "\n".join(unwrapped_lines)
+            penalty += 1
+
         # Upgrade top-level trigger:/condition:/action: to triggers:/conditions:/actions:
         block = re.sub(r"(?m)^trigger:\s*$", "triggers:", block)
         block = re.sub(r"(?m)^condition:\s*$", "conditions:", block)
         block = re.sub(r"(?m)^action:\s*$", "actions:", block)
+        # Upgrade invalid mode values (e.g. mode: auto or mode: immediate -> mode: single)
+        block = re.sub(r"(?m)^mode:\s*(?:auto|immediate)\s*$", "mode: single", block)
         # Upgrade "- platform:" to "- trigger:" inside triggers
         if re.search(r"(?m)^\s*-\s*platform:\s+", block):
             block = re.sub(r"(?m)^(\s*-\s*)platform:(\s+)", r"\1trigger:\2", block)
             notes.append("Always use modern 'trigger:' instead of deprecated 'platform:' inside automation triggers.")
             penalty += 1
+        # Upgrade invalid "- trigger: presence" to "- trigger: state"
+        if re.search(r"(?m)^\s*-\s*trigger:\s*presence\s*$", block):
+            block = re.sub(r"(?m)^(\s*-\s*trigger:\s*)presence\s*$", r"\1state", block)
+            block = re.sub(r"(?m)^(\s*)presence:\s*true\s*$", r'\1to: "on"', block)
+            penalty += 1
+        # Upgrade invalid "- trigger: condition.state" inside conditions to "- condition: state"
+        block = re.sub(r"(?m)^(\s*-\s*)trigger:\s*condition\.state\s*$", r"\1condition: state", block)
         # Upgrade "service:" to "action:" inside action steps
         if re.search(r"(?m)^\s*-?\s*service:\s+[a-z0-9_]+\.[a-z0-9_]+", block):
             block = re.sub(r"(?m)^(\s*-?\s*)service:(\s+[a-z0-9_]+\.[a-z0-9_]+)", r"\1action:\2", block)
@@ -5342,30 +5802,118 @@ def validate_and_upgrade_assistant_response(
     if "```yaml" in upgraded:
         upgraded = re.sub(r"```yaml\s*(.*?)```", _upgrade_yaml_block, upgraded, flags=re.DOTALL)
 
-    # 2. Check for hallucinated entity_ids inside YAML blocks against hass.states
+    # 2. Check for hallucinated entity_ids inside YAML blocks against hass.states and strip invalid YAML blocks
     if hass is not None and hasattr(hass, "states") and hasattr(hass.states, "async_entity_ids"):
         try:
-            existing_eids = {str(e).lower() for e in hass.states.async_entity_ids()}
+            raw_ids = hass.states.async_entity_ids()
+            existing_eids = {str(e).lower() for e in raw_ids} if isinstance(raw_ids, (list, tuple, set)) else set()
             if existing_eids and "```yaml" in upgraded:
                 entity_domains = (
                     "light", "switch", "climate", "media_player", "lock", "cover",
                     "binary_sensor", "sensor", "alarm_control_panel", "camera", "fan",
                     "vacuum", "siren", "person", "input_boolean",
                 )
-                yaml_blocks = re.findall(r"```yaml\s*(.*?)```", upgraded, flags=re.DOTALL)
-                for yb in yaml_blocks:
-                    for m in re.finditer(r"entity_id:\s*['\"]?([a-z_]+\.[a-z0-9_]+)['\"]?", yb, re.IGNORECASE):
+                hallucinated_in_yaml: list[str] = []
+
+                def _filter_hallucinated_yaml(match: re.Match) -> str:
+                    nonlocal penalty
+                    yb = match.group(1)
+                    block_missing: list[str] = []
+                    for m in re.finditer(r"\b([a-z_]+\.[a-z0-9_]+)\b", yb, re.IGNORECASE):
                         cand_eid = m.group(1).lower()
-                        dom = cand_eid.split(".", 1)[0]
+                        dom, obj_id = cand_eid.split(".", 1)
+                        # Skip service names like light.turn_on, switch.turn_off, homeassistant.turn_on
+                        if obj_id in (
+                            "turn_on", "turn_off", "toggle", "set_temperature", "set_hvac_mode",
+                            "select_source", "volume_set", "media_play", "media_pause", "media_stop",
+                            "lock", "unlock", "open_cover", "close_cover", "stop_cover",
+                            "arm_away", "arm_home", "arm_night", "disarm", "speak", "create",
+                            "reload", "sun", "state",
+                        ):
+                            continue
                         if dom in entity_domains and cand_eid not in existing_eids:
+                            if cand_eid not in block_missing:
+                                block_missing.append(cand_eid)
+                            if cand_eid not in hallucinated_in_yaml:
+                                hallucinated_in_yaml.append(cand_eid)
+                    if block_missing:
+                        for meid in block_missing:
                             notes.append(
-                                f"Entity '{cand_eid}' does not exist on this Home Assistant instance; always verify entity IDs against Active Entities or ask the user for clarification."
+                                f"Entity '{meid}' does not exist on this Home Assistant instance; always verify entity IDs against Active Entities or ask the user for clarification."
                             )
                             penalty += 2
+                        missing_str = ", ".join(f"`{e}`" for e in block_missing)
+                        return (
+                            f"\n*(⚠️ Removed draft YAML block because it referenced non-existent entity ID(s): {missing_str}. "
+                            "Only verified entities registered in Home Assistant can be deployed.)*\n"
+                        )
+                    return match.group(0)
+
+                upgraded = re.sub(r"```yaml\s*(.*?)```", _filter_hallucinated_yaml, upgraded, flags=re.DOTALL)
         except Exception:
             pass
 
+    # 3. Strip numbered or inline manual automations.yaml file-editing instructions
+    upgraded = re.sub(
+        r"(?is)to\s+deploy\s+this\s+automation,\s+you\s+can\s+follow\s+these\s+steps:.*?(?=\n\nWould you like|\Z)",
+        "",
+        upgraded,
+    ).strip()
+
     return upgraded, list(dict.fromkeys(notes)), penalty
+
+
+def _resolve_agent_config_entry(
+    hass: HomeAssistant | None,
+    agent_id: str,
+) -> tuple[Any | None, Any | None, str, str]:
+    """Resolve (ConfigEntry, ConfigSubentry, platform_domain, canonical_key) for a conversation agent ID."""
+    aid_str = str(agent_id or "")
+    if not hass:
+        return None, None, "", aid_str
+
+    entry = None
+    subentry = None
+    platform_domain = ""
+    canonical_key = aid_str
+
+    if hasattr(hass, "config_entries") and hasattr(hass.config_entries, "async_get_entry"):
+        try:
+            entry = hass.config_entries.async_get_entry(aid_str)
+            if entry is not None and not isinstance(getattr(entry, "domain", None), str):
+                entry = None
+        except Exception:
+            entry = None
+
+    if entry is not None:
+        platform_domain = str(getattr(entry, "domain", "") or "").lower()
+        canonical_key = str(getattr(entry, "entry_id", aid_str) or aid_str)
+        return entry, None, platform_domain, canonical_key
+
+    # Resolve conversation.* entity ID via Entity Registry -> parent ConfigEntry & Subentry
+    if aid_str.startswith("conversation."):
+        try:
+            ent_reg = er.async_get(hass)
+            ent_entry = ent_reg.async_get(aid_str) if ent_reg and hasattr(ent_reg, "async_get") else None
+            if ent_entry is not None:
+                platform_domain = str(getattr(ent_entry, "platform", "") or "").lower()
+                cfg_id = getattr(ent_entry, "config_entry_id", None)
+                sub_id = getattr(ent_entry, "config_subentry_id", None)
+                if cfg_id and isinstance(cfg_id, str):
+                    canonical_key = f"{cfg_id}:{sub_id}" if sub_id else cfg_id
+                    if hasattr(hass, "config_entries") and hasattr(hass.config_entries, "async_get_entry"):
+                        c_cand = hass.config_entries.async_get_entry(cfg_id)
+                        if c_cand is not None and isinstance(getattr(c_cand, "domain", None), str):
+                            entry = c_cand
+                            if not platform_domain:
+                                platform_domain = str(getattr(entry, "domain", "") or "").lower()
+                            raw_subs = getattr(entry, "subentries", None)
+                            if sub_id and isinstance(raw_subs, dict):
+                                subentry = raw_subs.get(sub_id)
+        except Exception:
+            pass
+
+    return entry, subentry, platform_domain, canonical_key
 
 
 def classify_and_score_agent(
@@ -5376,12 +5924,9 @@ def classify_and_score_agent(
     """Classify a conversation agent into Paid, Standard Cloud, or Restricted Free Tier and compute a live health score."""
     aid_str = str(agent_id or "")
     aid_lower = aid_str.lower()
-    entry = (
-        hass.config_entries.async_get_entry(aid_str)
-        if hass and hasattr(hass, "config_entries") and hasattr(hass.config_entries, "async_get_entry")
-        else None
-    )
-    domain = str(getattr(entry, "domain", "") or "").lower()
+    entry, matched_sub, resolved_platform, canonical_key = _resolve_agent_config_entry(hass, aid_str)
+
+    domain = str(getattr(entry, "domain", "") or resolved_platform or "").lower()
     title = str(getattr(entry, "title", "") or "").lower()
     data = dict(getattr(entry, "data", {}) or {})
     options = dict(getattr(entry, "options", {}) or {})
@@ -5392,12 +5937,15 @@ def classify_and_score_agent(
     protect_free_tier = bool(options.get("protect_free_tier") or data.get("protect_free_tier"))
     explicit_paid = bool(options.get("paid_tier") or data.get("paid_tier"))
 
-    raw_subs = getattr(entry, "subentries", None)
-    sub_iterable = (
-        raw_subs.values()
-        if isinstance(raw_subs, dict)
-        else (raw_subs if isinstance(raw_subs, (list, tuple)) else [])
-    )
+    if matched_sub is not None:
+        sub_iterable = [matched_sub]
+    else:
+        raw_subs = getattr(entry, "subentries", None)
+        sub_iterable = (
+            raw_subs.values()
+            if isinstance(raw_subs, dict)
+            else (raw_subs if isinstance(raw_subs, (list, tuple)) else [])
+        )
     for sub in sub_iterable:
         s_data = getattr(sub, "data", None) or (sub.get("data") if isinstance(sub, dict) else {}) or {}
         s_title = getattr(sub, "title", None) or (sub.get("title") if isinstance(sub, dict) else "") or ""
@@ -5460,7 +6008,7 @@ def classify_and_score_agent(
         tier_rank = 1
         base_score = 75.0
 
-    m = (health_metrics or {}).get(aid_str) or {}
+    m = (health_metrics or {}).get(aid_str) or (health_metrics or {}).get(canonical_key) or {}
     consec_fail = int(m.get("consecutive_failures", 0))
     err_count = int(m.get("error_count", 0))
     succ_count = int(m.get("success_count", 0))
@@ -5489,6 +6037,7 @@ def classify_and_score_agent(
 
     return {
         "agent_id": aid_str,
+        "canonical_key": canonical_key,
         "domain": domain,
         "tier": tier,
         "tier_rank": tier_rank,
@@ -5522,12 +6071,41 @@ async def async_get_prioritized_agents(hass: HomeAssistant, preferred_agent_id: 
         if sys_pref and sys_pref in discovered_ids:
             primary_choice = sys_pref
 
-    all_candidates: list[str] = []
+    # If primary_choice is a legacy config_entry_id and a conversation.* entity_id exists in discovered_ids for that entry, prefer the discovered entity_id
+    if primary_choice and primary_choice not in discovered_ids:
+        p_entry, _, _, _ = _resolve_agent_config_entry(hass, str(primary_choice))
+        p_entry_id = str(getattr(p_entry, "entry_id", "") or "") if p_entry is not None else ""
+        if p_entry_id:
+            for d_id in discovered_ids:
+                d_entry, _, _, _ = _resolve_agent_config_entry(hass, str(d_id))
+                if d_entry is not None and str(getattr(d_entry, "entry_id", "") or "") == p_entry_id:
+                    primary_choice = str(d_id)
+                    break
+
+    raw_candidates: list[str] = []
     if primary_choice:
-        all_candidates.append(primary_choice)
+        raw_candidates.append(primary_choice)
     for aid in discovered_ids:
-        if aid not in all_candidates:
-            all_candidates.append(aid)
+        if aid not in raw_candidates:
+            raw_candidates.append(aid)
+
+    # Deduplicate candidates that resolve to the same underlying ConfigEntry (e.g. entry_id vs conversation.* entity_id)
+    all_candidates: list[str] = []
+    seen_entry_ids: set[str] = set()
+    for aid in raw_candidates:
+        c_entry, c_sub, _, c_key = _resolve_agent_config_entry(hass, str(aid))
+        entry_id_key = str(getattr(c_entry, "entry_id", "") or "") if c_entry is not None else ""
+        # If this config entry has only 1 conversation subentry, deduplicate entry_id and conversation.* entity_id
+        if entry_id_key:
+            raw_subs = getattr(c_entry, "subentries", None)
+            sub_count = len(raw_subs) if isinstance(raw_subs, (dict, list, tuple)) else 0
+            dedup_key = entry_id_key if sub_count <= 1 else c_key
+        else:
+            dedup_key = str(aid)
+        if dedup_key in seen_entry_ids:
+            continue
+        seen_entry_ids.add(dedup_key)
+        all_candidates.append(aid)
 
     scored: list[tuple[int, float, float, int, str]] = []
     for idx, aid in enumerate(all_candidates):
@@ -5598,6 +6176,14 @@ class DiscoveryEngine:
         self._suggestions_by_id: dict[str, dict[str, Any]] = {}
         self._ha_news_cache: list[dict[str, Any]] = []
         self._ha_news_cache_ts: float = 0.0
+        if not getattr(hass, "is_running", True) and hasattr(hass, "bus") and hasattr(hass.bus, "async_listen_once"):
+            try:
+                hass.bus.async_listen_once(
+                    EVENT_HOMEASSISTANT_STARTED,
+                    lambda _: self.invalidate_cache(),
+                )
+            except Exception:
+                pass
 
     def invalidate_cache(self) -> None:
         """Invalidate the cached capability map and suggestions."""
@@ -7014,6 +7600,13 @@ class DiscoveryEngine:
         self, capability_map: dict[str, Any]
     ) -> list[dict[str, Any]]:
         """Generate intelligent, proactive smart home recommendations across all maturity stages."""
+        if not getattr(self.hass, "is_running", True):
+            _LOGGER.debug(
+                "Skipping proactive suggestion generation until Home Assistant is fully started."
+            )
+            self._suggestions_by_id = {}
+            return []
+
         suggestions: list[dict[str, Any]] = []
 
         orphaned = capability_map.get("orphaned_entities", [])
@@ -8551,14 +9144,41 @@ class DiscoveryEngine:
                 "action_payload": {"guide": "Configure media players or Music Assistant in your main rooms for coordinated multi-room audio."},
             })
 
-        # 16. Proactive Person Identification & Audio Attribution Training (Phase 5 Step 5)
+        # 16. Proactive Identity, Presence & Spatial Intelligence (People, Pets & Guests)
         if getattr(self, "rules_manager", None):
             try:
+                rules_data = self.rules_manager.get_rules()
                 profiles = self.rules_manager.get_person_profiles()
-                ignored_pids = {str(x).lower() for x in (self.rules_manager.get_rules().get("ignored_persons") or [])}
+                ignored_pids = {str(x).lower() for x in (rules_data.get("ignored_persons") or [])}
                 person_entities = [e for e in entities if str(e.get("entity_id", "")).startswith("person.")]
+                users_list = capability_map.get("users") or []
 
-                active_training_profiles: list[dict[str, Any]] = []
+                merged_profile_map: dict[str, dict[str, Any]] = {}
+
+                # 1. Include all stored profiles from rules_manager (custom residents, pets, guests)
+                for raw_pid, prof in profiles.items():
+                    if not isinstance(prof, dict):
+                        continue
+                    pid = str(prof.get("person_id") or raw_pid).strip().lower()
+                    if not pid or pid in ignored_pids:
+                        continue
+                    if prof.get("training_enabled") is False or prof.get("entity_type") == "ignored":
+                        continue
+                    p_label = str(prof.get("label") or pid.replace("person.", "").replace("user_", "").replace("_", " ").title())
+                    p_type = prof.get("entity_type") or (
+                        "pet" if any(k in p_label.lower() for k in ("dexter", "charles", "dog", "cat", "pet"))
+                        else ("guest" if "guest" in p_label.lower() else "resident")
+                    )
+                    merged_profile_map[pid] = {
+                        "person_id": pid,
+                        "label": p_label,
+                        "entity_type": p_type,
+                        "confidence": float(prof.get("confidence", 0.50)),
+                        "samples": int(prof.get("samples", 0)),
+                        "verified_rooms": list(prof.get("verified_rooms") or []),
+                    }
+
+                # 2. Merge person.* entities (if any exist)
                 for pe in person_entities:
                     pid = str(pe["entity_id"]).lower()
                     if pid in ignored_pids:
@@ -8571,16 +9191,45 @@ class DiscoveryEngine:
                         "pet" if any(k in p_name.lower() for k in ("dexter", "charles", "dog", "cat", "pet"))
                         else ("guest" if "guest" in p_name.lower() else "resident")
                     )
-                    conf = float(prof.get("confidence", 0.50))
-                    samples = int(prof.get("samples", 0))
-                    active_training_profiles.append({
+                    merged_profile_map[pid] = {
                         "person_id": pid,
                         "label": prof.get("label") or p_name,
                         "entity_type": p_type,
-                        "confidence": conf,
-                        "samples": samples,
-                        "verified_rooms": prof.get("verified_rooms") or [],
-                    })
+                        "confidence": float(prof.get("confidence", 0.50)),
+                        "samples": int(prof.get("samples", 0)),
+                        "verified_rooms": list(prof.get("verified_rooms") or []),
+                    }
+
+                # 3. Merge HA user accounts when not already represented by a person.* entity or profile
+                existing_labels = {str(v.get("label", "")).strip().lower() for v in merged_profile_map.values()}
+                for u in users_list:
+                    if not isinstance(u, dict) or not u.get("name"):
+                        continue
+                    u_name = str(u["name"]).strip()
+                    if u_name.lower() in existing_labels:
+                        continue
+                    u_slug = re.sub(r"[^a-z0-9_]+", "_", u_name.lower()).strip("_")
+                    pid = f"user_{u_slug}"
+                    if pid in ignored_pids or pid in merged_profile_map:
+                        continue
+                    prof = profiles.get(pid, {})
+                    if prof.get("training_enabled") is False or prof.get("entity_type") == "ignored":
+                        continue
+                    p_type = prof.get("entity_type") or (
+                        "pet" if any(k in u_name.lower() for k in ("dexter", "charles", "dog", "cat", "pet"))
+                        else ("guest" if "guest" in u_name.lower() else "resident")
+                    )
+                    merged_profile_map[pid] = {
+                        "person_id": pid,
+                        "label": prof.get("label") or u_name,
+                        "entity_type": p_type,
+                        "confidence": float(prof.get("confidence", 0.50)),
+                        "samples": int(prof.get("samples", 0)),
+                        "verified_rooms": list(prof.get("verified_rooms") or []),
+                    }
+
+                active_training_profiles: list[dict[str, Any]] = list(merged_profile_map.values())
+
                 # Live Room Entry & Active Presence Identity Verification Prompts
                 untrained_profiles = [
                     p for p in active_training_profiles
@@ -8598,7 +9247,7 @@ class DiscoveryEngine:
                         else {}
                     )
                     recent_verifications = (
-                        self.rules_manager.get_rules().get("recent_room_verifications") or {}
+                        rules_data.get("recent_room_verifications") or {}
                     )
                     now_ts = time.time()
 
@@ -8676,7 +9325,8 @@ class DiscoveryEngine:
                                 f"{f'{det_label} detection & presence' if det_label else 'Presence & motion'} recorded in the {r_name} ({cam_title}). "
                                 f"Review the snapshot below and select who is in the {r_name} "
                                 "(or mark as Unknown Person, Unknown Animal, or Not Person/Pet) "
-                                "to calibrate Otis's camera recognition and personalized Audio Follow-Me."
+                                "to calibrate Otis's camera recognition, pet-aware security & occupancy filtering, "
+                                "personalized room comfort/lighting, guest hospitality, and spatial routines."
                             ),
                             "action_type": "confirm_person_identity",
                             "action_payload": {
@@ -8704,6 +9354,343 @@ class DiscoveryEngine:
                                 **media_info,
                             },
                         })
+
+                # Multi-Domain Quality Recommendations Powered by People, Pet & Guest Identity Data
+                pet_profiles = [p for p in active_training_profiles if p.get("entity_type") == "pet"]
+                resident_profiles = [p for p in active_training_profiles if p.get("entity_type") == "resident"]
+                guest_profiles = [p for p in active_training_profiles if p.get("entity_type") == "guest"]
+                feedback_history = list(rules_data.get("vision_training_feedback") or [])
+
+                # A. Pet-Aware Occupancy & Security Guard (prevents pets from tripping Away alarms or bright night lights)
+                if pet_profiles:
+                    pet_names = ", ".join(p["label"] for p in pet_profiles[:3])
+                    pet_verified_rooms: list[str] = []
+                    for pp in pet_profiles:
+                        for vr in pp.get("verified_rooms") or []:
+                            vr_clean = str(vr).strip().lower()
+                            if vr_clean and vr_clean not in pet_verified_rooms:
+                                pet_verified_rooms.append(vr_clean)
+
+                    target_pet_room = pet_verified_rooms[0] if pet_verified_rooms else None
+                    target_room_label = (
+                        target_pet_room.replace("_", " ").title()
+                        if target_pet_room
+                        else "Main Living Areas"
+                    )
+                    room_motion_entities = [
+                        e["entity_id"]
+                        for e in entities
+                        if str(e.get("entity_id", "")).startswith("binary_sensor.")
+                        and any(k in str(e.get("entity_id", "")).lower() for k in ("motion", "occupancy", "pir"))
+                        and (not target_pet_room or target_pet_room in str(e.get("entity_id", "")).lower())
+                    ]
+                    room_person_entities = [
+                        e["entity_id"]
+                        for e in entities
+                        if str(e.get("entity_id", "")).startswith("binary_sensor.")
+                        and "person" in str(e.get("entity_id", "")).lower()
+                        and (not target_pet_room or target_pet_room in str(e.get("entity_id", "")).lower())
+                    ]
+                    room_light_entities = [
+                        e["entity_id"]
+                        for e in entities
+                        if str(e.get("entity_id", "")).startswith("light.")
+                        and (not target_pet_room or target_pet_room in str(e.get("entity_id", "")).lower())
+                    ]
+                    if room_motion_entities or room_person_entities:
+                        trigger_ent = (room_person_entities or room_motion_entities)[0]
+                        light_ent = room_light_entities[0] if room_light_entities else None
+                        slug_suffix = target_pet_room or "home"
+                        suggestions.append({
+                            "id": f"identity_pet_immunity_guard_{slug_suffix}",
+                            "title": f"🐾 Pet-Immune Occupancy & Security Guard ({pet_names} in {target_room_label})",
+                            "category": "security",
+                            "priority": "high",
+                            "icon": "mdi:paw",
+                            "description": (
+                                f"Using trained pet identity profiles for {pet_names}, gate motion-activated lighting and "
+                                f"security alerts in {target_room_label} on verified human presence (`{trigger_ent}`) so pet movement "
+                                "does not trigger false Away-mode alarms or bright overnight lights."
+                            ),
+                            "action_type": "create_automation",
+                            "action_payload": {
+                                "alias": f"Otis Pet-Immune Presence Guard ({target_room_label})",
+                                "description": f"Prevents {pet_names} from triggering false occupancy lighting or security alerts in {target_room_label}.",
+                                "trigger": [
+                                    {
+                                        "platform": "state",
+                                        "entity_id": trigger_ent,
+                                        "to": "on",
+                                    }
+                                ],
+                                "condition": (
+                                    [
+                                        {
+                                            "condition": "state",
+                                            "entity_id": room_person_entities[0],
+                                            "state": "on",
+                                        }
+                                    ]
+                                    if room_person_entities
+                                    else []
+                                ),
+                                "action": (
+                                    [
+                                        {
+                                            "service": "light.turn_on",
+                                            "target": {"entity_id": light_ent},
+                                        }
+                                    ]
+                                    if light_ent
+                                    else [
+                                        {
+                                            "service": "persistent_notification.create",
+                                            "data": {
+                                                "title": f"Verified Human Activity in {target_room_label}",
+                                                "message": f"Human presence verified in {target_room_label} (pet activity filtered for {pet_names}).",
+                                            },
+                                        }
+                                    ]
+                                ),
+                                "mode": "single",
+                            },
+                        })
+
+                # B. Personalized Resident Room Comfort & Lighting Coordinator (for residents with verified rooms/samples)
+                for res_prof in resident_profiles:
+                    v_rooms = [str(r).strip().lower() for r in (res_prof.get("verified_rooms") or []) if str(r).strip()]
+                    if not v_rooms and int(res_prof.get("samples", 0)) < 1:
+                        continue
+                    fav_room = v_rooms[0] if v_rooms else "study"
+                    fav_room_name = fav_room.replace("_", " ").title()
+                    res_label = res_prof["label"]
+                    res_slug = re.sub(r"[^a-z0-9_]+", "_", res_prof["person_id"].lower()).strip("_")
+
+                    r_sensors = [
+                        e["entity_id"]
+                        for e in entities
+                        if str(e.get("entity_id", "")).startswith("binary_sensor.")
+                        and fav_room in str(e.get("entity_id", "")).lower()
+                        and any(k in str(e.get("entity_id", "")).lower() for k in ("person", "occupancy", "motion", "presence"))
+                    ]
+                    r_lights = [
+                        e["entity_id"]
+                        for e in entities
+                        if str(e.get("entity_id", "")).startswith("light.")
+                        and fav_room in str(e.get("entity_id", "")).lower()
+                    ]
+                    r_climates = [
+                        e["entity_id"]
+                        for e in entities
+                        if str(e.get("entity_id", "")).startswith("climate.")
+                        and fav_room in str(e.get("entity_id", "")).lower()
+                    ]
+                    if r_sensors and (r_lights or r_climates):
+                        actions_list: list[dict[str, Any]] = []
+                        if r_lights:
+                            actions_list.append({
+                                "service": "light.turn_on",
+                                "target": {"entity_id": r_lights[0]},
+                            })
+                        if r_climates:
+                            actions_list.append({
+                                "service": "climate.set_hvac_mode",
+                                "target": {"entity_id": r_climates[0]},
+                                "data": {"hvac_mode": "heat_cool"},
+                            })
+                        suggestions.append({
+                            "id": f"identity_resident_comfort_{res_slug}_{fav_room}",
+                            "title": f"👤 Personalized Room Comfort for {res_label} ({fav_room_name})",
+                            "category": "presence",
+                            "priority": "medium",
+                            "icon": "mdi:account-star",
+                            "description": (
+                                f"{res_label} has verified identity presence in the {fav_room_name} "
+                                f"({int(res_prof.get('samples', 0))}/5 samples, {int(round(float(res_prof.get('confidence', 0.5)) * 100))}% confidence). "
+                                f"Automate personalized lighting and comfort in the {fav_room_name} when {res_label} enters."
+                            ),
+                            "action_type": "create_automation",
+                            "action_payload": {
+                                "alias": f"Otis Personalized {fav_room_name} Comfort ({res_label})",
+                                "description": f"Activates personalized lighting/comfort in the {fav_room_name} when {res_label} is detected.",
+                                "trigger": [
+                                    {
+                                        "platform": "state",
+                                        "entity_id": r_sensors[0],
+                                        "to": "on",
+                                    }
+                                ],
+                                "condition": [],
+                                "action": actions_list,
+                                "mode": "single",
+                            },
+                        })
+                        break
+
+                # C. Guest Hospitality & Privacy Mode Coordinator
+                if guest_profiles:
+                    guest_names = ", ".join(g["label"] for g in guest_profiles[:2])
+                    guest_rooms: list[str] = []
+                    for gp in guest_profiles:
+                        for vr in gp.get("verified_rooms") or []:
+                            vr_clean = str(vr).strip().lower()
+                            if vr_clean and vr_clean not in guest_rooms:
+                                guest_rooms.append(vr_clean)
+                    g_room = guest_rooms[0] if guest_rooms else "guest_room"
+                    g_room_name = g_room.replace("_", " ").title()
+                    g_sensors = [
+                        e["entity_id"]
+                        for e in entities
+                        if str(e.get("entity_id", "")).startswith("binary_sensor.")
+                        and any(k in str(e.get("entity_id", "")).lower() for k in (g_room, "guest", "foyer", "hallway"))
+                        and any(k in str(e.get("entity_id", "")).lower() for k in ("motion", "occupancy", "person", "presence"))
+                    ]
+                    g_lights = [
+                        e["entity_id"]
+                        for e in entities
+                        if str(e.get("entity_id", "")).startswith("light.")
+                        and any(k in str(e.get("entity_id", "")).lower() for k in (g_room, "guest", "hallway", "foyer"))
+                    ]
+                    if g_sensors and g_lights:
+                        suggestions.append({
+                            "id": f"identity_guest_hospitality_{g_room}",
+                            "title": f"👥 Guest Hospitality & Pathway Lighting ({guest_names})",
+                            "category": "presence",
+                            "priority": "medium",
+                            "icon": "mdi:account-group",
+                            "description": (
+                                f"Trained guest profile ({guest_names}) enables automatic hospitality lighting in the {g_room_name} "
+                                "and gentle evening pathway illumination without triggering unfamiliar-person security alerts."
+                            ),
+                            "action_type": "create_automation",
+                            "action_payload": {
+                                "alias": f"Otis Guest Hospitality Lighting ({g_room_name})",
+                                "description": f"Provides welcoming lighting in {g_room_name} for recognized guests ({guest_names}).",
+                                "trigger": [
+                                    {
+                                        "platform": "state",
+                                        "entity_id": g_sensors[0],
+                                        "to": "on",
+                                    }
+                                ],
+                                "condition": [],
+                                "action": [
+                                    {
+                                        "service": "light.turn_on",
+                                        "target": {"entity_id": g_lights[0]},
+                                    }
+                                ],
+                                "mode": "single",
+                            },
+                        })
+
+                # D. Vision Feedback Calibration: False-Positive Suppression & Unknown Person Deterrence
+                if feedback_history:
+                    false_pos_areas: list[str] = []
+                    unknown_person_areas: list[str] = []
+                    for fb in reversed(feedback_history):
+                        if not isinstance(fb, dict):
+                            continue
+                        fb_type = str(fb.get("classification") or fb.get("feedback_type") or "").strip().lower()
+                        vf = fb.get("visual_features") if isinstance(fb.get("visual_features"), dict) else {}
+                        fb_area = str(fb.get("area") or vf.get("area") or "").strip().lower()
+                        if not fb_area:
+                            continue
+                        if fb_type in ("not_person_pet", "unknown_animal", "false_positive") and fb_area not in false_pos_areas:
+                            false_pos_areas.append(fb_area)
+                        elif fb_type == "unknown_person" and fb_area not in unknown_person_areas:
+                            unknown_person_areas.append(fb_area)
+
+                    if false_pos_areas:
+                        fp_area = false_pos_areas[0]
+                        fp_name = fp_area.replace("_", " ").title()
+                        suggestions.append({
+                            "id": f"identity_feedback_filter_{fp_area}",
+                            "title": f"🎯 Vision False-Positive Filter Calibrated ({fp_name})",
+                            "category": "security",
+                            "priority": "medium",
+                            "icon": "mdi:shield-check-outline",
+                            "description": (
+                                f"You marked recent camera/sensor activity in the {fp_name} as a non-person/animal false positive. "
+                                f"Require dual-sensor confirmation (camera person detection + PIR/mmWave occupancy) in the {fp_name} "
+                                "before triggering occupancy or security automations."
+                            ),
+                            "action_type": "advisor_guide",
+                            "action_payload": {
+                                "guide": (
+                                    f"In the {fp_name}, pair `binary_sensor.{fp_area}_person_occupancy` with local motion sensors "
+                                    "so wind, shadows, or outdoor wildlife never trigger false room occupancy."
+                                )
+                            },
+                        })
+
+                    if unknown_person_areas:
+                        up_area = unknown_person_areas[0]
+                        up_name = up_area.replace("_", " ").title()
+                        up_sensors = [
+                            e["entity_id"]
+                            for e in entities
+                            if str(e.get("entity_id", "")).startswith("binary_sensor.")
+                            and up_area in str(e.get("entity_id", "")).lower()
+                            and any(k in str(e.get("entity_id", "")).lower() for k in ("person", "motion", "occupancy"))
+                        ]
+                        up_lights = [
+                            e["entity_id"]
+                            for e in entities
+                            if str(e.get("entity_id", "")).startswith("light.")
+                            and up_area in str(e.get("entity_id", "")).lower()
+                        ]
+                        if up_sensors:
+                            suggestions.append({
+                                "id": f"identity_unknown_person_watchdog_{up_area}",
+                                "title": f"🕵️ Unfamiliar Person Deterrence & Alert ({up_name})",
+                                "category": "security",
+                                "priority": "high",
+                                "icon": "mdi:shield-alert",
+                                "description": (
+                                    f"Based on your Unknown Person training feedback in the {up_name}, deploy an automated deterrence rule "
+                                    f"that turns on {up_name} lighting and sends an immediate security notification when unrecognized person activity occurs."
+                                ),
+                                "action_type": "create_automation",
+                                "action_payload": {
+                                    "alias": f"Otis Unfamiliar Person Deterrence ({up_name})",
+                                    "description": f"Alerts and illuminates {up_name} when person detection triggers.",
+                                    "trigger": [
+                                        {
+                                            "platform": "state",
+                                            "entity_id": up_sensors[0],
+                                            "to": "on",
+                                        }
+                                    ],
+                                    "condition": [],
+                                    "action": (
+                                        [
+                                            {
+                                                "service": "light.turn_on",
+                                                "target": {"entity_id": up_lights[0]},
+                                            },
+                                            {
+                                                "service": "persistent_notification.create",
+                                                "data": {
+                                                    "title": f"Unfamiliar Person Activity ({up_name})",
+                                                    "message": f"Person activity detected in {up_name} ({up_sensors[0]}).",
+                                                },
+                                            },
+                                        ]
+                                        if up_lights
+                                        else [
+                                            {
+                                                "service": "persistent_notification.create",
+                                                "data": {
+                                                    "title": f"Unfamiliar Person Activity ({up_name})",
+                                                    "message": f"Person activity detected in {up_name} ({up_sensors[0]}).",
+                                                },
+                                            }
+                                        ]
+                                    ),
+                                    "mode": "single",
+                                },
+                            })
             except Exception as err:
                 _LOGGER.debug("Error generating person identification suggestions: %s", err)
 

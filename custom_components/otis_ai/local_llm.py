@@ -473,6 +473,7 @@ class LocalLLMManager:
         self.embedding_model = embedding_model
         self.rag_manager = rag_manager
         self._last_health: dict[str, Any] = {"status": "unknown"}
+        self._embedding_unavailable_until: float = 0.0
 
     def _get_headers(self) -> dict[str, str]:
         """Build request headers."""
@@ -640,10 +641,29 @@ class LocalLLMManager:
         self,
         text: str,
         model: str | None = None,
-        timeout: float = 15.0,
+        timeout: float = 2.0,
     ) -> list[float] | None:
         """Generate a dense vector embedding using the local LLM server (Ollama /embed or /v1/embeddings)."""
+        if time.monotonic() < getattr(self, "_embedding_unavailable_until", 0.0):
+            return None
+
         chosen_model = model or self.embedding_model or self.model
+        if not model and not self.embedding_model:
+            installed_models = self._last_health.get("models") if isinstance(self._last_health, dict) else None
+            if isinstance(installed_models, list) and installed_models:
+                embed_candidates = [
+                    m for m in installed_models
+                    if isinstance(m, str) and any(k in m.lower() for k in ("embed", "minilm", "bge", "nomic", "mxbai"))
+                ]
+                if embed_candidates:
+                    chosen_model = embed_candidates[0]
+                elif not any(k in str(chosen_model).lower() for k in ("embed", "minilm", "bge", "nomic", "mxbai")):
+                    self._embedding_unavailable_until = time.monotonic() + 600.0
+                    return None
+            elif not any(k in str(chosen_model).lower() for k in ("embed", "minilm", "bge", "nomic", "mxbai")):
+                # Chat models (e.g. qwen2.5:3b) on CPU take 15-45s per embedding call; use fast deterministic fallback
+                return None
+
         session = self._get_session()
         headers = self._get_headers()
         req_timeout = ClientTimeout(total=timeout)
@@ -699,6 +719,7 @@ class LocalLLMManager:
         except Exception as err:
             _LOGGER.debug("OpenAI /v1/embeddings attempt failed: %s", err)
 
+        self._embedding_unavailable_until = time.monotonic() + 300.0
         return None
 
     async def async_generate(

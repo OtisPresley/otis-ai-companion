@@ -7,6 +7,31 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-05
+
+### Added & Enhanced
+- **Conversation Agent Resolution Badge Continuity (`__init__.py`, `otis-companion-card.js`)**:
+  - Restored and hardened the conversation agent resolution badge (`🧠 Thought for X.Xs (N steps) • ☁️/⚡ <Agent Name>`) across both LLM and grounded fast-path responses by emitting `agent_resolution` progress steps, preserving `"default"` session keys in `_create_response()` and `handle_chat()`, normalizing legacy `config_entry_id` agent preferences to active `conversation.*` entities, and extracting `resolved_agent` directly from `otis_ai.chat` service payloads on the frontend.
+- **Clean Alias-Free YAML Generation & Indoor Lighting Filtering (`__init__.py`)**:
+  - Added `_NoAliasSafeDumper` (`yaml.SafeDumper` subclass) to eliminate `&id001` / `*id001` YAML anchors and aliases in generated Home Assistant automations.
+  - Filtered hardware indicator LEDs (`*_led`, `*_screen`) and exterior driveway/floodlight fixtures when synthesizing indoor room motion/occupancy lighting automations.
+- **Full HACS Default Catalog Compliance Verified**:
+  - Verified 100% non-blocking event-loop file I/O (dispatched via `hass.async_add_executor_job`), mandatory authentication and 100MB upload size cap on `OtisWalkthroughUploadView` (`/api/otis_ai/upload_walkthrough`), private storage of walkthrough videos and floor plan SVGs under `.storage/otis_ai/media` served via authenticated `OtisMediaView` (`/api/otis_ai/media/{filename}`), and zero raw user YAML writes (`configuration.yaml`, `automations.yaml`, `scripts.yaml`, `blueprints/`).
+
+## [0.1.59] - 2026-11-05
+
+### Fixed & Enhanced
+- **Assist Co-Pilot Speed & Test Accuracy Optimization**:
+  - Eliminated the 45-second RAG embedding timeout stall per query in `local_llm.py` (`async_get_embedding`) by skipping embedding requests against non-embedding chat models (`qwen2.5:3b`) unless a dedicated embedding model is configured, falling back immediately to deterministic/lexical retrieval.
+  - Fixed `classify_and_score_agent()` and `async_get_prioritized_agents()` in `__init__.py` to resolve `conversation.*` entity IDs through the Entity Registry to their parent `ConfigEntry` and `ConfigSubentry`, deduplicating config entry IDs vs. entity IDs and properly classifying Groq (`domain="groq"`) and OpenRouter free tiers with compact prompts and responsive failover timeouts.
+  - Added grounded live room status inspection, anti-hallucination entity registry verification (refusing to generate or offer deployment for non-existent entities and stripping hallucinated YAML blocks in `validate_and_upgrade_assistant_response`), grounded single-room occupancy/lighting automation synthesis, and ambiguous room clarification prompts.
+- **Startup Gate (`hass.is_running` / `EVENT_HOMEASSISTANT_STARTED`)**:
+  - Prevented `DiscoveryEngine.async_generate_proactive_suggestions` and `VisionPresenceManager` state-change listeners from generating recommendations or firing spatial migration intents until Home Assistant is fully started (`hass.is_running` is `True`).
+- **Assist Co-Pilot Bottom Starting Scroll Position**:
+  - Updated `OtisCompanionCard._render()` so `#chat-history` starts scrolled to the bottom on initial load and tab switches so the most recent results are visible first, while preserving relative scroll offset if the user scrolls up.
+- **Standalone People/Pets/Guests Identity Training & Multi-Domain Recommendations**:
+  - Decoupled identity training in `async_generate_proactive_suggestions` from `person.*` entities and Audio Follow-Me by merging all profiles from `rules_manager.get_person_profiles()`, `person.*` entities, and Home Assistant users, and added multi-domain recommendations for pet-immune occupancy/security (`identity_pet_immunity_guard_*`), personalized resident room comfort (`identity_resident_comfort_*`), guest hospitality (`identity_guest_hospitality_*`), and vision false-positive / unfamiliar-person deterrence (`identity_feedback_filter_*`, `identity_unknown_person_watchdog_*`).
+
 ## [0.1.58] - 2026-11-05
 
 ### Fixed & Enhanced

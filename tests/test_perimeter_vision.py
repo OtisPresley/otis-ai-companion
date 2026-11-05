@@ -713,3 +713,302 @@ class TestPerimeterVisionAnalysis(unittest.TestCase):
                 self.assertEqual(res_cls["classification"], cls_id)
                 self.assertNotIn(cls_id, rm.get_person_profiles())
             self.assertEqual(len(rm.get_rules()["vision_training_feedback"]), 3)
+
+    def test_startup_gate_and_standalone_identity_recommendations(self) -> None:
+        """Verify suggestions wait until hass.is_running is True and standalone profiles generate quality recommendations."""
+        from custom_components.otis_ai import DiscoveryEngine
+        from custom_components.otis_ai.rules_manager import BehavioralRulesManager
+
+        hass = MagicMock()
+        hass.is_running = False
+        mock_store = MagicMock()
+        mock_store.async_load = AsyncMock(return_value={})
+        mock_store.async_save = AsyncMock(return_value=None)
+
+        with patch("custom_components.otis_ai.rules_manager.Store", return_value=mock_store):
+            rm = BehavioralRulesManager(hass)
+            engine = DiscoveryEngine(hass)
+            engine.rules_manager = rm
+
+            cap_map = {
+                "areas": {"study": {"name": "Study"}, "guest_room": {"name": "Guest Room"}},
+                "devices": {},
+                "entities": [
+                    {"entity_id": "binary_sensor.study_person_occupancy", "name": "Study Person"},
+                    {"entity_id": "binary_sensor.study_motion", "name": "Study Motion"},
+                    {"entity_id": "light.study_main", "name": "Study Light"},
+                    {"entity_id": "climate.study_thermostat", "name": "Study Climate"},
+                    {"entity_id": "binary_sensor.guest_room_motion", "name": "Guest Motion"},
+                    {"entity_id": "light.guest_room_lamp", "name": "Guest Lamp"},
+                ],
+                "integrations": [],
+                "orphaned_entities": [],
+            }
+
+            # 1. While hass.is_running is False, zero suggestions are generated
+            suggestions_booting = asyncio.run(engine.async_generate_proactive_suggestions(cap_map))
+            self.assertEqual(suggestions_booting, [])
+
+            # 2. Configure standalone profiles (no person.* entities required)
+            asyncio.run(rm.async_confirm_person_identity(
+                person_id="pet_dexter",
+                label="Dexter",
+                confirmed=True,
+                visual_features={"area": "study", "area_name": "Study"},
+            ))
+            asyncio.run(rm.async_confirm_person_identity(
+                person_id="user_alex",
+                label="Alex",
+                confirmed=True,
+                visual_features={"area": "study", "area_name": "Study"},
+            ))
+            asyncio.run(rm.async_confirm_person_identity(
+                person_id="guest_family",
+                label="Visiting Guest",
+                confirmed=True,
+                visual_features={"area": "guest_room", "area_name": "Guest Room"},
+            ))
+            asyncio.run(rm.async_confirm_person_identity(
+                person_id="unknown_person",
+                label="Unknown Person",
+                confirmed=True,
+                visual_features={"area": "study", "area_name": "Study"},
+            ))
+            asyncio.run(rm.async_confirm_person_identity(
+                person_id="not_person_pet",
+                label="Not Person/Pet",
+                confirmed=False,
+                visual_features={"area": "study", "area_name": "Study"},
+            ))
+
+            # 3. Once hass.is_running is True, quality identity recommendations are generated
+            hass.is_running = True
+            suggestions_ready = asyncio.run(engine.async_generate_proactive_suggestions(cap_map))
+            sug_ids = {s["id"] for s in suggestions_ready}
+            self.assertIn("identity_pet_immunity_guard_study", sug_ids)
+            self.assertIn("identity_resident_comfort_user_alex_study", sug_ids)
+            self.assertIn("identity_guest_hospitality_guest_room", sug_ids)
+            self.assertIn("identity_feedback_filter_study", sug_ids)
+            self.assertIn("identity_unknown_person_watchdog_study", sug_ids)
+
+    def test_copilot_benchmark_scenarios_and_agent_dedup(self) -> None:
+        """Verify all 5 Co-Pilot benchmark prompts and conversation.* entity agent resolution."""
+        from custom_components.otis_ai import (
+            OtisAIConversationAgent,
+            classify_and_score_agent,
+            validate_and_upgrade_assistant_response,
+        )
+
+        hass = MagicMock()
+        hass.data = {}
+
+        # Mock states for Great Room, Study, and Foyer
+        state_map = {
+            "binary_sensor.great_room_person_occupancy": MagicMock(
+                entity_id="binary_sensor.great_room_person_occupancy",
+                state="off",
+                attributes={"friendly_name": "Great Room Person Occupancy"},
+            ),
+            "light.great_room_main": MagicMock(
+                entity_id="light.great_room_main",
+                state="on",
+                attributes={"friendly_name": "Great Room Main Light"},
+            ),
+            "binary_sensor.study_temp_occupancy": MagicMock(
+                entity_id="binary_sensor.study_temp_occupancy",
+                state="on",
+                attributes={"friendly_name": "Study Occupancy"},
+            ),
+            "sensor.study_temp_temperature": MagicMock(
+                entity_id="sensor.study_temp_temperature",
+                state="72.4",
+                attributes={"friendly_name": "Study Temperature", "unit_of_measurement": "°F"},
+            ),
+            "light.study_2": MagicMock(
+                entity_id="light.study_2",
+                state="off",
+                attributes={"friendly_name": "Study Light"},
+            ),
+            "climate.downstairs": MagicMock(
+                entity_id="climate.downstairs",
+                state="heat_cool",
+                attributes={"friendly_name": "Downstairs Thermostat", "current_temperature": 71.0, "temperature": 72.0},
+            ),
+            "climate.upstairs": MagicMock(
+                entity_id="climate.upstairs",
+                state="heat_cool",
+                attributes={"friendly_name": "Upstairs Thermostat", "current_temperature": 72.0, "temperature": 73.0},
+            ),
+            "binary_sensor.foyer_person_occupancy": MagicMock(
+                entity_id="binary_sensor.foyer_person_occupancy",
+                state="off",
+                attributes={"friendly_name": "Foyer Person Occupancy"},
+            ),
+            "binary_sensor.foyer_motion": MagicMock(
+                entity_id="binary_sensor.foyer_motion",
+                state="off",
+                attributes={"friendly_name": "Foyer Motion"},
+            ),
+            "light.foyer_2": MagicMock(
+                entity_id="light.foyer_2",
+                state="off",
+                attributes={"friendly_name": "Foyer Chandelier"},
+            ),
+        }
+        hass.states.async_entity_ids.return_value = list(state_map.keys())
+        hass.states.get.side_effect = lambda eid: state_map.get(eid)
+        hass.states.async_all.return_value = list(state_map.values())
+
+        cap_map = {
+            "areas": {
+                "great_room": {
+                    "name": "Great Room",
+                    "entities": ["binary_sensor.great_room_person_occupancy", "light.great_room_main"],
+                },
+                "study": {
+                    "name": "Study",
+                    "entities": ["binary_sensor.study_temp_occupancy", "sensor.study_temp_temperature", "light.study_2"],
+                },
+                "foyer": {
+                    "name": "Foyer",
+                    "entities": ["binary_sensor.foyer_person_occupancy", "binary_sensor.foyer_motion", "light.foyer_2"],
+                },
+            },
+            "entities": [
+                {"entity_id": k, "domain": k.split(".")[0], "state": v.state, "name": v.attributes.get("friendly_name")}
+                for k, v in state_map.items()
+            ],
+            "orphaned_entities": [],
+            "integrations": ["lutron_caseta", "ecobee"],
+            "climate_topology": {
+                "area_to_thermostat": {
+                    "great_room": "climate.downstairs",
+                    "foyer": "climate.downstairs",
+                    "study": "climate.upstairs",
+                },
+                "area_to_floor": {
+                    "great_room": "Ground Floor",
+                    "foyer": "Ground Floor",
+                    "study": "Upper Floor",
+                },
+            },
+        }
+
+        entry = MagicMock()
+        entry.entry_id = "otis_entry_1"
+        entry.options = {}
+        entry.data = {}
+
+        engine = MagicMock()
+        engine.async_build_capability_map = AsyncMock(return_value=cap_map)
+        auto_mgr = MagicMock()
+
+        agent = OtisAIConversationAgent(hass, entry, engine, auto_mgr)
+
+        def _make_input(text: str, cid: str = "conv_test"):
+            inp = MagicMock()
+            inp.text = text
+            inp.conversation_id = cid
+            inp.language = "en"
+            inp.context = MagicMock()
+            inp.device_id = None
+            inp.agent_id = None
+            inp.create_response = lambda intent_response, speech: MagicMock(
+                speech={"plain": {"speech": speech}}
+            )
+            return inp
+
+        # Test 1: Multi-room exact status check (Great Room and Study)
+        res1 = asyncio.run(agent.async_process(_make_input(
+            "Give me an exact status check of the Great Room and Study right now: list the exact entity_id and current state for the occupancy/motion sensors, lights, and climate/temperature sensors in those two rooms. Do not guess any values.",
+            "c1",
+        )))
+        sp1 = res1.response.speech["plain"]["speech"]
+        self.assertIn("binary_sensor.great_room_person_occupancy", sp1)
+        self.assertIn("light.great_room_main", sp1)
+        self.assertIn("binary_sensor.study_temp_occupancy", sp1)
+        self.assertIn("sensor.study_temp_temperature", sp1)
+        self.assertIn("72.4 °F", sp1)
+        self.assertIn("light.study_2", sp1)
+        self.assertIn("climate.upstairs", sp1)
+
+        # Test 2: Single-room status check (Study)
+        res2 = asyncio.run(agent.async_process(_make_input(
+            "Give me an exact status check of the Study right now: list the exact entity_id and current state for the occupancy/motion sensors, lights, and climate/temperature sensors in this room. Do not guess any values.",
+            "c2",
+        )))
+        sp2 = res2.response.speech["plain"]["speech"]
+        self.assertIn("binary_sensor.study_temp_occupancy", sp2)
+        self.assertIn("sensor.study_temp_temperature", sp2)
+        self.assertNotIn("binary_sensor.great_room_person_occupancy", sp2)
+
+        # Test 3: Anti-Hallucination Trap (non-existent entities)
+        res3 = asyncio.run(agent.async_process(_make_input(
+            "What is the current temperature of sensor.nonexistent_rooftop_sauna_temp, and can you write an automation to turn on switch.imaginary_helipad_deicer when binary_sensor.fake_submarine_hatch opens?",
+            "c3",
+        )))
+        sp3 = res3.response.speech["plain"]["speech"]
+        self.assertIn("sensor.nonexistent_rooftop_sauna_temp", sp3)
+        self.assertIn("switch.imaginary_helipad_deicer", sp3)
+        self.assertIn("binary_sensor.fake_submarine_hatch", sp3)
+        self.assertIn("do not exist", sp3.lower())
+        self.assertNotIn("```yaml", sp3)
+        self.assertIsNone(hass.data["otis_ai"]["sessions"]["c3"].get("pending_items"))
+
+        # Also verify validate_and_upgrade_assistant_response strips hallucinated YAML blocks
+        fake_llm_speech = (
+            "Here is the automation:\n```yaml\nalias: Fake\ntriggers:\n  - trigger: state\n"
+            "    entity_id: binary_sensor.fake_submarine_hatch\nactions:\n  - action: switch.turn_on\n"
+            "    entity_id: switch.imaginary_helipad_deicer\n```"
+        )
+        upgraded_sp, notes, pen = validate_and_upgrade_assistant_response(hass, fake_llm_speech)
+        self.assertNotIn("```yaml", upgraded_sp)
+        self.assertGreaterEqual(pen, 2)
+
+        # Test 4: Real Entity Automation Synthesis (Foyer light + motion/person occupancy after sunset, 10m off)
+        res4 = asyncio.run(agent.async_process(_make_input(
+            "Write a Home Assistant automation YAML that turns on the Foyer light when motion or person occupancy is detected in the Foyer after sunset, and turns it off after 10 minutes of no motion. Use only my real Foyer entity IDs.",
+            "c4",
+        )))
+        sp4 = res4.response.speech["plain"]["speech"]
+        self.assertIn("```yaml", sp4)
+        self.assertIn("light.foyer_2", sp4)
+        self.assertIn("binary_sensor.foyer_person_occupancy", sp4)
+        self.assertIn("binary_sensor.foyer_motion", sp4)
+        self.assertNotIn("light.foyer_light", sp4)
+        self.assertEqual(len(hass.data["otis_ai"]["sessions"]["c4"]["pending_items"]), 1)
+
+        # Test 5: Ambiguous Request Clarification ("Turn on the light when I walk in.")
+        res5 = asyncio.run(agent.async_process(_make_input(
+            "Turn on the light when I walk in.",
+            "c5",
+        )))
+        sp5 = res5.response.speech["plain"]["speech"]
+        self.assertIn("Which room", sp5)
+        self.assertNotIn("```yaml", sp5)
+
+        # Verify classify_and_score_agent resolves conversation.* entity_id via entity_registry -> ConfigEntry
+        groq_cfg = MagicMock()
+        groq_cfg.entry_id = "01M67610PWR70AAS0V08XR5K56"
+        groq_cfg.domain = "groq"
+        groq_cfg.title = "Groq"
+        groq_cfg.data = {}
+        groq_cfg.options = {}
+        groq_cfg.subentries = {
+            "sub1": {"title": "Text generation assist", "data": {"model": "openai/gpt-oss-120b", "protect_free_tier": True}}
+        }
+        hass.config_entries.async_get_entry.side_effect = (
+            lambda cid: groq_cfg if cid == "01M67610PWR70AAS0V08XR5K56" else None
+        )
+        ent_entry = MagicMock()
+        ent_entry.config_entry_id = "01M67610PWR70AAS0V08XR5K56"
+        ent_entry.config_subentry_id = "sub1"
+        ent_entry.platform = "groq"
+        mock_er = MagicMock()
+        mock_er.async_get.side_effect = (
+            lambda eid: ent_entry if eid == "conversation.text_generation_assist" else None
+        )
+        with patch("custom_components.otis_ai.er.async_get", return_value=mock_er):
+            info = classify_and_score_agent(hass, "conversation.text_generation_assist")
+            self.assertEqual(info["domain"], "groq")
+            self.assertEqual(info["tier"], "free_restricted")

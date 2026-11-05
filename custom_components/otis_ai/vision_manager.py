@@ -1902,8 +1902,11 @@ class VisionPresenceManager:
         elif occupied_areas:
             target_transition_area = occupied_areas[0].lower().replace(" ", "_")
 
+        prev_active_area = self._last_active_area
+        room_transition_occurred = False
         if target_transition_area:
             if self._last_active_area != target_transition_area:
+                room_transition_occurred = True
                 if self._last_active_area is not None:
                     self.record_area_transition(
                         from_area=self._last_active_area,
@@ -1917,15 +1920,18 @@ class VisionPresenceManager:
 
         intent = await self.async_detect_migration_intent(presence_data)
 
-        # Build a direct room-to-room audio migration intent whenever a user enters a room
-        # without any time-of-day or lifestyle macro gate.
+        # Build a direct room-to-room audio migration intent only when an actual room transition occurred
+        # or an explicit migration intent was detected.
         audio_migration_intent = intent
-        if target_transition_area:
+        if target_transition_area and (room_transition_occurred or intent):
             recent_trans = self._transition_history[-1] if self._transition_history else None
             src_candidate = (
-                recent_trans.get("from_area")
-                if recent_trans and (now_ts - recent_trans.get("timestamp", 0) <= 600.0)
-                else None
+                prev_active_area
+                or (
+                    recent_trans.get("from_area")
+                    if recent_trans and (now_ts - recent_trans.get("timestamp", 0) <= 600.0)
+                    else None
+                )
             )
             audio_migration_intent = {
                 "intent": intent["intent"] if intent else "room_transition",
@@ -1995,6 +2001,8 @@ class VisionPresenceManager:
                 _debounce_task = self.hass.async_create_task(_debounced_publish())
 
         def _on_state_changed(event):
+            if not getattr(self.hass, "is_running", True):
+                return
             eid = getattr(event, "data", {}).get("entity_id", "")
             if (
                 eid.startswith("binary_sensor.")

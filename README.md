@@ -51,9 +51,11 @@ It replaces fragile Jinja2 templates, hardcoded entity mappings, and rigid autom
 - ⚙️ **User Behavioral Rules & Interactive Onboarding (Roadmap Item 7)**: Persistent persona engine (`rules_manager.py`) governing assistant personality (Concierge, Butler, Minimalist, Custom), conversational tone, response verbosity, autonomy safeguards (explicit deadbolt/alarm confirmations), quiet hours volume limiting, and custom household rules. Dynamic prompt injection into Assist conversation turns and an interactive 5-tab onboarding modal.
 - 📱 **Modern Sections & Adaptive Dashboard Layout Pipeline (v0.1.16)**: Full pipeline support for user layout preferences across the Home Command Center (`/command-center`), all 5 Studios (Media, Security, Climate & Pool, Energy, Floor Plan), and all Room subviews. Features domain-specific tile ergonomics including HVAC dual-setpoints with mode toggles, separated pool heating, 2-column wide perimeter camera walls (`column_span: 2`), header consolidation, and clean responsive collapse for mobile, tablet, and desktop displays. Toggle between mobile-first **Modern Responsive Sections** (`type: "sections"` with title headings) and traditional **Classic Grid** masonry columns. Choose between **Sleek Touch Buttons** (balanced 2-column touch buttons) and **Standard Grid Cards** (compact 3-column square cards) for studio and room navigation, alongside **Agenda Daily List** (`listDay`) vs. **Full Month Grid** (`dayGridMonth`) schedule views.
 - ⚡ **1-Click Clean Dashboard Regeneration & Conversational Intent**: Cleanly regenerate Command Center, Studios, and Rooms on demand via dedicated service (`otis_ai.regenerate_dashboards`), 1-click `⚡ Regenerate` UI buttons in the Companion Card launchpad and Rules tab, or spoken Assist commands (*"regenerate dashboards"*, *"rebuild command center"*), preserving user-added custom cards and custom subviews without stale view inheritance.
-- 🚀 **Direct Blueprint Management & Deployment**: Inspect, edit, and deploy blueprints directly to `/config/blueprints/automation/<path>` with 1-click `🚀 Deploy & Update Blueprint` UI cards in Assist chat across all model tiers.
-- ⛅ **Command Center Home View Resilience**: Weather forecast (`weather.home`) and calendar agenda glance strip seamlessly integrated between Studios and Rooms. Automatic direct registry fallback and storage overwrite guards for all 16 room and area subviews.
-- 💬 **Assist AI Co-Pilot with Real-Time Audio Streaming, Clipboard Pasting & Failover**: Interactive multi-turn chat co-pilot (`otis_ai.chat`) with direct Web Speech microphone input, 5-bar animated audio waveform visualizer, instant Markdown live preview, clipboard image pasting (`Ctrl+V`), 1-click turn retry (`🔄 Retry`), compacted entity representations resolving Groq HTTP 413, and automated failover cascade across Google Generative AI / Gemini.
+- 🛡️ **HACS-Compliant Storage-Backed Automations & Private Media Security**: Integration-managed automations, scripts, and blueprints are persisted safely in `.storage/otis_ai.managed_configs` without modifying user YAML files (`configuration.yaml`, `automations.yaml`, `scripts.yaml`, or `/config/blueprints/`). Walkthrough videos and floor plan SVGs are stored privately under `.storage/otis_ai/media` and served exclusively via authenticated `HomeAssistantView` routes (`/api/otis_ai/media/{filename}`).
+- 🧑 **Standalone People, Pets & Guests Identity Intelligence (`v0.2.0`)**: Interactive room identity verification cards with live camera streams and Frigate/NVR detection snapshots (`👤 Resident`, `🕵️ Unknown Person`, `🦊 Unknown Animal`, `🚫 Not Person/Pet`), powering standalone multi-domain recommendations for pet-immune presence/security guards, personalized resident room comfort, guest hospitality lighting, and vision false-positive filtering.
+- 🧊 **3D Isometric Floor Plan with Raised Glass Walls & Dashboard Sync (`v0.2.0`)**: Interactive 360° azimuth orbit, 30°–75° pitch incline, 0px–60px raised glass walls with full click-through room inspection, and 1-click `💾 Save 3D to Dashboard` rule synchronization across Command Center and dedicated Floor Plan subviews.
+- ⛅ **Command Center Home View Resilience**: Weather forecast (`weather.home`) and calendar agenda glance strip seamlessly integrated between Studios and Rooms. Automatic direct registry fallback and storage overwrite guards for all room and area subviews.
+- 💬 **Grounded Assist AI Co-Pilot with Sub-Second Telemetry & Agent Attribution (`v0.2.0`)**: Interactive multi-turn chat co-pilot (`otis_ai.chat`) with live entity registry anti-hallucination verification, exact live room telemetry reports, alias-free YAML synthesis, conversation agent attribution badges (`🧠 Thought for X.Xs • ☁️/⚡ <Agent>`), Web Speech microphone input, clipboard image pasting (`Ctrl+V`), native text selection/copy, and 1-click turn retry (`🔄 Retry`).
 
 <div align="center">
   <img width="1141" height="1189" alt="image" src="https://github.com/user-attachments/assets/d436b1ab-42eb-4452-bab0-29603fafd105" />
@@ -91,15 +93,10 @@ Otis AI models your home as an undirected adjacency graph where rooms connect vi
 ### HACS (Recommended)
 
 1. In the Home Assistant UI, navigate to **HACS → Integrations**.
-2. Click the three vertical dots in the top right corner and select **Custom Repositories**.
-3. Under **Repository**, enter:
-   ```text
-   https://github.com/OtisPresley/otis-ai-companion
-   ```
-4. Set **Category** to **Integration** and click **Add**.
-5. Find **Otis AI Companion** in the catalog and click **Download**.
-6. **Restart Home Assistant**.
-7. Navigate to **Settings → Devices & Services → Add Integration** and select **Otis AI Companion**.
+2. Search for **Otis AI Companion** in the HACS default catalog and click **Download**.
+   *(Interim fallback if not yet visible in your local catalog cache: click the three dots `⋮` in the top right → **Custom Repositories** → enter `https://github.com/OtisPresley/otis-ai-companion` with Category **Integration** → click **Add**).*
+3. **Restart Home Assistant**.
+4. Navigate to **Settings → Devices & Services → Add Integration** and select **Otis AI Companion**.
 
 ---
 
@@ -309,8 +306,10 @@ show_chat: true
 ### Features:
 * **Interactive Rules Launchpad & Onboarding Wizard**: `⚙️ Rules` chip launches a 5-tab modal for dashboard & layout preferences, persona selection (Concierge, Butler, Minimalist, Custom), response verbosity, autonomy safeguards (deadbolt & alarm confirmation), quiet hours volume limiting, and custom household rules with first-run onboarding banner.
 * **1-Click Dashboard Regeneration**: Dedicated `⚡ Regenerate` launchpad button and `⚡ Regenerate Now` under the Rules Dashboard tab to cleanly rebuild Command Center, Studios, and Rooms to match active layouts without stomping manual customizations.
-* **Direct Blueprint Management & Deployment**: 1-click `🚀 Deploy & Update Blueprint` action cards generated directly in Assist chat for rapid blueprint editing and deployment into `/config/blueprints/automation/<path>`.
-* **Clipboard Image Pasting & Turn Retry**: Direct clipboard image pasting (`Ctrl+V`) into Assist chat for multimodal visual diagnostics, accompanied by instant 1-click turn retry (`🔄 Retry`).
+* **Storage-Backed Automation & Blueprint Management**: 1-click `🚀 Deploy & Enable Automation` and `🚀 Deploy & Update Blueprint` action cards generated in Assist chat, persisting integration-managed configurations safely in `.storage/otis_ai.managed_configs` and presenting copyable YAML snippets for user-applied system optimizations.
+* **3D Floor Plan Orbit, Glass Walls & Dashboard Sync**: Interactive 3D isometric canvas with 360° orbit, pitch incline, raised glass walls with click-through room drawers, and 1-click `💾 Save 3D to Dashboard` persistence.
+* **Interactive Room Identity Training Cards**: Live camera feeds and Frigate/NVR detection snapshots embedded directly inside room identity training cards with 1-click resident, guest, pet, unknown person/animal, and false-positive feedback buttons.
+* **Clipboard Image Pasting, Native Text Copy & Turn Retry**: Direct clipboard image pasting (`Ctrl+V`) into Assist chat for multimodal visual diagnostics, native text selection and clipboard copy across all chat bubbles and code blocks, conversation agent attribution badges, and instant 1-click turn retry (`🔄 Retry`).
 <p align="center">
   <img width="900" alt="image" src="https://github.com/user-attachments/assets/f80d88bd-a68f-4681-8c7f-2538568eb0af" />
 </p>
