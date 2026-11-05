@@ -946,6 +946,7 @@ class EnergyManager:
         ev_departure_hour: int = 7,
         ev_prefer_solar: bool = True,
         solar_forecast_table: list[float] | None = None,
+        has_ev: bool = True,
     ) -> dict[str, Any]:
         """Simulate and generate an optimal 24-hour battery charge/discharge & EV schedule."""
         now = start_dt or datetime.now()
@@ -966,19 +967,22 @@ class EnergyManager:
 
         load_profile = self.estimate_household_consumption_profile(baseline_load_kw)
 
-        # Smart EV Schedule Co-Optimization
-        ev_schedule = self.calculate_ev_charging_schedule(
-            current_soc_pct=ev_current_soc_pct,
-            target_soc_pct=ev_target_soc_pct,
-            battery_capacity_kwh=ev_battery_capacity_kwh,
-            max_charge_rate_kw=ev_max_charge_kw,
-            target_departure_hour=ev_departure_hour,
-            prefer_solar_surplus=ev_prefer_solar,
-            solar_profile=solar_profile,
-            load_profile=load_profile,
-            tariff_schedule=tariff_schedule,
-            start_dt=now,
-        )
+        # Smart EV Schedule Co-Optimization (only if EV is integrated)
+        if has_ev:
+            ev_schedule = self.calculate_ev_charging_schedule(
+                current_soc_pct=ev_current_soc_pct,
+                target_soc_pct=ev_target_soc_pct,
+                battery_capacity_kwh=ev_battery_capacity_kwh,
+                max_charge_rate_kw=ev_max_charge_kw,
+                target_departure_hour=ev_departure_hour,
+                prefer_solar_surplus=ev_prefer_solar,
+                solar_profile=solar_profile,
+                load_profile=load_profile,
+                tariff_schedule=tariff_schedule,
+                start_dt=now,
+            )
+        else:
+            ev_schedule = None
 
         schedule: list[dict[str, Any]] = []
         unmanaged_cost_total = 0.0
@@ -995,7 +999,7 @@ class EnergyManager:
             solar_kwh = solar_profile[sim_hour]
             load_kwh = load_profile[sim_hour]
 
-            ev_step = ev_schedule["schedule"][step]
+            ev_step = ev_schedule["schedule"][step] if (ev_schedule and "schedule" in ev_schedule and step < len(ev_schedule["schedule"])) else {}
             ev_kw = ev_step.get("ev_charge_kw", 0.0)
 
             # Net surplus after basic household consumption
@@ -1147,6 +1151,7 @@ class EnergyManager:
             "current_action": current_step["action"],
             "current_reason": current_step["reason"],
             "current_battery_flow_kw": current_step["battery_flow_kw"],
+            "has_ev": bool(has_ev),
             "ev_charging_plan": ev_schedule,
             "schedule": schedule,
             "timestamp": now.isoformat(),
@@ -1244,6 +1249,8 @@ class EnergyManager:
                     ev_soc = float(v.get("soc_pct", 45.0))
                     break
 
+        has_ev = bool(topo.get("ev_chargers") or topo.get("ev_vehicles"))
+
         plan = self.calculate_arbitrage_schedule(
             current_soc_pct=soc,
             battery_capacity_kwh=battery_capacity_kwh or self._battery_capacity_kwh,
@@ -1258,6 +1265,7 @@ class EnergyManager:
             ev_target_soc_pct=ev_target_soc_pct if ev_target_soc_pct is not None else self._ev_target_soc_pct,
             ev_departure_hour=ev_departure_hour if ev_departure_hour is not None else self._ev_departure_hour,
             solar_forecast_table=solar_table,
+            has_ev=has_ev,
         )
 
         self._cached_arbitrage_plan = plan
@@ -1329,7 +1337,7 @@ class EnergyManager:
     ) -> dict[str, Any]:
         """Dispatch real-time load, EV charging, and storage commands based on current schedule action."""
         plan = await self.async_get_arbitrage_plan()
-        ev_plan = plan.get("ev_charging_plan", {})
+        ev_plan = plan.get("ev_charging_plan") or {}
         topo = await self.async_discover_energy_topology()
 
         current_action = plan.get("current_action", ACTION_IDLE)

@@ -482,6 +482,8 @@ class SentinelManager:
 
         for state in all_states:
             eid = state.entity_id
+            if eid.startswith("device_tracker."):
+                continue
             attrs = state.attributes or {}
             friendly_name = attrs.get("friendly_name", eid)
             lower_name = (friendly_name + " " + eid).lower()

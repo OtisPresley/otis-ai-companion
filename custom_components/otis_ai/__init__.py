@@ -4864,15 +4864,84 @@ CRITICAL INSTRUCTIONS FOR AUTOMATIONS & SCRIPTS:
 User: {user_input.text}
 """
 
-        # 4. Delegate to prioritized AI agent pool first (e.g. Gemini 2.5 Flash, OpenRouter)
+        # 4. Delegate to prioritized AI agent pool (Google AI -> Groq -> Local Qwen -> Free Router)
         result = None
         last_error_msg = None
         resolved_agent_name = None
         resolved_agent_id = None
         failover_occurred = False
+        local_attempted = False
+
+        local_enabled = getattr(self, "entry", None) is not None and (
+            self.entry.options.get(CONF_LOCAL_LLM_ENABLED, self.entry.data.get(CONF_LOCAL_LLM_ENABLED, True))
+        )
+
+        async def _try_local_llm() -> bool:
+            nonlocal result, resolved_agent_id, resolved_agent_name, failover_occurred, last_error_msg
+            if not (local_enabled and self.local_llm_manager):
+                return False
+            try:
+                failover_occurred = True
+                fire_progress("llm", "Local Edge Failover", "Consulting fast offline Local LLM on LAN...")
+                health = await self.local_llm_manager.async_health_check()
+                if health.get("status") == "online" and health.get("model_ready"):
+                    fire_progress(
+                        "llm",
+                        "Local Edge AI Active",
+                        f"Reasoning locally via {health.get('provider')} ({self.local_llm_manager.model})",
+                    )
+                    local_res = await self.local_llm_manager.async_chat_with_tools(
+                        prompt=prompt,
+                        system_prompt=(
+                            "You are Otis AI, the ultimate proactive smart home companion and butler. "
+                            "Analyze the home's active state and respond concisely and actionably. "
+                            "You have access to smart home tools to pin devices on the floorplan, run sentinel audits, "
+                            "heal network nodes, and control entities. When asked to take action, call the appropriate tool. "
+                            "Provide automations strictly in Home Assistant GUI YAML format (clean top-level dict starting with alias:, description:, triggers:, conditions:, actions:, mode: without - id: or leading dashes). "
+                            "Never tell the user to edit automations.yaml themselves; always offer to deploy and enable it for them."
+                        ),
+                        timeout=reasoning_timeout,
+                    )
+                    if local_res.get("success") and (local_res.get("response") or local_res.get("executed_tools")):
+                        resp_text = local_res.get("response", "")
+                        if not resp_text and local_res.get("executed_tools"):
+                            executed_tools = [t.get("tool", "") for t in local_res["executed_tools"]]
+                            resp_text = f"Otis AI executed the following actions: {', '.join(executed_tools)}."
+                        resolved_agent_id = f"local_llm:{self.local_llm_manager.model}"
+                        resolved_agent_name = f"Local Edge ({self.local_llm_manager.model})"
+                        tool_count = len(local_res.get("executed_tools", []))
+                        _LOGGER.info(
+                            "Local Edge AI (%s) responded in %ss (%s tool(s) executed)",
+                            self.local_llm_manager.model,
+                            local_res.get("total_duration_s"),
+                            tool_count,
+                        )
+                        fire_progress(
+                            "agent_resolution",
+                            f"Resolved by Local Edge ({self.local_llm_manager.model})",
+                            f"Executed locally by {self.local_llm_manager.model} via Ollama in {local_res.get('total_duration_s')}s with {tool_count} tool(s)",
+                        )
+                        result = self._create_response(user_input, resp_text)
+                        return True
+                    else:
+                        _LOGGER.warning("Local LLM returned error: %s", local_res.get("error"))
+                        if not last_error_msg:
+                            last_error_msg = local_res.get("error")
+            except Exception as local_err:
+                _LOGGER.debug("Local LLM invocation notice: %s", local_err)
+                if not last_error_msg:
+                    last_error_msg = str(local_err)
+            return False
 
         if prioritized_agents:
             for idx, agent_id in enumerate(prioritized_agents):
+                # Intercept before third-party public free routers: give LAN Local LLM priority
+                is_free_router = any(f in str(agent_id).lower() for f in ("free_models", "free_router", "open_router", "free"))
+                if is_free_router and not local_attempted:
+                    local_attempted = True
+                    if await _try_local_llm():
+                        break
+
                 is_primary = (idx == 0)
                 role_label = "Primary" if is_primary else f"Failover #{idx}"
                 agent_display = get_agent_display_name(self.hass, agent_id)
@@ -4880,9 +4949,24 @@ User: {user_input.text}
                 fire_progress("llm", f"Consulting {role_label} AI ({agent_display})", f"Reasoning with model '{agent_display}' (max {int(reasoning_timeout)}s)")
 
                 try:
+                    # For agents with payload/token constraints (e.g. Groq with HTTP 413) or if prompt is overly large
+                    agent_prompt = prompt
+                    is_groq = "groq" in str(agent_id).lower() or "groq" in agent_display.lower()
+                    if is_groq and len(prompt) > 6000:
+                        agent_prompt = f"""You are Otis AI, the smart home co-pilot and butler.
+Respond concisely and actionably to the user.
+{rules_snippet}
+
+System State:
+- Notable Integrations: {notable_integrations[:15]}
+- Active Entities: {entity_summary}
+- Actionable Control Devices: {detailed_entities[:15]}
+
+{history_snippet}User Request: {user_input.text}"""
+
                     converse_coro = conversation.async_converse(
                         hass=self.hass,
-                        text=prompt,
+                        text=agent_prompt,
                         conversation_id=user_input.conversation_id,
                         context=user_input.context,
                         language=user_input.language,
@@ -4959,65 +5043,9 @@ User: {user_input.text}
                         )
                     continue
 
-        # 4.5. Offline / Local LLM Failover (Engaged only when cloud agents fail or are unconfigured)
-        if result is None:
-            local_enabled = getattr(self, "entry", None) is not None and (
-                self.entry.options.get(CONF_LOCAL_LLM_ENABLED, self.entry.data.get(CONF_LOCAL_LLM_ENABLED, True))
-            )
-            if local_enabled and self.local_llm_manager:
-                try:
-                    failover_occurred = True
-                    fire_progress("llm", "Local Edge Failover", "Cloud unavailable. Engaging offline local LLM failover...")
-                    health = await self.local_llm_manager.async_health_check()
-                    if health.get("status") == "online" and health.get("model_ready"):
-                        fire_progress(
-                            "llm",
-                            "Local Edge AI Failover",
-                            f"Reasoning locally via {health.get('provider')} ({self.local_llm_manager.model})",
-                        )
-                        local_res = await self.local_llm_manager.async_chat_with_tools(
-                            prompt=prompt,
-                            system_prompt=(
-                                "You are Otis AI, the ultimate proactive smart home companion and butler. "
-                                "Analyze the home's active state and respond concisely and actionably. "
-                                "You have access to smart home tools to pin devices on the floorplan, run sentinel audits, "
-                                "heal network nodes, and control entities. When asked to take action, call the appropriate tool. "
-                                "Provide automations strictly in Home Assistant GUI YAML format (clean top-level dict starting with alias:, description:, triggers:, conditions:, actions:, mode: without - id: or leading dashes). "
-                                "Never tell the user to edit automations.yaml themselves; always offer to deploy and enable it for them."
-                            ),
-                            timeout=reasoning_timeout,
-                        )
-                        if local_res.get("success") and (local_res.get("response") or local_res.get("executed_tools")):
-                            resp_text = local_res.get("response", "")
-                            if not resp_text and local_res.get("executed_tools"):
-                                executed_tools = [t.get("tool", "") for t in local_res["executed_tools"]]
-                                resp_text = f"Otis AI executed the following actions: {', '.join(executed_tools)}."
-                            resolved_agent_id = f"local_llm:{self.local_llm_manager.model}"
-                            resolved_agent_name = f"Local Edge ({self.local_llm_manager.model})"
-                            tool_count = len(local_res.get("executed_tools", []))
-                            _LOGGER.info(
-                                "Local Edge AI (%s) failover responded in %ss (%s tool(s) executed)",
-                                self.local_llm_manager.model,
-                                local_res.get("total_duration_s"),
-                                tool_count,
-                            )
-                            fire_progress(
-                                "agent_resolution",
-                                f"Resolved by Local Edge ({self.local_llm_manager.model})",
-                                f"Cloud unavailable / offline failover: executed by {self.local_llm_manager.model} via Ollama in {local_res.get('total_duration_s')}s with {tool_count} tool(s)",
-                            )
-                            result = self._create_response(user_input, resp_text)
-                        else:
-                            _LOGGER.warning(
-                                "Local LLM failover returned error: %s",
-                                local_res.get("error"),
-                            )
-                            if not last_error_msg:
-                                last_error_msg = local_res.get("error")
-                except Exception as local_err:
-                    _LOGGER.debug("Local LLM failover invocation notice: %s", local_err)
-                    if not last_error_msg:
-                        last_error_msg = str(local_err)
+        # 4.5. Offline / Local LLM Failover if not already attempted
+        if result is None and not local_attempted:
+            await _try_local_llm()
 
         if result is not None:
             session_data["last_resolved_agent"] = resolved_agent_name or "Primary Cloud AI"
@@ -5205,10 +5233,20 @@ async def async_get_prioritized_agents(hass: HomeAssistant, preferred_agent_id: 
         if system_primary and system_primary in discovered_ids:
             prioritized.append(system_primary)
 
-    # 3. Add any remaining discovered agents as failover pool
+    # 3. Add any remaining discovered agents as failover pool, sorting fast cloud before free router queues
+    fast_cloud = []
+    free_routers = []
     for aid in discovered_ids:
-        if aid not in prioritized:
-            prioritized.append(aid)
+        if aid in prioritized:
+            continue
+        aid_lower = str(aid).lower()
+        if any(f in aid_lower for f in ("free_models", "free_router", "open_router", "free")):
+            free_routers.append(aid)
+        else:
+            fast_cloud.append(aid)
+
+    prioritized.extend(fast_cloud)
+    prioritized.extend(free_routers)
 
     return prioritized
 
@@ -6537,6 +6575,11 @@ class DiscoveryEngine:
 
                 # Check F: Proactive Migration of Existing Automations & Blueprints to Otis Native Coordinators
                 if isinstance(parsed_autos, list):
+                    has_ev_or_storage = any(
+                        any(k in eid for k in ("ev_charge", "ev_charger", "tesla_charge", "powerwall", "home_battery", "enphase_battery"))
+                        for eid in active_entity_ids
+                    )
+
                     for auto in parsed_autos:
                         if not isinstance(auto, dict):
                             continue
@@ -6569,10 +6612,20 @@ class DiscoveryEngine:
                                         "target_coordinator": "presence_fusion",
                                         "area": matched_area or "general",
                                     },
-                                })
+                                    })
 
                         # EV or Battery charging automation -> recommend Otis TOU Contextual Energy Arbitrage
-                        if any(k in auto_str for k in ("ev_charge", "ev_charging", "charger", "battery", "tesla", "charge_mode")) and any(k in auto_str for k in ("switch.turn_on", "time", "numeric_state")):
+                        alias_lower = str(alias).lower()
+                        is_non_energy = any(
+                            k in alias_lower
+                            for k in ("light", "lamp", "ups", "maintenance", "adaptive", "sleep", "bed", "motion", "door", "window", "fan")
+                        )
+                        if (
+                            has_ev_or_storage
+                            and not is_non_energy
+                            and any(k in auto_str for k in ("ev_charge", "ev_charging", "switch.charger", "switch.ev_", "tesla_charge", "charge_mode"))
+                            and any(k in auto_str for k in ("switch.turn_on", "time", "numeric_state"))
+                        ):
                             sugg_id = f"migrate_energy_arbitrage_{aid}"
                             if not any(s["id"] == sugg_id for s in result["improvement_suggestions"]):
                                 result["improvement_suggestions"].append({

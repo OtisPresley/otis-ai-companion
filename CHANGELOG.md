@@ -7,6 +7,28 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.53] - 2026-11-05
+
+### Fixed & Enhanced
+- **Rules Wizard & Preference Persistence**:
+  - Fixed pre-render DOM destruction: inputs are now harvested before setting saving flags or re-rendering, ensuring user-typed text edits save reliably.
+  - Added continuous real-time input event synchronization across wizard fields (`#wiz-residents`, `#wiz-work`, `#wiz-sleep`, `#wiz-guest-code`).
+  - Restricted available household members strictly to Home Assistant `person.*` entities, eliminating duplicate chips.
+  - Removed disruptive unconditional `regenerate_dashboards` call on preference save.
+- **People & Pets Recognition Management**:
+  - Implemented persistent `ignored_persons` registry: deleted profiles are permanently excluded from recognition and will not re-appear on refresh.
+  - Fixed profile deletion button to immediately prune local and server state.
+- **Dashboard & Card Configuration Preservation**:
+  - Enhanced `_merge_dashboard_config_preserving_user_views` across all views and subviews (`media`, `energy`, `security`, `climate`, `area_*`): all user card configurations, custom cards, ordering, and options are now strictly preserved when Otis updates or synchronizes dashboards.
+- **Energy Arbitrage & EV Suppression**:
+  - Omitted Smart EV Charging section from Command Center Capabilities card when no EV is integrated in the home.
+  - Filtered out non-energy automations (lighting, UPS watchdogs, adaptive brightness) from Contextual Energy Arbitrage migration recommendations.
+- **Sentinel False Positive Filter**:
+  - Excluded `device_tracker.*` entities from BLE proxy offline audits, resolving spurious alerts for active Bluetooth proxies.
+- **AI Assist Co-Pilot Cascade Optimization**:
+  - Compacted conversation prompts for high-speed agents (Groq) to eliminate HTTP 413 Payload Too Large errors.
+  - Re-ordered fallback cascade to engage local edge models (`qwen2.5:3b` on LAN) and fast cloud models ahead of slow public third-party free routers.
+
 ## [0.1.52] - 2026-11-05
 
 ### Added & Enhanced

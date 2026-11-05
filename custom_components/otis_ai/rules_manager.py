@@ -51,6 +51,7 @@ DEFAULT_RULES: dict[str, Any] = {
     "voice_announcements_enabled": True,
     "voice_filter_passersby": True,
     "person_profiles": {},
+    "ignored_persons": [],
     "wizard_state": {},
     "reasoning_timeout": 60,
 }
@@ -205,6 +206,10 @@ class BehavioralRulesManager:
             merged["wizard_state"] = dict(new_rules["wizard_state"])
         if "person_profiles" in new_rules and isinstance(new_rules["person_profiles"], dict):
             merged["person_profiles"] = dict(new_rules["person_profiles"])
+        if "ignored_persons" in new_rules and isinstance(new_rules["ignored_persons"], (list, set, tuple)):
+            merged["ignored_persons"] = list(dict.fromkeys(str(x).strip().lower() for x in new_rules["ignored_persons"] if x))
+        elif "ignored_persons" not in merged:
+            merged["ignored_persons"] = list(self._rules.get("ignored_persons") or [])
 
         self._rules = merged
         await self._store.async_save(self._rules)
@@ -302,6 +307,11 @@ class BehavioralRulesManager:
 
         profiles = dict(self._rules.get("person_profiles") or {})
         clean_pid = str(person_id).strip().lower()
+        ignored = list(self._rules.get("ignored_persons") or [])
+        if clean_pid in ignored:
+            ignored.remove(clean_pid)
+            self._rules["ignored_persons"] = ignored
+
         profile = profiles.get(clean_pid, {
             "person_id": clean_pid,
             "label": label or clean_pid.replace("person.", "").title(),
@@ -327,19 +337,25 @@ class BehavioralRulesManager:
         return {"success": True, "person_id": clean_pid, "profile": profile}
 
     async def async_remove_person_profile(self, person_id: str) -> dict[str, Any]:
-        """Remove a person/pet profile from recognition training."""
+        """Remove a person/pet profile from recognition training and add to ignored_persons."""
         if not self._loaded:
             await self.async_load()
 
         profiles = dict(self._rules.get("person_profiles") or {})
         clean_pid = str(person_id).strip().lower()
+        ignored = list(self._rules.get("ignored_persons") or [])
+
+        if clean_pid not in ignored:
+            ignored.append(clean_pid)
+            self._rules["ignored_persons"] = ignored
+
         if clean_pid in profiles:
             del profiles[clean_pid]
             self._rules["person_profiles"] = profiles
-            await self._store.async_save(self._rules)
-            _LOGGER.info("Otis AI: Removed person profile %s", clean_pid)
-            return {"success": True, "person_id": clean_pid}
-        return {"success": False, "error": f"Profile {clean_pid} not found"}
+
+        await self._store.async_save(self._rules)
+        _LOGGER.info("Otis AI: Removed and ignored person profile %s", clean_pid)
+        return {"success": True, "person_id": clean_pid}
 
     async def async_confirm_person_identity(
         self,

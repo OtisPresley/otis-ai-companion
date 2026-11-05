@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.52";
+const CARD_VERSION = "0.1.53";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -6544,8 +6544,8 @@ class OtisCompanionCard extends HTMLElement {
                   </div>
                 ` : ""}
 
-                <!-- Smart EV Charging Section (Phase 7) -->
-                ${arbitrage.ev_charging_plan ? `
+                <!-- Smart EV Charging Section (Phase 7 - shown only when EV is integrated) -->
+                ${arbitrage.ev_charging_plan && (arbitrage.has_ev || (this._capabilityMap?.energy_topology?.ev_chargers && this._capabilityMap.energy_topology.ev_chargers.length > 0)) ? `
                   <div style="margin-top: 8px; margin-bottom: 8px; padding: 6px 8px; background: rgba(14, 165, 233, 0.08); border-radius: 6px; border: 1px solid rgba(14, 165, 233, 0.2);">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                       <span style="font-weight: 600; font-size: 0.70rem; color: var(--otis-primary);">
@@ -7499,27 +7499,14 @@ class OtisCompanionCard extends HTMLElement {
 
   _getAvailableUsers() {
     const userMap = new Map();
-    // 1. Registered users discovered by Otis backend
-    if (Array.isArray(this._capabilityMap?.users)) {
-      for (const u of this._capabilityMap.users) {
-        if (u && u.id) userMap.set(u.id, { id: u.id, name: u.name || u.id });
-      }
-    }
-    // 2. Person entities from Home Assistant states
+    // Strictly discover registered person.* entities from Home Assistant states
     const states = this._hass?.states || {};
     for (const eid in states) {
       if (eid.startsWith("person.")) {
         const p = states[eid];
-        const uid = p.attributes?.user_id || eid;
-        const name = p.attributes?.friendly_name || p.entity_id.replace("person.", "").replace(/_/g, " ");
-        if (!userMap.has(uid)) {
-          userMap.set(uid, { id: uid, name: name });
-        }
+        const name = p.attributes?.friendly_name || eid.replace("person.", "").replace(/_/g, " ");
+        userMap.set(eid, { id: eid, name: name });
       }
-    }
-    // 3. Current active user fallback
-    if (this._hass?.user?.id && !userMap.has(this._hass.user.id)) {
-      userMap.set(this._hass.user.id, { id: this._hass.user.id, name: this._hass.user.name || "Current User" });
     }
     return Array.from(userMap.values());
   }
@@ -8481,12 +8468,13 @@ class OtisCompanionCard extends HTMLElement {
 
   _renderRulesPeopleTab(rules) {
     const profiles = { ...(this._userRules?.person_profiles || {}) };
+    const ignored = (this._userRules?.ignored_persons || []).map((x) => String(x).toLowerCase());
     const availUsers = this._getAvailableUsers();
 
-    // Ensure registered person entities from Home Assistant are represented
+    // Ensure registered person entities from Home Assistant are represented unless explicitly ignored
     availUsers.forEach((u) => {
       const pid = u.id.toLowerCase();
-      if (!profiles[pid]) {
+      if (!ignored.includes(pid) && !profiles[pid]) {
         profiles[pid] = {
           person_id: pid,
           label: u.name,
@@ -8500,7 +8488,7 @@ class OtisCompanionCard extends HTMLElement {
       }
     });
 
-    const profileList = Object.values(profiles);
+    const profileList = Object.values(profiles).filter((p) => !ignored.includes(String(p.person_id).toLowerCase()));
 
     return `
       <div style="display: flex; flex-direction: column; gap: 14px;">
@@ -9593,16 +9581,18 @@ class OtisCompanionCard extends HTMLElement {
       if (wizApplySaveBtn) {
         wizApplySaveBtn.onclick = async () => {
           if (this._savingRules) return;
+          // Harvest latest input values directly from DOM before setting saving flag & re-rendering
+          _harvestWizardInputs();
+          const generated = this._generateStructuredRulesText();
+          const w = { ...(this._wizardState || {}) };
+
           this._savingRules = true;
           this._render();
           try {
-            _harvestWizardInputs();
-            const generated = this._generateStructuredRulesText();
-            const w = this._wizardState || {};
-
             const draft = {
               ...(this._rulesDraft || {}),
               custom_instructions: generated,
+              wizard_state: w,
               require_lock_confirmation: w.requireDeadboltConfirm !== false,
               require_security_confirmation: w.requireAlarmConfirm !== false,
               quiet_hours_enabled: true,
@@ -9618,12 +9608,6 @@ class OtisCompanionCard extends HTMLElement {
             this._userRules = saved;
             this._rulesDraft = { ...saved };
             this._rulesModalOpen = false;
-
-            try {
-              await this._hass.callService("otis_ai", "regenerate_dashboards", {});
-            } catch (syncErr) {
-              console.debug("Dashboard auto-sync notice:", syncErr);
-            }
 
             this._showToast("✨ Household Rules wizard preferences saved & applied!");
             await this._fetchData();
@@ -9861,6 +9845,32 @@ class OtisCompanionCard extends HTMLElement {
         };
       });
 
+      // Real-time input synchronization for Wizard text fields
+      const resInp = root.querySelector("#wiz-residents");
+      if (resInp) {
+        resInp.oninput = () => {
+          this._wizardState = { ...(this._wizardState || {}), residents: resInp.value };
+        };
+      }
+      const workInp = root.querySelector("#wiz-work");
+      if (workInp) {
+        workInp.oninput = () => {
+          this._wizardState = { ...(this._wizardState || {}), workHours: workInp.value };
+        };
+      }
+      const sleepInp = root.querySelector("#wiz-sleep");
+      if (sleepInp) {
+        sleepInp.oninput = () => {
+          this._wizardState = { ...(this._wizardState || {}), sleepHabits: sleepInp.value };
+        };
+      }
+      const codeInp = root.querySelector("#wiz-guest-code");
+      if (codeInp) {
+        codeInp.oninput = () => {
+          this._wizardState = { ...(this._wizardState || {}), guestLockCode: codeInp.value };
+        };
+      }
+
       // People & Pets Classification Dropdown
       root.querySelectorAll(".profile-type-select").forEach((sel) => {
         sel.onchange = async () => {
@@ -9906,7 +9916,17 @@ class OtisCompanionCard extends HTMLElement {
             await this._hass.callService("otis_ai", "remove_person_profile", {
               person_id: pid,
             });
+            const cleanPid = pid.toLowerCase();
+            const profiles = { ...(this._userRules?.person_profiles || {}) };
+            delete profiles[cleanPid];
+            const ignored = Array.from(new Set([...(this._userRules?.ignored_persons || []), cleanPid]));
+            this._userRules = {
+              ...this._userRules,
+              person_profiles: profiles,
+              ignored_persons: ignored,
+            };
             this._showToast(`Removed profile for ${pid}`);
+            this._render();
             await this._fetchData();
           } catch (err) {
             this._showToast(`Failed to delete profile: ${err.message || err}`, true);
@@ -9919,31 +9939,24 @@ class OtisCompanionCard extends HTMLElement {
       if (saveBtn) {
         saveBtn.onclick = async () => {
           if (this._savingRules) return;
+          // Harvest latest input values directly from DOM before constructing payload and before re-rendering
+          const draft = _harvestAllInputs();
           this._savingRules = true;
           this._render();
           try {
-            // Harvest latest input values directly from DOM before constructing payload
-            const draft = _harvestAllInputs();
-
             const payload = {
               ...draft,
+              wizard_state: { ...(this._wizardState || {}) },
               onboarding_completed: true,
             };
-            this._showToast("⚙️ Saving preferences & generating dashboards...");
+            this._showToast("⚙️ Saving preferences...");
             const res = await this._hass.callService("otis_ai", "set_user_rules", { rules: payload });
             const saved = res?.rules || payload;
             this._userRules = saved;
             this._rulesDraft = { ...saved };
             this._rulesModalOpen = false;
 
-            // Automatically sync and regenerate Command Center dashboard matching preferences
-            try {
-              await this._hass.callService("otis_ai", "regenerate_dashboards", {});
-            } catch (syncErr) {
-              console.debug("Dashboard auto-sync notice:", syncErr);
-            }
-
-            this._showToast("✨ Preferences saved & Command Center generated!");
+            this._showToast("✨ Preferences saved!");
             await this._fetchData();
           } catch (err) {
             console.error("Failed to save user rules:", err);
