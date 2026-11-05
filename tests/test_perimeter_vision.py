@@ -694,7 +694,22 @@ class TestPerimeterVisionAnalysis(unittest.TestCase):
                 person_id="person.resident_primary",
                 track_id="trk_002",
                 confirmed=True,
+                visual_features={"area": "backyard", "area_name": "Backyard"},
             ))
             self.assertEqual(res2["profile"]["samples"], 2)
             self.assertEqual(res2["profile"]["confidence"], 0.70)
             self.assertEqual(len(res2["profile"]["tracks"]), 2)
+            self.assertIn("backyard", res2["profile"]["verified_rooms"])
+
+            # 3. Unknown Person / Unknown Animal / Not Person/Pet classifications
+            for cls_id in ("unknown_person", "unknown_animal", "not_person_pet"):
+                res_cls = asyncio.run(rm.async_confirm_person_identity(
+                    person_id=cls_id,
+                    label=cls_id.replace("_", " ").title(),
+                    confirmed=(cls_id != "not_person_pet"),
+                    visual_features={"area": "frontyard", "area_name": "Frontyard"},
+                ))
+                self.assertTrue(res_cls["success"])
+                self.assertEqual(res_cls["classification"], cls_id)
+                self.assertNotIn(cls_id, rm.get_person_profiles())
+            self.assertEqual(len(rm.get_rules()["vision_training_feedback"]), 3)

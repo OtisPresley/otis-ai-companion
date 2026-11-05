@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.56";
+const CARD_VERSION = "0.1.57";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -1873,6 +1873,158 @@ class OtisCompanionCard extends HTMLElement {
             `;
           }).join("")}
         </div>
+      </div>
+    `;
+  }
+
+  _renderTrainingVerificationMedia(suggestion) {
+    if (!suggestion || suggestion.action_type !== "confirm_person_identity") return "";
+    const payload = suggestion.action_payload || {};
+    const areaSlug = String(payload.area || payload.visual_features?.area || "").trim().toLowerCase();
+    const areaName = payload.area_name || payload.visual_features?.area_name || areaSlug || "Room";
+    const states = this._hass?.states || {};
+
+    const aliases = new Set([areaSlug, String(areaName).toLowerCase().replace(/\s+/g, "_")].filter(Boolean));
+    if (areaSlug === "great_room") {
+      aliases.add("kitchen");
+      aliases.add("living_room");
+      aliases.add("greatroom");
+    } else if (areaSlug === "foyer") {
+      aliases.add("frontdoor");
+      aliases.add("front_door");
+      aliases.add("entryway");
+    } else if (areaSlug === "frontyard") {
+      aliases.add("front_doorbell");
+      aliases.add("frontdoor");
+      aliases.add("driveway");
+      aliases.add("porch");
+    } else if (areaSlug === "garage") {
+      aliases.add("driveway");
+    }
+
+    let detEid = payload.detection_image_entity_id || payload.visual_features?.detection_image_entity_id || null;
+    let snapEid = payload.snapshot_camera_entity_id || null;
+    let camEid = payload.camera_entity_id || payload.visual_features?.camera_entity_id || null;
+    let camName = payload.camera_name || areaName;
+    let detLabel = payload.detection_label || "Detection";
+
+    // Dynamically discover matching image.* and camera.* from live hass.states if needed
+    const allEids = Object.keys(states);
+    if (!detEid || !states[detEid] || ["unknown", "unavailable"].includes(String(states[detEid]?.state).toLowerCase())) {
+      for (const eid of allEids) {
+        const low = eid.toLowerCase();
+        if (!low.startsWith("image.")) continue;
+        if (!/_(person|dog|cat|pet|animal)$/.test(low)) continue;
+        const st = states[eid];
+        if (!st || ["unknown", "unavailable", "none", ""].includes(String(st.state).toLowerCase())) continue;
+        const matches = Array.from(aliases).some((a) => a && (low.includes(`.${a}_`) || low.includes(`_${a}_`)));
+        if (matches) {
+          detEid = eid;
+          detLabel = low.endsWith("_person") ? "Person" : (low.endsWith("_dog") ? "Dog" : (low.endsWith("_cat") ? "Cat" : "Pet/Animal"));
+          break;
+        }
+      }
+    }
+
+    if (!snapEid) {
+      for (const eid of allEids) {
+        const low = eid.toLowerCase();
+        if (!low.startsWith("camera.") || !low.includes("snapshot")) continue;
+        const st = states[eid];
+        if (!st || String(st.state).toLowerCase() === "unavailable") continue;
+        const matches = Array.from(aliases).some((a) => a && low.includes(a));
+        if (matches) {
+          snapEid = eid;
+          break;
+        }
+      }
+    }
+
+    if (!camEid) {
+      const topoCams = this._capabilityMap?.vision_topology?.cameras || [];
+      for (const c of topoCams) {
+        const cArea = String(c.area_id || "").toLowerCase();
+        const cLow = String(c.entity_id || "").toLowerCase();
+        if (cArea === areaSlug || Array.from(aliases).some((a) => a && cLow.includes(a))) {
+          camEid = c.entity_id;
+          camName = c.name || camName;
+          break;
+        }
+      }
+      if (!camEid) {
+        for (const eid of allEids) {
+          const low = eid.toLowerCase();
+          if (!low.startsWith("camera.") || low.includes("snapshot") || low.includes("map")) continue;
+          const st = states[eid];
+          if (!st || String(st.state).toLowerCase() === "unavailable") continue;
+          if (Array.from(aliases).some((a) => a && low.includes(a))) {
+            camEid = eid;
+            camName = st.attributes?.friendly_name || camName;
+            break;
+          }
+        }
+      }
+    }
+
+    const resolvePic = (eid, fallbackPic) => {
+      if (eid && states[eid]) {
+        const st = states[eid];
+        const stVal = String(st.state || "").toLowerCase();
+        if (eid.startsWith("image.") && (stVal === "unknown" || stVal === "unavailable")) {
+          return null;
+        }
+        if (stVal === "unavailable") return null;
+        if (st.attributes?.entity_picture) return st.attributes.entity_picture;
+        if (st.attributes?.access_token) {
+          const proxy = eid.startsWith("image.") ? "image_proxy" : "camera_proxy";
+          return `/api/${proxy}/${eid}?token=${st.attributes.access_token}`;
+        }
+      }
+      return fallbackPic || null;
+    };
+
+    const detPic = resolvePic(detEid, payload.detection_image_picture);
+    const snapPic = resolvePic(snapEid, payload.snapshot_camera_picture);
+    const camPic = resolvePic(camEid, payload.camera_entity_picture || payload.entity_picture);
+
+    const bestDetPic = detPic || snapPic;
+    const bestDetEid = detPic ? detEid : snapEid;
+    if (!bestDetPic && !camPic) return "";
+
+    let detTimeStr = "";
+    if (detEid && states[detEid]?.state && !["unknown", "unavailable"].includes(String(states[detEid].state).toLowerCase())) {
+      const dt = new Date(states[detEid].state);
+      if (!isNaN(dt.getTime())) {
+        detTimeStr = ` • ${dt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
+      }
+    }
+
+    const showDual = Boolean(bestDetPic && camPic && bestDetPic !== camPic);
+
+    return `
+      <div style="display: grid; grid-template-columns: ${showDual ? "repeat(auto-fit, minmax(210px, 1fr))" : "1fr"}; gap: 10px; margin: 10px 0; max-width: ${showDual ? "560px" : "320px"};">
+        ${bestDetPic ? `
+          <div class="camera-preview-container" data-cam-id="${this._escapeHtml(bestDetEid || camEid || "")}" title="Click to enlarge detection snapshot" style="position: relative; border-radius: 10px; overflow: hidden; border: 1px solid rgba(56, 189, 248, 0.38); background: #090d16; cursor: pointer; aspect-ratio: 16 / 9; max-height: 175px;">
+            <img src="${this._escapeHtml(bestDetPic)}" alt="${this._escapeHtml(areaName)} Detection Snapshot" loading="lazy" style="width: 100%; height: 100%; object-fit: cover; display: block;" onerror="${camPic && camPic !== bestDetPic ? `this.onerror=null; this.src='${this._escapeHtml(camPic)}';` : `this.closest('.camera-preview-container').style.display='none';`}" />
+            <span style="position: absolute; top: 6px; left: 6px; background: rgba(15, 23, 42, 0.86); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.45); border-radius: 6px; padding: 2px 7px; font-size: 0.67rem; font-weight: 700; backdrop-filter: blur(6px);">
+              🎯 ${this._escapeHtml(detLabel)} Snapshot${this._escapeHtml(detTimeStr)}
+            </span>
+            <span style="position: absolute; bottom: 6px; right: 6px; background: rgba(15, 23, 42, 0.78); color: #e2e8f0; border-radius: 5px; padding: 2px 6px; font-size: 0.64rem;">
+              🔍 Click to Enlarge
+            </span>
+          </div>
+        ` : ""}
+        ${camPic && (!bestDetPic || showDual) ? `
+          <div class="camera-preview-container" data-cam-id="${this._escapeHtml(camEid || bestDetEid || "")}" title="Click to open live camera feed" style="position: relative; border-radius: 10px; overflow: hidden; border: 1px solid rgba(148, 163, 184, 0.28); background: #090d16; cursor: pointer; aspect-ratio: 16 / 9; max-height: 175px;">
+            <img src="${this._escapeHtml(camPic)}" alt="${this._escapeHtml(camName)} Live View" loading="lazy" style="width: 100%; height: 100%; object-fit: cover; display: block;" onerror="this.closest('.camera-preview-container').style.display='none';" />
+            <span style="position: absolute; top: 6px; left: 6px; background: rgba(15, 23, 42, 0.86); color: #34d399; border: 1px solid rgba(52, 211, 153, 0.45); border-radius: 6px; padding: 2px 7px; font-size: 0.67rem; font-weight: 700; backdrop-filter: blur(6px);">
+              📹 ${this._escapeHtml(camName)} (Live)
+            </span>
+            <span style="position: absolute; bottom: 6px; right: 6px; background: rgba(15, 23, 42, 0.78); color: #e2e8f0; border-radius: 5px; padding: 2px 6px; font-size: 0.64rem;">
+              🔍 Click for Stream
+            </span>
+          </div>
+        ` : ""}
       </div>
     `;
   }
@@ -4543,7 +4695,8 @@ class OtisCompanionCard extends HTMLElement {
         .floorplan-3d-stage {
           perspective: 1200px;
           perspective-origin: 50% 50%;
-          transform-style: preserve-3d;
+          transform-style: flat;
+          pointer-events: none;
           width: 100%;
           height: 100%;
           min-height: 420px;
@@ -4561,6 +4714,7 @@ class OtisCompanionCard extends HTMLElement {
           max-height: 100%;
           transform-style: preserve-3d;
           transform-origin: 50% 50%;
+          pointer-events: none;
           will-change: transform;
           transition: transform 0.08s ease-out;
         }
@@ -4602,6 +4756,7 @@ class OtisCompanionCard extends HTMLElement {
           transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
         }
 
+        .floorplan-3d-room-shell.is-hovered .floorplan-3d-wall,
         .floorplan-3d-room-shell:hover .floorplan-3d-wall,
         .floorplan-3d-wall:hover {
           background: linear-gradient(to top, rgba(56, 189, 248, 0.35) 0%, rgba(56, 189, 248, 0.70) 60%, rgba(56, 189, 248, 1.0) 100%) !important;
@@ -4700,7 +4855,7 @@ class OtisCompanionCard extends HTMLElement {
 
         .floorplan-device-pin {
           position: absolute;
-          transform: translate(-50%, -50%) rotateZ(calc(-1 * var(--floorplan-azimuth, 0deg))) rotateX(calc(-1 * var(--floorplan-pitch, 0deg)));
+          transform: translate3d(-50%, -50%, 14px) rotateZ(calc(-1 * var(--floorplan-azimuth, 0deg))) rotateX(calc(-1 * var(--floorplan-pitch, 0deg)));
           transform-origin: 50% 50%;
           transform-style: preserve-3d;
           display: flex;
@@ -4718,7 +4873,7 @@ class OtisCompanionCard extends HTMLElement {
         }
 
         .floorplan-device-pin:hover {
-          transform: translate(-50%, -50%) rotateZ(calc(-1 * var(--floorplan-azimuth, 0deg))) rotateX(calc(-1 * var(--floorplan-pitch, 0deg))) scale(1.3);
+          transform: translate3d(-50%, -50%, 14px) rotateZ(calc(-1 * var(--floorplan-azimuth, 0deg))) rotateX(calc(-1 * var(--floorplan-pitch, 0deg))) scale(1.3);
           z-index: 35;
         }
 
@@ -4746,6 +4901,11 @@ class OtisCompanionCard extends HTMLElement {
           height: 100%;
           filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4));
           display: block;
+          pointer-events: auto;
+        }
+
+        .floorplan-svg-viewport.view-3d-active svg {
+          filter: none;
         }
 
         /* 3D Orbit & Pitch Controls HUD */
@@ -6024,6 +6184,7 @@ class OtisCompanionCard extends HTMLElement {
                       </div>
                       <div class="suggestion-title">${s.title}</div>
                       <div class="suggestion-desc">${s.description}</div>
+                      ${s.action_type === "confirm_person_identity" ? this._renderTrainingVerificationMedia(s) : ""}
                       <div class="suggestion-actions">
                         ${
                           s.action_type === "sentinel_alert_actions"
@@ -6047,7 +6208,7 @@ class OtisCompanionCard extends HTMLElement {
                             ? `
                           <div style="display: flex; flex-direction: column; gap: 8px; width: 100%;">
                             <div style="font-size: 0.73rem; font-weight: 600; color: var(--otis-primary);">Tap who entered ${this._escapeHtml(s.action_payload.area_name || s.action_payload.area || "this room")}:</div>
-                            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                            <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
                               ${s.action_payload.candidates.map((cand) => {
                                 const cIcon = cand.entity_type === "pet" ? "🐾" : (cand.entity_type === "guest" ? "👥" : "👤");
                                 return `
@@ -6056,6 +6217,15 @@ class OtisCompanionCard extends HTMLElement {
                                   </button>
                                 `;
                               }).join("")}
+                              <button type="button" class="btn-toolbar btn-verify-room-candidate" data-suggestion-id="${this._escapeHtml(s.id)}" data-person-id="unknown_person" data-person-label="Unknown Person" data-area="${this._escapeHtml(s.action_payload.area || "")}" data-area-name="${this._escapeHtml(s.action_payload.area_name || "")}" title="Log as an unknown visitor, delivery person, or passerby" style="padding: 5px 10px; font-size: 0.74rem; background: rgba(245, 158, 11, 0.14); border: 1px solid rgba(245, 158, 11, 0.45); color: #fbbf24; border-radius: 6px; cursor: pointer;">
+                                🕵️ Unknown Person
+                              </button>
+                              <button type="button" class="btn-toolbar btn-verify-room-candidate" data-suggestion-id="${this._escapeHtml(s.id)}" data-person-id="unknown_animal" data-person-label="Unknown Animal" data-area="${this._escapeHtml(s.action_payload.area || "")}" data-area-name="${this._escapeHtml(s.action_payload.area_name || "")}" title="Log as wildlife or a non-household animal" style="padding: 5px 10px; font-size: 0.74rem; background: rgba(16, 185, 129, 0.14); border: 1px solid rgba(16, 185, 129, 0.45); color: #34d399; border-radius: 6px; cursor: pointer;">
+                                🦊 Unknown Animal
+                              </button>
+                              <button type="button" class="btn-toolbar btn-verify-room-candidate" data-suggestion-id="${this._escapeHtml(s.id)}" data-person-id="not_person_pet" data-person-label="Not Person/Pet" data-area="${this._escapeHtml(s.action_payload.area || "")}" data-area-name="${this._escapeHtml(s.action_payload.area_name || "")}" title="Mark as false positive (wind, shadows, foliage, or object)" style="padding: 5px 10px; font-size: 0.74rem; background: rgba(239, 68, 68, 0.14); border: 1px solid rgba(239, 68, 68, 0.45); color: #f87171; border-radius: 6px; cursor: pointer;">
+                                🚫 Not Person/Pet
+                              </button>
                               ${
                                 isDismissed
                                   ? `<button type="button" class="btn-restore" data-restore="${this._escapeHtml(s.id)}">↺ Restore</button>`
@@ -10503,18 +10673,32 @@ class OtisCompanionCard extends HTMLElement {
         const areaName = e.currentTarget.getAttribute("data-area-name") || area;
         const sid = e.currentTarget.getAttribute("data-suggestion-id");
         if (!pid || !this._hass) return;
+        const isNotPersonPet = pid === "not_person_pet";
         try {
-          this._showToast(`👤 Verifying ${label} in ${areaName}...`);
+          this._showToast(`👤 Recording ${label} for ${areaName}...`);
           await this._hass.callService("otis_ai", "confirm_person_identity", {
             person_id: pid,
             label,
-            confirmed: true,
-            visual_features: { area, area_name: areaName },
+            confirmed: !isNotPersonPet,
+            visual_features: {
+              area,
+              area_name: areaName,
+              classification: pid,
+            },
           });
           if (sid) {
             this._dismissedIds.add(sid);
+            this._saveDismissedIds();
           }
-          this._showToast(`✨ Verified ${label} in ${areaName}! Training sample recorded.`);
+          if (pid === "unknown_person") {
+            this._showToast(`🕵️ Logged Unknown Person in ${areaName} for security & training calibration.`);
+          } else if (pid === "unknown_animal") {
+            this._showToast(`🦊 Logged Unknown Animal in ${areaName} — excluded from household pet profiles.`);
+          } else if (isNotPersonPet) {
+            this._showToast(`🚫 Marked ${areaName} trigger as Not Person/Pet (false positive suppressed).`);
+          } else {
+            this._showToast(`✨ Verified ${label} in ${areaName}! Training sample recorded.`);
+          }
           await this._fetchData();
         } catch (err) {
           this._showToast(`Failed to verify identity: ${err.message || err}`, true);
@@ -12014,8 +12198,18 @@ class OtisCompanionCard extends HTMLElement {
         // --- Normal Interactive Viewer Mode (Room navigation) ---
         svgViewport.querySelectorAll(".room-group").forEach((grp) => {
           grp.style.cursor = "pointer";
+          const areaId = grp.getAttribute("data-area-id") || grp.getAttribute("data-room-id");
+          grp.onpointerenter = () => {
+            if (!areaId) return;
+            const shell = svgViewport.querySelector(`.floorplan-3d-room-shell[data-room-id="${areaId}"]`);
+            if (shell) shell.classList.add("is-hovered");
+          };
+          grp.onpointerleave = () => {
+            if (!areaId) return;
+            const shell = svgViewport.querySelector(`.floorplan-3d-room-shell[data-room-id="${areaId}"]`);
+            if (shell) shell.classList.remove("is-hovered");
+          };
           grp.onclick = () => {
-            const areaId = grp.getAttribute("data-area-id") || grp.getAttribute("data-room-id");
             if (areaId) {
               const area = this._capabilityMap?.areas?.[areaId];
               const slug = areaId.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "room";

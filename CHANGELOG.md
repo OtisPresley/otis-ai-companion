@@ -7,6 +7,16 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.57] - 2026-11-05
+
+### Fixed & Enhanced
+- **Identity Training Cards with Detection Snapshots, Live Camera Preview & Classification Buttons**:
+  - Added `_resolve_room_training_media()` in `OtisDataCoordinator` and `_renderTrainingVerificationMedia()` in `otis-companion-card.js` to attach Frigate/NVR detection snapshots (`image.<room>_person`, `image.<room>_dog`, `image.<room>_cat`, `camera.<room>_snapshots_*`) and live room camera feeds (`camera.<room>`) directly onto `📍 Who is in the <Room>? Verify Identity for Training` cards, with click-to-enlarge `hass-more-info` support.
+  - Added **🕵️ Unknown Person**, **🦊 Unknown Animal**, and **🚫 Not Person/Pet** classification buttons to all room identity verification cards and persisted non-household / false-positive classifications in `vision_training_feedback` (`rules_manager.py`) along with a 10-minute per-room verification cooldown (`recent_room_verifications`).
+- **3D Floor Plan Near & Far Wall Click/Hover Fix**:
+  - Fixed Chromium/WebKit 3D Z-buffer hit-testing on the far half (`Z < 0` under `rotateX` tilt) of the 3D floor plan by setting `transform-style: flat; pointer-events: none;` on `.floorplan-3d-stage` and `pointer-events: none;` on `.floorplan-3d-canvas`, preventing `.floorplan-3d-stage`'s `Z = 0` plane from intercepting hover and click events over far rooms and walls (`Backyard`, `Great Room`, `Mudroom`, `Garage`, upper suites).
+  - Elevated `.floorplan-device-pin` to `translate3d(-50%, -50%, 14px)` above the `z_local = 0` SVG floor plane and linked `.room-group` `pointerenter`/`pointerleave` events to highlight the room's raised 3D glass walls (`.floorplan-3d-room-shell.is-hovered`).
+
 ## [0.1.56] - 2026-11-05
 
 ### Fixed & Enhanced

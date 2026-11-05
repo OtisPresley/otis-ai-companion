@@ -8581,26 +8581,6 @@ class DiscoveryEngine:
                         "samples": samples,
                         "verified_rooms": prof.get("verified_rooms") or [],
                     })
-                    if samples < 3 or conf < 0.80:
-                        suggestions.append({
-                            "id": f"person_train_identity_{pid.replace('.', '_')}",
-                            "title": f"Train Identity: Confirm Profile for {p_name}",
-                            "category": "presence",
-                            "priority": "high",
-                            "icon": "mdi:account-badge",
-                            "description": (
-                                f"Otis AI is calibrating person identification for {p_name} ({int(conf * 100)}% confidence, {samples}/5 samples). "
-                                "Confirming this profile enables high-confidence person recognition, personalized audio follow-me, "
-                                "and prevents startling voice announcements when residents are home."
-                            ),
-                            "action_type": "confirm_person_identity",
-                            "action_payload": {
-                                "person_id": pid,
-                                "label": p_name,
-                                "confirmed": True,
-                            },
-                        })
-
                 # Live Room Entry & Active Presence Identity Verification Prompts
                 untrained_profiles = [
                     p for p in active_training_profiles
@@ -8610,12 +8590,26 @@ class DiscoveryEngine:
                     pres_data = await self.vision_manager.async_get_presence_states(use_cache=True)
                     rooms_map = pres_data.get("rooms") or {}
                     recent_trans = self.vision_manager.get_transition_history(5)
+                    cams = await self.vision_manager.async_get_cameras()
+                    all_states = self.hass.states.async_all() if hasattr(self.hass.states, "async_all") else []
+                    entity_to_area = (
+                        self.vision_manager._build_entity_to_area_map()
+                        if hasattr(self.vision_manager, "_build_entity_to_area_map")
+                        else {}
+                    )
+                    recent_verifications = (
+                        self.rules_manager.get_rules().get("recent_room_verifications") or {}
+                    )
+                    now_ts = time.time()
+
                     candidate_rooms: list[tuple[str, str]] = []
                     seen_rooms: set[str] = set()
 
                     for tr in reversed(recent_trans):
                         to_r = str(tr.get("to_area") or "").strip().lower()
                         if to_r and to_r not in seen_rooms:
+                            if (now_ts - float(recent_verifications.get(to_r, 0.0))) < 600.0:
+                                continue
                             r_name = rooms_map.get(to_r, {}).get("area_name") or to_r.replace("_", " ").title()
                             candidate_rooms.append((to_r, r_name))
                             seen_rooms.add(to_r)
@@ -8623,6 +8617,8 @@ class DiscoveryEngine:
                     for r_slug, r_info in rooms_map.items():
                         clean_slug = str(r_slug).strip().lower()
                         if clean_slug in seen_rooms:
+                            continue
+                        if (now_ts - float(recent_verifications.get(clean_slug, 0.0))) < 600.0:
                             continue
                         s_info = r_info.get("sensors") or {}
                         has_active_sensor = (
@@ -8635,8 +8631,41 @@ class DiscoveryEngine:
                             candidate_rooms.append((clean_slug, r_info.get("area_name") or clean_slug.replace("_", " ").title()))
                             seen_rooms.add(clean_slug)
 
-                    for r_slug, r_name in candidate_rooms[:3]:
+                    # Also include camera-equipped rooms if fewer than 3 active rooms matched
+                    for c_item in cams:
+                        c_area = str(c_item.get("area_id") or "").strip().lower()
+                        if not c_area or c_area in seen_rooms:
+                            continue
+                        if (now_ts - float(recent_verifications.get(c_area, 0.0))) < 600.0:
+                            continue
+                        c_area_name = (
+                            rooms_map.get(c_area, {}).get("area_name")
+                            or c_item.get("area_name")
+                            or c_area.replace("_", " ").title()
+                        )
+                        candidate_rooms.append((c_area, c_area_name))
+                        seen_rooms.add(c_area)
+
+                    # Resolve camera & detection snapshot media for each candidate room and prioritize rooms with visual media
+                    enriched_candidates: list[tuple[str, str, dict[str, Any]]] = []
+                    for r_slug, r_name in candidate_rooms:
+                        media_info = self._resolve_room_training_media(
+                            r_slug, r_name, cams, all_states, entity_to_area
+                        )
+                        enriched_candidates.append((r_slug, r_name, media_info))
+
+                    camera_backed = [
+                        item for item in enriched_candidates
+                        if item[2].get("camera_entity_id")
+                        or item[2].get("detection_image_entity_id")
+                        or item[2].get("snapshot_camera_entity_id")
+                    ]
+                    selected_room_items = camera_backed[:3] if camera_backed else enriched_candidates[:3]
+
+                    for r_slug, r_name, media_info in selected_room_items:
                         primary_cand = untrained_profiles[0]
+                        det_label = media_info.get("detection_label")
+                        cam_title = media_info.get("camera_name") or r_name
                         suggestions.append({
                             "id": f"verify_room_entry_{r_slug}",
                             "title": f"📍 Who is in the {r_name}? Verify Identity for Training",
@@ -8644,15 +8673,22 @@ class DiscoveryEngine:
                             "priority": "critical",
                             "icon": "mdi:account-question",
                             "description": (
-                                f"Presence & motion detected in the {r_name}. Select who walked into the {r_name} below "
-                                "to calibrate Otis's room-level camera & sensor recognition and personalized Audio Follow-Me."
+                                f"{f'{det_label} detection & presence' if det_label else 'Presence & motion'} recorded in the {r_name} ({cam_title}). "
+                                f"Review the snapshot below and select who is in the {r_name} "
+                                "(or mark as Unknown Person, Unknown Animal, or Not Person/Pet) "
+                                "to calibrate Otis's camera recognition and personalized Audio Follow-Me."
                             ),
                             "action_type": "confirm_person_identity",
                             "action_payload": {
                                 "person_id": primary_cand["person_id"],
                                 "label": primary_cand["label"],
                                 "confirmed": True,
-                                "visual_features": {"area": r_slug, "area_name": r_name},
+                                "visual_features": {
+                                    "area": r_slug,
+                                    "area_name": r_name,
+                                    "camera_entity_id": media_info.get("camera_entity_id"),
+                                    "detection_image_entity_id": media_info.get("detection_image_entity_id"),
+                                },
                                 "candidates": [
                                     {
                                         "person_id": cp["person_id"],
@@ -8665,6 +8701,7 @@ class DiscoveryEngine:
                                 ],
                                 "area": r_slug,
                                 "area_name": r_name,
+                                **media_info,
                             },
                         })
             except Exception as err:
@@ -8715,6 +8752,123 @@ class DiscoveryEngine:
 
         self._suggestions_by_id = {s["id"]: s for s in suggestions if s.get("id")}
         return suggestions
+
+    def _resolve_room_training_media(
+        self,
+        r_slug: str,
+        r_name: str,
+        cams: list[dict[str, Any]],
+        all_states: list[Any],
+        entity_to_area: dict[str, str],
+    ) -> dict[str, Any]:
+        """Resolve live camera and Frigate/NVR detection snapshot media for a given room."""
+        clean_slug = str(r_slug or "").strip().lower()
+        clean_name = str(r_name or clean_slug).strip().lower()
+        aliases = {clean_slug, clean_name.replace(" ", "_")}
+        if clean_slug == "great_room":
+            aliases.update({"kitchen", "living_room", "greatroom"})
+        elif clean_slug == "foyer":
+            aliases.update({"frontdoor", "front_door", "entryway"})
+        elif clean_slug == "frontyard":
+            aliases.update({"front_doorbell", "frontdoor", "driveway", "porch"})
+        elif clean_slug == "garage":
+            aliases.update({"driveway"})
+
+        cam_eid: str | None = None
+        cam_name: str | None = None
+        cam_pic: str | None = None
+        cam_token: str | None = None
+
+        for c in cams or []:
+            c_area = str(c.get("area_id") or "").strip().lower()
+            c_eid = str(c.get("entity_id") or "")
+            c_eid_low = c_eid.lower()
+            c_lbl = str(c.get("name") or c_eid)
+            if (
+                c_area == clean_slug
+                or any(a and a in c_eid_low for a in aliases)
+                or any(a and a in c_lbl.lower().replace(" ", "_") for a in aliases)
+            ):
+                cam_eid = c_eid
+                cam_name = c_lbl
+                cam_pic = c.get("entity_picture")
+                cam_token = c.get("access_token")
+                if not cam_pic and cam_token and cam_eid:
+                    cam_pic = f"/api/camera_proxy/{cam_eid}?token={cam_token}"
+                break
+
+        det_candidates: list[tuple[float, int, str, str | None, str]] = []
+        snap_eid: str | None = None
+        snap_pic: str | None = None
+
+        for st in all_states or []:
+            eid = getattr(st, "entity_id", "")
+            eid_low = eid.lower()
+            if not (eid_low.startswith("image.") or eid_low.startswith("camera.")):
+                continue
+            st_val = str(getattr(st, "state", "") or "")
+            if st_val.lower() in ("unavailable", "unknown", "none", ""):
+                continue
+
+            attrs = getattr(st, "attributes", {}) or {}
+            e_area = str(entity_to_area.get(eid) or "").strip().lower()
+            matches_room = (
+                e_area == clean_slug
+                or any(a and (f".{a}_" in eid_low or eid_low.endswith(f".{a}")) for a in aliases)
+            )
+            if not matches_room:
+                continue
+
+            pic = attrs.get("entity_picture")
+            token = attrs.get("access_token")
+            if not pic and token:
+                proxy_prefix = "image_proxy" if eid_low.startswith("image.") else "camera_proxy"
+                pic = f"/api/{proxy_prefix}/{eid}?token={token}"
+
+            if eid_low.startswith("image.") and any(
+                eid_low.endswith(sfx) for sfx in ("_person", "_dog", "_cat", "_pet", "_animal")
+            ):
+                last_changed = getattr(st, "last_changed", None)
+                ts_val = 0.0
+                if last_changed and hasattr(last_changed, "timestamp"):
+                    try:
+                        ts_val = float(last_changed.timestamp())
+                    except Exception:
+                        ts_val = 0.0
+                type_rank = 1 if eid_low.endswith("_person") else 0
+                det_lbl = "Person" if eid_low.endswith("_person") else (
+                    "Dog" if eid_low.endswith("_dog") else (
+                        "Cat" if eid_low.endswith("_cat") else "Pet/Animal"
+                    )
+                )
+                det_candidates.append((ts_val, type_rank, eid, pic, det_lbl))
+            elif eid_low.startswith("camera.") and "snapshot" in eid_low and not snap_eid:
+                snap_eid = eid
+                snap_pic = pic
+            elif eid_low.startswith("camera.") and not cam_eid and "map" not in eid_low:
+                cam_eid = eid
+                cam_name = attrs.get("friendly_name") or eid
+                cam_pic = pic
+
+        det_eid: str | None = None
+        det_pic: str | None = None
+        det_label: str | None = None
+        if det_candidates:
+            det_candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            _, _, det_eid, det_pic, det_label = det_candidates[0]
+
+        primary_pic = det_pic or snap_pic or cam_pic
+        return {
+            "camera_entity_id": cam_eid,
+            "camera_name": cam_name,
+            "camera_entity_picture": cam_pic,
+            "detection_image_entity_id": det_eid,
+            "detection_image_picture": det_pic,
+            "detection_label": det_label,
+            "snapshot_camera_entity_id": snap_eid,
+            "snapshot_camera_picture": snap_pic,
+            "entity_picture": primary_pic,
+        }
 
     async def async_fetch_ha_official_news(self) -> list[dict[str, Any]]:
         """Fetch and cache official Home Assistant blog / release news entries from atom.xml."""

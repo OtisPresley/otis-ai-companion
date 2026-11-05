@@ -56,6 +56,8 @@ DEFAULT_RULES: dict[str, Any] = {
     "reasoning_timeout": 60,
     "learned_instructions": [],
     "agent_health_metrics": {},
+    "vision_training_feedback": [],
+    "recent_room_verifications": {},
 }
 
 
@@ -375,8 +377,45 @@ class BehavioralRulesManager:
         if not self._loaded:
             await self.async_load()
 
-        profiles = dict(self._rules.get("person_profiles") or {})
+        import time
         clean_pid = str(person_id).strip().lower()
+
+        if clean_pid in ("unknown_person", "unknown_animal", "not_person_pet", "false_positive"):
+            feedback_log = list(self._rules.get("vision_training_feedback") or [])
+            entry = {
+                "classification": clean_pid,
+                "label": label or clean_pid.replace("_", " ").title(),
+                "track_id": track_id,
+                "visual_features": visual_features or {},
+                "timestamp": time.time(),
+            }
+            feedback_log.append(entry)
+            self._rules["vision_training_feedback"] = feedback_log[-50:]
+
+            if visual_features and isinstance(visual_features, dict) and visual_features.get("area"):
+                room_verifications = dict(self._rules.get("recent_room_verifications") or {})
+                room_verifications[str(visual_features["area"]).strip().lower()] = time.time()
+                self._rules["recent_room_verifications"] = room_verifications
+
+            await self._store.async_save(self._rules)
+            if hasattr(self.hass, "bus") and hasattr(self.hass.bus, "async_fire"):
+                try:
+                    self.hass.bus.async_fire("otis_ai_rules_updated", {"rules": dict(self._rules)})
+                except Exception:
+                    pass
+            _LOGGER.info(
+                "Otis AI: Recorded vision training classification '%s' (features: %s)",
+                clean_pid,
+                visual_features,
+            )
+            return {
+                "success": True,
+                "person_id": clean_pid,
+                "classification": clean_pid,
+                "feedback": entry,
+            }
+
+        profiles = dict(self._rules.get("person_profiles") or {})
         profile = profiles.get(clean_pid, {
             "person_id": clean_pid,
             "label": label or clean_pid.replace("person.", "").title(),
@@ -406,6 +445,9 @@ class BehavioralRulesManager:
                     if clean_area and clean_area not in v_rooms:
                         v_rooms.append(clean_area)
                     profile["verified_rooms"] = v_rooms[-20:]
+                    room_verifications = dict(self._rules.get("recent_room_verifications") or {})
+                    room_verifications[clean_area] = time.time()
+                    self._rules["recent_room_verifications"] = room_verifications
                 feats.update(visual_features)
                 profile["features"] = feats
         else:
