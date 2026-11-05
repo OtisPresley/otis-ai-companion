@@ -7,6 +7,24 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.56] - 2026-11-05
+
+### Fixed & Enhanced
+- **3D Floor Plan Lock Button & Real-Time Entity Pin State Coloring**:
+  - Fixed `#btn-toggle-3d-lock` by separating its class (`btn-lock-pill`) from angle preset pills (`.btn-preset-pill[data-azimuth]`), preventing the `45° NE` preset listener from overriding the Lock/Unlock toggle, and persisted lock state across re-renders via `localStorage`.
+  - Added real-time `_updateFloorplanPinStates()` synchronization inside `set hass()` and `_setupEventListeners()` so `<ha-state-icon>` pins dynamically update domain-specific active colors (`#f59e0b` for lights/switches, `#38bdf8` for media/climate, `#ef4444` for unlocked deadbolts/open covers, `#10b981` for active motion/occupancy) and glow filters immediately on state change.
+- **Unrestricted Spatial Audio Follow-Me & Multi-Zone Source Selection**:
+  - Removed all time-of-day gates from Audio Follow-Me and Movie Time (`movie_night`) migration in `vision_manager.py`, leaving **Quiet Hours** and **Party Mode** as the sole suppressants.
+  - Excluded slow-cooldown Ecobee thermostat occupancy sensors (`*temp_occupancy`, `downstairs_occupancy`, `upstairs_occupancy`) from `is_mmwave` so `binary_sensor.study_temp_occupancy` no longer pins `occupied_areas[0]` to `study` for 30+ minutes after leaving the room.
+  - Added Frigate/Reolink `*_person_occupancy` and `*_all_occupancy` camera sensors (`great_room`, `foyer`, `mudroom`, etc.) to spatial presence transition tracking, removed the premature `target_area in occupied_areas` abort in `audio_manager.py`, and prioritized active music sources (`"Server"`, `"Bridge"`, `"Spotify"`) over idle TTS inputs (`"Home Assistant"`).
+- **Room-Entry Identity Verification Cards & Training Progress UI**:
+  - Added critical-priority room-entry verification cards (`📍 Who is in the <Room>? Verify Identity for Training`) with multi-choice resident/pet/guest candidate buttons for recently entered or active rooms (`Great Room`, `Mudroom`, `Foyer`, `Study`, etc.).
+  - Added a live **Training Progress Summary Banner** in the `👥 People & Pets` feed view and enhanced the `Rules -> People & Pets` tab with visual sample progress bars (`samples/5`), confidence percentages, status badges (`🟢 Trained`, `🟡 Calibrating`, `🔵 Needs Samples`), verified rooms list, and 1-click `+ Verify Sample` buttons.
+- **Paid-First Dynamic Agent Reordering, Free-Tier Audit & Continuous Self-Learning Engine**:
+  - Implemented `classify_and_score_agent()` and dynamic `async_get_prioritized_agents()` ordering that inspects config entries and subentries to prioritize **Paid Cloud APIs first** (`anthropic`, `openai_conversation`, `extended_openai_conversation`, paid `open_router`), followed by healthy Standard Cloud and **Local LAN LLM (`Ollama` / `qwen2.5:3b`)**, while automatically demoting congested `google_generative_ai_conversation` (HTTP 429/503) and restricted Free Tiers (`groq` with `protect_free_tier` 6k–12k TPM limit and `openrouter/free`).
+  - Added continuous self-learning (`async_learn_from_interaction()`) and `validate_and_upgrade_assistant_response()` to enforce modern Home Assistant (`triggers:`, `conditions:`, `actions:`, `action:`) syntax, ask the user for clarification when requests are ambiguous, detect hallucinated entity IDs, and automatically append learned rules/corrections to Custom Instructions.
+  - Updated the **AI Multi-Agent Routing & Failover Guide** modal with clear Paid vs. Local vs. Restricted Free Tier guidance covering Anthropic Claude, OpenAI, OpenRouter, Google Gemini, xAI Grok, Local Ollama, and why Groq Free Tier is not recommended.
+
 ## [0.1.55] - 2026-11-05
 
 ### Fixed & Enhanced

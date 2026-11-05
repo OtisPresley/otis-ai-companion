@@ -4791,9 +4791,19 @@ class OtisAIConversationAgent(AbstractAgent):
             except Exception as rag_err:
                 _LOGGER.debug("RAG context retrieval notice: %s", rag_err)
 
-        prompt = f"""You are the Otis AI Companion, an intelligent, proactive smart home architect, co-pilot, and butler.
+        ha_version = getattr(getattr(self.hass, "config", None), "version", None) or "2026.11"
+
+        prompt = f"""You are the Otis AI Companion, an intelligent, proactive smart home architect, co-pilot, and butler running on Home Assistant {ha_version}.
 Your goal is to guide the user from a bare Home Assistant installation to a fully optimized, cohesive, automated smart home—and offer to build and configure everything for them.
 Always prioritize native Home Assistant solutions, minimize frontend dependencies, and synthesize right-sized, modular coordinator automations and scripts.
+
+ANTI-HALLUCINATION, ASK-BEFORE-GUESSING & MODERN HA ({ha_version}) PROTOCOL:
+- ZERO HALLUCINATION POLICY: Everything you produce MUST be 100% accurate, relevant to this local system, non-deprecated, and up-to-date with Home Assistant {ha_version}. NEVER invent, guess, or hallucinate entity IDs, room names, integrations, services, or attributes that do not exist in the capability map below.
+- ASK WHEN UNSURE OR AMBIGUOUS: If the user's request is ambiguous, missing a target room or device, or if you need more information to be 100% sure, STOP and ASK the user a concise clarifying question before generating YAML or executing actions!
+- MODERN HA {ha_version} YAML SYNTAX: Always use modern Home Assistant syntax in automations and scripts:
+  * Use plural top-level keys `triggers:`, `conditions:`, `actions:`.
+  * Inside `triggers:`, use `trigger: state` / `trigger: time` (NEVER deprecated `platform:`).
+  * Inside `actions:`, use `action: domain.service` with `target:` and `data:` (NEVER deprecated `service:`).
 
 CONVERSATION DISCIPLINE & FOCUS:
 - Stay strictly focused on the user's active goal, topic, and immediate thread.
@@ -4805,13 +4815,14 @@ HOME ASSISTANT ARCHITECTURAL GROUNDING:
 - Voice Satellites & Assist: Hardware voice satellites (e.g., ESP32-S3 Box, Atom Echo, Wyoming Satellite) connect via the native ESPHome or Wyoming Protocol integrations. Home Assistant DOES NOT have an integration named "Assist Satellite". Pipelines (Wake word, STT, LLM, TTS) are configured in Settings → Voice Assistants. Hardware satellites provide entities in the assist_satellite domain (e.g., assist_satellite.<area>_assistant).
 - Command-Line & Package Installation Prohibition: NEVER instruct the user to run Linux/shell terminal commands such as `cd /config`, `git pull`, `pip install`, `apt-get`, `sudo`, or `homeassistant --now-cli`. Modern Home Assistant runs in a managed OS or container environment.
 - No Nonexistent YAML Sections: NEVER invent fictional YAML keys such as `voice:`, `speech:`, or `satellite:` in `configuration.yaml`. Voice outputs use `tts.speak` services, and satellites are configured via ESPHome/Wyoming in the UI.
-- Polling Anti-Pattern Prohibition: NEVER create or recommend automations with platform: time_pattern (e.g. minutes: "/5") to check volume or quiet hours! Always use discrete platform: time triggers (e.g., at: "22:00:00" and at: "08:00:00") or entity state triggers to protect the Home Assistant asyncio event loop.
+- Polling Anti-Pattern Prohibition: NEVER create or recommend automations with trigger: time_pattern (e.g. minutes: "/5") to check volume or quiet hours! Always use discrete trigger: time triggers (e.g., at: "22:00:00" and at: "08:00:00") or entity state triggers to protect the Home Assistant asyncio event loop.
 - Clean System Configuration: NEVER tell the user to create README.md notes, markdown files, or arbitrary files in /config.
 - Automation Delivery: Supply clean, ready-to-paste Home Assistant YAML for the UI automation editor (Settings → Automations & Scenes → Create Automation → Edit in YAML).
 
 {rules_snippet}
 
 {history_snippet}{matched_yaml_context}{rag_context}Here is the current capability and architecture map of the home:
+- Home Assistant Local Version: {ha_version}
 - System Maturity: {maturity_summary}
 - Key Integrations: {notable_integrations}
 - Spatial Adjacency (Connected Rooms): {spatial_summary}
@@ -4841,15 +4852,16 @@ CRITICAL INSTRUCTIONS FOR AUTOMATIONS & SCRIPTS:
    - ALWAYS state that you have drafted the configuration and offer to deploy and enable it immediately for them.
 
 2. GUI-Compatible Automation Format (Visual Automation Editor Ready):
-   - Provide all automations strictly in standard Home Assistant GUI YAML format (clean standalone dictionary):
+   - Provide all automations strictly in modern Home Assistant {ha_version} GUI YAML format (clean standalone dictionary):
      * Start directly with `alias: "Descriptive Name"` and `description: "Clear explanation"`.
-     * Use standard Home Assistant keys: `triggers:` (or `trigger:`), `conditions:` (or `condition:`), `actions:` (or `action:`), and `mode:`.
+     * Use modern Home Assistant keys: `triggers:`, `conditions:`, `actions:`, and `mode:`.
+     * Inside `triggers:`, use `- trigger: state` (never `platform:`). Inside `actions:`, use `- action: domain.service` (never `service:`).
      * DO NOT prefix the block with a list dash (`- id:` or `- alias:`).
      * DO NOT manually define an `id:` field. Otis automatically provisions unique persistent IDs and registers the automation with Home Assistant so it is 100% editable in the GUI Automation Editor (Settings → Automations & Scenes)!
      * Always enclose the automation in its own clean ```yaml ... ``` code block.
 
 3. Script Format & Multi-Item Orchestration:
-   - When creating or recommending scripts, provide each script in its own clean ```yaml ... ``` block starting with `alias: "Descriptive Name"`, `sequence:` (or `actions:`), `mode:`, etc.
+   - When creating or recommending scripts, provide each script in its own clean ```yaml ... ``` block starting with `alias: "Descriptive Name"`, `sequence:`, `mode:`, etc.
    - If an automation needs to call the script, provide both the script block AND the calling automation block in separate clean ```yaml blocks so Otis can deploy both together.
 
 4. Reason deeply over the home's hardware topology:
@@ -4871,12 +4883,12 @@ CRITICAL INSTRUCTIONS FOR AUTOMATIONS & SCRIPTS:
      * You have FULL ACCESS and authority to inspect and edit blueprint files directly (`/config/blueprints/automation/<path>`). When the user asks to analyze, fix, or update a blueprint, output the corrected blueprint YAML (starting with `blueprint:`) and specify the blueprint subpath! Otis will autonomously offer 1-click deployment to update the blueprint file directly in Home Assistant. Never claim you cannot edit blueprints, and never force unlinking into standalone automations unless the user explicitly requests to unlink it!
 
 7. Concise, Actionable Responses:
-   - Keep conversational commentary brief. Present the GUI-ready YAML block cleanly and proactively conclude by offering to deploy and enable it for the user.
+   - Keep conversational commentary brief. If any detail is uncertain, ask the user first; otherwise present the GUI-ready YAML block cleanly and proactively conclude by offering to deploy and enable it for the user.
 
 User: {user_input.text}
 """
 
-        # 4. Delegate to prioritized AI agent pool (Google AI -> Groq -> Local Qwen -> Free Router)
+        # 4. Delegate to prioritized AI agent pool (Paid Cloud -> Healthy Standard Cloud -> Local Qwen -> Restricted Free Tier)
         result = None
         last_error_msg = None
         resolved_agent_name = None
@@ -4905,13 +4917,14 @@ User: {user_input.text}
                     local_res = await self.local_llm_manager.async_chat_with_tools(
                         prompt=prompt,
                         system_prompt=(
-                            "You are Otis AI, the ultimate proactive smart home companion and butler. "
+                            f"You are Otis AI, the ultimate proactive smart home companion and butler running on Home Assistant {ha_version}. "
                             "Analyze the home's active state and respond concisely and actionably. "
+                            "ANTI-HALLUCINATION RULE: Never invent or guess entity IDs or rooms not listed in the prompt. If the user's request is ambiguous or missing details, ask a concise clarifying question first. "
                             "You have access to smart home tools to pin devices on the floorplan, run sentinel audits, "
                             "heal network nodes, and control entities. When asked to take action, call the appropriate tool. "
                             "Home Assistant Grounding: Voice satellites connect via ESPHome or Wyoming Protocol under Settings → Voice Assistants (never an imaginary 'Assist Satellite' integration). "
-                            "Never use platform: time_pattern for polling quiet hours; use discrete time triggers. Never tell user to create README.md in /config. "
-                            "Provide automations strictly in Home Assistant GUI YAML format (clean top-level dict starting with alias:, description:, triggers:, conditions:, actions:, mode: without - id: or leading dashes). "
+                            "Never use trigger: time_pattern for polling quiet hours; use discrete time triggers. Never tell user to create README.md in /config. "
+                            "Provide automations strictly in modern Home Assistant GUI YAML format (clean top-level dict starting with alias:, description:, triggers:, conditions:, actions:, mode: using trigger: and action: keys, without - id: or leading dashes). "
                             "Never tell the user to edit automations.yaml themselves; always offer to deploy and enable it for them."
                         ),
                         timeout=reasoning_timeout,
@@ -4947,42 +4960,45 @@ User: {user_input.text}
                     last_error_msg = str(local_err)
             return False
 
+        health_metrics = (
+            self.rules_manager.get_agent_health_metrics()
+            if getattr(self, "rules_manager", None) and hasattr(self.rules_manager, "get_agent_health_metrics")
+            else {}
+        )
+
         if prioritized_agents:
             for idx, agent_id in enumerate(prioritized_agents):
                 agent_display = get_agent_display_name(self.hass, agent_id)
-                agent_entry = (
-                    self.hass.config_entries.async_get_entry(str(agent_id))
-                    if self.hass and hasattr(self.hass, "config_entries")
-                    else None
-                )
-                agent_domain = str(getattr(agent_entry, "domain", "") or "").lower()
-                agent_title = str(getattr(agent_entry, "title", "") or "").lower()
-                combined_agent_meta = f"{str(agent_id).lower()} {agent_display.lower()} {agent_domain} {agent_title}"
+                agent_info = classify_and_score_agent(self.hass, str(agent_id), health_metrics)
+                agent_tier = agent_info["tier"]
+                is_free_restricted = (agent_tier == "free_restricted")
+                is_degraded_cloud = (agent_info["consecutive_failures"] >= 2 and (time.time() - agent_info["last_error_ts"]) < 600)
 
-                is_free_router = any(
-                    f in combined_agent_meta
-                    for f in ("free_models", "free_router", "open_router", "free", "sk-or-")
-                )
-                # Intercept before third-party public free routers: give LAN Local LLM priority
-                if is_free_router and not local_attempted:
+                # Intercept before restricted free-tier agents (Groq free tier, OpenRouter free) or degraded cloud agents:
+                # always give LAN Local LLM priority before falling back to restricted free tiers!
+                if (is_free_restricted or is_degraded_cloud) and not local_attempted:
                     local_attempted = True
                     if await _try_local_llm():
                         break
 
                 is_primary = (idx == 0)
                 role_label = "Primary" if is_primary else f"Failover #{idx}"
-                agent_timeout = min(reasoning_timeout, 45.0) if is_free_router else reasoning_timeout
-                _LOGGER.debug("Attempting conversation with %s AI agent: %s (%s, timeout=%ss)", role_label, agent_display, agent_id, agent_timeout)
-                fire_progress("llm", f"Consulting {role_label} AI ({agent_display})", f"Reasoning with model '{agent_display}' (max {int(agent_timeout)}s)")
+                agent_timeout = min(reasoning_timeout, 35.0) if is_free_restricted else reasoning_timeout
+                _LOGGER.debug(
+                    "Attempting conversation with %s AI agent: %s (%s, tier=%s, score=%s, timeout=%ss)",
+                    role_label, agent_display, agent_id, agent_tier, agent_info["score"], agent_timeout
+                )
+                fire_progress("llm", f"Consulting {role_label} AI ({agent_display})", f"Reasoning with model '{agent_display}' [{agent_tier.replace('_', ' ').title()}] (max {int(agent_timeout)}s)")
 
+                attempt_start_ts = time.monotonic()
                 try:
-                    # For agents with payload/token constraints (e.g. Groq with HTTP 413) or if prompt is overly large
+                    # For agents with strict payload/token constraints (e.g. Groq with HTTP 413) or if prompt is overly large
                     agent_prompt = prompt
-                    is_groq = "groq" in combined_agent_meta
-                    if is_groq and len(prompt) > 6000:
-                        agent_prompt = f"""You are Otis AI, the smart home co-pilot and butler.
-Respond concisely and actionably to the user.
-Note: Voice satellites use ESPHome or Wyoming under Settings → Voice Assistants. Never instruct the user to run Linux shell commands (git pull, pip install) or invent voice: YAML keys. Never use time_pattern polling automations or advise creating README.md in /config.
+                    is_groq = agent_info["domain"] == "groq" or "groq" in str(agent_id).lower() or "groq" in agent_display.lower()
+                    if is_groq and len(prompt) > 5500:
+                        agent_prompt = f"""You are Otis AI, the smart home co-pilot and butler on Home Assistant {ha_version}.
+Respond concisely and actionably to the user. Ask a clarifying question if any detail is ambiguous.
+Note: Voice satellites use ESPHome or Wyoming under Settings → Voice Assistants. Never instruct the user to run Linux shell commands (git pull, pip install) or invent voice: YAML keys. Never use time_pattern polling automations or advise creating README.md in /config. Use modern triggers:/actions: YAML syntax.
 {rules_snippet}
 
 System State:
@@ -5002,10 +5018,12 @@ System State:
                         device_id=user_input.device_id,
                     )
                     attempt_result = await asyncio.wait_for(converse_coro, timeout=agent_timeout)
+                    elapsed_s = round(time.monotonic() - attempt_start_ts, 2)
 
                     resp_type = getattr(attempt_result.response, "response_type", None)
                     raw_speech = attempt_result.response.speech.get("plain", {}).get("speech", "")
                     speech_text = sanitize_model_speech(raw_speech)
+                    had_leaked_tags = (speech_text != raw_speech.strip())
                     if getattr(attempt_result, "response", None) and getattr(attempt_result.response, "speech", None) and "plain" in attempt_result.response.speech:
                         attempt_result.response.speech["plain"]["speech"] = speech_text
 
@@ -5013,6 +5031,14 @@ System State:
 
                     if is_err_type or is_provider_error(raw_speech) or is_provider_error(speech_text) or not speech_text:
                         failover_occurred = True
+                        if getattr(self, "rules_manager", None) and hasattr(self.rules_manager, "async_record_agent_metric"):
+                            await self.rules_manager.async_record_agent_metric(
+                                str(agent_id),
+                                success=False,
+                                latency_s=elapsed_s,
+                                quality_penalty=2 if had_leaked_tags else 1,
+                                error_reason=speech_text[:140] or "provider_error",
+                            )
                         _LOGGER.warning(
                             "%s AI agent '%s' (%s) returned provider error/quota exhaustion: %s. Transparently failing over to next agent...",
                             role_label, agent_display, agent_id, speech_text[:140]
@@ -5028,34 +5054,57 @@ System State:
                             )
                         continue
 
-                    _LOGGER.info("AI agent '%s' (%s) responded successfully", agent_display, role_label)
+                    if getattr(self, "rules_manager", None) and hasattr(self.rules_manager, "async_record_agent_metric"):
+                        await self.rules_manager.async_record_agent_metric(
+                            str(agent_id),
+                            success=True,
+                            latency_s=elapsed_s,
+                            quality_penalty=1 if had_leaked_tags else 0,
+                        )
+                    _LOGGER.info("AI agent '%s' (%s) responded successfully in %ss", agent_display, role_label, elapsed_s)
                     result = attempt_result
                     resolved_agent_id = agent_id
                     resolved_agent_name = agent_display
                     fire_progress(
                         "agent_resolution",
                         f"Resolved by {agent_display}",
-                        f"Response generated by {role_label} AI: {agent_display} ({agent_id})",
+                        f"Response generated by {role_label} AI: {agent_display} ({elapsed_s}s)",
                     )
                     break
                 except asyncio.TimeoutError:
                     failover_occurred = True
+                    elapsed_s = round(time.monotonic() - attempt_start_ts, 2)
+                    if getattr(self, "rules_manager", None) and hasattr(self.rules_manager, "async_record_agent_metric"):
+                        await self.rules_manager.async_record_agent_metric(
+                            str(agent_id),
+                            success=False,
+                            latency_s=elapsed_s,
+                            error_reason=f"Timeout after {int(agent_timeout)}s",
+                        )
                     _LOGGER.warning(
                         "%s AI agent '%s' (%s) timed out after %ss. Transparently failing over to next agent...",
-                        role_label, agent_display, agent_id, reasoning_timeout
+                        role_label, agent_display, agent_id, agent_timeout
                     )
-                    last_error_msg = f"Agent '{agent_display}' timed out after {int(reasoning_timeout)}s"
+                    last_error_msg = f"Agent '{agent_display}' timed out after {int(agent_timeout)}s"
                     if idx + 1 < len(prioritized_agents):
                         next_agent = prioritized_agents[idx + 1]
                         next_display = get_agent_display_name(self.hass, next_agent)
                         fire_progress(
                             "llm",
                             f"Timeout Failover ({role_label})",
-                            f"Agent '{agent_display}' timed out ({int(reasoning_timeout)}s). Transparently failing over to '{next_display}'..."
+                            f"Agent '{agent_display}' timed out ({int(agent_timeout)}s). Transparently failing over to '{next_display}'..."
                         )
                     continue
                 except Exception as err:
                     failover_occurred = True
+                    elapsed_s = round(time.monotonic() - attempt_start_ts, 2)
+                    if getattr(self, "rules_manager", None) and hasattr(self.rules_manager, "async_record_agent_metric"):
+                        await self.rules_manager.async_record_agent_metric(
+                            str(agent_id),
+                            success=False,
+                            latency_s=elapsed_s,
+                            error_reason=str(err),
+                        )
                     _LOGGER.warning(
                         "%s AI agent '%s' (%s) raised exception: %s. Transparently failing over...",
                         role_label, agent_display, agent_id, err
@@ -5089,7 +5138,7 @@ System State:
             if is_quota:
                 quota_msg = (
                     "⚠️ **AI Provider Quota Exhausted**: Your primary AI agent and failover agents have reached their API rate or quota limits.\n\n"
-                    "Please check your API key quota & billing, or configure an additional backup provider (such as local Ollama, Groq, or OpenAI) in *Settings → Devices & Services → Otis AI Companion*."
+                    "Please check your API key quota & billing, or configure a Paid Cloud API (Anthropic Claude, OpenAI, Gemini Paid) or Local Ollama in *Settings → Devices & Services → Otis AI Companion*."
                 )
                 self._record_turn(session_data, user_input.text, quota_msg)
                 return self._create_response(user_input, quota_msg)
@@ -5097,10 +5146,28 @@ System State:
             self._record_turn(session_data, user_input.text, msg)
             return self._create_response(user_input, msg)
 
-        # Check for proposed YAML blocks in the response
+        # 5. Post-response Quality Equalization, Modern Syntax Upgrade & Anti-Hallucination Self-Learning
         try:
             speech_text = result.response.speech.get("plain", {}).get("speech", "")
             if speech_text:
+                upgraded_speech, quality_notes, quality_penalty = validate_and_upgrade_assistant_response(
+                    self.hass, speech_text
+                )
+                if upgraded_speech != speech_text:
+                    speech_text = upgraded_speech
+                    result.response.speech["plain"]["speech"] = speech_text
+                if quality_penalty > 0 and resolved_agent_id and getattr(self, "rules_manager", None) and hasattr(self.rules_manager, "async_record_agent_metric"):
+                    await self.rules_manager.async_record_agent_metric(
+                        str(resolved_agent_id),
+                        success=True,
+                        quality_penalty=quality_penalty,
+                    )
+                if getattr(self, "rules_manager", None) and hasattr(self.rules_manager, "async_learn_from_interaction"):
+                    await self.rules_manager.async_learn_from_interaction(
+                        user_text=user_input.text,
+                        assistant_text=speech_text,
+                        correction_notes=quality_notes,
+                    )
                 pending_items, cleaned_speech = self._extract_pending_items_from_speech(speech_text, user_input.text)
                 if pending_items:
                     session_data["pending_items"] = pending_items
@@ -5237,50 +5304,243 @@ def is_provider_error(speech: str) -> bool:
     return any(sig in speech_lower for sig in ERROR_SIGNATURES)
 
 
+def validate_and_upgrade_assistant_response(
+    hass: HomeAssistant | None,
+    speech: str,
+) -> tuple[str, list[str], int]:
+    """Ensure consistent response quality across all agents, auto-upgrade deprecated YAML syntax, and detect hallucinations."""
+    if not speech:
+        return speech, [], 0
+
+    notes: list[str] = []
+    penalty = 0
+    upgraded = speech
+
+    # 1. Auto-upgrade deprecated YAML keys inside ```yaml ... ``` blocks
+    def _upgrade_yaml_block(match: re.Match) -> str:
+        nonlocal penalty
+        block = match.group(1)
+        orig_block = block
+        # Upgrade top-level trigger:/condition:/action: to triggers:/conditions:/actions:
+        block = re.sub(r"(?m)^trigger:\s*$", "triggers:", block)
+        block = re.sub(r"(?m)^condition:\s*$", "conditions:", block)
+        block = re.sub(r"(?m)^action:\s*$", "actions:", block)
+        # Upgrade "- platform:" to "- trigger:" inside triggers
+        if re.search(r"(?m)^\s*-\s*platform:\s+", block):
+            block = re.sub(r"(?m)^(\s*-\s*)platform:(\s+)", r"\1trigger:\2", block)
+            notes.append("Always use modern 'trigger:' instead of deprecated 'platform:' inside automation triggers.")
+            penalty += 1
+        # Upgrade "service:" to "action:" inside action steps
+        if re.search(r"(?m)^\s*-?\s*service:\s+[a-z0-9_]+\.[a-z0-9_]+", block):
+            block = re.sub(r"(?m)^(\s*-?\s*)service:(\s+[a-z0-9_]+\.[a-z0-9_]+)", r"\1action:\2", block)
+            notes.append("Always use modern 'action: domain.service' instead of deprecated 'service:' in Home Assistant automations and scripts.")
+            penalty += 1
+        if block != orig_block:
+            return f"```yaml\n{block.strip()}\n```"
+        return match.group(0)
+
+    if "```yaml" in upgraded:
+        upgraded = re.sub(r"```yaml\s*(.*?)```", _upgrade_yaml_block, upgraded, flags=re.DOTALL)
+
+    # 2. Check for hallucinated entity_ids inside YAML blocks against hass.states
+    if hass is not None and hasattr(hass, "states") and hasattr(hass.states, "async_entity_ids"):
+        try:
+            existing_eids = {str(e).lower() for e in hass.states.async_entity_ids()}
+            if existing_eids and "```yaml" in upgraded:
+                entity_domains = (
+                    "light", "switch", "climate", "media_player", "lock", "cover",
+                    "binary_sensor", "sensor", "alarm_control_panel", "camera", "fan",
+                    "vacuum", "siren", "person", "input_boolean",
+                )
+                yaml_blocks = re.findall(r"```yaml\s*(.*?)```", upgraded, flags=re.DOTALL)
+                for yb in yaml_blocks:
+                    for m in re.finditer(r"entity_id:\s*['\"]?([a-z_]+\.[a-z0-9_]+)['\"]?", yb, re.IGNORECASE):
+                        cand_eid = m.group(1).lower()
+                        dom = cand_eid.split(".", 1)[0]
+                        if dom in entity_domains and cand_eid not in existing_eids:
+                            notes.append(
+                                f"Entity '{cand_eid}' does not exist on this Home Assistant instance; always verify entity IDs against Active Entities or ask the user for clarification."
+                            )
+                            penalty += 2
+        except Exception:
+            pass
+
+    return upgraded, list(dict.fromkeys(notes)), penalty
+
+
+def classify_and_score_agent(
+    hass: HomeAssistant | None,
+    agent_id: str,
+    health_metrics: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Classify a conversation agent into Paid, Standard Cloud, or Restricted Free Tier and compute a live health score."""
+    aid_str = str(agent_id or "")
+    aid_lower = aid_str.lower()
+    entry = (
+        hass.config_entries.async_get_entry(aid_str)
+        if hass and hasattr(hass, "config_entries") and hasattr(hass.config_entries, "async_get_entry")
+        else None
+    )
+    domain = str(getattr(entry, "domain", "") or "").lower()
+    title = str(getattr(entry, "title", "") or "").lower()
+    data = dict(getattr(entry, "data", {}) or {})
+    options = dict(getattr(entry, "options", {}) or {})
+
+    # Inspect subentries (Home Assistant 2025/2026 stores model/protect_free_tier in subentries)
+    sub_models: list[str] = []
+    sub_titles: list[str] = []
+    protect_free_tier = bool(options.get("protect_free_tier") or data.get("protect_free_tier"))
+    explicit_paid = bool(options.get("paid_tier") or data.get("paid_tier"))
+
+    raw_subs = getattr(entry, "subentries", None)
+    sub_iterable = (
+        raw_subs.values()
+        if isinstance(raw_subs, dict)
+        else (raw_subs if isinstance(raw_subs, (list, tuple)) else [])
+    )
+    for sub in sub_iterable:
+        s_data = getattr(sub, "data", None) or (sub.get("data") if isinstance(sub, dict) else {}) or {}
+        s_title = getattr(sub, "title", None) or (sub.get("title") if isinstance(sub, dict) else "") or ""
+        if s_title:
+            sub_titles.append(str(s_title).lower())
+        for mk in ("model", "chat_model"):
+            if s_data.get(mk):
+                sub_models.append(str(s_data[mk]).lower())
+        if s_data.get("protect_free_tier"):
+            protect_free_tier = True
+        if s_data.get("paid_tier"):
+            explicit_paid = True
+
+    for mk in ("model", "chat_model"):
+        if options.get(mk):
+            sub_models.append(str(options[mk]).lower())
+        if data.get(mk):
+            sub_models.append(str(data[mk]).lower())
+
+    combined_meta = f"{aid_lower} {domain} {title} {' '.join(sub_titles)} {' '.join(sub_models)}"
+
+    # Determine Tier:
+    # 1. Restricted Free Tier (Groq Free Tier with strict 6k-12k TPM, OpenRouter Free Models Router)
+    is_openrouter_free = (
+        ("open_router" in combined_meta or "openrouter" in combined_meta)
+        and any(f in combined_meta for f in ("openrouter/free", ":free", "free models", "free router", "free"))
+        and not explicit_paid
+    )
+    is_groq_free = (
+        (domain == "groq" or "groq" in combined_meta)
+        and (protect_free_tier or "free" in combined_meta or not explicit_paid)
+    )
+    is_generic_free = any(f in combined_meta for f in ("free_models", "free_router", ":free")) and not explicit_paid
+
+    # 2. Paid Tier (Anthropic Claude, OpenAI, xAI / Extended OpenAI, Paid OpenRouter, or explicitly marked paid)
+    is_paid_domain = domain in (
+        "anthropic",
+        "openai_conversation",
+        "extended_openai_conversation",
+        "azure_openai_conversation",
+    ) or any(
+        p in aid_lower for p in ("anthropic", "claude", "openai", "gpt-4", "grok")
+    )
+    is_openrouter_paid = (
+        (domain == "open_router" or "openrouter" in combined_meta)
+        and not is_openrouter_free
+        and bool(sub_models or explicit_paid)
+    )
+
+    if explicit_paid or is_paid_domain or is_openrouter_paid:
+        tier = "paid"
+        tier_rank = 0
+        base_score = 100.0
+    elif is_groq_free or is_openrouter_free or is_generic_free:
+        tier = "free_restricted"
+        tier_rank = 2
+        base_score = 15.0
+    else:
+        tier = "cloud_standard"
+        tier_rank = 1
+        base_score = 75.0
+
+    m = (health_metrics or {}).get(aid_str) or {}
+    consec_fail = int(m.get("consecutive_failures", 0))
+    err_count = int(m.get("error_count", 0))
+    succ_count = int(m.get("success_count", 0))
+    avg_lat = float(m.get("avg_latency_s", 2.0))
+    q_penalties = int(m.get("quality_penalties", 0))
+    last_err_ts = float(m.get("last_error_ts", 0.0))
+
+    # Dynamic adjustments based on availability, latency, and response quality
+    score = base_score
+    score += min(15.0, succ_count * 1.5)
+    score -= min(30.0, err_count * 3.0)
+    score -= min(25.0, q_penalties * 4.0)
+
+    # Recent consecutive failures heavily demote overloaded/rate-limited agents (e.g. Gemini Free 429/503)
+    if consec_fail > 0:
+        recency_mult = 2.0 if (time.time() - last_err_ts) < 900 else 1.0
+        score -= consec_fail * 20.0 * recency_mult
+        if consec_fail >= 2 and tier == "cloud_standard":
+            tier_rank = 2  # Demote overloaded standard cloud below healthy agents
+
+    # Fast latency bonus / slow latency penalty
+    if avg_lat > 8.0:
+        score -= min(15.0, (avg_lat - 8.0) * 1.5)
+    elif 0 < avg_lat < 3.5 and succ_count > 0:
+        score += 5.0
+
+    return {
+        "agent_id": aid_str,
+        "domain": domain,
+        "tier": tier,
+        "tier_rank": tier_rank,
+        "score": round(score, 2),
+        "avg_latency_s": avg_lat,
+        "consecutive_failures": consec_fail,
+        "last_error_ts": last_err_ts,
+    }
+
+
 async def async_get_prioritized_agents(hass: HomeAssistant, preferred_agent_id: str | None = None) -> list[str]:
-    """Return an ordered list of conversation agent IDs for primary + failover cascade.
-    
-    1. If preferred_agent_id is provided, place it first as primary.
-    2. If not, inspect Settings > System > AI (.storage/ai_task) and match with discovered agents.
-    3. If none found, first discovered agent is primary.
-    4. All other discovered agents follow as the failover cascade pool.
-    """
+    """Return a dynamically ordered list of conversation agent IDs based on Paid status, live availability, latency, and quality."""
     from .config_flow import _get_agents, async_get_system_ai_preferred_agent
 
     agents = _get_agents(hass)
     discovered_ids = [getattr(a, "id", str(a)) for a in agents if getattr(a, "id", str(a)) is not None]
 
-    prioritized = []
+    # Retrieve live agent health telemetry from rules_manager if loaded
+    health_metrics: dict[str, dict[str, Any]] = {}
+    if hass and hasattr(hass, "data") and isinstance(hass.data.get(DOMAIN), dict):
+        for val in hass.data[DOMAIN].values():
+            if isinstance(val, dict) and "rules_manager" in val:
+                rm = val["rules_manager"]
+                if hasattr(rm, "get_agent_health_metrics"):
+                    health_metrics = rm.get_agent_health_metrics()
+                    break
 
-    # 1. User explicit choice has top priority
-    if preferred_agent_id:
-        prioritized.append(preferred_agent_id)
-    elif hass is not None:
-        # 2. Check Settings > System > AI
-        system_primary = await async_get_system_ai_preferred_agent(hass, agents)
-        if system_primary and system_primary in discovered_ids:
-            prioritized.append(system_primary)
+    primary_choice = preferred_agent_id
+    if not primary_choice and hass is not None:
+        sys_pref = await async_get_system_ai_preferred_agent(hass, agents)
+        if sys_pref and sys_pref in discovered_ids:
+            primary_choice = sys_pref
 
-    # 3. Add any remaining discovered agents as failover pool, sorting fast cloud before free router queues
-    fast_cloud = []
-    free_routers = []
+    all_candidates: list[str] = []
+    if primary_choice:
+        all_candidates.append(primary_choice)
     for aid in discovered_ids:
-        if aid in prioritized:
-            continue
-        aid_lower = str(aid).lower()
-        entry = hass.config_entries.async_get_entry(str(aid)) if hass and hasattr(hass, "config_entries") else None
-        ent_domain = str(getattr(entry, "domain", "") or "").lower()
-        ent_title = str(getattr(entry, "title", "") or "").lower()
-        combined = f"{aid_lower} {ent_domain} {ent_title}"
-        if any(f in combined for f in ("free_models", "free_router", "open_router", "free", "sk-or-")):
-            free_routers.append(aid)
-        else:
-            fast_cloud.append(aid)
+        if aid not in all_candidates:
+            all_candidates.append(aid)
 
-    prioritized.extend(fast_cloud)
-    prioritized.extend(free_routers)
+    scored: list[tuple[int, float, float, int, str]] = []
+    for idx, aid in enumerate(all_candidates):
+        info = classify_and_score_agent(hass, str(aid), health_metrics)
+        eff_score = info["score"]
+        tier_rank = info["tier_rank"]
+        # Give user's preferred agent a tie-breaker boost within its tier if healthy
+        if aid == primary_choice and info["consecutive_failures"] < 2 and info["tier"] != "free_restricted":
+            eff_score += 20.0
+        scored.append((tier_rank, -eff_score, info["avg_latency_s"], idx, aid))
 
-    return prioritized
+    scored.sort()
+    return [item[4] for item in scored]
 
 
 class DiscoveryEngine:
@@ -8295,15 +8555,32 @@ class DiscoveryEngine:
         if getattr(self, "rules_manager", None):
             try:
                 profiles = self.rules_manager.get_person_profiles()
+                ignored_pids = {str(x).lower() for x in (self.rules_manager.get_rules().get("ignored_persons") or [])}
                 person_entities = [e for e in entities if str(e.get("entity_id", "")).startswith("person.")]
+
+                active_training_profiles: list[dict[str, Any]] = []
                 for pe in person_entities:
-                    pid = pe["entity_id"]
+                    pid = str(pe["entity_id"]).lower()
+                    if pid in ignored_pids:
+                        continue
                     p_name = pe.get("name") or pid.replace("person.", "").title()
                     prof = profiles.get(pid, {})
                     if prof.get("training_enabled") is False or prof.get("entity_type") == "ignored":
                         continue
-                    conf = prof.get("confidence", 0.50)
-                    samples = prof.get("samples", 0)
+                    p_type = prof.get("entity_type") or (
+                        "pet" if any(k in p_name.lower() for k in ("dexter", "charles", "dog", "cat", "pet"))
+                        else ("guest" if "guest" in p_name.lower() else "resident")
+                    )
+                    conf = float(prof.get("confidence", 0.50))
+                    samples = int(prof.get("samples", 0))
+                    active_training_profiles.append({
+                        "person_id": pid,
+                        "label": prof.get("label") or p_name,
+                        "entity_type": p_type,
+                        "confidence": conf,
+                        "samples": samples,
+                        "verified_rooms": prof.get("verified_rooms") or [],
+                    })
                     if samples < 3 or conf < 0.80:
                         suggestions.append({
                             "id": f"person_train_identity_{pid.replace('.', '_')}",
@@ -8312,7 +8589,7 @@ class DiscoveryEngine:
                             "priority": "high",
                             "icon": "mdi:account-badge",
                             "description": (
-                                f"Otis AI is calibrating person identification for {p_name} ({int(conf * 100)}% confidence, {samples} samples). "
+                                f"Otis AI is calibrating person identification for {p_name} ({int(conf * 100)}% confidence, {samples}/5 samples). "
                                 "Confirming this profile enables high-confidence person recognition, personalized audio follow-me, "
                                 "and prevents startling voice announcements when residents are home."
                             ),
@@ -8321,6 +8598,73 @@ class DiscoveryEngine:
                                 "person_id": pid,
                                 "label": p_name,
                                 "confirmed": True,
+                            },
+                        })
+
+                # Live Room Entry & Active Presence Identity Verification Prompts
+                untrained_profiles = [
+                    p for p in active_training_profiles
+                    if p["samples"] < 5 or p["confidence"] < 0.85
+                ]
+                if untrained_profiles and getattr(self, "vision_manager", None):
+                    pres_data = await self.vision_manager.async_get_presence_states(use_cache=True)
+                    rooms_map = pres_data.get("rooms") or {}
+                    recent_trans = self.vision_manager.get_transition_history(5)
+                    candidate_rooms: list[tuple[str, str]] = []
+                    seen_rooms: set[str] = set()
+
+                    for tr in reversed(recent_trans):
+                        to_r = str(tr.get("to_area") or "").strip().lower()
+                        if to_r and to_r not in seen_rooms:
+                            r_name = rooms_map.get(to_r, {}).get("area_name") or to_r.replace("_", " ").title()
+                            candidate_rooms.append((to_r, r_name))
+                            seen_rooms.add(to_r)
+
+                    for r_slug, r_info in rooms_map.items():
+                        clean_slug = str(r_slug).strip().lower()
+                        if clean_slug in seen_rooms:
+                            continue
+                        s_info = r_info.get("sensors") or {}
+                        has_active_sensor = (
+                            (s_info.get("mmwave") or {}).get("active")
+                            or (s_info.get("pir") or {}).get("active")
+                            or ((s_info.get("pir") or {}).get("seconds_since_motion") is not None and (s_info.get("pir") or {}).get("seconds_since_motion", 9999) <= 600)
+                            or r_info.get("status") in ("occupied", "likely_occupied")
+                        )
+                        if has_active_sensor:
+                            candidate_rooms.append((clean_slug, r_info.get("area_name") or clean_slug.replace("_", " ").title()))
+                            seen_rooms.add(clean_slug)
+
+                    for r_slug, r_name in candidate_rooms[:3]:
+                        primary_cand = untrained_profiles[0]
+                        suggestions.append({
+                            "id": f"verify_room_entry_{r_slug}",
+                            "title": f"📍 Who is in the {r_name}? Verify Identity for Training",
+                            "category": "presence",
+                            "priority": "critical",
+                            "icon": "mdi:account-question",
+                            "description": (
+                                f"Presence & motion detected in the {r_name}. Select who walked into the {r_name} below "
+                                "to calibrate Otis's room-level camera & sensor recognition and personalized Audio Follow-Me."
+                            ),
+                            "action_type": "confirm_person_identity",
+                            "action_payload": {
+                                "person_id": primary_cand["person_id"],
+                                "label": primary_cand["label"],
+                                "confirmed": True,
+                                "visual_features": {"area": r_slug, "area_name": r_name},
+                                "candidates": [
+                                    {
+                                        "person_id": cp["person_id"],
+                                        "label": cp["label"],
+                                        "entity_type": cp["entity_type"],
+                                        "confidence": cp["confidence"],
+                                        "samples": cp["samples"],
+                                    }
+                                    for cp in untrained_profiles[:6]
+                                ],
+                                "area": r_slug,
+                                "area_name": r_name,
                             },
                         })
             except Exception as err:

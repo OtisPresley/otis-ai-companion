@@ -317,6 +317,10 @@ class VisionPresenceManager:
                     e_name = (s.attributes.get("friendly_name") or eid).lower()
                     if re.search(rf"\b{re.escape(a_lower)}\b", e_name) or re.search(rf"\b{re.escape(a_id)}\b", eid.lower()):
                         e_area = a_id
+                    elif a_id == "great_room" and any(k in eid.lower() or k in e_name for k in ("kitchen", "living_room", "greatroom", "downstairs")):
+                        e_area = a_id
+                    elif a_id == "foyer" and any(k in eid.lower() or k in e_name for k in ("frontdoor", "front_door", "entryway")):
+                        e_area = a_id
 
                 if e_area != a_id:
                     continue
@@ -324,26 +328,46 @@ class VisionPresenceManager:
                 d_class = str(s.attributes.get("device_class") or "").lower()
                 eid_lower = eid.lower()
 
-                # 1. mmWave Radar / Micro-movement presence
-                is_mmwave = (
+                # 1. mmWave Radar / Micro-movement presence (exclude Ecobee slow-cooldown occupancy sensors)
+                is_slow_thermostat_occ = "temp_occupancy" in eid_lower or eid_lower.endswith("downstairs_occupancy") or eid_lower.endswith("upstairs_occupancy")
+                is_mmwave = not is_slow_thermostat_occ and (
                     d_class in ("occupancy", "presence")
-                    or any(k in eid_lower for k in ("mmwave", "radar", "ld2410", "fp1", "fp2", "screek", "presence"))
+                    or any(k in eid_lower for k in ("mmwave", "radar", "ld2410", "fp1", "fp2", "screek", "presence", "_person_occupancy", "_all_occupancy"))
                 )
                 if is_mmwave and eid.startswith("binary_sensor."):
                     mmwave_entities.append(eid)
                     if s.state == "on":
                         mmwave_active = True
+                        most_recent_motion_ts = now_ts
 
-                # 2. PIR Motion
+                # 2. PIR Motion & Camera Person/Motion Detection
                 is_pir = (
                     d_class == "motion"
-                    or any(k in eid_lower for k in ("motion", "pir"))
+                    or is_slow_thermostat_occ
+                    or any(k in eid_lower for k in ("motion", "pir", "_person", "_pet", "_animal"))
                 )
                 if is_pir and eid.startswith("binary_sensor.") and not is_mmwave:
                     pir_entities.append(eid)
                     if s.state == "on":
-                        pir_active = True
-                        most_recent_motion_ts = now_ts
+                        # Slow Ecobee occupancy sensors stay 'on' for 30+ mins after room exit;
+                        # only treat them as active motion if they turned 'on' within the last 180 seconds.
+                        if is_slow_thermostat_occ:
+                            last_changed = getattr(s, "last_changed", None)
+                            l_ts = now_ts
+                            if last_changed:
+                                try:
+                                    l_ts = last_changed.timestamp() if hasattr(last_changed, "timestamp") else float(last_changed)
+                                except Exception:
+                                    l_ts = now_ts
+                            if (now_ts - l_ts) <= 180.0:
+                                pir_active = True
+                                if l_ts > most_recent_motion_ts:
+                                    most_recent_motion_ts = l_ts
+                            elif l_ts > most_recent_motion_ts:
+                                most_recent_motion_ts = l_ts
+                        else:
+                            pir_active = True
+                            most_recent_motion_ts = now_ts
                     else:
                         # Check last_changed
                         last_changed = getattr(s, "last_changed", None)
@@ -1775,16 +1799,14 @@ class VisionPresenceManager:
                 self._active_migration = intent
                 return intent
 
-        # Pattern 2: Evening Movie Migration (17:00 - 21:30)
-        if (17.0 <= cur_hour < 21.5) and any(
-            k in cur_to for k in ("hallway", "living", "theater", "great_room")
-        ):
-            if any(k in cur_to for k in ("hallway", "stairs", "great_room")) and not is_room_occupied("theater"):
+        # Pattern 2: Movie / Cinema Migration (No time-of-day gate)
+        if any(k in cur_to for k in ("hallway", "living", "theater", "great_room")):
+            if any(k in cur_to for k in ("hallway", "stairs", "great_room", "theater")) and not is_room_occupied("theater"):
                 intent = {
                     "intent": "movie_night",
                     "target_area": "theater",
-                    "source_area": cur_to,
-                    "confidence": 0.85 if "hallway" in cur_to else 0.70,
+                    "source_area": recent.get("from_area") or cur_to,
+                    "confidence": 0.85 if "hallway" in cur_to or "theater" in cur_to else 0.70,
                     "lifestyle_macro": "movie_night_mode",
                     "preconditioning_state": "armed",
                     "suggested_action": "Pre-cooling Theater to 68°F & pre-arming cinema display",
@@ -1840,33 +1862,88 @@ class VisionPresenceManager:
     ) -> dict[str, Any] | None:
         """Process updated presence states, record transition if room changed, and update sensor.otis_spatial_migration."""
         occupied_areas = presence_data.get("occupied_areas") or []
+        likely_areas = presence_data.get("likely_areas") or []
+        rooms = presence_data.get("rooms") or {}
         now_ts = time.time()
 
-        if occupied_areas:
-            primary_area = occupied_areas[0].lower().replace(" ", "_")
-            if self._last_active_area != primary_area:
+        prev_occupied_set = getattr(self, "_prev_occupied_set", set())
+        cur_occupied_slugs = {
+            a.lower().replace(" ", "_").replace("-", "_")
+            for a in (occupied_areas + likely_areas)
+            if a
+        }
+        # Also include any room with active PIR/mmWave motion right now
+        fresh_motion_rooms: list[tuple[float, str]] = []
+        for rid, rinfo in rooms.items():
+            r_slug = rid.lower().replace(" ", "_").replace("-", "_")
+            s_data = rinfo.get("sensors") or {}
+            pir_info = s_data.get("pir") or {}
+            mm_info = s_data.get("mmwave") or {}
+            sec_since = pir_info.get("seconds_since_motion")
+            if mm_info.get("active") or pir_info.get("active"):
+                cur_occupied_slugs.add(r_slug)
+                fresh_motion_rooms.append((0.0, r_slug))
+            elif sec_since is not None and sec_since <= 45:
+                cur_occupied_slugs.add(r_slug)
+                fresh_motion_rooms.append((float(sec_since), r_slug))
+
+        fresh_motion_rooms.sort(key=lambda x: x[0])
+        newly_entered = [r for _, r in fresh_motion_rooms if r not in prev_occupied_set]
+        if not newly_entered:
+            newly_entered = [r for r in cur_occupied_slugs if r not in prev_occupied_set]
+
+        self._prev_occupied_set = cur_occupied_slugs
+
+        target_transition_area: str | None = None
+        if newly_entered:
+            target_transition_area = newly_entered[0]
+        elif fresh_motion_rooms:
+            target_transition_area = fresh_motion_rooms[0][1]
+        elif occupied_areas:
+            target_transition_area = occupied_areas[0].lower().replace(" ", "_")
+
+        if target_transition_area:
+            if self._last_active_area != target_transition_area:
                 if self._last_active_area is not None:
                     self.record_area_transition(
                         from_area=self._last_active_area,
-                        to_area=primary_area,
-                        confidence=0.85,
+                        to_area=target_transition_area,
+                        confidence=0.88,
                         timestamp=now_ts,
                     )
                 else:
-                    self._last_active_area = primary_area
+                    self._last_active_area = target_transition_area
                     self._last_active_area_ts = now_ts
 
         intent = await self.async_detect_migration_intent(presence_data)
 
+        # Build a direct room-to-room audio migration intent whenever a user enters a room
+        # without any time-of-day or lifestyle macro gate.
+        audio_migration_intent = intent
+        if target_transition_area:
+            recent_trans = self._transition_history[-1] if self._transition_history else None
+            src_candidate = (
+                recent_trans.get("from_area")
+                if recent_trans and (now_ts - recent_trans.get("timestamp", 0) <= 600.0)
+                else None
+            )
+            audio_migration_intent = {
+                "intent": intent["intent"] if intent else "room_transition",
+                "source_area": src_candidate,
+                "target_area": target_transition_area,
+                "confidence": max(float(intent.get("confidence", 0.0)) if intent else 0.0, 0.88),
+                "preconditioning_state": intent.get("preconditioning_state", "armed") if intent else "armed",
+            }
+
         # Publish sensor.otis_spatial_migration
         if hasattr(self.hass, "states") and hasattr(self.hass.states, "async_set"):
-            state_val = intent["intent"] if intent else "idle"
+            state_val = intent["intent"] if intent else ("room_transition" if target_transition_area else "idle")
             attrs = {
                 "friendly_name": "Otis Spatial Migration & Pre-Conditioning",
                 "icon": "mdi:transit-connection-variant",
-                "target_area": intent.get("target_area") if intent else None,
-                "source_area": intent.get("source_area") if intent else None,
-                "confidence": intent.get("confidence") if intent else 0.0,
+                "target_area": (intent.get("target_area") if intent else target_transition_area),
+                "source_area": (intent.get("source_area") if intent else (audio_migration_intent.get("source_area") if audio_migration_intent else None)),
+                "confidence": (intent.get("confidence") if intent else (0.88 if target_transition_area else 0.0)),
                 "lifestyle_macro": intent.get("lifestyle_macro") if intent else None,
                 "preconditioning_state": intent.get("preconditioning_state") if intent else "idle",
                 "suggested_action": intent.get("suggested_action") if intent else "Monitoring room-to-room migration flows",
@@ -1883,11 +1960,11 @@ class VisionPresenceManager:
             except Exception as mm_err:
                 _LOGGER.debug("Error processing spatial migration in macro_manager: %s", mm_err)
 
-        # Trigger follow-me audio migration in audio_manager
-        if getattr(self, "audio_manager", None):
+        # Trigger follow-me audio migration in audio_manager (always runs on room transitions, independent of lifestyle macros)
+        if getattr(self, "audio_manager", None) and audio_migration_intent:
             try:
                 await self.audio_manager.async_process_spatial_audio_migration(
-                    intent, occupied_areas=presence_data.get("occupied_areas")
+                    audio_migration_intent, occupied_areas=presence_data.get("occupied_areas")
                 )
             except Exception as am_err:
                 _LOGGER.debug("Error processing spatial audio migration in audio_manager: %s", am_err)

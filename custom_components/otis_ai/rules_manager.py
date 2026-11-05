@@ -54,6 +54,8 @@ DEFAULT_RULES: dict[str, Any] = {
     "ignored_persons": [],
     "wizard_state": {},
     "reasoning_timeout": 60,
+    "learned_instructions": [],
+    "agent_health_metrics": {},
 }
 
 
@@ -210,6 +212,10 @@ class BehavioralRulesManager:
             merged["ignored_persons"] = list(dict.fromkeys(str(x).strip().lower() for x in new_rules["ignored_persons"] if x))
         elif "ignored_persons" not in merged:
             merged["ignored_persons"] = list(self._rules.get("ignored_persons") or [])
+        if "learned_instructions" in new_rules and isinstance(new_rules["learned_instructions"], (list, set, tuple)):
+            merged["learned_instructions"] = list(dict.fromkeys(str(x).strip() for x in new_rules["learned_instructions"] if x))[-30:]
+        if "agent_health_metrics" in new_rules and isinstance(new_rules["agent_health_metrics"], dict):
+            merged["agent_health_metrics"] = dict(new_rules["agent_health_metrics"])
 
         self._rules = merged
         await self._store.async_save(self._rules)
@@ -393,6 +399,13 @@ class BehavioralRulesManager:
                 profile["tracks"] = tr_list[-20:]
             if visual_features and isinstance(visual_features, dict):
                 feats = dict(profile.get("features") or {})
+                area_val = visual_features.get("area")
+                if area_val:
+                    v_rooms = list(profile.get("verified_rooms") or [])
+                    clean_area = str(area_val).strip().lower()
+                    if clean_area and clean_area not in v_rooms:
+                        v_rooms.append(clean_area)
+                    profile["verified_rooms"] = v_rooms[-20:]
                 feats.update(visual_features)
                 profile["features"] = feats
         else:
@@ -402,6 +415,11 @@ class BehavioralRulesManager:
         profiles[clean_pid] = profile
         self._rules["person_profiles"] = profiles
         await self._store.async_save(self._rules)
+        if hasattr(self.hass, "bus") and hasattr(self.hass.bus, "async_fire"):
+            try:
+                self.hass.bus.async_fire("otis_ai_rules_updated", {"rules": dict(self._rules)})
+            except Exception:
+                pass
         _LOGGER.info(
             "Otis AI: Updated person profile for %s (confirmed: %s, confidence: %.2f)",
             clean_pid,
@@ -422,6 +440,115 @@ class BehavioralRulesManager:
         """Return whether user has completed initial onboarding."""
         return bool(self._rules.get("onboarding_completed", False))
 
+    def get_agent_health_metrics(self) -> dict[str, dict[str, Any]]:
+        """Return persisted conversation agent availability, latency, and quality metrics."""
+        return dict(self._rules.get("agent_health_metrics") or {})
+
+    async def async_record_agent_metric(
+        self,
+        agent_id: str,
+        *,
+        success: bool,
+        latency_s: float = 0.0,
+        quality_penalty: int = 0,
+        error_reason: str | None = None,
+    ) -> dict[str, Any]:
+        """Record live performance, availability, and quality telemetry for a conversation agent."""
+        if not self._loaded:
+            await self.async_load()
+
+        import time
+        metrics_map = dict(self._rules.get("agent_health_metrics") or {})
+        clean_id = str(agent_id).strip()
+        m = dict(metrics_map.get(clean_id) or {
+            "success_count": 0,
+            "error_count": 0,
+            "consecutive_failures": 0,
+            "avg_latency_s": 2.0,
+            "quality_penalties": 0,
+            "last_error_ts": 0.0,
+            "last_error_reason": "",
+            "last_success_ts": 0.0,
+        })
+
+        now_ts = time.time()
+        if success:
+            m["success_count"] = int(m.get("success_count", 0)) + 1
+            m["consecutive_failures"] = 0
+            m["last_success_ts"] = now_ts
+            prev_lat = float(m.get("avg_latency_s", max(0.5, latency_s)))
+            if latency_s > 0:
+                m["avg_latency_s"] = round((prev_lat * 0.7) + (latency_s * 0.3), 2)
+        else:
+            m["error_count"] = int(m.get("error_count", 0)) + 1
+            m["consecutive_failures"] = int(m.get("consecutive_failures", 0)) + 1
+            m["last_error_ts"] = now_ts
+            if error_reason:
+                m["last_error_reason"] = str(error_reason)[:160]
+
+        if quality_penalty > 0:
+            m["quality_penalties"] = int(m.get("quality_penalties", 0)) + int(quality_penalty)
+
+        metrics_map[clean_id] = m
+        self._rules["agent_health_metrics"] = metrics_map
+        await self._store.async_save(self._rules)
+        return m
+
+    async def async_learn_from_interaction(
+        self,
+        user_text: str,
+        assistant_text: str = "",
+        correction_notes: list[str] | None = None,
+    ) -> list[str]:
+        """Autonomously detect user corrections, household trends, and anti-hallucination guardrails and persist them."""
+        if not self._loaded:
+            await self.async_load()
+
+        import re
+        learned = list(self._rules.get("learned_instructions") or [])
+        custom_inst = str(self._rules.get("custom_instructions") or "").strip()
+        changed = False
+
+        u_clean = str(user_text or "").strip()
+        if u_clean and len(u_clean) <= 320:
+            # Detect explicit user teaching / preference / correction patterns
+            teaching_patterns = [
+                r"(?:please\s+)?remember\s+that\s+(.+)",
+                r"(?:always|never|do\s+not|don't)\s+(?:use|turn\s+on|turn\s+off|touch|include|suggest|route|announce)\s+(.+)",
+                r"(?:actually|correction)[,:]\s+(.+)",
+                r"from\s+now\s+on[,:]?\s+(.+)",
+                r"make\s+sure\s+you\s+(?:always|never)\s+(.+)",
+            ]
+            for pat in teaching_patterns:
+                m = re.search(pat, u_clean, re.IGNORECASE)
+                if m:
+                    rule_sentence = u_clean[0].upper() + u_clean[1:]
+                    if not rule_sentence.endswith("."):
+                        rule_sentence += "."
+                    if rule_sentence not in learned:
+                        learned.append(rule_sentence)
+                        changed = True
+                    if rule_sentence.lower() not in custom_inst.lower():
+                        bullet = f"- [Auto-Learned] {rule_sentence}"
+                        custom_inst = f"{custom_inst}\n{bullet}".strip() if custom_inst else bullet
+                        self._rules["custom_instructions"] = custom_inst
+                        changed = True
+                    break
+
+        if correction_notes:
+            for note in correction_notes:
+                clean_note = str(note or "").strip()
+                if clean_note and clean_note not in learned:
+                    learned.append(clean_note)
+                    changed = True
+
+        if changed:
+            self._rules["learned_instructions"] = learned[-30:]
+            await self._store.async_save(self._rules)
+            _LOGGER.info("Otis AI: Autonomously updated learned instructions (%d active rules)", len(self._rules["learned_instructions"]))
+
+        return list(self._rules.get("learned_instructions") or [])
+
     def get_system_prompt_snippet(self) -> str:
         """Generate a compact, token-efficient behavioral instructions snippet for LLM prompts."""
         p_key = self._rules.get("persona", "concierge")
@@ -430,6 +557,7 @@ class BehavioralRulesManager:
         length = self._rules.get("response_length", "balanced")
         autonomy = self._rules.get("autonomy_level", "balanced")
         custom_inst = (self._rules.get("custom_instructions") or "").strip()
+        learned_inst = list(self._rules.get("learned_instructions") or [])
 
         lines = [
             "### User Persona & Behavioral Instructions:",
@@ -461,6 +589,10 @@ class BehavioralRulesManager:
 
         if custom_inst:
             lines.append(f"- Custom Household Rules & Notes:\n{custom_inst}")
+
+        if learned_inst:
+            learned_bullets = "\n".join(f"  * {item}" for item in learned_inst[-12:])
+            lines.append(f"- Autonomous Learned Guardrails & User Corrections:\n{learned_bullets}")
 
         return "\n".join(lines)
 

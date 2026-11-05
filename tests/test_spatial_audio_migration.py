@@ -223,6 +223,98 @@ class TestAudioMigration(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(off_calls), 0)
         self.assertEqual(off_calls[0][0][2]["entity_id"], "media_player.theater_receiver")
 
+    async def test_audio_follow_study_to_great_room_with_occupied_areas_and_party_suppressant(self) -> None:
+        """Verify audio follows from Study to Great Room even when target is in occupied_areas, and suppresses on Party Mode."""
+        from custom_components.otis_ai.rules_manager import BehavioralRulesManager
+
+        rm = BehavioralRulesManager(self.hass)
+        rm._loaded = True
+        rm._rules["audio_follow_enabled"] = True
+        rm._rules["party_mode_enabled"] = False
+        rm._rules["quiet_hours_enabled"] = False
+
+        am = AudioHandoffManager(self.hass, rules_manager=rm)
+        am.async_get_active_media_zones = unittest.mock.AsyncMock(return_value={
+            "matrix_zones": [
+                {
+                    "entity_id": "media_player.matrix_amp_1_study",
+                    "name": "Matrix Amp 1 Study",
+                    "area_id": None,
+                    "state": "on",
+                    "source": "Server",
+                    "volume_level": 0.45,
+                },
+                {
+                    "entity_id": "media_player.matrix_amp_1_great_room",
+                    "name": "Matrix Amp 1 Great Room",
+                    "area_id": None,
+                    "state": "on",
+                    "source": "Home Assistant",
+                    "volume_level": 0.25,
+                },
+            ],
+            "other_players": [],
+            "tv_cinema_players": [],
+        })
+
+        res = await am.async_process_spatial_audio_migration(
+            {"source_area": "study", "target_area": "great_room", "confidence": 0.90},
+            occupied_areas=["great_room", "study"],
+        )
+        self.assertIsNotNone(res)
+        self.assertTrue(res.get("migrated"))
+        self.assertEqual(res.get("source_area"), "study")
+        self.assertEqual(res.get("target_area"), "great_room")
+
+        # Verify Party Mode suppresses Audio Follow
+        rm._rules["party_mode_enabled"] = True
+        suppressed = await am.async_process_spatial_audio_migration(
+            {"source_area": "study", "target_area": "great_room", "confidence": 0.90},
+            occupied_areas=["great_room"],
+        )
+        self.assertIsNone(suppressed)
+
+    async def test_agent_classification_and_self_learning_upgrade(self) -> None:
+        """Verify Paid vs Free tier scoring, YAML syntax upgrade, and autonomous rule learning."""
+        from custom_components.otis_ai import (
+            classify_and_score_agent,
+            validate_and_upgrade_assistant_response,
+        )
+        from custom_components.otis_ai.rules_manager import BehavioralRulesManager
+
+        # Paid vs Free Restricted scoring
+        paid_info = classify_and_score_agent(None, "anthropic_claude", {})
+        free_groq_info = classify_and_score_agent(None, "groq_free_models", {})
+        self.assertEqual(paid_info["tier"], "paid")
+        self.assertEqual(free_groq_info["tier"], "free_restricted")
+        self.assertGreater(paid_info["score"], free_groq_info["score"])
+
+        # Deprecated YAML auto-upgrade
+        legacy_resp = (
+            "Here is your automation:\n```yaml\nalias: Test Light\ntrigger:\n"
+            "  - platform: state\n    entity_id: binary_sensor.study_motion\n"
+            "action:\n  - service: light.turn_on\n    target:\n      entity_id: light.study\n```"
+        )
+        upgraded, notes, penalty = validate_and_upgrade_assistant_response(None, legacy_resp)
+        self.assertIn("triggers:", upgraded)
+        self.assertIn("- trigger: state", upgraded)
+        self.assertIn("actions:", upgraded)
+        self.assertIn("- action: light.turn_on", upgraded)
+        self.assertGreaterEqual(penalty, 2)
+        self.assertGreaterEqual(len(notes), 2)
+
+        # Autonomous user teaching learning
+        rm = BehavioralRulesManager(self.hass)
+        rm._loaded = True
+        rm._store.async_save = unittest.mock.AsyncMock()
+        learned = await rm.async_learn_from_interaction(
+            "Remember that the Great Room chandelier should never be turned on after 10pm",
+            upgraded,
+            correction_notes=notes,
+        )
+        self.assertTrue(any("Great Room chandelier" in item for item in learned))
+        self.assertIn("Great Room chandelier", rm.get_rules()["custom_instructions"])
+
 
 if __name__ == "__main__":
     unittest.main()

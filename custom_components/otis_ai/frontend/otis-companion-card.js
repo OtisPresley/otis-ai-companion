@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.55";
+const CARD_VERSION = "0.1.56";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -63,7 +63,12 @@ class OtisCompanionCard extends HTMLElement {
     this._rulesActiveTab = "wizard";
     this._rulesDraft = null;
     this._wizardStep = 1;
-    this._floorplanOrbitLocked = true;
+    try {
+      const savedLock = localStorage.getItem("otis_floorplan_orbit_locked");
+      this._floorplanOrbitLocked = savedLock !== null ? savedLock !== "false" : true;
+    } catch (_) {
+      this._floorplanOrbitLocked = true;
+    }
     this._wizardState = {
       residents: "",
       workHours: "",
@@ -262,7 +267,69 @@ class OtisCompanionCard extends HTMLElement {
       this._fetchData();
       this._subscribeReasoningEvents();
       this._subscribeRuleEvents();
+    } else if (hass && this.shadowRoot) {
+      this._updateFloorplanPinStates();
     }
+  }
+
+  _getPinActiveColor(entityId) {
+    const dom = String(entityId || "").split(".")[0];
+    const domainColors = {
+      light: "#f59e0b",
+      switch: "#a855f7",
+      media_player: "#ec4899",
+      fan: "#06b6d4",
+      climate: "#f97316",
+      cover: "#eab308",
+      lock: "#10b981",
+      vacuum: "#8b5cf6",
+      binary_sensor: "#10b981",
+    };
+    return domainColors[dom] || "#38bdf8";
+  }
+
+  _isPinEntityActive(stateObj) {
+    const state = String(stateObj?.state || "unknown").toLowerCase();
+    return ["on", "playing", "open", "unlocked", "active", "cleaning", "heating", "cooling", "home"].includes(state);
+  }
+
+  _updateFloorplanPinStates() {
+    if (!this.shadowRoot || !this._hass?.states) return;
+    const pinsOverlay = this.shadowRoot.querySelector("#floorplan-pins-overlay");
+    if (!pinsOverlay) return;
+
+    pinsOverlay.querySelectorAll(".floorplan-device-pin").forEach((pin) => {
+      const eid = pin.getAttribute("data-entity-id");
+      if (!eid) return;
+      const stateObj = this._hass.states[eid];
+      const name = stateObj?.attributes?.friendly_name || eid;
+      const state = stateObj?.state || "unknown";
+      const isActive = this._isPinEntityActive(stateObj);
+      const activeColor = this._getPinActiveColor(eid);
+      const pinColor = isActive ? activeColor : "#94a3b8";
+
+      pin.classList.toggle("is-active", isActive);
+      pin.setAttribute("title", `${name}: ${state}`);
+      pin.style.color = pinColor;
+      pin.style.setProperty("--paper-item-icon-color", pinColor);
+      pin.style.setProperty("--paper-item-icon-active-color", activeColor);
+      pin.style.setProperty("--state-icon-color", pinColor);
+      pin.style.setProperty("--state-icon-active-color", activeColor);
+
+      const iconEl = pin.querySelector("ha-state-icon");
+      if (iconEl) {
+        iconEl.hass = this._hass;
+        if (stateObj) {
+          iconEl.stateObj = stateObj;
+        }
+        iconEl.stateColor = true;
+        iconEl.style.color = pinColor;
+        iconEl.style.setProperty("--paper-item-icon-color", pinColor);
+        iconEl.style.setProperty("--paper-item-icon-active-color", activeColor);
+        iconEl.style.setProperty("--state-icon-color", pinColor);
+        iconEl.style.setProperty("--state-icon-active-color", activeColor);
+      }
+    });
   }
 
   disconnectedCallback() {
@@ -1731,6 +1798,83 @@ class OtisCompanionCard extends HTMLElement {
     });
 
     return src;
+  }
+
+  _renderPeopleTrainingSummaryBanner() {
+    const profiles = { ...(this._userRules?.person_profiles || {}) };
+    const ignored = (this._userRules?.ignored_persons || []).map((x) => String(x).toLowerCase());
+    const availUsers = this._getAvailableUsers();
+
+    availUsers.forEach((u) => {
+      const pid = u.id.toLowerCase();
+      if (!ignored.includes(pid) && !profiles[pid]) {
+        profiles[pid] = {
+          person_id: pid,
+          label: u.name,
+          confidence: 0.50,
+          samples: 0,
+          entity_type: /dexter|charles|dog|cat|pet/i.test(u.name) ? "pet" : (/guest/i.test(u.name) ? "guest" : "resident"),
+          training_enabled: true,
+          verified_rooms: [],
+        };
+      }
+    });
+
+    const activeList = Object.values(profiles).filter(
+      (p) => !ignored.includes(String(p.person_id).toLowerCase()) && p.entity_type !== "ignored" && p.training_enabled !== false
+    );
+    if (!activeList.length) return "";
+
+    return `
+      <div style="margin-bottom: 12px; padding: 12px 14px; background: rgba(14, 165, 233, 0.08); border: 1px solid rgba(56, 189, 248, 0.28); border-radius: 10px; display: flex; flex-direction: column; gap: 10px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+          <div>
+            <div style="font-weight: 700; font-size: 0.85rem; color: var(--otis-primary);">🎯 Identity &amp; Presence Training Progress</div>
+            <div style="font-size: 0.73rem; color: var(--otis-text-muted);">Verify room entry cards below or click + Verify Sample to reach 5/5 samples (85%+ confidence) for each enabled resident, pet, or guest.</div>
+          </div>
+          <button type="button" class="btn-subtle-toggle" id="btn-open-people-rules" style="font-size: 0.72rem; padding: 4px 10px;">
+            ⚙️ Manage People &amp; Pets
+          </button>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px;">
+          ${activeList.map((p) => {
+            const pid = p.person_id;
+            const pType = p.entity_type || (/dexter|charles|pet|dog|cat/i.test(p.label || pid) ? "pet" : (/guest/i.test(p.label || pid) ? "guest" : "resident"));
+            const icon = pType === "pet" ? "🐾" : (pType === "guest" ? "👥" : "👤");
+            const samples = Number(p.samples || 0);
+            const confPct = Math.round((p.confidence || 0.50) * 100);
+            const progPct = Math.min(100, Math.round(Math.max((samples / 5) * 100, confPct)));
+            const isComplete = samples >= 5 || confPct >= 85;
+            const statusText = isComplete ? "🟢 Trained" : (samples > 0 ? "🟡 Calibrating" : "🔵 Needs Samples");
+            const barColor = isComplete ? "#10b981" : "#38bdf8";
+            const roomsList = Array.isArray(p.verified_rooms) && p.verified_rooms.length
+              ? `Rooms: ${p.verified_rooms.map((r) => String(r).replace(/_/g, " ")).join(", ")}`
+              : "No room samples verified yet";
+
+            return `
+              <div style="padding: 8px 10px; border-radius: 8px; background: rgba(0,0,0,0.25); border: 1px solid var(--otis-surface-border); display: flex; flex-direction: column; gap: 5px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
+                  <span style="font-weight: 700; font-size: 0.78rem; color: var(--otis-text);">${icon} ${this._escapeHtml(p.label || pid)}</span>
+                  <span style="font-size: 0.68rem; font-weight: 700; color: ${barColor};">${statusText}</span>
+                </div>
+                <div style="width: 100%; height: 6px; background: rgba(255,255,255,0.08); border-radius: 4px; overflow: hidden;">
+                  <div style="width: ${progPct}%; height: 100%; background: ${barColor}; transition: width 0.3s ease;"></div>
+                </div>
+                <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.69rem; color: var(--otis-text-muted);">
+                  <span>${samples}/5 samples • ${confPct}% conf</span>
+                  <button type="button" class="btn-quick-verify-person" data-person-id="${this._escapeHtml(pid)}" data-person-label="${this._escapeHtml(p.label || pid)}" style="background: rgba(56,189,248,0.18); color: #38bdf8; border: 1px solid rgba(56,189,248,0.4); border-radius: 4px; padding: 1px 6px; font-size: 0.66rem; font-weight: 600; cursor: pointer;">
+                    + Verify
+                  </button>
+                </div>
+                <div style="font-size: 0.66rem; color: var(--otis-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${this._escapeHtml(roomsList)}">
+                  📍 ${this._escapeHtml(roomsList)}
+                </div>
+              </div>
+            `;
+          }).join("")}
+        </div>
+      </div>
+    `;
   }
 
   _matchesCategoryFilter(suggestion, filterKey) {
@@ -4578,8 +4722,15 @@ class OtisCompanionCard extends HTMLElement {
           z-index: 35;
         }
 
+        .floorplan-device-pin ha-state-icon {
+          color: inherit !important;
+          --paper-item-icon-color: currentColor !important;
+          --state-icon-color: currentColor !important;
+          transition: color 0.18s ease, filter 0.18s ease;
+        }
+
         .floorplan-device-pin.is-active ha-state-icon {
-          filter: drop-shadow(0 0 6px currentColor);
+          filter: drop-shadow(0 0 8px currentColor);
         }
 
         .floorplan-device-pin.is-draggable {
@@ -5841,6 +5992,7 @@ class OtisCompanionCard extends HTMLElement {
             : ""
         }
       </div>
+      ${this._selectedCategory === "presence" ? this._renderPeopleTrainingSummaryBanner() : ""}
       <div class="suggestions-list">
         ${
           this._loadingSuggestions
@@ -5889,6 +6041,27 @@ class OtisCompanionCard extends HTMLElement {
                                 </button>
                               `
                             }
+                          </div>
+                        `
+                            : s.action_type === "confirm_person_identity" && Array.isArray(s.action_payload?.candidates) && s.action_payload.candidates.length > 0
+                            ? `
+                          <div style="display: flex; flex-direction: column; gap: 8px; width: 100%;">
+                            <div style="font-size: 0.73rem; font-weight: 600; color: var(--otis-primary);">Tap who entered ${this._escapeHtml(s.action_payload.area_name || s.action_payload.area || "this room")}:</div>
+                            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                              ${s.action_payload.candidates.map((cand) => {
+                                const cIcon = cand.entity_type === "pet" ? "🐾" : (cand.entity_type === "guest" ? "👥" : "👤");
+                                return `
+                                  <button type="button" class="apply-btn btn-verify-room-candidate" data-suggestion-id="${this._escapeHtml(s.id)}" data-person-id="${this._escapeHtml(cand.person_id)}" data-person-label="${this._escapeHtml(cand.label)}" data-area="${this._escapeHtml(s.action_payload.area || "")}" data-area-name="${this._escapeHtml(s.action_payload.area_name || "")}" style="padding: 5px 11px; font-size: 0.75rem;">
+                                    ${cIcon} ${this._escapeHtml(cand.label)} (${Math.round((cand.confidence || 0.5) * 100)}%)
+                                  </button>
+                                `;
+                              }).join("")}
+                              ${
+                                isDismissed
+                                  ? `<button type="button" class="btn-restore" data-restore="${this._escapeHtml(s.id)}">↺ Restore</button>`
+                                  : `<button type="button" class="btn-dismiss-card" data-dismiss="${this._escapeHtml(s.id)}" title="Dismiss this room prompt">Ignore</button>`
+                              }
+                            </div>
                           </div>
                         `
                             : `
@@ -6819,7 +6992,7 @@ class OtisCompanionCard extends HTMLElement {
             <span class="hud-badge" id="hud-orbit-readout">${Math.round(this._floorplanAzimuth)}° Az / ${Math.round(this._floorplanPitch)}° Pitch</span>
           </div>
           <div style="display: flex; align-items: center; gap: 6px;">
-            <button type="button" class="btn-preset-pill ${isLocked ? 'active' : ''}" id="btn-toggle-3d-lock" title="${isLocked ? 'Unlock to adjust 3D Orbit & Pitch' : 'Lock 3D Orbit & Pitch to prevent accidental movement'}" style="padding: 3px 10px; font-size: 0.72rem; ${isLocked ? 'background: rgba(245, 158, 11, 0.22); border-color: rgba(245, 158, 11, 0.65); color: #fbbf24; font-weight: 700;' : 'background: rgba(16, 185, 129, 0.22); border-color: rgba(16, 185, 129, 0.65); color: #34d399; font-weight: 700;'}">
+            <button type="button" class="btn-lock-pill ${isLocked ? 'active' : ''}" id="btn-toggle-3d-lock" title="${isLocked ? 'Unlock to adjust 3D Orbit & Pitch' : 'Lock 3D Orbit & Pitch to prevent accidental movement'}" style="padding: 3px 10px; font-size: 0.72rem; border-radius: 6px; border: 1px solid; cursor: pointer; ${isLocked ? 'background: rgba(245, 158, 11, 0.22); border-color: rgba(245, 158, 11, 0.65); color: #fbbf24; font-weight: 700;' : 'background: rgba(16, 185, 129, 0.22); border-color: rgba(16, 185, 129, 0.65); color: #34d399; font-weight: 700;'}">
               ${isLocked ? '🔒 Locked' : '🔓 Unlocked'}
             </button>
             <button type="button" class="btn-hud-toggle" id="btn-toggle-3d-hud" title="${isCollapsed ? 'Expand 3D Controls' : 'Collapse 3D Controls'}">
@@ -7069,19 +7242,9 @@ class OtisCompanionCard extends HTMLElement {
             const stateObj = this._hass?.states?.[eid];
             const name = stateObj?.attributes?.friendly_name || eid;
             const state = stateObj?.state || "unknown";
-            const isActive = ["on", "playing", "open", "unlocked", "active", "cleaning"].includes(state);
-            const dom = eid.split(".")[0];
-            const domainColors = {
-              light: "#f59e0b",
-              switch: "#a855f7",
-              media_player: "#ec4899",
-              fan: "#06b6d4",
-              climate: "#f97316",
-              cover: "#eab308",
-              lock: "#10b981",
-              vacuum: "#8b5cf6",
-            };
-            const activeColor = domainColors[dom] || "#38bdf8";
+            const isActive = this._isPinEntityActive(stateObj);
+            const activeColor = this._getPinActiveColor(eid);
+            const pinColor = isActive ? activeColor : "#94a3b8";
             const bx = parseFloat(b.x || 300);
             const by = parseFloat(b.y || 300);
             const isoPt = this._projectToIso(bx, by);
@@ -7089,16 +7252,16 @@ class OtisCompanionCard extends HTMLElement {
             return `
               <div
                 class="floorplan-device-pin ${isActive ? "is-active" : ""} ${this._editorActive ? "is-draggable" : ""}"
-                data-entity-id="${eid}"
+                data-entity-id="${this._escapeHtml(eid)}"
                 data-x="${bx}"
                 data-y="${by}"
                 data-iso-x="${isoPt.x}"
                 data-iso-y="${isoPt.y}"
                 data-is-upper="${isoPt.isUpper ? "1" : "0"}"
-                title="${name}: ${state}"
-                style="display: none; top: 0px; left: 0px; --paper-item-icon-active-color: ${activeColor}; color: ${isActive ? activeColor : "#94a3b8"};"
+                title="${this._escapeHtml(name)}: ${this._escapeHtml(state)}"
+                style="display: none; top: 0px; left: 0px; --paper-item-icon-color: ${pinColor}; --paper-item-icon-active-color: ${activeColor}; --state-icon-color: ${pinColor}; --state-icon-active-color: ${activeColor}; color: ${pinColor};"
               >
-                <ha-state-icon></ha-state-icon>
+                <ha-state-icon style="color: ${pinColor}; --paper-item-icon-color: ${pinColor}; --state-icon-color: ${pinColor};"></ha-state-icon>
               </div>
             `;
           })
@@ -8547,7 +8710,15 @@ class OtisCompanionCard extends HTMLElement {
             const pType = p.entity_type || (/dexter|charles|pet|dog|cat/i.test(p.label || pid) ? "pet" : (/guest/i.test(p.label || pid) ? "guest" : "resident"));
             const typeIcon = pType === "pet" ? "🐾" : (pType === "guest" ? "👥" : (pType === "ignored" ? "🚫" : "👤"));
             const confPct = Math.round((p.confidence || 0.50) * 100);
+            const samples = Number(p.samples || 0);
+            const progPct = Math.min(100, Math.round(Math.max((samples / 5) * 100, confPct)));
+            const isTrained = samples >= 5 || confPct >= 85;
             const isTraining = p.training_enabled !== false && pType !== "ignored";
+            const stageLabel = pType === "ignored" ? "🚫 Excluded" : (!isTraining ? "⏸️ Paused" : (isTrained ? "🟢 Trained" : (samples > 0 ? "🟡 Calibrating" : "🔵 Needs Samples")));
+            const barColor = isTrained ? "#10b981" : "#38bdf8";
+            const roomsVerified = Array.isArray(p.verified_rooms) && p.verified_rooms.length
+              ? p.verified_rooms.map((r) => String(r).replace(/_/g, " ")).join(", ")
+              : "None yet";
 
             return `
               <div class="rules-setting-row" style="padding: 10px 14px; border-radius: 8px; background: rgba(0,0,0,0.18); border: 1px solid var(--otis-surface-border); display: flex; flex-direction: column; gap: 8px;" data-profile-card="${this._escapeHtml(pid)}">
@@ -8556,15 +8727,28 @@ class OtisCompanionCard extends HTMLElement {
                     <span style="font-size: 1.3rem;">${typeIcon}</span>
                     <div>
                       <div style="font-weight: 700; font-size: 0.85rem; color: var(--otis-text);">${this._escapeHtml(p.label || pid)}</div>
-                      <div style="font-size: 0.70rem; color: var(--otis-text-muted); font-family: monospace;">${this._escapeHtml(pid)}</div>
+                      <div style="font-size: 0.70rem; color: var(--otis-text-muted); font-family: monospace;">${this._escapeHtml(pid)} • Verified Rooms: ${this._escapeHtml(roomsVerified)}</div>
                     </div>
                   </div>
                   <div style="display: flex; align-items: center; gap: 8px;">
-                    <span style="font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; background: ${confPct >= 80 ? 'rgba(16,185,129,0.2)' : 'rgba(56,189,248,0.2)'}; color: ${confPct >= 80 ? '#10b981' : 'var(--otis-primary)'}; font-weight: 600;">
-                      ${confPct}% Confidence • ${p.samples || 0} sample(s)
+                    <span style="font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; background: ${isTrained ? 'rgba(16,185,129,0.2)' : 'rgba(56,189,248,0.2)'}; color: ${isTrained ? '#10b981' : 'var(--otis-primary)'}; font-weight: 600;">
+                      ${stageLabel} • ${confPct}% Confidence (${samples}/5 samples)
                     </span>
+                    ${isTraining ? `
+                      <button type="button" class="btn-quick-verify-person" data-person-id="${this._escapeHtml(pid)}" data-person-label="${this._escapeHtml(p.label || pid)}" style="background: rgba(56,189,248,0.18); color: #38bdf8; border: 1px solid rgba(56,189,248,0.4); border-radius: 6px; padding: 2px 8px; font-size: 0.70rem; font-weight: 600; cursor: pointer;" title="Record a verified recognition training sample">
+                        + Verify Sample
+                      </button>
+                    ` : ""}
                   </div>
                 </div>
+
+                ${pType !== "ignored" ? `
+                <div style="width: 100%; display: flex; flex-direction: column; gap: 3px;">
+                  <div style="width: 100%; height: 6px; background: rgba(255,255,255,0.08); border-radius: 4px; overflow: hidden;">
+                    <div style="width: ${progPct}%; height: 100%; background: ${barColor}; transition: width 0.3s ease;"></div>
+                  </div>
+                </div>
+                ` : ""}
 
                 <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px; gap: 12px; flex-wrap: wrap;">
                   <div style="display: flex; align-items: center; gap: 8px;">
@@ -8634,195 +8818,192 @@ class OtisCompanionCard extends HTMLElement {
   _renderFailoverModal() {
     return `
       <div class="modal-overlay" id="failover-modal-backdrop">
-        <div class="modal-card" style="max-width: 640px; max-height: calc(100vh - 48px); display: flex; flex-direction: column;">
+        <div class="modal-card" style="max-width: 680px; max-height: calc(100vh - 48px); display: flex; flex-direction: column;">
           <div class="modal-header">
             <div>
               <div class="modal-title">
                 <span>🛡️</span>
-                <span>AI Failover Redundancy Guide</span>
+                <span>AI Multi-Agent Routing &amp; Failover Guide</span>
               </div>
               <div class="modal-subtitle">
-                Zero-downtime conversational intelligence with automatic provider cascading
+                Paid-First Dynamic Priority • Live Health &amp; Latency Scoring • Continuous Self-Learning
               </div>
             </div>
             <button type="button" class="modal-close-btn" id="failover-modal-close-btn">✕</button>
           </div>
 
-          <!-- Explanation Box -->
-          <div class="guide-box" style="display: flex; flex-direction: column; gap: 8px;">
-            <div style="font-weight: 700; font-size: 0.86rem; color: var(--otis-primary); display: flex; align-items: center; gap: 6px;">
-              <span>⚡</span> How AI Failover Works in Otis
-            </div>
-            <div style="font-size: 0.78rem; line-height: 1.5; color: var(--otis-text);">
-              When you speak or type a command, Otis routes it to your <strong>Primary AI Agent</strong>. If that agent encounters <strong>rate limits (HTTP 429)</strong>, <strong>API outages (HTTP 503)</strong>, quota limits, or internet timeouts, Otis <strong>transparently cascades to your backup agent in &lt;200ms</strong>.
-            </div>
-            <div style="display: flex; align-items: center; justify-content: center; gap: 8px; padding: 10px; background: rgba(0,0,0,0.3); border-radius: 8px; font-size: 0.74rem; font-weight: 600; flex-wrap: wrap;">
-              <span style="padding: 4px 10px; border-radius: 6px; background: rgba(56, 189, 248, 0.2); border: 1px solid rgba(56, 189, 248, 0.4); color: #38bdf8;">Your Command</span>
-              <span>➔</span>
-              <span style="padding: 4px 10px; border-radius: 6px; background: rgba(16, 185, 129, 0.2); border: 1px solid rgba(16, 185, 129, 0.4); color: #10b981;">Primary Agent</span>
-              <span style="color: var(--otis-text-muted);">➔ [On Error: &lt;200ms] ➔</span>
-              <span style="padding: 4px 10px; border-radius: 6px; background: rgba(168, 85, 247, 0.2); border: 1px solid rgba(168, 85, 247, 0.4); color: #c084fc;">Failover Agent</span>
-            </div>
-          </div>
-
-          <!-- Recommended Conversation Providers & Free Tiers -->
-          <div>
-            <div style="font-size: 0.76rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--otis-text-muted); margin-bottom: 8px;">
-              Recommended Conversation Agents &amp; Free Tiers
-            </div>
-            <div style="display: flex; flex-direction: column; gap: 8px;">
-
-              <!-- Google Generative AI (Gemini Flash) -->
-              <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #38bdf8;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
-                  <span class="failover-agent-name" data-domain="google_generative_ai" style="font-weight: 700; font-size: 0.84rem; color: #38bdf8; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add Google Generative AI integration">
-                    🌟 Google Generative AI (Gemini 1.5 Flash) ↗
-                  </span>
-                  <div style="display: flex; align-items: center; gap: 6px;">
-                    <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4);">100% FREE TIER</span>
-                    <button type="button" class="btn-setup-agent" data-domain="google_generative_ai" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); cursor: pointer;">
-                      + Add in HA ↗
-                    </button>
-                  </div>
-                </div>
-                <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
-                  Completely free via Google AI Studio API key (15 requests/minute, 1,500 requests/day at $0 cost). Ultra-fast (&lt;600ms latency) with state-of-the-art tool calling.
-                </div>
+          <div style="overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-right: 4px;">
+            <!-- Explanation Box -->
+            <div class="guide-box" style="display: flex; flex-direction: column; gap: 8px;">
+              <div style="font-weight: 700; font-size: 0.86rem; color: var(--otis-primary); display: flex; align-items: center; gap: 6px;">
+                <span>⚡</span> How Otis Dynamically Orders &amp; Tunes Conversation Agents
               </div>
-
-              <!-- Ollama Local LLM -->
-              <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #10b981;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
-                  <span class="failover-agent-name" data-domain="ollama" style="font-weight: 700; font-size: 0.84rem; color: #10b981; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add Ollama integration">
-                    🏠 Ollama (Local LLM - Llama 3 / Mistral) ↗
-                  </span>
-                  <div style="display: flex; align-items: center; gap: 6px;">
-                    <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4);">100% FREE &amp; OFFLINE</span>
-                    <button type="button" class="btn-setup-agent" data-domain="ollama" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4); cursor: pointer;">
-                      + Add in HA ↗
-                    </button>
-                  </div>
-                </div>
-                <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
-                  Runs locally on your server or PC. Zero cloud dependencies, total privacy, and works even when your internet is completely down.
-                </div>
+              <div style="font-size: 0.77rem; line-height: 1.5; color: var(--otis-text);">
+                Otis continuously monitors <strong>API tier status (Paid vs. Free)</strong>, <strong>response latency</strong>, <strong>429/503 availability</strong>, and <strong>YAML accuracy</strong> across all installed conversation integrations. Agents are automatically reordered in real time:
               </div>
-
-              <!-- Groq Cloud -->
-              <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #f59e0b;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
-                  <span class="failover-agent-name" data-domain="groq" style="font-weight: 700; font-size: 0.84rem; color: #fbbf24; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add Groq integration in Home Assistant">
-                    ⚡ Groq Cloud (Llama 3.3 70B / 3.1 8B) ↗
-                  </span>
-                  <div style="display: flex; align-items: center; gap: 6px;">
-                    <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4);">FREE TIER</span>
-                    <button type="button" class="btn-setup-agent" data-domain="groq" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); cursor: pointer;">
-                      + Add Groq in HA ↗
-                    </button>
-                  </div>
-                </div>
-                <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
-                  Ultra-fast hardware LPUs (~250 tokens/sec) providing near-instant responses with a generous free monthly tier.
-                </div>
-                <div style="margin-top: 6px; padding: 8px 10px; background: rgba(245, 158, 11, 0.08); border: 1px dashed rgba(245, 158, 11, 0.4); border-radius: 8px; font-size: 0.73rem; line-height: 1.45; color: var(--otis-text);">
-                  <div style="font-weight: 700; color: #fbbf24; margin-bottom: 4px; display: flex; align-items: center; gap: 5px;">
-                    <span>✨</span> Setup via HACS (ha-groq integration):
-                  </div>
-                  <div>Install the dedicated <strong>Groq</strong> integration from <strong>HACS</strong> (no Base URL required!):</div>
-                  <ol style="margin: 4px 0 6px 18px; padding: 0; color: var(--otis-text-muted); font-size: 0.71rem;">
-                    <li>Open <strong>HACS ➔ Integrations</strong>, search for <strong>Groq</strong> (<code>ha-groq</code> by barneyonline), and download it.</li>
-                    <li>Restart Home Assistant when prompted by HACS.</li>
-                    <li>Go to <em>Settings ➔ Devices &amp; Services ➔ Add Integration</em>, search for <strong>Groq</strong>, and paste your free API key from <a href="https://console.groq.com" target="_blank" style="color: #fbbf24; text-decoration: underline;">console.groq.com</a>.</li>
-                  </ol>
-                  <div style="display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap;">
-                    <button type="button" class="btn-open-hacs" style="font-size: 0.68rem; padding: 3px 8px; border-radius: 5px; background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); cursor: pointer;">
-                      🛒 Open HACS Integrations ↗
-                    </button>
-                    <button type="button" class="btn-setup-agent" data-domain="groq" style="font-size: 0.68rem; padding: 3px 8px; border-radius: 5px; background: rgba(255, 255, 255, 0.05); color: var(--otis-text); border: 1px solid var(--otis-surface-border); cursor: pointer;">
-                      + Add Groq in HA ↗
-                    </button>
-                  </div>
-                </div>
+              <div style="display: flex; align-items: center; justify-content: center; gap: 6px; padding: 10px; background: rgba(0,0,0,0.3); border-radius: 8px; font-size: 0.72rem; font-weight: 700; flex-wrap: wrap;">
+                <span style="padding: 4px 9px; border-radius: 6px; background: rgba(16, 185, 129, 0.2); border: 1px solid rgba(16, 185, 129, 0.45); color: #10b981;">1. Paid Cloud APIs</span>
+                <span>➔</span>
+                <span style="padding: 4px 9px; border-radius: 6px; background: rgba(56, 189, 248, 0.2); border: 1px solid rgba(56, 189, 248, 0.45); color: #38bdf8;">2. Healthy Standard Cloud</span>
+                <span>➔</span>
+                <span style="padding: 4px 9px; border-radius: 6px; background: rgba(168, 85, 247, 0.2); border: 1px solid rgba(168, 85, 247, 0.45); color: #c084fc;">3. Local LAN LLM (Ollama)</span>
+                <span>➔</span>
+                <span style="padding: 4px 9px; border-radius: 6px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.35); color: #f87171;">4. Restricted Free Tiers (Last Resort)</span>
               </div>
+            </div>
 
-              <!-- xAI (Grok) -->
-              <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #38bdf8;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
-                  <span class="failover-agent-name" data-domain="openai_conversation" style="font-weight: 700; font-size: 0.84rem; color: #38bdf8; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add via Extended OpenAI Conversation integration">
-                    🚀 xAI (Grok-2 / Grok-beta) ↗
-                  </span>
-                  <div style="display: flex; align-items: center; gap: 6px;">
-                    <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4);">REASONING</span>
-                    <button type="button" class="btn-setup-agent" data-domain="extended_openai_conversation" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); cursor: pointer;">
-                      + Add via Extended OpenAI in HA ↗
-                    </button>
+            <!-- Tier 1: Paid & Local Providers (Recommended) -->
+            <div>
+              <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #10b981; margin-bottom: 8px;">
+                ✅ Priority 1 &amp; 2: Recommended Paid Cloud &amp; Local Offline Agents
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 8px;">
+
+                <!-- Anthropic Claude -->
+                <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #10b981;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; flex-wrap: wrap; gap: 6px;">
+                    <span class="failover-agent-name" data-domain="anthropic" style="font-weight: 700; font-size: 0.84rem; color: #10b981; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add Anthropic integration">
+                      🏆 Anthropic Claude (Claude 3.7 / 3.5 Sonnet &amp; Haiku) ↗
+                    </span>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <span style="font-size: 0.66rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4);">PAID PRIORITY #1</span>
+                      <button type="button" class="btn-setup-agent" data-domain="anthropic" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4); cursor: pointer;">
+                        + Add in HA ↗
+                      </button>
+                    </div>
+                  </div>
+                  <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
+                    Best-in-class Home Assistant YAML synthesis, zero hallucination adherence, and 200K context window. Always routed first when configured.
                   </div>
                 </div>
-                <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
-                  Frontier reasoning and live world intelligence powered by Elon Musk's xAI platform.
-                </div>
-                <div style="margin-top: 6px; padding: 8px 10px; background: rgba(56, 189, 248, 0.08); border: 1px dashed rgba(56, 189, 248, 0.4); border-radius: 8px; font-size: 0.73rem; line-height: 1.45; color: var(--otis-text);">
-                  <div style="font-weight: 700; color: #38bdf8; margin-bottom: 4px; display: flex; align-items: center; gap: 5px;">
-                    <span>⚠️</span> Where to Enter Base URL (xAI):
+
+                <!-- OpenAI -->
+                <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #a855f7;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; flex-wrap: wrap; gap: 6px;">
+                    <span class="failover-agent-name" data-domain="openai_conversation" style="font-weight: 700; font-size: 0.84rem; color: #c084fc; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add OpenAI Conversation integration">
+                      🤖 OpenAI (GPT-4o / GPT-4o-mini) ↗
+                    </span>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <span style="font-size: 0.66rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4);">PAID MICRO-COST</span>
+                      <button type="button" class="btn-setup-agent" data-domain="openai_conversation" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); cursor: pointer;">
+                        + Add in HA ↗
+                      </button>
+                    </div>
                   </div>
-                  <div>In Home Assistant, install <strong>Extended OpenAI Conversation</strong> from <strong>HACS</strong> to unlock custom Base URL support:</div>
-                  <ol style="margin: 4px 0 6px 18px; padding: 0; color: var(--otis-text-muted); font-size: 0.71rem;">
-                    <li>Download <em>Extended OpenAI Conversation</em> from <strong>HACS ➔ Integrations</strong>.</li>
-                    <li>Add <strong>Extended OpenAI Conversation</strong> in Home Assistant Integrations.</li>
-                    <li>Enter your xAI API key (from <em>console.x.ai</em>) and set:</li>
-                  </ol>
-                  <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 5px; padding: 4px 8px; background: rgba(0,0,0,0.35); border-radius: 5px; font-family: monospace; font-size: 0.7rem;">
+                  <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
+                    High-reliability Paid API with fast tool execution and huge context window (~$0.15 / 1M tokens on <code>gpt-4o-mini</code>). Automatically prioritized ahead of free tiers.
+                  </div>
+                </div>
+
+                <!-- OpenRouter -->
+                <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #38bdf8;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; flex-wrap: wrap; gap: 6px;">
+                    <span class="failover-agent-name" data-domain="open_router" style="font-weight: 700; font-size: 0.84rem; color: #38bdf8; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add OpenRouter integration">
+                      🔀 OpenRouter (Paid Credits vs. Free Router) ↗
+                    </span>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <span style="font-size: 0.66rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4);">USE PAID MODELS ONLY</span>
+                      <button type="button" class="btn-setup-agent" data-domain="open_router" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); cursor: pointer;">
+                        + Add in HA ↗
+                      </button>
+                    </div>
+                  </div>
+                  <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
+                    <strong>Paid Models Recommended:</strong> Selecting paid models (e.g. <code>anthropic/claude-3.5-sonnet</code>, <code>openai/gpt-4o-mini</code>) gives you Priority 1 routing. <strong style="color: #f87171;">Avoid <code>openrouter/free</code> (Free Models Router):</strong> Free community models suffer from 20–45s queue delays, leaked DSML tags, and frequent rate limits (automatically demoted behind Local LLM).
+                  </div>
+                </div>
+
+                <!-- Google Generative AI (Gemini) -->
+                <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #f59e0b;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; flex-wrap: wrap; gap: 6px;">
+                    <span class="failover-agent-name" data-domain="google_generative_ai_conversation" style="font-weight: 700; font-size: 0.84rem; color: #fbbf24; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add Google Generative AI integration">
+                      🌟 Google Gemini (Paid Billing vs. Busy Free Tier) ↗
+                    </span>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <span style="font-size: 0.66rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4);">FREE TIER OFTEN BUSY (429/503)</span>
+                      <button type="button" class="btn-setup-agent" data-domain="google_generative_ai_conversation" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); cursor: pointer;">
+                        + Add in HA ↗
+                      </button>
+                    </div>
+                  </div>
+                  <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
+                    Fast and capable with large 1M token context, but the <strong>Google AI Studio Free Tier is frequently congested (<code>RESOURCE_EXHAUSTED</code> / HTTP 429 / 503)</strong>. Enable Pay-As-You-Go billing in Google AI Studio for reliable uptime, or Otis will automatically demote it whenever it hits 429s.
+                  </div>
+                </div>
+
+                <!-- xAI (Grok) -->
+                <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #38bdf8;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; flex-wrap: wrap; gap: 6px;">
+                    <span class="failover-agent-name" data-domain="extended_openai_conversation" style="font-weight: 700; font-size: 0.84rem; color: #38bdf8; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add via Extended OpenAI Conversation integration">
+                      🚀 xAI (Grok-2 / Grok-3 via Extended OpenAI) ↗
+                    </span>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <span style="font-size: 0.66rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4);">PAID API</span>
+                      <button type="button" class="btn-setup-agent" data-domain="extended_openai_conversation" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); cursor: pointer;">
+                        + Add via Extended OpenAI ↗
+                      </button>
+                    </div>
+                  </div>
+                  <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
+                    Frontier reasoning via xAI API. Install <em>Extended OpenAI Conversation</em> from HACS and set Base URL to <code>https://api.x.ai/v1</code>.
+                  </div>
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 6px; padding: 4px 8px; background: rgba(0,0,0,0.35); border-radius: 5px; font-family: monospace; font-size: 0.7rem;">
                     <span>Base URL: <strong>https://api.x.ai/v1</strong></span>
                     <button type="button" class="btn-copy-base-url" data-url="https://api.x.ai/v1" style="font-size: 0.65rem; padding: 2px 7px; border-radius: 4px; background: rgba(56, 189, 248, 0.25); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.5); cursor: pointer;">
                       📋 Copy URL
                     </button>
                   </div>
-                  <div style="display: flex; gap: 6px; margin-top: 6px;">
-                    <button type="button" class="btn-open-hacs" style="font-size: 0.68rem; padding: 3px 8px; border-radius: 5px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); cursor: pointer;">
-                      🛒 Open HACS Integrations ↗
-                    </button>
-                    <button type="button" class="btn-setup-agent" data-domain="extended_openai_conversation" style="font-size: 0.68rem; padding: 3px 8px; border-radius: 5px; background: rgba(255, 255, 255, 0.05); color: var(--otis-text); border: 1px solid var(--otis-surface-border); cursor: pointer;">
-                      + Add Extended OpenAI in HA ↗
-                    </button>
+                </div>
+
+                <!-- Ollama Local LLM -->
+                <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #10b981;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; flex-wrap: wrap; gap: 6px;">
+                    <span class="failover-agent-name" data-domain="ollama" style="font-weight: 700; font-size: 0.84rem; color: #10b981; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add Ollama integration">
+                      🏠 Ollama Local Edge AI (Qwen 2.5 / Llama 3.1 on LAN) ↗
+                    </span>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                      <span style="font-size: 0.66rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4);">100% FREE &amp; OFFLINE</span>
+                      <button type="button" class="btn-setup-agent" data-domain="ollama" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4); cursor: pointer;">
+                        + Add in HA ↗
+                      </button>
+                    </div>
+                  </div>
+                  <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
+                    Runs locally on your LAN GPU/CPU server with zero cloud rate limits, total privacy, and instant failover before any restricted free-tier cloud router.
                   </div>
                 </div>
-              </div>
 
-              <!-- OpenAI -->
-              <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #a855f7;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 6px;">
-                  <span class="failover-agent-name" data-domain="openai_conversation" style="font-weight: 700; font-size: 0.84rem; color: #c084fc; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add OpenAI Conversation integration">
-                    🤖 OpenAI (GPT-4o / GPT-4o-mini) ↗
-                  </span>
-                  <div style="display: flex; align-items: center; gap: 6px;">
-                    <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4);">MICRO-COST</span>
-                    <button type="button" class="btn-setup-agent" data-domain="openai_conversation" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); cursor: pointer;">
-                      + Add in HA ↗
-                    </button>
+                <!-- Groq Free Tier Warning -->
+                <div style="padding: 10px 14px; background: rgba(239, 68, 68, 0.06); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 10px; border-left: 3px solid #ef4444;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; flex-wrap: wrap; gap: 6px;">
+                    <span style="font-weight: 700; font-size: 0.84rem; color: #f87171;">
+                      🚫 Groq Cloud Free Tier (Not Recommended for Otis)
+                    </span>
+                    <span style="font-size: 0.66rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4);">AUTO-DEMOTED ON FREE TIER</span>
+                  </div>
+                  <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
+                    Groq's Free Tier enforces a strict <strong>6,000–12,000 Tokens-Per-Minute (<code>protect_free_tier</code>) cap</strong>, which is too small for a complete smart home capability map and causes HTTP 413/429 rejections or severe context truncation. Otis automatically demotes Groq Free Tier below Paid APIs and Local Ollama.
                   </div>
                 </div>
-                <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
-                  Industry-leading tool accuracy and reasoning. Low cost (~$0.15 / million tokens on gpt-4o-mini).
-                </div>
+
               </div>
-
             </div>
-          </div>
 
-          <!-- Step-by-Step Instructions -->
-          <div style="padding: 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--otis-surface-border); border-radius: 10px; font-size: 0.78rem; line-height: 1.5;">
-            <div style="font-weight: 700; color: var(--otis-primary); margin-bottom: 6px;">
-              📋 How to Configure Failover in 2 Minutes:
+            <!-- Step-by-Step Instructions -->
+            <div style="padding: 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--otis-surface-border); border-radius: 10px; font-size: 0.76rem; line-height: 1.5;">
+              <div style="font-weight: 700; color: var(--otis-primary); margin-bottom: 6px;">
+                🧠 Continuous Self-Learning &amp; Anti-Hallucination Active:
+              </div>
+              <ul style="margin: 0; padding-left: 18px; color: var(--otis-text-muted);">
+                <li><strong>Ask-Before-Guessing:</strong> If a command or room target is ambiguous, Otis asks you to clarify rather than guessing entity IDs.</li>
+                <li><strong>Autonomous Rule Tuning:</strong> When you correct Otis (e.g., <em>"Remember that..."</em>, <em>"Always use..."</em>, <em>"Never touch..."</em>), Otis automatically saves the rule into your Custom Instructions.</li>
+                <li><strong>Local HA Version Grounding:</strong> All generated YAML is verified against your live entity registry and upgraded to modern Home Assistant syntax (<code>triggers:</code>, <code>actions:</code>, <code>action:</code>).</li>
+              </ul>
             </div>
-            <ol style="margin: 0; padding-left: 20px; color: var(--otis-text-muted);">
-              <li>Click <strong>Open Home Assistant Integrations</strong> below (or go to <em>Settings → Devices &amp; Services</em>).</li>
-              <li>Click <strong>+ Add Integration</strong> and add your second provider (e.g. <em>Google Generative AI</em> with a free AI Studio key or <em>Ollama</em>).</li>
-              <li>That's it! Otis automatically discovers all installed conversation agents and adds them to your transparent failover pool. You can select your preferred Primary agent under <em>Otis AI Companion → Configure</em>.</li>
-            </ol>
           </div>
 
           <!-- Modal Actions -->
-          <div class="modal-actions" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px;">
+          <div class="modal-actions" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px;">
             <button type="button" class="btn-modal-secondary" id="btn-close-failover-modal">
               Got It
             </button>
@@ -10311,6 +10492,67 @@ class OtisCompanionCard extends HTMLElement {
       };
     });
 
+    // Multi-choice Room Entry Identity Verification buttons
+    root.querySelectorAll(".btn-verify-room-candidate").forEach((btn) => {
+      btn.onclick = async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const pid = e.currentTarget.getAttribute("data-person-id");
+        const label = e.currentTarget.getAttribute("data-person-label");
+        const area = e.currentTarget.getAttribute("data-area");
+        const areaName = e.currentTarget.getAttribute("data-area-name") || area;
+        const sid = e.currentTarget.getAttribute("data-suggestion-id");
+        if (!pid || !this._hass) return;
+        try {
+          this._showToast(`👤 Verifying ${label} in ${areaName}...`);
+          await this._hass.callService("otis_ai", "confirm_person_identity", {
+            person_id: pid,
+            label,
+            confirmed: true,
+            visual_features: { area, area_name: areaName },
+          });
+          if (sid) {
+            this._dismissedIds.add(sid);
+          }
+          this._showToast(`✨ Verified ${label} in ${areaName}! Training sample recorded.`);
+          await this._fetchData();
+        } catch (err) {
+          this._showToast(`Failed to verify identity: ${err.message || err}`, true);
+        }
+      };
+    });
+
+    // Quick + Verify Sample buttons in People & Pets progress banner and modal
+    root.querySelectorAll(".btn-quick-verify-person").forEach((btn) => {
+      btn.onclick = async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const pid = e.currentTarget.getAttribute("data-person-id");
+        const label = e.currentTarget.getAttribute("data-person-label") || pid;
+        if (!pid || !this._hass) return;
+        try {
+          await this._hass.callService("otis_ai", "confirm_person_identity", {
+            person_id: pid,
+            label,
+            confirmed: true,
+          });
+          this._showToast(`✨ Recorded training sample for ${label}!`);
+          await this._fetchData();
+        } catch (err) {
+          this._showToast(`Failed to record sample: ${err.message || err}`, true);
+        }
+      };
+    });
+
+    const btnOpenPeopleRules = root.querySelector("#btn-open-people-rules");
+    if (btnOpenPeopleRules) {
+      btnOpenPeopleRules.onclick = () => {
+        this._rulesActiveTab = "people";
+        this._rulesModalOpen = true;
+        this._render();
+      };
+    }
+
     // Clear Chat history button
     const btnClearChat = root.querySelector("#btn-clear-chat");
     if (btnClearChat) {
@@ -10929,8 +11171,12 @@ class OtisCompanionCard extends HTMLElement {
     const btnToggle3dLock = root.querySelector("#btn-toggle-3d-lock");
     if (btnToggle3dLock) {
       btnToggle3dLock.onclick = (e) => {
+        e.preventDefault();
         e.stopPropagation();
         this._floorplanOrbitLocked = this._floorplanOrbitLocked === false ? true : false;
+        try {
+          localStorage.setItem("otis_floorplan_orbit_locked", String(this._floorplanOrbitLocked));
+        } catch (_) {}
         this._render();
       };
     }
@@ -10992,8 +11238,9 @@ class OtisCompanionCard extends HTMLElement {
       };
     }
 
-    root.querySelectorAll(".btn-preset-pill").forEach((btn) => {
+    root.querySelectorAll(".btn-preset-pill[data-azimuth]").forEach((btn) => {
       btn.onclick = (e) => {
+        if (this._floorplanOrbitLocked !== false) return;
         const az = parseFloat(e.currentTarget.getAttribute("data-azimuth") || "45");
         const pitch = parseFloat(e.currentTarget.getAttribute("data-pitch") || "58");
         this._floorplanAzimuth = az;
@@ -11003,13 +11250,14 @@ class OtisCompanionCard extends HTMLElement {
           localStorage.setItem("otis_floorplan_orbit_azimuth", String(this._floorplanAzimuth));
           localStorage.setItem("otis_floorplan_pitch_incline", String(this._floorplanPitch));
         } catch (_) {}
-        root.querySelectorAll(".btn-preset-pill").forEach((p) => p.classList.toggle("active", p === e.currentTarget));
+        root.querySelectorAll(".btn-preset-pill[data-azimuth]").forEach((p) => p.classList.toggle("active", p === e.currentTarget));
       };
     });
 
     const btnReset3d = root.querySelector("#btn-reset-3d-view");
     if (btnReset3d) {
       btnReset3d.onclick = () => {
+        if (this._floorplanOrbitLocked !== false) return;
         this._floorplanAzimuth = 45;
         this._floorplanPitch = 58;
         applyCanvas3dTransform(true);
@@ -11017,7 +11265,7 @@ class OtisCompanionCard extends HTMLElement {
           localStorage.setItem("otis_floorplan_orbit_azimuth", "45");
           localStorage.setItem("otis_floorplan_pitch_incline", "58");
         } catch (_) {}
-        root.querySelectorAll(".btn-preset-pill").forEach((p) => {
+        root.querySelectorAll(".btn-preset-pill[data-azimuth]").forEach((p) => {
           p.classList.toggle("active", p.getAttribute("data-azimuth") === "45");
         });
       };
@@ -11168,17 +11416,10 @@ class OtisCompanionCard extends HTMLElement {
       // 0. Set up interactive Home Assistant device pins (<ha-state-icon> overlays)
       const pinsOverlay = root.querySelector("#floorplan-pins-overlay");
       if (pinsOverlay) {
+        this._updateFloorplanPinStates();
         pinsOverlay.querySelectorAll(".floorplan-device-pin").forEach((pin) => {
           const entityId = pin.getAttribute("data-entity-id");
           if (!entityId) return;
-
-          const iconEl = pin.querySelector("ha-state-icon");
-          if (iconEl && this._hass) {
-            iconEl.hass = this._hass;
-            if (this._hass.states?.[entityId]) {
-              iconEl.stateObj = this._hass.states[entityId];
-            }
-          }
 
           if (this._editorActive && isAdmin) {
             pin.style.cursor = "grab";

@@ -427,7 +427,7 @@ class AudioHandoffManager:
         source_area = normalize_area_slug(migration_intent.get("source_area"))
         target_area = normalize_area_slug(migration_intent.get("target_area"))
 
-        if not source_area or not target_area or source_area == target_area:
+        if not target_area or (source_area and source_area == target_area):
             return None
 
         # Check behavioral rules
@@ -436,27 +436,70 @@ class AudioHandoffManager:
             if not rules.get("audio_follow_enabled", True):
                 _LOGGER.debug("Audio follow-me disabled by user behavioral rules")
                 return None
+            if rules.get("party_mode_enabled", False):
+                _LOGGER.debug("Audio follow-me suppressed because Party Mode is enabled in user rules")
+                return None
 
-        # Check user toggle entity if present (for non-admin Command Center users)
+        # Check user toggle entity and Party Mode entity if present
         if hasattr(self.hass, "states") and hasattr(self.hass.states, "get"):
             for eid in ("input_boolean.otis_audio_follow", "switch.otis_audio_follow", "input_boolean.audio_follow"):
                 toggle_st = self.hass.states.get(eid)
                 if toggle_st and toggle_st.state in ("off", "false", "0"):
                     _LOGGER.debug("Audio follow-me disabled by entity toggle '%s'", eid)
                     return None
+            for p_eid in ("input_boolean.party_mode", "input_boolean.otis_party_mode", "switch.otis_party_mode"):
+                party_st = self.hass.states.get(p_eid)
+                if party_st and party_st.state in ("on", "true", "1"):
+                    _LOGGER.debug("Audio follow-me suppressed because Party Mode entity '%s' is active", p_eid)
+                    return None
 
-        # Check if target area is already occupied
-        if occupied_areas and any(target_area == normalize_area_slug(a) for a in occupied_areas):
-            if self._active_audio_migration and self._active_audio_migration.get("status") == "following":
-                return await self.async_finalize_audio_handoff()
-            return None
+        # If an active follow migration already routed to this target_area and arrival is confirmed, finalize it
+        if (
+            self._active_audio_migration
+            and self._active_audio_migration.get("status") == "following"
+            and normalize_area_slug(self._active_audio_migration.get("target_area")) == target_area
+            and occupied_areas
+            and any(target_area == normalize_area_slug(a) for a in occupied_areas)
+        ):
+            return await self.async_finalize_audio_handoff()
 
         # Discover active players
         zones_data = await self.async_get_active_media_zones()
         all_zones = zones_data["matrix_zones"] + zones_data["other_players"] + zones_data["tv_cinema_players"]
 
-        source_candidates = filter_zones_by_area(all_zones, source_area)
-        playing_sources = [z for z in source_candidates if z["state"] in ("playing", "on")]
+        def _is_active_music_zone(z: dict[str, Any]) -> tuple[int, int]:
+            st = str(z.get("state") or "").lower()
+            src = str(z.get("source") or "").strip().lower()
+            is_real_music = 1 if (src and src not in ("home assistant", "tts", "announcements", "none")) else 0
+            is_playing = 1 if st == "playing" else 0
+            return (is_real_music, is_playing)
+
+        playing_sources: list[dict[str, Any]] = []
+        if source_area:
+            source_candidates = filter_zones_by_area(all_zones, source_area)
+            playing_sources = [z for z in source_candidates if z["state"] in ("playing", "on")]
+            playing_sources.sort(key=_is_active_music_zone, reverse=True)
+
+        # Fallback: if source_area had no playing zone (e.g. walked through a hallway/foyer without speakers)
+        # or if source_area was only on an idle TTS channel while another zone is actively streaming music
+        other_active = [
+            z for z in all_zones
+            if z["state"] in ("playing", "on") and not zone_matches_area(z, target_area)
+        ]
+        other_active.sort(key=_is_active_music_zone, reverse=True)
+
+        if other_active and (
+            not playing_sources
+            or (_is_active_music_zone(other_active[0]) > _is_active_music_zone(playing_sources[0]))
+        ):
+            best_z = other_active[0]
+            playing_sources = [best_z]
+            raw_z_area = best_z.get("area_id") or best_z.get("entity_id", "").split(".")[-1]
+            for prefix in ("matrix_amp_1_", "matrix_amp_2_", "matrix_amp_", "amp_"):
+                if str(raw_z_area).lower().startswith(prefix):
+                    raw_z_area = str(raw_z_area)[len(prefix):]
+                    break
+            source_area = normalize_area_slug(raw_z_area)
 
         if not playing_sources:
             _LOGGER.debug("No active audio playing in source area '%s'; no audio follow required", source_area)
