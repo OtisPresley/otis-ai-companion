@@ -135,6 +135,9 @@ class MeshManager:
             "last_audit_ts": now,
         }
 
+    # Backward-compatible alias
+    async_audit_mesh_health = async_audit_mesh_topology
+
     async def _audit_zwave_js_nodes(
         self,
         all_devices: list[Any],

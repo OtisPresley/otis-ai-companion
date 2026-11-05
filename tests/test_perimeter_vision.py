@@ -626,10 +626,10 @@ class TestPerimeterVisionAnalysis(unittest.TestCase):
         })
         am.async_audio_handoff = AsyncMock(return_value={"success": True, "target_player": "media_player.kitchen"})
 
-        # Record media playback session owned by "person.jamie"
+        # Record media playback session owned by "person.resident_primary"
         am.record_media_session_owner(
             player_entity_id="media_player.living_room",
-            person_id="person.jamie",
+            person_id="person.resident_primary",
             area_id="living_room",
         )
 
@@ -647,13 +647,13 @@ class TestPerimeterVisionAnalysis(unittest.TestCase):
         self.assertEqual(res_other["reason"], "user_mismatch")
         am.async_audio_handoff.assert_not_called()
 
-        # 2. Owner ("person.jamie") moves from living room to kitchen -> Audio follows!
+        # 2. Owner ("person.resident_primary") moves from living room to kitchen -> Audio follows!
         intent_owner = {
             "intent": "room_migration",
             "source_area": "living_room",
             "target_area": "kitchen",
             "confidence": 0.85,
-            "person_id": "person.jamie",
+            "person_id": "person.resident_primary",
         }
         res_owner = asyncio.run(am.async_process_spatial_audio_migration(intent_owner))
         self.assertIsNotNone(res_owner)
@@ -662,7 +662,7 @@ class TestPerimeterVisionAnalysis(unittest.TestCase):
         # Session owner transferred to target player
         self.assertEqual(
             am.get_media_session_owner("media_player.kitchen")["person_id"],
-            "person.jamie",
+            "person.resident_primary",
         )
 
     def test_confirm_person_identity_profile_calibration(self) -> None:
@@ -678,9 +678,9 @@ class TestPerimeterVisionAnalysis(unittest.TestCase):
             rm = BehavioralRulesManager(hass)
             # 1. Positive confirmation
             res1 = asyncio.run(rm.async_confirm_person_identity(
-                person_id="person.jamie",
+                person_id="person.resident_primary",
                 track_id="trk_001",
-                label="Jamie",
+                label="Jordan",
                 confirmed=True,
             ))
             self.assertTrue(res1["success"])
@@ -691,7 +691,7 @@ class TestPerimeterVisionAnalysis(unittest.TestCase):
 
             # 2. Second positive confirmation boosts confidence further
             res2 = asyncio.run(rm.async_confirm_person_identity(
-                person_id="person.jamie",
+                person_id="person.resident_primary",
                 track_id="trk_002",
                 confirmed=True,
             ))

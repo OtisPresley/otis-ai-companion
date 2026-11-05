@@ -132,9 +132,9 @@ def test_manager_trilaterate_beacon(presence_manager):
         "proxy_east": {"x": 10.0, "y": 5.0},
         "proxy_west": {"x": 0.0, "y": 5.0},
     })
-    presence_manager.assign_beacon_user("ble_watch_jamie", "Jamie")
+    presence_manager.assign_beacon_user("ble_watch_jordan", "Jordan")
 
-    assert presence_manager.get_beacon_user("ble_watch_jamie") == "Jamie"
+    assert presence_manager.get_beacon_user("ble_watch_jordan") == "Jordan"
 
     # Observation without explicit x/y coordinates pulls from manager registry
     obs = [
@@ -339,11 +339,11 @@ def test_fuse_room_ble_user_attribution(presence_manager):
         area_id="office",
         area_name="Office",
         pir_data={"active": True, "confidence": 0.75},
-        ble_data={"active": True, "confidence": 0.85, "user": "Jamie"},
+        ble_data={"active": True, "confidence": 0.85, "user": "Jordan"},
     )
     assert res["status"] == STATUS_OCCUPIED
-    assert res["attributed_user"] == "Jamie"
-    assert any("ble_beacon (Jamie)" in m for m in res["active_modalities"])
+    assert res["attributed_user"] == "Jordan"
+    assert any("ble_beacon (Jordan)" in m for m in res["active_modalities"])
 
 
 # ============================================================================
@@ -387,7 +387,7 @@ async def test_async_fuse_presence_full_audit(presence_manager, mock_hass):
         mock_hass.states.async_set(
             "sensor.office_ble_rssi",
             "-62",
-            {"friendly_name": "Office BLE RSSI", "distance": 1.2, "person": "Jamie"},
+            {"friendly_name": "Office BLE RSSI", "distance": 1.2, "person": "Jordan"},
         )
 
         telemetry = await presence_manager.async_fuse_presence(use_cache=False)
@@ -432,7 +432,7 @@ async def test_conversation_agent_fused_presence_query(mock_hass):
             "office": {
                 "area_name": "Office",
                 "status": "occupied",
-                "attributed_user": "Jamie",
+                "attributed_user": "Jordan",
                 "active_modalities": ["mmwave_moving", "thermal_human", "ble_beacon"],
                 "confidence_percent": 95,
             },
@@ -458,7 +458,7 @@ async def test_conversation_agent_fused_presence_query(mock_hass):
 
     speech = u1.create_response.call_args[1]["speech"]
     assert "Office" in speech
-    assert "Jamie" in speech
+    assert "Jordan" in speech
     assert "Master Bedroom" in speech
     assert "Elena" in speech
     assert "Micro-Presence" in speech

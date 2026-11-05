@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.50";
+const CARD_VERSION = "0.1.51";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -548,8 +548,11 @@ class OtisCompanionCard extends HTMLElement {
       this._hasWalkthrough = Boolean(capMap.floorplan?.walkthrough_completed);
       this._hasFloorplan = Boolean(capMap.floorplan?.exists);
 
-      // Load floorplan SVG if exists
-      if (capMap.floorplan?.exists && !this._floorplanSvg && !this._loadingFloorplan) {
+      // Load floorplan SVG if exists (use direct payload if provided)
+      if (capMap.floorplan?.svg) {
+        this._floorplanSvg = this._cleanAndSanitizeSvg(capMap.floorplan.svg);
+        this._floorplanLoadFailed = false;
+      } else if (capMap.floorplan?.exists && !this._floorplanSvg && !this._loadingFloorplan) {
         await this._loadFloorplanSvg(capMap.floorplan.url);
       }
     } catch (err) {
@@ -566,39 +569,53 @@ class OtisCompanionCard extends HTMLElement {
     }
   }
 
+  _cleanAndSanitizeSvg(rawSvg) {
+    if (!rawSvg || typeof rawSvg !== "string") return null;
+    let clean = rawSvg.replace(
+      /<text\b([^>]*)class="([^"]*(?:room-header|room-label|subzone-pill)[^"]*)"([^>]*)>(.*?)<\/text>/gi,
+      (fullMatch, preAttrs, clsName, postAttrs, content) => {
+        const allAttrs = `${preAttrs} ${postAttrs}`;
+        const xm = allAttrs.match(/x="([0-9.]+)"/) || content.match(/x="([0-9.]+)"/);
+        const ym = allAttrs.match(/y="([0-9.]+)"/) || content.match(/y="([0-9.]+)"/);
+        const xVal = xm ? xm[1] : "40";
+        const yVal = ym ? ym[1] : "40";
+        const cleanContent = content.replace(/^(?:\s*(?:x|y)="[^"]*"[>\s]*)+/g, "").trim();
+        return `<text x="${xVal}" y="${yVal}" class="${clsName}">${cleanContent}</text>`;
+      }
+    );
+    clean = clean.replace(/<g\b[^>]*class="[^"]*entity-badge[^"]*"[^>]*>[\s\S]*?<\/g>\s*/gi, "");
+    clean = clean.replace(/(<svg\b[^>]*)\bwidth="[0-9.]+"\s*/i, "$1 ");
+    clean = clean.replace(/(<svg\b[^>]*)\bheight="[0-9.]+"\s*/i, "$1 ");
+    return clean;
+  }
+
   async _loadFloorplanSvg(url) {
-    if (!url) url = "/api/otis_ai/media/otis_floorplan.svg";
     if (this._loadingFloorplan) return;
     this._loadingFloorplan = true;
     try {
-      const fetchUrl = url + (url.includes("?") ? "&" : "?") + "t=" + Date.now();
+      let targetUrl = url || "/api/otis_ai/media/otis_floorplan.svg";
+      // Never append query parameters to a signed URL as it invalidates the cryptographic signature
+      let fetchUrl = targetUrl;
+      if (!targetUrl.includes("authSig=")) {
+        fetchUrl = targetUrl + (targetUrl.includes("?") ? "&" : "?") + "t=" + Date.now();
+      }
+
       let resp;
       if (this._hass && typeof this._hass.fetchWithAuth === "function") {
         resp = await this._hass.fetchWithAuth(fetchUrl);
       } else {
         resp = await fetch(fetchUrl);
       }
+
+      if ((!resp || !resp.ok) && targetUrl.includes("authSig=")) {
+        if (this._hass && typeof this._hass.fetchWithAuth === "function") {
+          resp = await this._hass.fetchWithAuth("/api/otis_ai/media/otis_floorplan.svg");
+        }
+      }
+
       if (resp && resp.ok) {
         let rawSvg = await resp.text();
-        // Client-side sanitizer for any corrupted <text> elements where attributes leaked into text content
-        rawSvg = rawSvg.replace(
-          /<text\b([^>]*)class="([^"]*(?:room-header|room-label|subzone-pill)[^"]*)"([^>]*)>(.*?)<\/text>/gi,
-          (fullMatch, preAttrs, clsName, postAttrs, content) => {
-            const allAttrs = `${preAttrs} ${postAttrs}`;
-            const xm = allAttrs.match(/x="([0-9.]+)"/) || content.match(/x="([0-9.]+)"/);
-            const ym = allAttrs.match(/y="([0-9.]+)"/) || content.match(/y="([0-9.]+)"/);
-            const xVal = xm ? xm[1] : "40";
-            const yVal = ym ? ym[1] : "40";
-            const cleanContent = content.replace(/^(?:\s*(?:x|y)="[^"]*"[>\s]*)+/g, "").trim();
-            return `<text x="${xVal}" y="${yVal}" class="${clsName}">${cleanContent}</text>`;
-          }
-        );
-        // Strip any legacy burnt-in entity-badge circles/emojis from SVG so only clean HA icons show
-        rawSvg = rawSvg.replace(/<g\b[^>]*class="[^"]*entity-badge[^"]*"[^>]*>[\s\S]*?<\/g>\s*/gi, "");
-        // Strip hardcoded width and height attributes from the root <svg> tag so it sizes strictly by viewBox aspect ratio
-        rawSvg = rawSvg.replace(/(<svg\b[^>]*)\bwidth="[0-9.]+"\s*/i, "$1 ");
-        rawSvg = rawSvg.replace(/(<svg\b[^>]*)\bheight="[0-9.]+"\s*/i, "$1 ");
-        this._floorplanSvg = rawSvg;
+        this._floorplanSvg = this._cleanAndSanitizeSvg(rawSvg);
         this._floorplanLoadFailed = false;
       } else {
         this._floorplanLoadFailed = true;
@@ -1719,11 +1736,13 @@ class OtisCompanionCard extends HTMLElement {
       news: ["news", "official_news", "announcement"],
       habits: ["habit_routine", "habit_deviation", "habits", "behavioral"],
       lighting: ["lighting", "automation"],
+      migration: ["migration", "automation_migration", "blueprint_migration"],
       media: ["media"],
       security: ["security"],
       dashboard: ["dashboard", "visualization"],
       cleanup: ["cleanup"],
       energy: ["energy"],
+      mesh: ["mesh", "network"],
       system: ["system"],
     };
     const allowed = map[filterKey] || [filterKey];
@@ -1746,7 +1765,16 @@ class OtisCompanionCard extends HTMLElement {
       case "confirm_person_identity":
         return "👤 Confirm Identity Profile";
       case "heal_mesh_node":
-        return "📡 Heal Mesh Node";
+      case "heal_mesh_network":
+        return "📡 Auto-Heal Mesh Routes";
+      case "execute_energy_arbitrage":
+        return "⚡ Dispatch Energy Arbitrage";
+      case "schedule_ev_charging":
+        return "🌙 Schedule Off-Peak Charging";
+      case "fuse_presence":
+        return "🎯 Calibrate Radar Presence";
+      case "propose_automation_migration":
+        return "🚀 Propose Native Coordinator";
       case "sync_federated_nodes":
         return "🌐 Resync Edge Nodes";
       case "improve_automation":
@@ -5724,12 +5752,14 @@ class OtisCompanionCard extends HTMLElement {
     const ignoredCount = activeIgnored.length;
     const categories = [
       { key: "all", label: "All" },
+      { key: "migration", label: "🚀 Migrations" },
       { key: "news", label: "📰 Official News" },
       { key: "habits", label: "Habits & Routines" },
       { key: "lighting", label: "Lighting & Auto" },
       { key: "media", label: "Media" },
       { key: "security", label: "Security" },
       { key: "energy", label: "Energy" },
+      { key: "mesh", label: "Mesh & Zigbee" },
       { key: "dashboard", label: "Dashboards" },
       { key: "cleanup", label: "Cleanup" },
       { key: "system", label: "System" },
@@ -6536,7 +6566,7 @@ class OtisCompanionCard extends HTMLElement {
     const isControlOnly = this._config.mode === "floorplan_control";
     const isAdmin = Boolean(this._hass?.user?.is_admin || this._hass?.user?.is_owner);
 
-    if (!this._floorplanSvg && !this._loadingFloorplan && !this._floorplanLoadFailed) {
+    if (!this._floorplanSvg && !this._loadingFloorplan) {
       setTimeout(() => this._loadFloorplanSvg(this._capabilityMap?.floorplan?.url), 0);
     }
 
@@ -8213,17 +8243,17 @@ class OtisCompanionCard extends HTMLElement {
 
             <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
               <div class="rules-setting-label">Primary Residents / Household Members:</div>
-              <input type="text" id="wiz-residents" value="${this._escapeHtml(w.residents || "")}" placeholder="e.g. Jamie, Amy" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+              <input type="text" id="wiz-residents" value="${this._escapeHtml(w.residents || "")}" placeholder="e.g. Alex, Jordan" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
             </div>
 
             <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
               <div class="rules-setting-label">Work-From-Home Rooms & Active Hours:</div>
-              <input type="text" id="wiz-work" value="${this._escapeHtml(w.workHours || "")}" placeholder="e.g. Jamie works in Study from 9:00 AM to 5:00 PM" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+              <input type="text" id="wiz-work" value="${this._escapeHtml(w.workHours || "")}" placeholder="e.g. Primary resident works in Study from 9:00 AM to 5:00 PM" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
             </div>
 
             <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
               <div class="rules-setting-label">Sleep & Bed Navigation Preferences:</div>
-              <input type="text" id="wiz-sleep" value="${this._escapeHtml(w.sleepHabits || "")}" placeholder="e.g. Nighttime lights-off triggers when Amy or Jamie is in bed" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+              <input type="text" id="wiz-sleep" value="${this._escapeHtml(w.sleepHabits || "")}" placeholder="e.g. Nighttime lights-off triggers when everyone is in bed" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
             </div>
           </div>
         `
@@ -8430,7 +8460,7 @@ class OtisCompanionCard extends HTMLElement {
           id="rules-input-instructions"
           rows="8"
           placeholder="e.g.:
-- Jamie works in the Study from 9:00 AM to 5:00 PM.
+- Primary resident works in the Study from 9:00 AM to 5:00 PM.
 - Always keep the Great Room cooler than the rest of the house.
 - When guests are staying over, never arm the guest room motion sensors.
 - Refer to the backyard patio as 'The Oasis'."

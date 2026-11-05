@@ -513,8 +513,8 @@ class PresenceFusionManager:
             for ent_entry in ent_reg.entities.values():
                 if ent_entry.area_id:
                     entity_to_area[ent_entry.entity_id] = ent_entry.area_id
-                elif ent_entry.device_id and dev_reg and hasattr(dev_reg, "devices"):
-                    dev = dev_reg.devices.get(ent_entry.device_id)
+                elif ent_entry.device_id and dev_reg:
+                    dev = dev_reg.async_get(ent_entry.device_id) if hasattr(dev_reg, "async_get") else getattr(dev_reg, "devices", {}).get(ent_entry.device_id)
                     if dev and getattr(dev, "area_id", None):
                         entity_to_area[ent_entry.entity_id] = dev.area_id
 

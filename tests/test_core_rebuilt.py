@@ -766,7 +766,7 @@ class TestOtisAICore(unittest.TestCase):
             "```yaml\n"
             "- id: '1730000000'\n"
             "  alias: 'Notification: Guest Mode & PIN Alerts'\n"
-            "  description: 'Notifies Jamie and Amy when Guest Mode is toggled'\n"
+            "  description: 'Notifies residents when Guest Mode is toggled'\n"
             "  triggers:\n"
             "    - trigger: state\n"
             "      entity_id: input_boolean.guest_mode\n"
@@ -2913,7 +2913,7 @@ class TestSentinelManager(unittest.TestCase):
         self.assertEqual(subview["icon"], "mdi:door")
         self.assertEqual(dm._get_room_icon("Theater", "theater"), "mdi:theater")
         self.assertEqual(dm._get_room_icon("Backyard", "backyard"), "mdi:tree")
-        self.assertEqual(dm._get_room_icon("Amy's Office", "office"), "mdi:desk")
+        self.assertEqual(dm._get_room_icon("Executive Office", "office"), "mdi:desk")
         self.assertEqual(dm._get_room_icon("Downstairs Bath", "bath"), "mdi:shower")
 
     def test_floorplan_view_cards_picture_elements(self):
@@ -4101,7 +4101,7 @@ class TestBehavioralRulesManager(unittest.TestCase):
             "quiet_hours_start": "23:00",
             "quiet_hours_end": "06:30",
             "quiet_hours_volume": 120,  # Should clamp to 100
-            "custom_instructions": "Always greet Jamie politely. Never arm perimeter when guest room is occupied.",
+            "custom_instructions": "Always greet residents politely. Never arm perimeter when guest room is occupied.",
         }))
 
         self.assertTrue(updated["onboarding_completed"])
@@ -4115,7 +4115,7 @@ class TestBehavioralRulesManager(unittest.TestCase):
         self.assertIn("Formal", snippet)
         self.assertIn("STRICT", snippet)
         self.assertIn("23:00 to 06:30", snippet)
-        self.assertIn("Always greet Jamie politely", snippet)
+        self.assertIn("Always greet residents politely", snippet)
 
     def test_minimalist_and_high_autonomy_snippet(self):
         """Verify Minimalist persona and High Autonomy prompt snippet formatting."""
@@ -4696,7 +4696,8 @@ class TestModernSectionsDashboardGeneration(unittest.TestCase):
         engine = DiscoveryEngine(self.hass)
         news = engine._parse_ha_atom_feed(sample_atom_xml)
 
-        self.assertEqual(len(news), 1)
+        # 1 primary news card + 2 feature adoption cards (Assist voice and Floor cards)
+        self.assertEqual(len(news), 3)
         item = news[0]
         self.assertEqual(item["category"], "news")
         self.assertIn("2026.10: You are here", item["title"])
@@ -4704,6 +4705,14 @@ class TestModernSectionsDashboardGeneration(unittest.TestCase):
         self.assertEqual(item["action_payload"]["url"], "https://www.home-assistant.io/blog/2026/10/07/release-202610/")
         self.assertEqual(item["action_payload"]["pub_date"], "2026-10-07")
         self.assertTrue(item["id"].startswith("ha_news_release-202610_"))
+
+        # Verify actionable capability adoption recommendations
+        categories = [n["category"] for n in news]
+        self.assertIn("news", categories)
+        self.assertIn("system", categories)
+        adopt_voice = next((n for n in news if "adopt_voice" in n["id"]), None)
+        self.assertIsNotNone(adopt_voice)
+        self.assertIn("Voice Satellites", adopt_voice["title"])
 
     def test_async_write_blueprint_and_reload(self):
         """Test writing and reloading automation blueprints in AutomationManager."""

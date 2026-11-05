@@ -7,6 +7,20 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.51] - 2026-11-05
+
+### Added & Enhanced
+- **Instant Floor Plan SVG Delivery**:
+  - Embedded SVG XML directly into `cap_map["floorplan"]["svg"]` via non-blocking executor job, eliminating 401 signed URL parameter mismatches and guaranteeing instant floor plan rendering.
+- **Media Studio Dynamic Lovelace Card Detection**:
+  - Automatically discovers installed custom Lovelace cards (`custom:control4-mediaplayer-card`, `custom:mini-media-player`, `custom:universal-remote-card`, `custom:mushroom-media-player-card`) and configures specialized media player dashboards dynamically.
+- **Proactive Feed Migration Recommendations**:
+  - Analyzes existing legacy automations, scripts, and blueprints to propose native Otis coordinator upgrades (Multimodal Presence Fusion, TOU Contextual Energy Arbitrage) via safe non-destructive recommendations.
+- **HA News Capability Adoption**:
+  - Automatically parses official Home Assistant release feeds to identify newly introduced capabilities and generate one-click adoption suggestions.
+- **Zero Hard-Coding Standards**:
+  - Replaced residual user names and specific environment references with generic aliases and dynamic registry lookups across test suites and placeholders.
+
 ## [0.1.50] - 2026-11-05
 
 ### Fixed & Optimized

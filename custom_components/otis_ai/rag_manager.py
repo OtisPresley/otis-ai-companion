@@ -6,6 +6,7 @@ Zero-cloud, privacy-first, and fully persistent across Home Assistant restarts.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import re
@@ -98,13 +99,13 @@ def compute_fallback_embedding(text: str, dim: int = DEFAULT_EMBEDDING_DIM) -> l
     vec = [0.0] * dim
     tokens = re.findall(r"\w+", text.lower())
     for tok in tokens:
-        # Token unigram hash
-        h = hash(tok) % dim
+        # Token unigram deterministic hash
+        h = int(hashlib.md5(tok.encode("utf-8")).hexdigest()[:8], 16) % dim
         vec[h] += 1.0
         # Character bigram subword hashes
         for i in range(len(tok) - 1):
             sub = tok[i : i + 2]
-            h_sub = hash(sub) % dim
+            h_sub = int(hashlib.md5(sub.encode("utf-8")).hexdigest()[:8], 16) % dim
             vec[h_sub] += 0.5
 
     norm = math.sqrt(sum(x * x for x in vec))
@@ -324,7 +325,8 @@ class RAGKnowledgeManager:
 
         for idx, c_text in enumerate(chunks_text):
             chunk_id = f"{document_id}_c{idx}"
-            embedding = await self._generate_embedding(c_text)
+            embed_text = f"{title}\n{c_text}" if title else c_text
+            embedding = await self._generate_embedding(embed_text)
 
             chunk_record = {
                 "chunk_id": chunk_id,
@@ -606,11 +608,13 @@ class RAGKnowledgeManager:
 
             c_emb = chunk.get("embedding")
             c_content = chunk.get("content", "")
+            c_title = chunk.get("title", "")
 
             # Dense vector cosine similarity
             v_score = cosine_similarity(query_emb, c_emb)
             # Sparse lexical token overlap
-            l_score = lexical_similarity(query, c_content)
+            c_text_full = f"{c_title} {c_content}" if c_title else c_content
+            l_score = lexical_similarity(query, c_text_full)
 
             # Hybrid score weighting
             combined_score = (0.7 * v_score) + (0.3 * l_score) if v_score > 0 else l_score

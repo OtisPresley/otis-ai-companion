@@ -1208,6 +1208,52 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "message": f"Autonomous healing dispatched to mesh node {payload.get('node_id')}",
                 "result": res,
             }
+        elif action_type == "heal_mesh_network":
+            mm = _get_mesh_manager()
+            res = await mm.async_heal_mesh_node("all", protocol=payload.get("protocol"))
+            _invalidate()
+            return {
+                "success": True,
+                "message": "Self-healing mesh routine triggered across all degraded routes.",
+                "result": res,
+            }
+        elif action_type == "execute_energy_arbitrage":
+            em = _get_energy_manager()
+            res = await em.async_execute_energy_arbitrage()
+            _invalidate()
+            return {
+                "success": True,
+                "message": "Dispatched contextual TOU energy arbitrage load schedule.",
+                "result": res,
+            }
+        elif action_type == "schedule_ev_charging":
+            em = _get_energy_manager()
+            res = await em.async_schedule_ev_charging(mode=payload.get("mode", "off_peak_fast"))
+            _invalidate()
+            return {
+                "success": True,
+                "message": "EV charging scheduled to run during super off-peak rate window.",
+                "result": res,
+            }
+        elif action_type == "fuse_presence":
+            pm = _get_presence_fusion_manager()
+            res = await pm.async_fuse_presence(use_cache=False)
+            _invalidate()
+            return {
+                "success": True,
+                "message": "Recalibrated multimodal presence probabilities with micro-motion targets.",
+                "result": res,
+            }
+        elif action_type == "propose_automation_migration":
+            target_coord = payload.get("target_coordinator", "presence_fusion")
+            alias = payload.get("alias", "Automation")
+            area = payload.get("area", "Room")
+            return {
+                "success": True,
+                "action": "open_migration_modal",
+                "message": f"Proposed native Otis coordinator migration for '{alias}'. In Otis Rules, assign {area} to {target_coord} to coordinate automatically without legacy timer collisions.",
+                "payload": payload,
+            }
 
         return {"success": False, "error": f"Unsupported action_type '{action_type}'"}
 
@@ -5403,6 +5449,7 @@ class DiscoveryEngine:
             "floorplan": {
                 "exists": has_floorplan,
                 "walkthrough_completed": has_walkthrough,
+                "svg": await self.floorplan_parser.async_get_svg_content() if has_floorplan else None,
                 "url": (
                     self.hass.http.async_sign_path("/api/otis_ai/media/otis_floorplan.svg", timedelta(days=365))
                     if has_floorplan and hasattr(self.hass, "http") and hasattr(self.hass.http, "async_sign_path")
@@ -6445,6 +6492,65 @@ class DiscoveryEngine:
                                 "target_entity": "climate.upstairs",
                             },
                         })
+
+                # Check F: Proactive Migration of Existing Automations & Blueprints to Otis Native Coordinators
+                if isinstance(parsed_autos, list):
+                    for auto in parsed_autos:
+                        if not isinstance(auto, dict):
+                            continue
+                        aid = str(auto.get("id") or auto.get("alias") or "")
+                        alias = auto.get("alias") or aid
+                        auto_str = yaml.dump(auto).lower()
+
+                        # Motion lighting automation -> recommend Otis Multimodal Presence Fusion
+                        if any(k in auto_str for k in ("motion", "pir", "occupancy")) and any(k in auto_str for k in ("light.turn_on", "light.turn_off", "light.toggle")):
+                            matched_area = next((a for a in ("study", "office", "kitchen", "living_room", "bathroom", "hallway", "bedroom", "garage", "mudroom") if a in auto_str), None)
+                            area_label = matched_area.replace("_", " ").title() if matched_area else "Room"
+                            sugg_id = f"migrate_presence_coordinator_{aid}"
+                            if not any(s["id"] == sugg_id for s in result["improvement_suggestions"]):
+                                result["improvement_suggestions"].append({
+                                    "id": sugg_id,
+                                    "title": f"Migrate '{alias}' to Multimodal Presence Coordinator ({area_label})",
+                                    "category": "migration",
+                                    "priority": "high",
+                                    "icon": "mdi:motion-sensor-plus",
+                                    "description": (
+                                        f"Existing automation '{alias}' relies on basic motion triggers. "
+                                        "Migrating to Otis Multimodal Presence Fusion combines micro-motion mmWave radar, "
+                                        "BLE trilateration, and thermal body gating so lights never shut off while someone is sitting still, "
+                                        "and ignores robotic vacuums and pets."
+                                    ),
+                                    "action_type": "propose_automation_migration",
+                                    "action_payload": {
+                                        "automation_id": aid,
+                                        "alias": alias,
+                                        "target_coordinator": "presence_fusion",
+                                        "area": matched_area or "general",
+                                    },
+                                })
+
+                        # EV or Battery charging automation -> recommend Otis TOU Contextual Energy Arbitrage
+                        if any(k in auto_str for k in ("ev_charge", "ev_charging", "charger", "battery", "tesla", "charge_mode")) and any(k in auto_str for k in ("switch.turn_on", "time", "numeric_state")):
+                            sugg_id = f"migrate_energy_arbitrage_{aid}"
+                            if not any(s["id"] == sugg_id for s in result["improvement_suggestions"]):
+                                result["improvement_suggestions"].append({
+                                    "id": sugg_id,
+                                    "title": f"Migrate '{alias}' to Contextual Energy Arbitrage",
+                                    "category": "migration",
+                                    "priority": "high",
+                                    "icon": "mdi:transmission-tower-export",
+                                    "description": (
+                                        f"Existing automation '{alias}' controls charging on static triggers. "
+                                        "Migrating to Otis Contextual Energy Arbitrage dynamically integrates dynamic TOU off-peak tariffs, "
+                                        "negative grid pricing detection, and solar position to minimize charging costs."
+                                    ),
+                                    "action_type": "propose_automation_migration",
+                                    "action_payload": {
+                                        "automation_id": aid,
+                                        "alias": alias,
+                                        "target_coordinator": "energy_arbitrage",
+                                    },
+                                })
             except Exception as err:
                 _LOGGER.debug("Could not inspect automations.yaml: %s", err)
 
@@ -6585,9 +6691,97 @@ class DiscoveryEngine:
             except Exception as err:
                 _LOGGER.debug("Error generating Sentinel suggestions: %s", err)
 
-        # Surface Existing Automation Improvements & HA System/Config Optimizations
-        suggestions.extend(config_audit.get("improvement_suggestions", [])[:4])
+        # Surface Existing Automation Improvements, Proactive Migrations & HA System Optimizations
+        suggestions.extend(config_audit.get("improvement_suggestions", [])[:6])
         suggestions.extend(config_audit.get("system_suggestions", []))
+
+        # Surface Self-Healing Mesh Network Routing Optimizations
+        if self.mesh_manager:
+            try:
+                mesh_audit = await self.mesh_manager.async_audit_mesh_topology()
+                health_score = mesh_audit.get("health_score", 100)
+                degraded_nodes = mesh_audit.get("degraded_nodes", [])
+                if health_score < 85 or degraded_nodes:
+                    node_count = len(degraded_nodes)
+                    suggestions.append({
+                        "id": "heal_mesh_network_routes",
+                        "title": f"Self-Healing Mesh: Route Degradation Detected ({health_score}% Health)",
+                        "category": "mesh",
+                        "priority": "high" if health_score < 70 else "medium",
+                        "icon": "mdi:access-point-network-off",
+                        "description": (
+                            f"Otis Mesh Manager identified {node_count} Zigbee/Z-Wave node(s) with high hop count or weak signal. "
+                            "Trigger autonomous neighbor re-negotiation to heal routing paths and eliminate latency."
+                        ),
+                        "action_type": "heal_mesh_network",
+                        "action_payload": {"degraded_nodes": degraded_nodes},
+                    })
+            except Exception as err:
+                _LOGGER.debug("Error auditing mesh for suggestions: %s", err)
+
+        # Surface Contextual TOU Energy Arbitrage Opportunities
+        if self.energy_manager:
+            try:
+                energy_telemetry = await self.energy_manager.async_get_energy_summary()
+                arbitrage = energy_telemetry.get("arbitrage", {})
+                current_tariff = arbitrage.get("current_tariff_period")
+                negative_pricing = arbitrage.get("negative_pricing_active", False)
+                if negative_pricing:
+                    suggestions.append({
+                        "id": "negative_pricing_energy_opportunity",
+                        "title": "⚡ Negative Grid Pricing Detected: Dispatch Flexible Loads",
+                        "category": "energy",
+                        "priority": "critical",
+                        "icon": "mdi:cash-fast",
+                        "description": (
+                            "Grid electricity prices are currently negative! Pre-charge home batteries, "
+                            "heat pool water, and dispatch EV charging to earn credit."
+                        ),
+                        "action_type": "execute_energy_arbitrage",
+                        "action_payload": {"strategy": "negative_pricing_dispatch"},
+                    })
+                elif current_tariff == "off_peak":
+                    suggestions.append({
+                        "id": "off_peak_energy_arbitrage_window",
+                        "title": "🌙 Off-Peak TOU Tariff Window Active: Schedule Heavy Loads",
+                        "category": "energy",
+                        "priority": "low",
+                        "icon": "mdi:clock-check-outline",
+                        "description": (
+                            "Your electric utility is in super off-peak hours. Otis can co-optimize your EV charging "
+                            "and discretionary appliances before on-peak rates resume."
+                        ),
+                        "action_type": "schedule_ev_charging",
+                        "action_payload": {"mode": "off_peak_fast"},
+                    })
+            except Exception as err:
+                _LOGGER.debug("Error checking energy manager for suggestions: %s", err)
+
+        # Surface Multimodal Presence Radar Calibration
+        if self.presence_fusion_manager:
+            try:
+                presence_data = await self.presence_fusion_manager.async_fuse_presence(use_cache=True)
+                rooms_with_radar = [
+                    rname for rname, rinfo in presence_data.get("rooms", {}).items()
+                    if any("mmwave" in m for m in rinfo.get("active_modalities", []))
+                ]
+                if rooms_with_radar and not any(s.get("id") == "calibrate_mmwave_presence" for s in suggestions):
+                    room_list_str = ", ".join(r.replace("_", " ").title() for r in rooms_with_radar[:3])
+                    suggestions.append({
+                        "id": "calibrate_mmwave_presence",
+                        "title": f"Calibrate Micro-Motion Radar ({room_list_str})",
+                        "category": "presence",
+                        "priority": "medium",
+                        "icon": "mdi:radar",
+                        "description": (
+                            f"Active mmWave radar targets discovered in {room_list_str}. "
+                            "Calibrate Bayesian noise floors and static target persistence to eliminate false vacancies."
+                        ),
+                        "action_type": "fuse_presence",
+                        "action_payload": {"calibrate": True},
+                    })
+            except Exception as err:
+                _LOGGER.debug("Error checking presence fusion for suggestions: %s", err)
 
         # Surface New Home Assistant Capabilities (Native Multi-Floor Registry Sync)
         try:
@@ -8107,6 +8301,39 @@ class DiscoveryEngine:
                         "pub_date": pub_date,
                     },
                 })
+
+                # Check for actionable new features mentioned in HA release news
+                text_lower = f"{title} {clean_text}".lower()
+                if "voice" in text_lower or "assist" in text_lower or "satellite" in text_lower:
+                    items.append({
+                        "id": f"adopt_voice_news_{slug_hash}",
+                        "title": f"Adopt HA Capability: Configure Voice Satellites ({title})",
+                        "category": "system",
+                        "priority": "medium",
+                        "icon": "mdi:microphone-outline",
+                        "description": (
+                            "Home Assistant news highlights voice & satellite upgrades. Otis can link your "
+                            "local media players and satellite hardware with localized wake words and room arbitration."
+                        ),
+                        "action_type": "advisor_guide",
+                        "action_payload": {
+                            "guide_message": "To configure voice satellites with Otis, open the Capabilities tab or ask Assist Co-Pilot: 'Configure a voice satellite for [Room]'."
+                        },
+                    })
+                if "floor" in text_lower or "sections" in text_lower:
+                    items.append({
+                        "id": f"adopt_floors_news_{slug_hash}",
+                        "title": f"Adopt HA Capability: Sync Native Floors & Sections ({title})",
+                        "category": "system",
+                        "priority": "medium",
+                        "icon": "mdi:layers-triple-outline",
+                        "description": (
+                            "Recent Home Assistant updates introduce native Floor & Sections dashboard capabilities. "
+                            "Sync your areas and rooms to native Home Assistant floors in 1 click."
+                        ),
+                        "action_type": "sync_ha_floors",
+                        "action_payload": {},
+                    })
         except Exception as err:
             _LOGGER.debug("Error parsing HA atom feed: %s", err)
         return items

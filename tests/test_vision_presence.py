@@ -59,7 +59,7 @@ class TestVisionPresenceManager(unittest.TestCase):
             "binary_sensor.living_room_mmwave": MockEntityEntry("binary_sensor.living_room_mmwave", "living_room"),
             "binary_sensor.office_pir_motion": MockEntityEntry("binary_sensor.office_pir_motion", "office"),
             "media_player.living_room_tv": MockEntityEntry("media_player.living_room_tv", "living_room"),
-            "person.jamie": MockEntityEntry("person.jamie", "office"),
+            "person.resident_1": MockEntityEntry("person.resident_1", "office"),
             "switch.kitchen_oven": MockEntityEntry("switch.kitchen_oven", "kitchen"),
             "device_tracker.kitchen_smart_plug": MockEntityEntry("device_tracker.kitchen_smart_plug", "kitchen"),
         }
@@ -69,7 +69,7 @@ class TestVisionPresenceManager(unittest.TestCase):
             MockEntityState("binary_sensor.living_room_mmwave", "on", {"device_class": "occupancy", "friendly_name": "Living Room Radar"}),
             MockEntityState("media_player.living_room_tv", "playing", {"friendly_name": "Living Room TV"}),
             MockEntityState("binary_sensor.office_pir_motion", "on", {"device_class": "motion", "friendly_name": "Office PIR"}),
-            MockEntityState("person.jamie", "office", {"friendly_name": "Jamie"}),
+            MockEntityState("person.resident_1", "office", {"friendly_name": "Alex"}),
             MockEntityState("switch.kitchen_oven", "off", {"friendly_name": "Kitchen Oven"}),
             MockEntityState("device_tracker.kitchen_smart_plug", "home", {"friendly_name": "Kitchen Plug Tracker"}),
         ]
@@ -172,7 +172,7 @@ class TestVisionPresenceManager(unittest.TestCase):
 
         # All residents away, garage door open, space heater left on in vacant study, theater switches on
         states = [
-            MockEntityState("person.jamie", "not_home", {"friendly_name": "Jamie"}),
+            MockEntityState("person.resident_1", "not_home", {"friendly_name": "Alex"}),
             MockEntityState("cover.garage_door", "open", {"device_class": "garage", "friendly_name": "Garage Door"}),
             MockEntityState("switch.study_space_heater", "on", {"friendly_name": "Study Space Heater"}),
             MockEntityState("switch.theater_yamaha_enhancer", "on", {"friendly_name": "Theater Yamaha Enhancer"}),

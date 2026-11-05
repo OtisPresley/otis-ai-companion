@@ -47,6 +47,7 @@ class DashboardManager:
         self.hass = hass
         self.floorplan_parser = floorplan_parser
         self.rules_manager = rules_manager
+        self._cached_installed_cards: set[str] = set()
 
     def get_camera_stream_strategy(self) -> str:
         """Retrieve configured camera stream strategy from config entry."""
@@ -97,6 +98,79 @@ class DashboardManager:
             return False
         return os.path.exists(os.path.join(storage_dir, f"lovelace.{dash_id}"))
 
+    async def _async_dashboard_file_exists(self, dash_id: str) -> bool:
+        """Check if dashboard storage file exists on disk non-blockingly."""
+        if hasattr(self.hass, "async_add_executor_job"):
+            try:
+                return await self.hass.async_add_executor_job(self._dashboard_file_exists, dash_id)
+            except Exception:
+                return False
+        return self._dashboard_file_exists(dash_id)
+
+    def _inspect_lovelace_resources_sync(self) -> set[str]:
+        """Read .storage/lovelace_resources synchronously in executor to detect installed cards."""
+        detected = set()
+        storage_dir = self._storage_dir()
+        if not storage_dir:
+            return detected
+        res_file = os.path.join(storage_dir, "lovelace_resources")
+        if not os.path.isfile(res_file):
+            return detected
+        try:
+            with open(res_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            items = data.get("data", {}).get("items", []) if isinstance(data, dict) else []
+            for item in items:
+                url = str(item.get("url", "")).lower()
+                if "control4-mediaplayer-card" in url:
+                    detected.add("custom:control4-mediaplayer-card")
+                if "mini-media-player" in url:
+                    detected.add("custom:mini-media-player")
+                if "universal-remote-card" in url:
+                    detected.add("custom:universal-remote-card")
+                if "mushroom" in url:
+                    detected.add("custom:mushroom-media-player-card")
+                if "bubble-card" in url:
+                    detected.add("custom:bubble-card")
+                if "snmp-network-manager-card" in url:
+                    detected.add("custom:snmp-network-manager-card")
+                if "snmp-switch-manager-card" in url:
+                    detected.add("custom:snmp-switch-manager-card")
+                if "advanced-camera-card" in url:
+                    detected.add("custom:advanced-camera-card")
+                if "xiaomi-vacuum-map-card" in url:
+                    detected.add("custom:xiaomi-vacuum-map-card")
+        except Exception as err:
+            _LOGGER.debug("Could not read lovelace_resources: %s", err)
+        return detected
+
+    async def async_get_available_custom_cards(self, active_integrations: list[Any] | None = None) -> set[str]:
+        """Detect custom Lovelace cards registered in Lovelace resources or bundled with active integrations."""
+        cards: set[str] = set()
+        if hasattr(self.hass, "async_add_executor_job"):
+            try:
+                cards = await self.hass.async_add_executor_job(self._inspect_lovelace_resources_sync)
+            except Exception:
+                pass
+        else:
+            cards = self._inspect_lovelace_resources_sync()
+
+        # Also detect cards bundled with active integrations
+        if active_integrations:
+            active_domains = {
+                str(i.get("domain", "") if isinstance(i, dict) else i).lower()
+                for i in active_integrations
+            }
+            if "control4_mediaplayer" in active_domains:
+                cards.add("custom:control4-mediaplayer-card")
+            if "snmp_network_manager" in active_domains:
+                cards.add("custom:snmp-network-manager-card")
+            if "snmp_switch_manager" in active_domains:
+                cards.add("custom:snmp-switch-manager-card")
+
+        self._cached_installed_cards.update(cards)
+        return cards
+
     async def async_ensure_admin_companion_dashboard(
         self, capability_map: dict[str, Any] | None = None, force_regenerate: bool = False
     ) -> dict[str, Any]:
@@ -110,8 +184,14 @@ class DashboardManager:
             "show_in_sidebar": True,
             "mode": "storage",
         }
-        dashboard_config = self._build_otis_companion_dashboard_config(capability_map)
-        overwrite = True if (force_regenerate or capability_map or not self._dashboard_file_exists(OTIS_DASHBOARD_ID)) else False
+        installed_cards = await self.async_get_available_custom_cards(
+            capability_map.get("integrations", []) if capability_map else None
+        )
+        dashboard_config = self._build_otis_companion_dashboard_config(
+            capability_map, installed_cards=installed_cards
+        )
+        file_exists = await self._async_dashboard_file_exists(OTIS_DASHBOARD_ID)
+        overwrite = True if (force_regenerate or capability_map or not file_exists) else False
         return await self._async_register_and_save_dashboard(
             item=item,
             dashboard_config=dashboard_config,
@@ -132,8 +212,20 @@ class DashboardManager:
             "show_in_sidebar": True,
             "mode": "storage",
         }
-        dashboard_config = self._build_user_command_center_dashboard_config(capability_map)
-        overwrite = True if (force_regenerate or capability_map or not self._dashboard_file_exists(COMMAND_CENTER_DASHBOARD_ID)) else False
+        installed_cards = await self.async_get_available_custom_cards(
+            capability_map.get("integrations", []) if capability_map else None
+        )
+        dashboard_config = self._build_user_command_center_dashboard_config(
+            capability_map, installed_cards=installed_cards
+        )
+        file_exists = await self._async_dashboard_file_exists(COMMAND_CENTER_DASHBOARD_ID)
+        overwrite = True if (force_regenerate or capability_map or not file_exists) else False
+        return await self._async_register_and_save_dashboard(
+            item=item,
+            dashboard_config=dashboard_config,
+            overwrite_config=overwrite,
+            force_regenerate=force_regenerate,
+        )
         return await self._async_register_and_save_dashboard(
             item=item,
             dashboard_config=dashboard_config,
@@ -305,7 +397,7 @@ class DashboardManager:
         return view
 
     def _build_user_command_center_dashboard_config(
-        self, capability_map: dict[str, Any] | None = None
+        self, capability_map: dict[str, Any] | None = None, installed_cards: set[str] | None = None
     ) -> dict[str, Any]:
         """Build the Lovelace config for the Non-Admin User Command Center dashboard."""
         areas_map = capability_map.get("areas", {}) if capability_map else {}
@@ -635,7 +727,10 @@ class DashboardManager:
             home_view["cards"] = home_cards
 
         media_cards = self._build_media_view_cards(
-            capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, nav_style=nav_style
+            capability_map,
+            dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH,
+            nav_style=nav_style,
+            installed_cards=installed_cards,
         )
         sec_cards = self._build_security_view_cards(
             capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, nav_style=nav_style
@@ -706,7 +801,7 @@ class DashboardManager:
         }
 
     def _build_otis_companion_dashboard_config(
-        self, capability_map: dict[str, Any] | None = None
+        self, capability_map: dict[str, Any] | None = None, installed_cards: set[str] | None = None
     ) -> dict[str, Any]:
         """Build the Lovelace config for the Admin-only Otis AI Companion Command Center with Hub-and-Spoke subviews."""
         user_rules = self._get_user_rules()
@@ -737,7 +832,10 @@ class DashboardManager:
 
         # 1. Media Studio Subview
         media_cards = self._build_media_view_cards(
-            capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH, nav_style=nav_style
+            capability_map,
+            dashboard_url_path=OTIS_DASHBOARD_URL_PATH,
+            nav_style=nav_style,
+            installed_cards=installed_cards,
         )
         views.append(
             self._build_studio_view(
@@ -1439,7 +1537,12 @@ class DashboardManager:
         require_admin = bool(payload.get("require_admin", False))
         template = payload.get("template", "media_studio")
 
-        config = self._generate_template_config(template, title, capability_map, url_path=url_path)
+        installed_cards = await self.async_get_available_custom_cards(
+            capability_map.get("integrations", []) if capability_map else None
+        )
+        config = self._generate_template_config(
+            template, title, capability_map, url_path=url_path, installed_cards=installed_cards
+        )
         item = {
             "id": dash_id,
             "url_path": url_path,
@@ -2497,6 +2600,7 @@ class DashboardManager:
         capability_map: dict[str, Any] | None,
         dashboard_url_path: str = COMMAND_CENTER_DASHBOARD_URL_PATH,
         nav_style: str | None = None,
+        installed_cards: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Build cards for Media Studio subview or standalone dashboard."""
         if nav_style is None:
@@ -2567,6 +2671,22 @@ class DashboardManager:
         if not matrix_zones and all_mps:
             matrix_zones = [m for m in all_mps if m not in tvs and m not in streamers]
 
+        # Auto-detect available custom Lovelace cards
+        detected_cards = installed_cards if installed_cards is not None else self._cached_installed_cards
+        active_integrations = capability_map.get("integrations", [])
+        active_domains = {
+            str(i.get("domain", "") if isinstance(i, dict) else i).lower()
+            for i in active_integrations
+        }
+        has_c4_card = (
+            "custom:control4-mediaplayer-card" in detected_cards
+            or "control4_mediaplayer" in active_domains
+            or any("matrix_amp" in zid.lower() for zid in matrix_zones)
+        )
+        has_mmp = "custom:mini-media-player" in detected_cards
+        has_remote = "custom:universal-remote-card" in detected_cards
+        has_mushroom = "custom:mushroom-media-player-card" in detected_cards
+
         cards: list[dict[str, Any]] = [
             nav_card,
             {
@@ -2595,31 +2715,74 @@ class DashboardManager:
             },
         ]
 
+        # 1. Premier Matrix Controller Card (Control4 Card if installed / available)
+        if has_c4_card and matrix_zones:
+            cards.append({
+                "type": "custom:control4-mediaplayer-card",
+                "title": "Whole-Home Matrix Audio Controller",
+            })
+
+        # 2. Upstream Audio Streamers & Bridges
         if streamers:
+            streamer_cards = []
+            for s in streamers[:4]:
+                if has_mmp:
+                    streamer_cards.append({
+                        "type": "custom:mini-media-player",
+                        "entity": s,
+                        "artwork": "cover",
+                        "source": "full",
+                        "sound_mode": "full",
+                        "info": "short",
+                    })
+                elif has_mushroom:
+                    streamer_cards.append({
+                        "type": "custom:mushroom-media-player-card",
+                        "entity": s,
+                        "use_media_artwork": True,
+                        "show_volume_level": True,
+                    })
+                else:
+                    streamer_cards.append({"type": "media-control", "entity": s})
+
             cards.append({
                 "type": "grid",
                 "title": "Upstream Audio Streamers & Bridges",
-                "columns": min(2, len(streamers)),
+                "columns": min(2, len(streamer_cards)),
                 "square": False,
-                "cards": [{"type": "media-control", "entity": s} for s in streamers[:4]],
+                "cards": streamer_cards,
             })
 
+        # 3. Room Speaker & Amplifier Zones
         if matrix_zones:
+            zone_cards = []
+            for zid in matrix_zones:
+                if has_mmp:
+                    zone_cards.append({
+                        "type": "custom:mini-media-player",
+                        "entity": zid,
+                        "artwork": "cover",
+                        "source": "full",
+                        "sound_mode": "full",
+                        "group": False,
+                        "volume_stateless": False,
+                    })
+                else:
+                    zone_cards.append({
+                        "type": "tile",
+                        "entity": zid,
+                        "features": [{"type": "media-player-volume-slider"}],
+                    })
+
             cards.append({
                 "type": "grid",
                 "title": "Room Speaker & Amplifier Zones",
                 "columns": 2,
                 "square": False,
-                "cards": [
-                    {
-                        "type": "tile",
-                        "entity": zid,
-                        "features": [{"type": "media-player-volume-slider"}],
-                    }
-                    for zid in matrix_zones
-                ],
+                "cards": zone_cards,
             })
 
+        # 4. Audio Routing Helpers
         if helpers:
             cards.append({
                 "type": "entities",
@@ -2628,13 +2791,31 @@ class DashboardManager:
                 "entities": helpers[:10],
             })
 
+        # 5. Cinema & Room Displays
         if tvs:
+            tv_cards = []
+            for idx, tv in enumerate(tvs[:6]):
+                if idx == 0 and has_remote:
+                    tv_cards.append({
+                        "type": "custom:universal-remote-card",
+                        "entity": tv,
+                    })
+                elif has_mmp:
+                    tv_cards.append({
+                        "type": "custom:mini-media-player",
+                        "entity": tv,
+                        "artwork": "cover",
+                        "source": "full",
+                    })
+                else:
+                    tv_cards.append({"type": "tile", "entity": tv})
+
             cards.append({
                 "type": "grid",
                 "title": "Cinema & Room Displays",
-                "columns": min(2, len(tvs)),
+                "columns": min(2, len(tv_cards)),
                 "square": False,
-                "cards": [{"type": "tile", "entity": tv} for tv in tvs[:6]],
+                "cards": tv_cards,
             })
 
         if not streamers and not matrix_zones and not tvs and not helpers:
@@ -3144,6 +3325,7 @@ class DashboardManager:
         title: str,
         capability_map: dict[str, Any],
         url_path: str = "",
+        installed_cards: set[str] | None = None,
     ) -> dict[str, Any]:
         """Build professional-grade Lovelace Hub-and-Spoke view/card definitions using verified active entities only."""
         if not url_path:
@@ -3277,27 +3459,60 @@ class DashboardManager:
             if not matrix_zones and all_mps:
                 matrix_zones = [m for m in all_mps if m not in tvs and m not in streamers]
 
+            detected_cards = installed_cards if installed_cards is not None else self._cached_installed_cards
+            active_integrations = capability_map.get("integrations", [])
+            active_domains = {
+                str(i.get("domain", "") if isinstance(i, dict) else i).lower()
+                for i in active_integrations
+            }
+            has_c4_card = (
+                "custom:control4-mediaplayer-card" in detected_cards
+                or "control4_mediaplayer" in active_domains
+                or any("matrix_amp" in zid.lower() for zid in matrix_zones)
+            )
+            has_mmp = "custom:mini-media-player" in detected_cards
+            has_remote = "custom:universal-remote-card" in detected_cards
+            has_mushroom = "custom:mushroom-media-player-card" in detected_cards
+
             # Spoke 1: Speaker Zones
             zones_cards: list[dict[str, Any]] = [
                 {
                     "type": "markdown",
-                    "content": "## 🔊 Matrix & Speaker Zones\nIndependent volume and source selection for every room zone.",
+                    "content": "## 🔊 Matrix & Speaker Zones\nIndependent volume, source selection, and power management for every room zone.",
                 }
             ]
+            if has_c4_card and matrix_zones:
+                zones_cards.append({
+                    "type": "custom:control4-mediaplayer-card",
+                    "title": "Control4 Audio Matrix Controller",
+                })
+
             if matrix_zones:
+                zone_cards = []
+                for zid in matrix_zones:
+                    if has_mmp:
+                        zone_cards.append({
+                            "type": "custom:mini-media-player",
+                            "entity": zid,
+                            "artwork": "cover",
+                            "source": "full",
+                            "sound_mode": "full",
+                            "group": False,
+                            "volume_stateless": False,
+                        })
+                    else:
+                        zone_cards.append({
+                            "type": "tile",
+                            "entity": zid,
+                            "features": [{"type": "media-player-volume-slider"}],
+                        })
+
                 zones_cards.append({
                     "type": "grid",
                     "title": "Speaker Zones",
                     "columns": 2,
                     "square": False,
-                    "cards": [
-                        {
-                            "type": "tile",
-                            "entity": zid,
-                            "features": [{"type": "media-player-volume-slider"}],
-                        }
-                        for zid in matrix_zones
-                    ],
+                    "cards": zone_cards,
                 })
             else:
                 zones_cards.append({
@@ -3322,12 +3537,33 @@ class DashboardManager:
                 }
             ]
             if streamers:
+                streamer_cards = []
+                for s in streamers[:6]:
+                    if has_mmp:
+                        streamer_cards.append({
+                            "type": "custom:mini-media-player",
+                            "entity": s,
+                            "artwork": "cover",
+                            "source": "full",
+                            "sound_mode": "full",
+                            "info": "short",
+                        })
+                    elif has_mushroom:
+                        streamer_cards.append({
+                            "type": "custom:mushroom-media-player-card",
+                            "entity": s,
+                            "use_media_artwork": True,
+                            "show_volume_level": True,
+                        })
+                    else:
+                        streamer_cards.append({"type": "media-control", "entity": s})
+
                 streamers_cards.append({
                     "type": "grid",
                     "title": "Audio Streamers",
-                    "columns": min(2, len(streamers)),
+                    "columns": min(2, len(streamer_cards)),
                     "square": False,
-                    "cards": [{"type": "media-control", "entity": s} for s in streamers[:6]],
+                    "cards": streamer_cards,
                 })
             if helpers:
                 streamers_cards.append({
@@ -3359,12 +3595,29 @@ class DashboardManager:
                 }
             ]
             if tvs:
+                tv_cards = []
+                for idx, tv in enumerate(tvs[:8]):
+                    if idx == 0 and has_remote:
+                        tv_cards.append({
+                            "type": "custom:universal-remote-card",
+                            "entity": tv,
+                        })
+                    elif has_mmp:
+                        tv_cards.append({
+                            "type": "custom:mini-media-player",
+                            "entity": tv,
+                            "artwork": "cover",
+                            "source": "full",
+                        })
+                    else:
+                        tv_cards.append({"type": "tile", "entity": tv})
+
                 cinema_cards.append({
                     "type": "grid",
                     "title": "Displays & TVs",
-                    "columns": min(2, len(tvs)),
+                    "columns": min(2, len(tv_cards)),
                     "square": False,
-                    "cards": [{"type": "tile", "entity": tv} for tv in tvs[:8]],
+                    "cards": tv_cards,
                 })
             else:
                 cinema_cards.append({
@@ -3418,28 +3671,62 @@ class DashboardManager:
                     "cards": hub_nav_cards,
                 },
             ]
+
+            if has_c4_card and matrix_zones:
+                hub_cards.append({
+                    "type": "custom:control4-mediaplayer-card",
+                    "title": "Whole-Home Matrix Audio Controller",
+                })
+
             if streamers:
+                hub_streamer_cards = []
+                for s in streamers[:2]:
+                    if has_mmp:
+                        hub_streamer_cards.append({
+                            "type": "custom:mini-media-player",
+                            "entity": s,
+                            "artwork": "cover",
+                            "source": "full",
+                            "sound_mode": "full",
+                            "info": "short",
+                        })
+                    else:
+                        hub_streamer_cards.append({"type": "media-control", "entity": s})
+
                 hub_cards.append({
                     "type": "grid",
                     "title": "Active Upstream Streamers",
-                    "columns": min(2, len(streamers)),
+                    "columns": min(2, len(hub_streamer_cards)),
                     "square": False,
-                    "cards": [{"type": "media-control", "entity": s} for s in streamers[:2]],
+                    "cards": hub_streamer_cards,
                 })
+
             if matrix_zones:
+                hub_zone_cards = []
+                for zid in matrix_zones[:4]:
+                    if has_mmp:
+                        hub_zone_cards.append({
+                            "type": "custom:mini-media-player",
+                            "entity": zid,
+                            "artwork": "cover",
+                            "source": "full",
+                            "sound_mode": "full",
+                            "group": False,
+                            "volume_stateless": False,
+                        })
+                    else:
+                        hub_zone_cards.append({
+                            "type": "tile",
+                            "entity": zid,
+                            "features": [{"type": "media-player-volume-slider"}],
+                        })
+
                 hub_cards.append({
                     "type": "grid",
                     "title": "Primary Speaker Zones",
                     "columns": 2,
                     "square": False,
-                    "cards": [
-                        {
-                            "type": "tile",
-                            "entity": zid,
-                            "features": [{"type": "media-player-volume-slider"}],
-                        }
-                        for zid in matrix_zones[:4]
-                    ],
+                    "cards": hub_zone_cards,
                 })
 
             hub_view = {

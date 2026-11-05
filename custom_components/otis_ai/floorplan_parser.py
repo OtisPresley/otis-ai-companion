@@ -620,6 +620,25 @@ class FloorplanParser:
         """Check if a video walkthrough has been completed."""
         return bool(self._metadata.get("walkthrough_completed", False))
 
+    def _read_svg_content_sync(self, full_path: str) -> str | None:
+        """Read SVG content synchronously in executor."""
+        if not os.path.isfile(full_path):
+            return None
+        try:
+            with open(full_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception as err:
+            _LOGGER.debug("Could not read floorplan SVG content: %s", err)
+            return None
+
+    async def async_get_svg_content(self, svg_relative_path: str = DEFAULT_OUTPUT_SVG_PATH) -> str | None:
+        """Asynchronously return raw SVG content from executor."""
+        if hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
+            full_path = self.hass.config.path(svg_relative_path)
+        else:
+            full_path = svg_relative_path
+        return await self._async_run_in_executor(self._read_svg_content_sync, full_path)
+
     def floorplan_exists(self) -> bool:
         """Check if an interactive floorplan SVG already exists in www/."""
         if self._floorplan_exists or bool(self._cached_svg_room_bounds):
