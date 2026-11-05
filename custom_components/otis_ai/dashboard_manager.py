@@ -2234,6 +2234,12 @@ class DashboardManager:
                 card_cfg["floorplan_pitch"] = user_rules["floorplan_pitch"]
             if "floorplan_wall_height" in user_rules:
                 card_cfg["floorplan_wall_height"] = user_rules["floorplan_wall_height"]
+            if "floorplan_walls_enabled" in user_rules:
+                card_cfg["floorplan_walls_enabled"] = user_rules["floorplan_walls_enabled"]
+            if "floorplan_zone" in user_rules:
+                card_cfg["floorplan_zone"] = user_rules["floorplan_zone"]
+            if "floorplan_scale" in user_rules:
+                card_cfg["floorplan_scale"] = user_rules["floorplan_scale"]
             return [card_cfg]
 
         image_url = f"/api/otis_ai/media/otis_floorplan.svg?v={svg_mtime}" if svg_mtime else "/api/otis_ai/media/otis_floorplan.svg"

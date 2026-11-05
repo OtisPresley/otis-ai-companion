@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.57";
+const CARD_VERSION = "0.1.58";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -550,6 +550,13 @@ class OtisCompanionCard extends HTMLElement {
     if (config.floorplan_walls_enabled !== undefined) {
       this._floorplanWallsEnabled = config.floorplan_walls_enabled !== false;
     }
+    if (config.floorplan_zone) {
+      this._selectedFloorZone = config.floorplan_zone;
+    }
+    if (config.floorplan_scale !== undefined) {
+      const sc = parseFloat(config.floorplan_scale);
+      if (!isNaN(sc)) this._floorplanScale = Math.max(0.6, Math.min(1.8, sc));
+    }
     this._ensureValidActiveTab();
     this._render();
   }
@@ -594,20 +601,28 @@ class OtisCompanionCard extends HTMLElement {
       if (!this._rulesModalOpen) {
         this._rulesDraft = { ...this._userRules };
       }
-      if (this._userRules.floorplan_view_mode && !localStorage.getItem("otis_floorplan_view_mode")) {
+      const isFloorplanControlView = this._config.mode === "floorplan_control";
+      if (this._userRules.floorplan_view_mode && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_view_mode"))) {
         this._floorplanViewMode = this._userRules.floorplan_view_mode;
       }
-      if (this._userRules.floorplan_azimuth !== undefined && !localStorage.getItem("otis_floorplan_orbit_azimuth")) {
+      if (this._userRules.floorplan_azimuth !== undefined && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_orbit_azimuth"))) {
         this._floorplanAzimuth = parseFloat(this._userRules.floorplan_azimuth) || 0;
       }
-      if (this._userRules.floorplan_pitch !== undefined && !localStorage.getItem("otis_floorplan_pitch_incline")) {
+      if (this._userRules.floorplan_pitch !== undefined && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_pitch_incline"))) {
         this._floorplanPitch = parseFloat(this._userRules.floorplan_pitch) || 30;
       }
-      if (this._userRules.floorplan_wall_height !== undefined && !localStorage.getItem("otis_floorplan_wall_height")) {
+      if (this._userRules.floorplan_wall_height !== undefined && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_wall_height"))) {
         this._floorplanWallHeight = parseFloat(this._userRules.floorplan_wall_height) || 36;
       }
-      if (this._userRules.floorplan_walls_enabled !== undefined && !localStorage.getItem("otis_floorplan_walls_enabled")) {
+      if (this._userRules.floorplan_walls_enabled !== undefined && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_walls_enabled"))) {
         this._floorplanWallsEnabled = this._userRules.floorplan_walls_enabled !== false;
+      }
+      if (this._userRules.floorplan_zone && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_selected_zone"))) {
+        this._selectedFloorZone = this._userRules.floorplan_zone;
+      }
+      if (this._userRules.floorplan_scale !== undefined && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_scale"))) {
+        const sc = parseFloat(this._userRules.floorplan_scale);
+        if (!isNaN(sc)) this._floorplanScale = Math.max(0.6, Math.min(1.8, sc));
       }
       if (Array.isArray(this._userRules.dismissed_recommendation_ids)) {
         for (const id of this._userRules.dismissed_recommendation_ids) {
@@ -1590,14 +1605,26 @@ class OtisCompanionCard extends HTMLElement {
   }
 
   _showToast(msg, isError = false) {
-    const toast = this.shadowRoot.querySelector("#toast");
+    this._activeToast = {
+      msg,
+      isError,
+      expiresAt: Date.now() + 4000,
+    };
+    if (this._toastTimer) {
+      clearTimeout(this._toastTimer);
+    }
+    const toast = this.shadowRoot ? this.shadowRoot.querySelector("#toast") : null;
     if (toast) {
       toast.textContent = msg;
       toast.className = isError ? "toast error show" : "toast show";
-      setTimeout(() => {
-        toast.className = "toast";
-      }, 4000);
     }
+    this._toastTimer = setTimeout(() => {
+      this._activeToast = null;
+      const curToast = this.shadowRoot ? this.shadowRoot.querySelector("#toast") : null;
+      if (curToast) {
+        curToast.className = "toast";
+      }
+    }, 4000);
   }
 
   async _copyToClipboard(text, successToast = "Copied to clipboard!") {
@@ -3111,6 +3138,9 @@ class OtisCompanionCard extends HTMLElement {
           flex-direction: column;
           gap: 12px;
           padding-right: 6px;
+          user-select: text !important;
+          -webkit-user-select: text !important;
+          -moz-user-select: text !important;
         }
 
         .chat-bubble {
@@ -3121,6 +3151,28 @@ class OtisCompanionCard extends HTMLElement {
           font-size: 0.82rem;
           line-height: 1.5;
           word-break: break-word;
+          user-select: text !important;
+          -webkit-user-select: text !important;
+          -moz-user-select: text !important;
+          cursor: text;
+        }
+
+        .chat-bubble *,
+        .reasoning-steps-list,
+        .reasoning-steps-list * {
+          user-select: text !important;
+          -webkit-user-select: text !important;
+          -moz-user-select: text !important;
+        }
+
+        .chat-bubble button,
+        .chat-bubble .prompt-copy-btn,
+        .chat-bubble .response-copy-btn,
+        .chat-bubble .response-retry-btn,
+        .chat-bubble .code-copy-btn {
+          user-select: none !important;
+          -webkit-user-select: none !important;
+          cursor: pointer;
         }
 
         .chat-bubble p {
@@ -5942,7 +5994,7 @@ class OtisCompanionCard extends HTMLElement {
         }
 
         <!-- Feedback Toast -->
-        <div class="toast" id="toast"></div>
+        <div class="${this._activeToast && Date.now() < this._activeToast.expiresAt ? (this._activeToast.isError ? 'toast error show' : 'toast show') : 'toast'}" id="toast">${this._activeToast && Date.now() < this._activeToast.expiresAt ? this._escapeHtml(this._activeToast.msg) : ""}</div>
       </ha-card>
 
       <!-- Viewport Floating Modals (Rendered outside ha-card to prevent backdrop-filter / overflow containment clipping) -->
@@ -7058,7 +7110,7 @@ class OtisCompanionCard extends HTMLElement {
             ? `
             <div class="floorplan-svg-viewport ${this._editorActive && isAdmin && !isControlOnly ? 'editor-mode' : ''} ${this._floorplanViewMode === '3d' ? 'view-3d-active' : ''}" id="floorplan-viewport">
               ${this._editorActive && isAdmin && !isControlOnly ? `<div class="editor-hud" id="editor-hud">📐 Pointer: --, --</div>` : ''}
-              ${this._floorplanViewMode === '3d' && (!this._editorActive || isControlOnly) ? this._renderFloorplan3dControls() : ''}
+              ${this._floorplanViewMode === '3d' && (!this._editorActive || isControlOnly) ? this._renderFloorplan3dControls(isControlOnly) : ''}
               <div class="floorplan-3d-stage" id="floorplan-3d-stage">
                 <div class="floorplan-3d-canvas" id="floorplan-canvas" style="--floorplan-azimuth: ${this._floorplanAzimuth}deg; --floorplan-pitch: ${this._floorplanPitch}deg; --wall-height: ${this._floorplanWallHeight || 28}px; aspect-ratio: ${this._selectedFloorZone === 'main' ? '1300 / 713' : (this._selectedFloorZone === 'upper' ? '1300 / 488' : '1300 / 1250')};">
                   ${this._floorplanSvg}
@@ -7146,7 +7198,7 @@ class OtisCompanionCard extends HTMLElement {
     `;
   }
 
-  _renderFloorplan3dControls() {
+  _renderFloorplan3dControls(isControlOnly = false) {
     if (this._editorActive) return "";
     const isCollapsed = Boolean(this._floorplanHudCollapsed);
     const isLocked = this._floorplanOrbitLocked !== false;
@@ -7213,7 +7265,7 @@ class OtisCompanionCard extends HTMLElement {
               <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 270 ? 'active' : ''}" data-azimuth="270" data-pitch="55" title="West" style="${disabledStyle}" ${disabledAttr}>270° W</button>
               <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 315 ? 'active' : ''}" data-azimuth="315" data-pitch="58" title="Isometric NW" style="${disabledStyle}" ${disabledAttr}>315° NW</button>
               <button type="button" class="btn-preset-reset" id="btn-reset-3d-view" title="Reset to Default Isometric Projection" style="${disabledStyle}" ${disabledAttr}>↺ Reset</button>
-              <button type="button" class="btn-preset-reset" id="btn-save-3d-dashboard" title="Save current 3D camera angles and sync to Interactive Floor Plan dashboard view" style="background: rgba(14, 165, 233, 0.22); border-color: rgba(56, 189, 248, 0.55); color: #38bdf8; font-weight: 700;">💾 Save 3D to Dashboard</button>
+              ${!isControlOnly ? `<button type="button" class="btn-preset-reset" id="btn-save-3d-dashboard" title="Save current 3D camera angles, walls &amp; zone to the Interactive Floor Plan dashboard view" style="background: rgba(14, 165, 233, 0.22); border-color: rgba(56, 189, 248, 0.55); color: #38bdf8; font-weight: 700;">💾 Save 3D to Dashboard</button>` : ""}
             </div>
           </div>
           <div class="hud-hint">
@@ -10767,6 +10819,17 @@ class OtisCompanionCard extends HTMLElement {
       };
     });
 
+    // Allow text selection inside chat history without Lovelace drag/gesture interference
+    const chatHistoryEl = root.querySelector("#chat-history");
+    if (chatHistoryEl) {
+      chatHistoryEl.onpointerdown = (e) => {
+        e.stopPropagation();
+      };
+      chatHistoryEl.onmousedown = (e) => {
+        e.stopPropagation();
+      };
+    }
+
     // Prompt copy buttons
     root.querySelectorAll(".prompt-copy-btn").forEach((btn) => {
       btn.onclick = async (e) => {
@@ -10776,16 +10839,13 @@ class OtisCompanionCard extends HTMLElement {
         }
         const prompt = btn.getAttribute("data-prompt");
         if (prompt) {
-          try {
-            await navigator.clipboard.writeText(prompt);
-          } catch (_) {}
+          await this._copyToClipboard(prompt, "📋 Copied prompt to clipboard & input!");
           const input = root.querySelector("#chat-input");
           if (input) {
             input.value = prompt;
             input.focus();
             input.dispatchEvent(new Event("input", { bubbles: true }));
           }
-          this._showToast("📋 Copied prompt to input!");
         }
       };
     });
@@ -11457,31 +11517,51 @@ class OtisCompanionCard extends HTMLElement {
 
     const btnSave3dDash = root.querySelector("#btn-save-3d-dashboard");
     if (btnSave3dDash) {
-      btnSave3dDash.onclick = async () => {
+      btnSave3dDash.onclick = async (e) => {
+        if (e) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        const originalText = btnSave3dDash.textContent;
+        btnSave3dDash.disabled = true;
+        btnSave3dDash.textContent = "⏳ Saving...";
         try {
           this._showToast("💾 Saving 3D View to Interactive Floor Plan Dashboard...");
+          const az = Math.round(this._floorplanAzimuth || 0);
+          const pitch = Math.round(this._floorplanPitch || 30);
+          const wallH = Math.round(this._floorplanWallHeight || 36);
+          const wallsEnabled = this._floorplanWallsEnabled !== false;
+          const zone = this._selectedFloorZone || "all";
+          const scale = this._floorplanScale || 1.0;
           try {
             localStorage.setItem("otis_floorplan_view_mode", "3d");
-            localStorage.setItem("otis_floorplan_orbit_azimuth", String(this._floorplanAzimuth));
-            localStorage.setItem("otis_floorplan_pitch_incline", String(this._floorplanPitch));
-            localStorage.setItem("otis_floorplan_walls_enabled", String(this._floorplanWallsEnabled));
-            localStorage.setItem("otis_floorplan_wall_height", String(this._floorplanWallHeight || 36));
+            localStorage.setItem("otis_floorplan_orbit_azimuth", String(az));
+            localStorage.setItem("otis_floorplan_pitch_incline", String(pitch));
+            localStorage.setItem("otis_floorplan_walls_enabled", String(wallsEnabled));
+            localStorage.setItem("otis_floorplan_wall_height", String(wallH));
+            localStorage.setItem("otis_floorplan_selected_zone", String(zone));
+            localStorage.setItem("otis_floorplan_scale", String(scale));
           } catch (_) {}
           await this._hass.callService("otis_ai", "set_user_rules", {
             rules: {
               floorplan_view_mode: "3d",
               floorplan_3d: true,
-              floorplan_azimuth: this._floorplanAzimuth,
-              floorplan_pitch: this._floorplanPitch,
-              floorplan_wall_height: this._floorplanWallHeight || 36,
-              floorplan_walls_enabled: this._floorplanWallsEnabled !== false,
+              floorplan_azimuth: az,
+              floorplan_pitch: pitch,
+              floorplan_wall_height: wallH,
+              floorplan_walls_enabled: wallsEnabled,
+              floorplan_zone: zone,
+              floorplan_scale: scale,
             },
           });
           await this._hass.callService("otis_ai", "regenerate_dashboards", {});
-          this._showToast("✨ 3D Floor Plan saved & synced to Interactive Floor Plan dashboard view!");
+          btnSave3dDash.textContent = "✅ Saved!";
+          this._showToast(`✨ 3D Floor Plan (${az}° Az / ${pitch}° Pitch) saved & synced to Floor Plan dashboard!`);
           await this._fetchData();
         } catch (err) {
           console.error("Failed to save 3D dashboard view:", err);
+          btnSave3dDash.disabled = false;
+          btnSave3dDash.textContent = originalText;
           this._showToast(`Failed to sync 3D view: ${err.message || err}`, true);
         }
       };

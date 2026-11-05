@@ -48,6 +48,8 @@ DEFAULT_RULES: dict[str, Any] = {
     "floorplan_pitch": 30,
     "floorplan_wall_height": 36,
     "floorplan_walls_enabled": True,
+    "floorplan_zone": "all",
+    "floorplan_scale": 1.0,
     "voice_announcements_enabled": True,
     "voice_filter_passersby": True,
     "person_profiles": {},
@@ -200,6 +202,14 @@ class BehavioralRulesManager:
                 merged["floorplan_pitch"] = max(30, min(75, float(merged["floorplan_pitch"])))
             except (ValueError, TypeError):
                 merged["floorplan_pitch"] = 30
+        if "floorplan_zone" in merged:
+            zone_val = str(merged["floorplan_zone"]).strip().lower()
+            merged["floorplan_zone"] = zone_val if zone_val in ("all", "main", "upper", "outdoor") else "all"
+        if "floorplan_scale" in merged:
+            try:
+                merged["floorplan_scale"] = max(0.6, min(1.8, float(merged["floorplan_scale"])))
+            except (ValueError, TypeError):
+                merged["floorplan_scale"] = 1.0
         if "dismissed_recommendation_ids" in merged:
             if isinstance(merged["dismissed_recommendation_ids"], (list, set, tuple)):
                 merged["dismissed_recommendation_ids"] = list(dict.fromkeys(str(x) for x in merged["dismissed_recommendation_ids"] if x))

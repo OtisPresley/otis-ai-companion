@@ -7,6 +7,16 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.58] - 2026-11-05
+
+### Fixed & Enhanced
+- **3D Floor Plan Save-to-Dashboard Synchronization & Dedicated Subview Polish**:
+  - Fixed `#btn-save-3d-dashboard` on the Command Center Floor Plan tab by persisting `floorplan_view_mode`, `floorplan_3d`, `floorplan_azimuth`, `floorplan_pitch`, `floorplan_wall_height`, `floorplan_walls_enabled`, `floorplan_zone`, and `floorplan_scale` to `user_rules` (`rules_manager.py`) and `dashboard_manager.py`, applying saved rules directly on the `floorplan_control` view even when `localStorage` contains older values, and preserving toast notifications across Shadow DOM re-renders.
+  - Hid the `💾 Save 3D to Dashboard` button on the dedicated **Floor Plan** dashboard view (`mode: "floorplan_control"`) while keeping it available on the main Command Center Floor Plan tab.
+- **Assist Co-Pilot Chat Text Selection & Clipboard Copy**:
+  - Enabled native text highlighting and copy (`user-select: text !important`) across `.chat-history`, `.chat-bubble`, markdown blocks, code blocks, and reasoning steps, stopping Lovelace pointer event capture from interfering with drag-to-select.
+  - Updated `.prompt-copy-btn` to use `_copyToClipboard()` so prompt and response copying work reliably over both HTTPS and local HTTP connections.
+
 ## [0.1.57] - 2026-11-05
 
 ### Fixed & Enhanced
