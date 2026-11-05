@@ -1067,7 +1067,7 @@ test_local_llm:
       name: Endpoint URL
       description: Optional override URL (defaults to configured local LLM URL).
       required: false
-      example: "http://10.0.12.228:11434"
+      example: "http://127.0.0.1:11434"
       selector:
         text:
 
@@ -1104,7 +1104,7 @@ pull_local_llm_model:
       name: Endpoint URL
       description: Optional override URL (defaults to configured local LLM URL).
       required: false
-      example: "http://10.0.12.228:11434"
+      example: "http://127.0.0.1:11434"
       selector:
         text:
     test_after_pull:
@@ -1552,7 +1552,7 @@ confirm_person_identity:
   fields:
     person_id:
       name: Person Entity ID
-      description: The Home Assistant person entity ID (e.g. person.jamie).
+      description: The Home Assistant person entity ID (e.g. person.resident).
       required: true
       selector:
         entity:

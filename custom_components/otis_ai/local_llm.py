@@ -19,7 +19,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 _LOGGER = logging.getLogger(__name__)
 
-DEFAULT_LOCAL_LLM_URL = "http://10.0.12.228:11434"
+DEFAULT_LOCAL_LLM_URL = "http://127.0.0.1:11434"
 DEFAULT_LOCAL_LLM_MODEL = "qwen2.5:3b"
 DEFAULT_LOCAL_VISION_MODEL = "llama3.2-vision:latest"
 DEFAULT_TIMEOUT_SECONDS = 60.0

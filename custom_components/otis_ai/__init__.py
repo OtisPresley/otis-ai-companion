@@ -555,6 +555,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     # Start real-time presence tracking and publish initial fused presence states
     vision_manager.async_start_presence_tracking()
+    vision_manager.publish_initial_perimeter_sentinel_state()
     pres_coro = vision_manager.async_publish_fused_presence_states()
     if hasattr(hass, "async_create_task"):
         pres_task = hass.async_create_task(pres_coro)

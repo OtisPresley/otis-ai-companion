@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.49";
+const CARD_VERSION = "0.1.50";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -64,10 +64,10 @@ class OtisCompanionCard extends HTMLElement {
     this._rulesDraft = null;
     this._wizardStep = 1;
     this._wizardState = {
-      residents: "Jamie, Amy",
-      workHours: "Jamie works in Study, 9:00 AM - 5:00 PM",
-      sleepHabits: "Bedtime navigation active when Jamie or Amy in bed",
-      guestLockCode: "4411",
+      residents: "",
+      workHours: "",
+      sleepHabits: "",
+      guestLockCode: "",
       guestDelayedOff: "00:00:00",
       guestClimateComfort: true,
       holidaySwitches: true,
@@ -4344,23 +4344,33 @@ class OtisCompanionCard extends HTMLElement {
         }
 
         /* 3D Raised Transparent Walls - Illuminated Architectural Glass */
+        .floorplan-walls-overlay,
+        .floorplan-walls-overlay * {
+          pointer-events: none !important;
+        }
+
         .floorplan-walls-overlay {
           position: absolute;
           top: 0;
           left: 0;
           width: 100%;
           height: 100%;
-          pointer-events: none;
+          pointer-events: none !important;
           z-index: 6;
           transform-style: preserve-3d;
           backface-visibility: visible;
           -webkit-backface-visibility: visible;
         }
 
+        .floorplan-3d-room-shell,
+        .floorplan-3d-room-shell * {
+          pointer-events: none !important;
+        }
+
         .floorplan-3d-room-shell {
           position: absolute;
           transform-style: preserve-3d;
-          pointer-events: none;
+          pointer-events: none !important;
           background: rgba(14, 165, 233, 0.04);
           transition: opacity 0.2s ease;
           backface-visibility: visible;
@@ -4369,7 +4379,7 @@ class OtisCompanionCard extends HTMLElement {
 
         .floorplan-3d-wall {
           position: absolute;
-          pointer-events: none;
+          pointer-events: none !important;
           background: linear-gradient(to top, rgba(14, 165, 233, 0.15) 0%, rgba(56, 189, 248, 0.38) 60%, rgba(56, 189, 248, 0.75) 100%);
           border-left: 2px solid rgba(56, 189, 248, 0.85);
           border-right: 2px solid rgba(56, 189, 248, 0.85);
@@ -4377,6 +4387,19 @@ class OtisCompanionCard extends HTMLElement {
           transform-style: preserve-3d;
           backface-visibility: visible !important;
           -webkit-backface-visibility: visible !important;
+        }
+
+        .door-cut,
+        .door-leaf,
+        .door-swing,
+        .door-garage,
+        .door-sliding,
+        .window-cut,
+        .window-sill,
+        .window-pane,
+        .window-cap,
+        .stairs-step {
+          pointer-events: none !important;
         }
 
         .floorplan-3d-wall-north {
@@ -9231,18 +9254,7 @@ class OtisCompanionCard extends HTMLElement {
         };
       }
 
-      // Rules Tab Switching
-      ["wizard", "dashboard", "persona", "safety", "voice", "instructions"].forEach((tab) => {
-        const tabBtn = root.querySelector(`#rules-tab-${tab}`);
-        if (tabBtn) {
-          tabBtn.onclick = () => {
-            this._rulesActiveTab = tab;
-            this._render();
-          };
-        }
-      });
-
-      // Wizard Input Harvester
+      // Rules Tab Switching & Input Harvesters
       const _harvestWizardInputs = () => {
         const w = { ...(this._wizardState || {}) };
         const resInput = root.querySelector("#wiz-residents");
@@ -9282,7 +9294,74 @@ class OtisCompanionCard extends HTMLElement {
         if (quietVol) w.quietVolume = parseInt(quietVol.value, 10) || 25;
 
         this._wizardState = w;
+        return w;
       };
+
+      const _harvestAllInputs = () => {
+        _harvestWizardInputs();
+
+        const focusSelect = root.querySelector("#rules-input-content-focus");
+        const toneSelect = root.querySelector("#rules-input-tone");
+        const lengthSelect = root.querySelector("#rules-input-length");
+        const instArea = root.querySelector("#rules-input-instructions");
+        const quietToggle = root.querySelector("#rules-input-quiet-enabled");
+        const quietStart = root.querySelector("#rules-input-quiet-start");
+        const quietEnd = root.querySelector("#rules-input-quiet-end");
+        const quietVol = root.querySelector("#rules-input-quiet-vol");
+        const speakerInput = root.querySelector("#rules-input-speaker");
+        const showIgnoredCheck = root.querySelector("#rules-input-show-ignored");
+        const audioFollowToggle = root.querySelector("#rules-input-audio-follow-enabled");
+        const voiceAnnouncementsToggle = root.querySelector("#rules-input-voice-announcements-enabled");
+        const voiceFilterToggle = root.querySelector("#rules-input-voice-filter-passersby");
+        const presenceCardsToggle = root.querySelector("#rules-input-presence-room-cards");
+        const timeoutInput = root.querySelector("#rules-input-reasoning-timeout");
+
+        const draft = { ...(this._rulesDraft || {}) };
+        if (focusSelect) draft.primary_content_focus = focusSelect.value;
+        if (toneSelect) draft.tone = toneSelect.value;
+        if (lengthSelect) draft.response_length = lengthSelect.value;
+        if (instArea) draft.custom_instructions = instArea.value;
+        if (quietToggle) draft.quiet_hours_enabled = quietToggle.checked;
+        if (quietStart) draft.quiet_hours_start = quietStart.value;
+        if (quietEnd) draft.quiet_hours_end = quietEnd.value;
+        if (quietVol) draft.quiet_hours_volume = parseInt(quietVol.value, 10);
+        if (speakerInput) draft.preferred_speaker = speakerInput.value.trim();
+        if (audioFollowToggle) draft.audio_follow_enabled = audioFollowToggle.checked;
+        if (voiceAnnouncementsToggle) draft.voice_announcements_enabled = voiceAnnouncementsToggle.checked;
+        if (voiceFilterToggle) draft.voice_filter_passersby = voiceFilterToggle.checked;
+        if (presenceCardsToggle) draft.presence_room_cards = presenceCardsToggle.checked;
+        if (showIgnoredCheck) draft.show_ignored_recommendations = showIgnoredCheck.checked;
+        if (timeoutInput && timeoutInput.value) draft.reasoning_timeout = parseInt(timeoutInput.value, 10);
+
+        // If wizard state has any values and instructions are empty or wizard active, synthesize instructions
+        const w = this._wizardState || {};
+        const hasWizardContent = Boolean(w.residents || w.workHours || w.sleepHabits || w.guestLockCode);
+        if (hasWizardContent) {
+          const generated = this._generateStructuredRulesText();
+          if (generated && (!draft.custom_instructions || this._rulesActiveTab === "wizard")) {
+            draft.custom_instructions = generated;
+          }
+          if (w.requireDeadboltConfirm !== undefined) draft.require_lock_confirmation = w.requireDeadboltConfirm !== false;
+          if (w.requireAlarmConfirm !== undefined) draft.require_security_confirmation = w.requireAlarmConfirm !== false;
+          if (w.quietHoursStart) draft.quiet_hours_start = w.quietHoursStart;
+          if (w.quietHoursEnd) draft.quiet_hours_end = w.quietHoursEnd;
+          if (w.quietVolume !== undefined) draft.quiet_hours_volume = w.quietVolume;
+        }
+
+        this._rulesDraft = draft;
+        return draft;
+      };
+
+      ["wizard", "dashboard", "persona", "safety", "voice", "instructions"].forEach((tab) => {
+        const tabBtn = root.querySelector(`#rules-tab-${tab}`);
+        if (tabBtn) {
+          tabBtn.onclick = () => {
+            _harvestAllInputs();
+            this._rulesActiveTab = tab;
+            this._render();
+          };
+        }
+      });
 
       // Wizard Stepper Controls
       const launchWizBtn = root.querySelector("#btn-launch-rules-wizard");
@@ -9596,38 +9675,7 @@ class OtisCompanionCard extends HTMLElement {
           this._render();
           try {
             // Harvest latest input values directly from DOM before constructing payload
-            const focusSelect = root.querySelector("#rules-input-content-focus");
-            const toneSelect = root.querySelector("#rules-input-tone");
-            const lengthSelect = root.querySelector("#rules-input-length");
-            const instArea = root.querySelector("#rules-input-instructions");
-            const quietToggle = root.querySelector("#rules-input-quiet-enabled");
-            const quietStart = root.querySelector("#rules-input-quiet-start");
-            const quietEnd = root.querySelector("#rules-input-quiet-end");
-            const quietVol = root.querySelector("#rules-input-quiet-vol");
-            const speakerInput = root.querySelector("#rules-input-speaker");
-            const showIgnoredCheck = root.querySelector("#rules-input-show-ignored");
-
-            const draft = { ...(this._rulesDraft || {}) };
-            if (focusSelect) draft.primary_content_focus = focusSelect.value;
-            if (toneSelect) draft.tone = toneSelect.value;
-            if (lengthSelect) draft.response_length = lengthSelect.value;
-            if (instArea) draft.custom_instructions = instArea.value;
-            if (quietToggle) draft.quiet_hours_enabled = quietToggle.checked;
-            if (quietStart) draft.quiet_hours_start = quietStart.value;
-            if (quietEnd) draft.quiet_hours_end = quietEnd.value;
-            if (quietVol) draft.quiet_hours_volume = parseInt(quietVol.value, 10);
-            if (speakerInput) draft.preferred_speaker = speakerInput.value.trim();
-            const audioFollowToggle = root.querySelector("#rules-input-audio-follow-enabled");
-            if (audioFollowToggle) draft.audio_follow_enabled = audioFollowToggle.checked;
-            const voiceAnnouncementsToggle = root.querySelector("#rules-input-voice-announcements-enabled");
-            if (voiceAnnouncementsToggle) draft.voice_announcements_enabled = voiceAnnouncementsToggle.checked;
-            const voiceFilterToggle = root.querySelector("#rules-input-voice-filter-passersby");
-            if (voiceFilterToggle) draft.voice_filter_passersby = voiceFilterToggle.checked;
-            const presenceCardsToggle = root.querySelector("#rules-input-presence-room-cards");
-            if (presenceCardsToggle) draft.presence_room_cards = presenceCardsToggle.checked;
-            if (showIgnoredCheck) draft.show_ignored_recommendations = showIgnoredCheck.checked;
-            const timeoutInput = root.querySelector("#rules-input-reasoning-timeout");
-            if (timeoutInput && timeoutInput.value) draft.reasoning_timeout = parseInt(timeoutInput.value, 10);
+            const draft = _harvestAllInputs();
 
             const payload = {
               ...draft,

@@ -805,6 +805,32 @@ class VisionPresenceManager:
             "audit": audit_entry,
         }
 
+    def publish_initial_perimeter_sentinel_state(self) -> None:
+        """Publish initial baseline state for sensor.otis_perimeter_sentinel if not set."""
+        if not hasattr(self.hass, "states") or not hasattr(self.hass.states, "async_set"):
+            return
+        current = self.hass.states.get("sensor.otis_perimeter_sentinel")
+        if current is not None and current.state not in ("unavailable", "unknown"):
+            return
+        attrs = {
+            "friendly_name": "Otis Perimeter Sentinel",
+            "icon": "mdi:shield-check",
+            "latest_camera": None,
+            "latest_zone": None,
+            "latest_severity": "normal",
+            "latest_anomaly_type": None,
+            "latest_confidence": 1.0,
+            "latest_summary": "Perimeter sentinel active. All zones normal.",
+            "active_anomalies_count": 0,
+            "detected_objects": [],
+            "recommended_action": "None",
+            "llm_used": False,
+            "llm_model": None,
+            "total_audits": len(self._camera_audit_history),
+            "active_intruder_tracks_count": 0,
+        }
+        self.hass.states.async_set("sensor.otis_perimeter_sentinel", "normal", attrs)
+
     def _update_perimeter_sentinel_sensor(self, latest_audit: dict[str, Any]) -> None:
         """Publish or update sensor.otis_perimeter_sentinel state with security status."""
         if not hasattr(self.hass, "states") or not hasattr(self.hass.states, "async_set"):
@@ -1789,9 +1815,9 @@ class VisionPresenceManager:
 
         # Pattern 4: Workday Focus Migration (07:30 - 18:00)
         if (7.5 <= cur_hour <= 18.0) and any(
-            k in cur_to for k in ("hallway", "study", "office", "amy_s_office")
+            k in cur_to for k in ("hallway", "study", "office", "work")
         ):
-            target_slug = "study" if "study" in cur_to else "amy_s_office"
+            target_slug = cur_to if any(k in cur_to for k in ("study", "office", "work")) else "office"
             if not is_room_occupied(target_slug):
                 intent = {
                     "intent": "focus_work",

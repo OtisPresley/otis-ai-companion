@@ -14,6 +14,7 @@ from typing import Any
 import uuid
 
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -350,7 +351,7 @@ class EnergyManager:
             # 4. Battery & UPS Storage
             if (
                 device_class == "battery"
-                or "ups_theater" in eid_lower
+                or "ups" in eid_lower
                 or (domain == "sensor" and eid.endswith(("_battery_charge", "_battery_level", "_battery")))
             ):
                 battery_sensors.append({
@@ -470,14 +471,37 @@ class EnergyManager:
 
         # Check Solar Production & Elevation
         solar_elevation = None
+        solar_azimuth = None
         elevation_st = self.hass.states.get("sensor.sun_solar_elevation")
         if elevation_st and elevation_st.state not in ("unavailable", "unknown"):
             try:
                 solar_elevation = round(float(elevation_st.state), 1)
-            except ValueError:
+            except (ValueError, TypeError):
                 pass
 
+        sun_st = self.hass.states.get("sun.sun")
+        if sun_st:
+            attrs = sun_st.attributes or {}
+            if solar_elevation is None and "elevation" in attrs:
+                try:
+                    solar_elevation = round(float(attrs["elevation"]), 1)
+                except (ValueError, TypeError):
+                    pass
+            if "azimuth" in attrs:
+                try:
+                    solar_azimuth = round(float(attrs["azimuth"]), 1)
+                except (ValueError, TypeError):
+                    pass
+
+        if solar_elevation is None:
+            # Fallback approximation from time of day (peaks at ~60° around 13:00)
+            now = dt_util.utcnow()
+            hour_float = now.hour + now.minute / 60.0
+            rad = (hour_float - 13.0) * (math.pi / 12.0)
+            solar_elevation = round(60.0 * math.cos(rad), 1)
+
         solar_watts = 0.0
+        has_solar_system = len(topo.get("solar_sensors", [])) > 0
         for s in topo["solar_sensors"]:
             if s["unit"] in ("W", "kW") or "power" in s["entity_id"]:
                 try:
@@ -491,9 +515,15 @@ class EnergyManager:
         # Check UPS & Battery Status
         ups_data: dict[str, Any] = {}
         for b in topo["battery_sensors"]:
-            if "ups_theater" in b["entity_id"]:
-                key = b["entity_id"].replace("sensor.ups_theater_", "")
-                ups_data[key] = b["state"]
+            raw_eid = b["entity_id"].lower()
+            if "ups" in raw_eid or "battery" in raw_eid:
+                clean_key = (
+                    b["entity_id"]
+                    .split(".", 1)[-1]
+                    .replace("ups_", "")
+                    .replace("battery_", "")
+                )
+                ups_data[clean_key] = b["state"]
 
         # Calculate potential load shedding savings
         active_candidates = [
@@ -508,9 +538,11 @@ class EnergyManager:
             "top_consumers": top_consumers,
             "tariff": tariff,
             "solar": {
-                "production_w": round(solar_watts, 1),
+                "has_solar_system": has_solar_system,
+                "production_w": round(solar_watts, 1) if has_solar_system else 0.0,
                 "solar_elevation_deg": solar_elevation,
-                "has_surplus": solar_watts > total_current_power_w if solar_watts > 0 else False,
+                "solar_azimuth_deg": solar_azimuth,
+                "has_surplus": (solar_watts > total_current_power_w) if (has_solar_system and solar_watts > 0) else False,
             },
             "ups_storage": ups_data,
             "load_shedding": {

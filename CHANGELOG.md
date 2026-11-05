@@ -7,6 +7,21 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.50] - 2026-11-05
+
+### Fixed & Optimized
+- **Floor Plan 3D/2D Wall Pass-Through**:
+  - Added strict `pointer-events: none !important;` to `.floorplan-walls-overlay *`, `.floorplan-3d-wall`, and SVG door/window stroke geometries, allowing click-and-hover gestures to seamlessly reach underlying floor plans, rooms, and entity pins.
+- **Sun Elevation Resolution & Solar Conditional Rendering**:
+  - Fixed `sun_elevation` reporting `None` by evaluating `sun.sun` attributes (`elevation`, `azimuth`) and circadian time-of-day math fallbacks.
+  - Dynamically detects presence of real solar systems; suppresses misleading zero-production solar panels in Energy Studio when no solar integration exists.
+- **Perimeter Sentinel Entity Initialization**:
+  - Added `publish_initial_perimeter_sentinel_state()` on startup, eliminating the "Entity Not Found: sensor.otis_perimeter_sentinel" warning on the Security Center view.
+- **Rules Wizard Multi-Tab Input Persistence**:
+  - Implemented comprehensive `_harvestAllInputs()` handler across all Rules Wizard tabs and footer save actions, preventing input loss on tab switching and persisting custom instructions directly.
+- **Zero Hard-Coding Compliance**:
+  - Removed hardcoded resident names, IP addresses, and specific entity IDs (`ups_theater`, `amy_s_office`, `10.0.12.228`) across `energy_manager.py`, `dashboard_manager.py`, `vision_manager.py`, `const.py`, and `otis-companion-card.js`.
+
 ## [0.1.49] - 2026-11-05
 
 ### Fixed

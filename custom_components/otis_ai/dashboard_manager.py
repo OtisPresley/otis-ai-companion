@@ -2688,13 +2688,20 @@ class DashboardManager:
         ]
         battery_eids = [
             e["entity_id"] for e in entities_list
-            if "battery" in e["entity_id"] or "ups_theater" in e["entity_id"]
+            if "battery" in e["entity_id"] or "ups" in e["entity_id"]
         ]
         controllable_power_eids = [
             e["entity_id"] for e in entities_list
-            if e["entity_id"] in ("switch.pool_pump", "switch.amp_power", "switch.processor_power")
-            or "charger" in e["entity_id"] or "rivian" in e["entity_id"]
+            if any(k in e["entity_id"].lower() for k in ("pump", "charger", "ev_", "vehicle", "car", "heater", "hvac", "ac_", "compressor", "amp", "processor"))
+            and e.get("domain") in ("switch", "climate", "water_heater")
         ]
+
+        has_solar = solar.get("has_solar_system", False) or solar.get("production_w", 0) > 0
+        solar_line = (
+            f"• **Solar & Inverter Status**: Production `{solar.get('production_w', 0)} W` | Sun Elevation `{solar.get('solar_elevation_deg', 0)}°`"
+            if has_solar
+            else f"• **Sun & Solar Position**: Sun Elevation `{solar.get('solar_elevation_deg', 0)}°`"
+        )
 
         cards: list[dict[str, Any]] = [
             nav_card,
@@ -2705,7 +2712,7 @@ class DashboardManager:
                     f"• **Live Power Consumption**: `{total_w} W` monitored across active sub-circuits.\n"
                     f"• **Grid Tariff Period**: `{tariff.get('period', 'standard').upper()}` ({tariff.get('peak_window_description', 'Time-Of-Use')}) — "
                     f"`{tariff.get('hours_until_change', 0)}h` until next rate window change.\n"
-                    f"• **Solar & Inverter Status**: Production `{solar.get('production_w', 0)} W` | Sun Elevation `{solar.get('solar_elevation_deg', 0)}°`"
+                    f"{solar_line}"
                 ),
             },
             {

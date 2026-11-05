@@ -2425,6 +2425,9 @@ class FloorplanParser:
       }}
       .badge-circle {{ fill: rgba(15, 23, 42, 0.92); stroke: {accent_color}; stroke-width: 1.5; }}
       .badge-icon {{ fill: {text_color}; font-size: 10px; text-anchor: middle; dominant-baseline: middle; }}
+      .door-cut, .door-leaf, .door-swing, .door-garage, .door-sliding, .window-cut, .window-sill, .window-pane, .window-cap, .stairs-step {{
+        pointer-events: none;
+      }}
       .door-cut {{ stroke: {accent_secondary}; stroke-width: 4; stroke-linecap: round; }}
       .door-leaf {{ stroke: {accent_color}; stroke-width: 2.2; stroke-linecap: round; }}
       .door-swing {{ stroke: {accent_color}; stroke-width: 1.2; stroke-dasharray: 3 3; fill: none; opacity: 0.80; }}
