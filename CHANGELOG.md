@@ -7,6 +7,13 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-11-05
+
+### Fixed
+- **Lovelace Card `isStudioMode is not defined` Configuration Error**: Moved the Assist Co-Pilot bottom-scroll logic out of `_bindEvents()` (where it referenced `_render()`-scoped variables) into `_render()` so every dashboard view loads again.
+- **Walkthrough Upload Cap**: Raised `MAX_UPLOAD_SIZE_BYTES` to 3GB and streamed raw-body (non-multipart) uploads to disk in 1MB chunks instead of buffering with `request.read()`.
+- **Flaky Multi-Clip Test**: The mock analyzer matched `clip_1` against the random temp directory path; it now matches the file basename only.
+
 ## [0.2.0] - 2026-11-05
 
 ### Added & Enhanced

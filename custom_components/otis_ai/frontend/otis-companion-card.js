@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 0.2.0
+ * Version: 0.2.1
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.2.0";
+const CARD_VERSION = "0.2.1";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -6043,6 +6043,19 @@ class OtisCompanionCard extends HTMLElement {
     `;
 
     this._bindEvents();
+
+    if (this._activeTab === "chat" && !isStudioMode) {
+      const chatHistoryEl = this.shadowRoot.querySelector("#chat-history");
+      if (chatHistoryEl) {
+        if (!wasChatScrolledUp || !prevChatEl) {
+          this._chatInitialScrolled = true;
+          chatHistoryEl.scrollTop = chatHistoryEl.scrollHeight;
+          this._scrollChatToBottom();
+        } else {
+          chatHistoryEl.scrollTop = Math.max(0, chatHistoryEl.scrollHeight - prevChatBottomOffset);
+        }
+      }
+    }
   }
 
   _renderGlanceStrip() {
@@ -13051,18 +13064,6 @@ class OtisCompanionCard extends HTMLElement {
       };
     }
 
-    if (this._activeTab === "chat" && !isStudioMode) {
-      const chatHistoryEl = root.querySelector("#chat-history");
-      if (chatHistoryEl) {
-        if (!wasChatScrolledUp || !prevChatEl) {
-          this._chatInitialScrolled = true;
-          chatHistoryEl.scrollTop = chatHistoryEl.scrollHeight;
-          this._scrollChatToBottom();
-        } else {
-          chatHistoryEl.scrollTop = Math.max(0, chatHistoryEl.scrollHeight - prevChatBottomOffset);
-        }
-      }
-    }
   }
 }
 
