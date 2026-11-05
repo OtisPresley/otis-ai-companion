@@ -223,7 +223,8 @@ class _NoAliasSafeDumper(yaml.SafeDumper):
 
 
 
-MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024  # 100 MB upload limit
+MAX_UPLOAD_SIZE_BYTES = 3 * 1024 * 1024 * 1024  # 3 GB upload limit (streamed to disk, never buffered in RAM)
+UPLOAD_STREAM_CHUNK_BYTES = 1024 * 1024  # 1 MB read chunk for raw-body uploads
 
 
 class OtisWalkthroughUploadView(HomeAssistantView):
@@ -339,22 +340,25 @@ class OtisWalkthroughUploadView(HomeAssistantView):
                         spoken_order = (await field.text()).strip()
             else:
                 v_dest = os.path.join(upload_dir, "walkthrough_upload.mp4")
-                data = await request.read()
-                if len(data) > MAX_UPLOAD_SIZE_BYTES:
-                    _LOGGER.warning(
-                        "Walkthrough upload body exceeded max size %d bytes",
-                        MAX_UPLOAD_SIZE_BYTES,
-                    )
-                    return web.Response(
-                        status=413,
-                        text=f"Upload body exceeded limit of {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)}MB.",
-                    )
-                await self.hass.async_add_executor_job(_append_chunk, v_dest, data, "wb")
+                await self.hass.async_add_executor_job(_append_chunk, v_dest, b"", "wb")
+                body_bytes = 0
+                async for chunk in request.content.iter_chunked(UPLOAD_STREAM_CHUNK_BYTES):
+                    body_bytes += len(chunk)
+                    if body_bytes > MAX_UPLOAD_SIZE_BYTES:
+                        _LOGGER.warning(
+                            "Walkthrough upload body exceeded max size %d bytes",
+                            MAX_UPLOAD_SIZE_BYTES,
+                        )
+                        return web.Response(
+                            status=413,
+                            text=f"Upload body exceeded limit of {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)}MB.",
+                        )
+                    await self.hass.async_add_executor_job(_append_chunk, v_dest, chunk, "ab")
                 saved_videos.append(v_dest)
                 _LOGGER.info(
                     "Walkthrough video saved to %s (%d bytes)",
                     v_dest,
-                    len(data),
+                    body_bytes,
                 )
 
             self._set_progress("Analyzing videos", [], active=True)

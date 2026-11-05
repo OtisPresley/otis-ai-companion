@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added `_NoAliasSafeDumper` (`yaml.SafeDumper` subclass) to eliminate `&id001` / `*id001` YAML anchors and aliases in generated Home Assistant automations.
   - Filtered hardware indicator LEDs (`*_led`, `*_screen`) and exterior driveway/floodlight fixtures when synthesizing indoor room motion/occupancy lighting automations.
 - **Full HACS Default Catalog Compliance Verified**:
-  - Verified 100% non-blocking event-loop file I/O (dispatched via `hass.async_add_executor_job`), mandatory authentication and 100MB upload size cap on `OtisWalkthroughUploadView` (`/api/otis_ai/upload_walkthrough`), private storage of walkthrough videos and floor plan SVGs under `.storage/otis_ai/media` served via authenticated `OtisMediaView` (`/api/otis_ai/media/{filename}`), and zero raw user YAML writes (`configuration.yaml`, `automations.yaml`, `scripts.yaml`, `blueprints/`).
+  - Verified 100% non-blocking event-loop file I/O (dispatched via `hass.async_add_executor_job`), mandatory authentication and a 3GB streamed upload size cap (`MAX_UPLOAD_SIZE_BYTES`, enforced on `Content-Length` and incoming chunks for both multipart and raw-body uploads, never buffered in RAM) on `OtisWalkthroughUploadView` (`/api/otis_ai/upload_walkthrough`), private storage of walkthrough videos and floor plan SVGs under `.storage/otis_ai/media` served via authenticated `OtisMediaView` (`/api/otis_ai/media/{filename}`), and zero raw user YAML writes (`configuration.yaml`, `automations.yaml`, `scripts.yaml`, `blueprints/`).
 
 ## [0.1.59] - 2026-11-05
 
