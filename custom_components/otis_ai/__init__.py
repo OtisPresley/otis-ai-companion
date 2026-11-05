@@ -832,8 +832,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Handle service call to get the capability map."""
         _LOGGER.debug("Service 'get_capability_map' triggered")
         eng = _get_engine()
-        capability_map = await eng.async_build_capability_map()
+        rm = _get_rules_manager()
+        force = bool(call.data.get("force") or call.data.get("force_refresh"))
+        capability_map = await eng.async_build_capability_map(force_refresh=force)
         capability_map["conversation_agent_id"] = entry.entry_id
+        if rm:
+            capability_map["user_rules"] = rm.get_rules()
         return capability_map
 
     async def handle_get_suggestions(call) -> ServiceResponse:
@@ -4799,6 +4803,8 @@ CONVERSATION DISCIPLINE & FOCUS:
 
 HOME ASSISTANT ARCHITECTURAL GROUNDING:
 - Voice Satellites & Assist: Hardware voice satellites (e.g., ESP32-S3 Box, Atom Echo, Wyoming Satellite) connect via the native ESPHome or Wyoming Protocol integrations. Home Assistant DOES NOT have an integration named "Assist Satellite". Pipelines (Wake word, STT, LLM, TTS) are configured in Settings → Voice Assistants. Hardware satellites provide entities in the assist_satellite domain (e.g., assist_satellite.<area>_assistant).
+- Command-Line & Package Installation Prohibition: NEVER instruct the user to run Linux/shell terminal commands such as `cd /config`, `git pull`, `pip install`, `apt-get`, `sudo`, or `homeassistant --now-cli`. Modern Home Assistant runs in a managed OS or container environment.
+- No Nonexistent YAML Sections: NEVER invent fictional YAML keys such as `voice:`, `speech:`, or `satellite:` in `configuration.yaml`. Voice outputs use `tts.speak` services, and satellites are configured via ESPHome/Wyoming in the UI.
 - Polling Anti-Pattern Prohibition: NEVER create or recommend automations with platform: time_pattern (e.g. minutes: "/5") to check volume or quiet hours! Always use discrete platform: time triggers (e.g., at: "22:00:00" and at: "08:00:00") or entity state triggers to protect the Home Assistant asyncio event loop.
 - Clean System Configuration: NEVER tell the user to create README.md notes, markdown files, or arbitrary files in /config.
 - Automation Delivery: Supply clean, ready-to-paste Home Assistant YAML for the UI automation editor (Settings → Automations & Scenes → Create Automation → Edit in YAML).
@@ -4943,8 +4949,21 @@ User: {user_input.text}
 
         if prioritized_agents:
             for idx, agent_id in enumerate(prioritized_agents):
+                agent_display = get_agent_display_name(self.hass, agent_id)
+                agent_entry = (
+                    self.hass.config_entries.async_get_entry(str(agent_id))
+                    if self.hass and hasattr(self.hass, "config_entries")
+                    else None
+                )
+                agent_domain = str(getattr(agent_entry, "domain", "") or "").lower()
+                agent_title = str(getattr(agent_entry, "title", "") or "").lower()
+                combined_agent_meta = f"{str(agent_id).lower()} {agent_display.lower()} {agent_domain} {agent_title}"
+
+                is_free_router = any(
+                    f in combined_agent_meta
+                    for f in ("free_models", "free_router", "open_router", "free", "sk-or-")
+                )
                 # Intercept before third-party public free routers: give LAN Local LLM priority
-                is_free_router = any(f in str(agent_id).lower() for f in ("free_models", "free_router", "open_router", "free"))
                 if is_free_router and not local_attempted:
                     local_attempted = True
                     if await _try_local_llm():
@@ -4952,18 +4971,18 @@ User: {user_input.text}
 
                 is_primary = (idx == 0)
                 role_label = "Primary" if is_primary else f"Failover #{idx}"
-                agent_display = get_agent_display_name(self.hass, agent_id)
-                _LOGGER.debug("Attempting conversation with %s AI agent: %s (%s, timeout=%ss)", role_label, agent_display, agent_id, reasoning_timeout)
-                fire_progress("llm", f"Consulting {role_label} AI ({agent_display})", f"Reasoning with model '{agent_display}' (max {int(reasoning_timeout)}s)")
+                agent_timeout = min(reasoning_timeout, 45.0) if is_free_router else reasoning_timeout
+                _LOGGER.debug("Attempting conversation with %s AI agent: %s (%s, timeout=%ss)", role_label, agent_display, agent_id, agent_timeout)
+                fire_progress("llm", f"Consulting {role_label} AI ({agent_display})", f"Reasoning with model '{agent_display}' (max {int(agent_timeout)}s)")
 
                 try:
                     # For agents with payload/token constraints (e.g. Groq with HTTP 413) or if prompt is overly large
                     agent_prompt = prompt
-                    is_groq = "groq" in str(agent_id).lower() or "groq" in agent_display.lower()
+                    is_groq = "groq" in combined_agent_meta
                     if is_groq and len(prompt) > 6000:
                         agent_prompt = f"""You are Otis AI, the smart home co-pilot and butler.
 Respond concisely and actionably to the user.
-Note: Voice satellites use ESPHome or Wyoming under Settings → Voice Assistants. Never use time_pattern polling automations or advise creating README.md in /config.
+Note: Voice satellites use ESPHome or Wyoming under Settings → Voice Assistants. Never instruct the user to run Linux shell commands (git pull, pip install) or invent voice: YAML keys. Never use time_pattern polling automations or advise creating README.md in /config.
 {rules_snippet}
 
 System State:
@@ -4982,7 +5001,7 @@ System State:
                         agent_id=agent_id,
                         device_id=user_input.device_id,
                     )
-                    attempt_result = await asyncio.wait_for(converse_coro, timeout=reasoning_timeout)
+                    attempt_result = await asyncio.wait_for(converse_coro, timeout=agent_timeout)
 
                     resp_type = getattr(attempt_result.response, "response_type", None)
                     raw_speech = attempt_result.response.speech.get("plain", {}).get("speech", "")
@@ -5249,7 +5268,11 @@ async def async_get_prioritized_agents(hass: HomeAssistant, preferred_agent_id: 
         if aid in prioritized:
             continue
         aid_lower = str(aid).lower()
-        if any(f in aid_lower for f in ("free_models", "free_router", "open_router", "free")):
+        entry = hass.config_entries.async_get_entry(str(aid)) if hass and hasattr(hass, "config_entries") else None
+        ent_domain = str(getattr(entry, "domain", "") or "").lower()
+        ent_title = str(getattr(entry, "title", "") or "").lower()
+        combined = f"{aid_lower} {ent_domain} {ent_title}"
+        if any(f in combined for f in ("free_models", "free_router", "open_router", "free", "sk-or-")):
             free_routers.append(aid)
         else:
             fast_cloud.append(aid)
@@ -5352,7 +5375,10 @@ class DiscoveryEngine:
             and self._cache_signature == current_sig
             and (now - self._cache_ts) < self.CAPABILITY_CACHE_TTL
         ):
-            return dict(self._cached_cap_map)
+            cached = dict(self._cached_cap_map)
+            if getattr(self, "rules_manager", None):
+                cached["user_rules"] = self.rules_manager.get_rules()
+            return cached
 
         _LOGGER.debug("Discovery Engine: Starting registry scan...")
 
@@ -8283,7 +8309,7 @@ class DiscoveryEngine:
                             "id": f"person_train_identity_{pid.replace('.', '_')}",
                             "title": f"Train Identity: Confirm Profile for {p_name}",
                             "category": "presence",
-                            "priority": "high" if samples == 0 else "medium",
+                            "priority": "high",
                             "icon": "mdi:account-badge",
                             "description": (
                                 f"Otis AI is calibrating person identification for {p_name} ({int(conf * 100)}% confidence, {samples} samples). "

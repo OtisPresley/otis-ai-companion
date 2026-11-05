@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.1.54";
+const CARD_VERSION = "0.1.55";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -60,9 +60,10 @@ class OtisCompanionCard extends HTMLElement {
     this._themeModalOpen = false;
     this._failoverModalOpen = false;
     this._rulesModalOpen = false;
-    this._rulesActiveTab = "persona";
+    this._rulesActiveTab = "wizard";
     this._rulesDraft = null;
     this._wizardStep = 1;
+    this._floorplanOrbitLocked = true;
     this._wizardState = {
       residents: "",
       workHours: "",
@@ -523,7 +524,7 @@ class OtisCompanionCard extends HTMLElement {
       if (this._userRules.wizard_state && typeof this._userRules.wizard_state === "object") {
         this._wizardState = { ...this._wizardState, ...this._userRules.wizard_state };
       }
-      if (!this._rulesDraft) {
+      if (!this._rulesModalOpen) {
         this._rulesDraft = { ...this._userRules };
       }
       if (this._userRules.floorplan_view_mode && !localStorage.getItem("otis_floorplan_view_mode")) {
@@ -1737,7 +1738,8 @@ class OtisCompanionCard extends HTMLElement {
     const cat = String(suggestion?.category || "automation").toLowerCase();
     const map = {
       news: ["news", "official_news", "announcement"],
-      habits: ["habit_routine", "habit_deviation", "habits", "behavioral"],
+      habits: ["habit_routine", "habit_deviation", "habits", "behavioral", "presence"],
+      presence: ["presence", "people", "identity"],
       lighting: ["lighting", "automation"],
       migration: ["migration", "automation_migration", "blueprint_migration"],
       media: ["media"],
@@ -4436,8 +4438,7 @@ class OtisCompanionCard extends HTMLElement {
         .floorplan-3d-room-shell {
           position: absolute;
           transform-style: preserve-3d;
-          pointer-events: auto !important;
-          cursor: pointer !important;
+          pointer-events: none !important;
           background: rgba(14, 165, 233, 0.04);
           transition: background 0.2s ease, opacity 0.2s ease;
           backface-visibility: visible;
@@ -4446,8 +4447,7 @@ class OtisCompanionCard extends HTMLElement {
 
         .floorplan-3d-wall {
           position: absolute;
-          pointer-events: auto !important;
-          cursor: pointer !important;
+          pointer-events: none !important;
           background: linear-gradient(to top, rgba(14, 165, 233, 0.15) 0%, rgba(56, 189, 248, 0.38) 60%, rgba(56, 189, 248, 0.75) 100%);
           border-left: 2px solid rgba(56, 189, 248, 0.85);
           border-right: 2px solid rgba(56, 189, 248, 0.85);
@@ -5800,6 +5800,7 @@ class OtisCompanionCard extends HTMLElement {
     const ignoredCount = activeIgnored.length;
     const categories = [
       { key: "all", label: "All" },
+      { key: "presence", label: "👥 People & Pets" },
       { key: "migration", label: "🚀 Migrations" },
       { key: "news", label: "📰 Official News" },
       { key: "habits", label: "Habits & Routines" },
@@ -6572,7 +6573,7 @@ class OtisCompanionCard extends HTMLElement {
                 ` : ""}
 
                 <!-- Smart EV Charging Section (Phase 7 - shown only when EV is integrated) -->
-                ${arbitrage.ev_charging_plan && (arbitrage.has_ev || (this._capabilityMap?.energy_topology?.ev_chargers && this._capabilityMap.energy_topology.ev_chargers.length > 0)) ? `
+                ${arbitrage.ev_charging_plan && Boolean(arbitrage.has_ev) ? `
                   <div style="margin-top: 8px; margin-bottom: 8px; padding: 6px 8px; background: rgba(14, 165, 233, 0.08); border-radius: 6px; border: 1px solid rgba(14, 165, 233, 0.2);">
                     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                       <span style="font-weight: 600; font-size: 0.70rem; color: var(--otis-primary);">
@@ -6805,67 +6806,75 @@ class OtisCompanionCard extends HTMLElement {
   _renderFloorplan3dControls() {
     if (this._editorActive) return "";
     const isCollapsed = Boolean(this._floorplanHudCollapsed);
+    const isLocked = this._floorplanOrbitLocked !== false;
+    const disabledAttr = isLocked ? "disabled" : "";
+    const disabledStyle = isLocked ? "opacity: 0.45; pointer-events: none;" : "";
 
     return `
       <div class="floorplan-3d-hud ${isCollapsed ? 'collapsed' : ''}" id="floorplan-3d-hud">
         <div class="hud-header">
-          <div style="display: flex; align-items: center; gap: 6px;">
+          <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
             <span class="hud-icon">🧭</span>
             <span class="hud-title">3D Orbit &amp; Pitch Controls</span>
             <span class="hud-badge" id="hud-orbit-readout">${Math.round(this._floorplanAzimuth)}° Az / ${Math.round(this._floorplanPitch)}° Pitch</span>
           </div>
-          <button type="button" class="btn-hud-toggle" id="btn-toggle-3d-hud" title="${isCollapsed ? 'Expand 3D Controls' : 'Collapse 3D Controls'}">
-            ${isCollapsed ? '▾' : '▴'}
-          </button>
+          <div style="display: flex; align-items: center; gap: 6px;">
+            <button type="button" class="btn-preset-pill ${isLocked ? 'active' : ''}" id="btn-toggle-3d-lock" title="${isLocked ? 'Unlock to adjust 3D Orbit & Pitch' : 'Lock 3D Orbit & Pitch to prevent accidental movement'}" style="padding: 3px 10px; font-size: 0.72rem; ${isLocked ? 'background: rgba(245, 158, 11, 0.22); border-color: rgba(245, 158, 11, 0.65); color: #fbbf24; font-weight: 700;' : 'background: rgba(16, 185, 129, 0.22); border-color: rgba(16, 185, 129, 0.65); color: #34d399; font-weight: 700;'}">
+              ${isLocked ? '🔒 Locked' : '🔓 Unlocked'}
+            </button>
+            <button type="button" class="btn-hud-toggle" id="btn-toggle-3d-hud" title="${isCollapsed ? 'Expand 3D Controls' : 'Collapse 3D Controls'}">
+              ${isCollapsed ? '▾' : '▴'}
+            </button>
+          </div>
         </div>
         ${!isCollapsed ? `
         <div class="hud-body">
-          <div class="hud-row">
+          <div class="hud-row" style="${disabledStyle}">
             <span class="hud-label">Orbit Azimuth:</span>
             <div class="hud-slider-wrap">
-              <button type="button" class="btn-hud-step" id="btn-azimuth-step-minus" title="Rotate -15°">⟲</button>
-              <input type="range" min="0" max="360" step="1" value="${Math.round(this._floorplanAzimuth)}" id="slider-orbit-azimuth" class="hud-slider" />
-              <button type="button" class="btn-hud-step" id="btn-azimuth-step-plus" title="Rotate +15°">⟳</button>
+              <button type="button" class="btn-hud-step" id="btn-azimuth-step-minus" title="Rotate -15°" ${disabledAttr}>⟲</button>
+              <input type="range" min="0" max="360" step="1" value="${Math.round(this._floorplanAzimuth)}" id="slider-orbit-azimuth" class="hud-slider" ${disabledAttr} />
+              <button type="button" class="btn-hud-step" id="btn-azimuth-step-plus" title="Rotate +15°" ${disabledAttr}>⟳</button>
               <span class="hud-val" id="val-orbit-azimuth">${Math.round(this._floorplanAzimuth)}°</span>
             </div>
           </div>
-          <div class="hud-row">
+          <div class="hud-row" style="${disabledStyle}">
             <span class="hud-label">Pitch Incline:</span>
             <div class="hud-slider-wrap">
-              <button type="button" class="btn-hud-step" id="btn-pitch-step-minus" title="Lower Incline -5°">▼</button>
-              <input type="range" min="30" max="75" step="1" value="${Math.round(this._floorplanPitch)}" id="slider-pitch-incline" class="hud-slider" />
-              <button type="button" class="btn-hud-step" id="btn-pitch-step-plus" title="Steepen Incline +5°">▲</button>
+              <button type="button" class="btn-hud-step" id="btn-pitch-step-minus" title="Lower Incline -5°" ${disabledAttr}>▼</button>
+              <input type="range" min="30" max="75" step="1" value="${Math.round(this._floorplanPitch)}" id="slider-pitch-incline" class="hud-slider" ${disabledAttr} />
+              <button type="button" class="btn-hud-step" id="btn-pitch-step-plus" title="Steepen Incline +5°" ${disabledAttr}>▲</button>
               <span class="hud-val" id="val-pitch-incline">${Math.round(this._floorplanPitch)}°</span>
             </div>
           </div>
-          <div class="hud-row">
+          <div class="hud-row" style="${disabledStyle}">
             <span class="hud-label">3D Glass Walls:</span>
             <div style="display: flex; align-items: center; gap: 6px; flex: 1;">
-              <button type="button" class="btn-preset-pill ${this._floorplanWallsEnabled !== false ? 'active' : ''}" id="btn-toggle-3d-walls" title="Toggle Raised 3D Glass Walls">
+              <button type="button" class="btn-preset-pill ${this._floorplanWallsEnabled !== false ? 'active' : ''}" id="btn-toggle-3d-walls" title="Toggle Raised 3D Glass Walls" ${disabledAttr}>
                 ${this._floorplanWallsEnabled !== false ? '🏢 Walls ON' : '🏢 Walls OFF'}
               </button>
-              <button type="button" class="btn-hud-step" id="btn-wall-height-minus" title="Lower Wall Height -4px">▼</button>
+              <button type="button" class="btn-hud-step" id="btn-wall-height-minus" title="Lower Wall Height -4px" ${disabledAttr}>▼</button>
               <span class="hud-val" id="val-wall-height" style="min-width: 44px; text-align: center;">${Math.round(this._floorplanWallHeight || 28)}px</span>
-              <button type="button" class="btn-hud-step" id="btn-wall-height-plus" title="Raise Wall Height +4px">▲</button>
+              <button type="button" class="btn-hud-step" id="btn-wall-height-plus" title="Raise Wall Height +4px" ${disabledAttr}>▲</button>
             </div>
           </div>
           <div class="hud-row presets-row">
             <span class="hud-label">Presets:</span>
             <div class="hud-presets-wrap">
-              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 0 ? 'active' : ''}" data-azimuth="0" data-pitch="55" title="North (Front)">0° N</button>
-              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 45 ? 'active' : ''}" data-azimuth="45" data-pitch="58" title="Isometric NE">45° NE</button>
-              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 90 ? 'active' : ''}" data-azimuth="90" data-pitch="55" title="East">90° E</button>
-              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 135 ? 'active' : ''}" data-azimuth="135" data-pitch="58" title="Isometric SE">135° SE</button>
-              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 180 ? 'active' : ''}" data-azimuth="180" data-pitch="55" title="South (Rear)">180° S</button>
-              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 225 ? 'active' : ''}" data-azimuth="225" data-pitch="58" title="Isometric SW">225° SW</button>
-              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 270 ? 'active' : ''}" data-azimuth="270" data-pitch="55" title="West">270° W</button>
-              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 315 ? 'active' : ''}" data-azimuth="315" data-pitch="58" title="Isometric NW">315° NW</button>
-              <button type="button" class="btn-preset-reset" id="btn-reset-3d-view" title="Reset to Default Isometric Projection">↺ Reset</button>
+              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 0 ? 'active' : ''}" data-azimuth="0" data-pitch="55" title="North (Front)" style="${disabledStyle}" ${disabledAttr}>0° N</button>
+              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 45 ? 'active' : ''}" data-azimuth="45" data-pitch="58" title="Isometric NE" style="${disabledStyle}" ${disabledAttr}>45° NE</button>
+              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 90 ? 'active' : ''}" data-azimuth="90" data-pitch="55" title="East" style="${disabledStyle}" ${disabledAttr}>90° E</button>
+              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 135 ? 'active' : ''}" data-azimuth="135" data-pitch="58" title="Isometric SE" style="${disabledStyle}" ${disabledAttr}>135° SE</button>
+              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 180 ? 'active' : ''}" data-azimuth="180" data-pitch="55" title="South (Rear)" style="${disabledStyle}" ${disabledAttr}>180° S</button>
+              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 225 ? 'active' : ''}" data-azimuth="225" data-pitch="58" title="Isometric SW" style="${disabledStyle}" ${disabledAttr}>225° SW</button>
+              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 270 ? 'active' : ''}" data-azimuth="270" data-pitch="55" title="West" style="${disabledStyle}" ${disabledAttr}>270° W</button>
+              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 315 ? 'active' : ''}" data-azimuth="315" data-pitch="58" title="Isometric NW" style="${disabledStyle}" ${disabledAttr}>315° NW</button>
+              <button type="button" class="btn-preset-reset" id="btn-reset-3d-view" title="Reset to Default Isometric Projection" style="${disabledStyle}" ${disabledAttr}>↺ Reset</button>
               <button type="button" class="btn-preset-reset" id="btn-save-3d-dashboard" title="Save current 3D camera angles and sync to Interactive Floor Plan dashboard view" style="background: rgba(14, 165, 233, 0.22); border-color: rgba(56, 189, 248, 0.55); color: #38bdf8; font-weight: 700;">💾 Save 3D to Dashboard</button>
             </div>
           </div>
           <div class="hud-hint">
-            <span>🖱️ Drag canvas to orbit freely • Scroll/pinch to zoom</span>
+            <span>${isLocked ? '🔒 3D Orbit & Pitch locked for clean clicking • Click 🔒 Locked above to unlock' : '🖱️ Drag canvas to orbit freely • Scroll/pinch to zoom'}</span>
           </div>
         </div>
         ` : ''}
@@ -7528,11 +7537,17 @@ class OtisCompanionCard extends HTMLElement {
     const userMap = new Map();
     // Strictly discover registered person.* entities from Home Assistant states
     const states = this._hass?.states || {};
+    const ignored = new Set((this._userRules?.ignored_persons || []).map((x) => String(x).toLowerCase()));
+    const profiles = this._userRules?.person_profiles || {};
+
     for (const eid in states) {
       if (eid.startsWith("person.")) {
+        const cleanEid = eid.toLowerCase();
+        if (ignored.has(cleanEid)) continue;
+        if ((profiles[cleanEid] || profiles[eid])?.entity_type === "ignored") continue;
         const p = states[eid];
         const name = p.attributes?.friendly_name || eid.replace("person.", "").replace(/_/g, " ");
-        userMap.set(eid, { id: eid, name: name });
+        userMap.set(cleanEid, { id: eid, name: name });
       }
     }
     return Array.from(userMap.values());
@@ -8548,9 +8563,6 @@ class OtisCompanionCard extends HTMLElement {
                     <span style="font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; background: ${confPct >= 80 ? 'rgba(16,185,129,0.2)' : 'rgba(56,189,248,0.2)'}; color: ${confPct >= 80 ? '#10b981' : 'var(--otis-primary)'}; font-weight: 600;">
                       ${confPct}% Confidence • ${p.samples || 0} sample(s)
                     </span>
-                    <button type="button" class="btn-toolbar btn-delete-profile" data-del-person="${this._escapeHtml(pid)}" style="padding: 3px 8px; font-size: 0.72rem; color: #ef4444; border-color: rgba(239,68,68,0.3);" title="Remove profile from Otis recognition">
-                      🗑️
-                    </button>
                   </div>
                 </div>
 
@@ -9185,6 +9197,9 @@ class OtisCompanionCard extends HTMLElement {
       btn.onclick = (e) => {
         e.stopPropagation();
         this._rulesDraft = { ...(this._userRules || {}) };
+        if (this._userRules?.wizard_state && typeof this._userRules.wizard_state === "object") {
+          this._wizardState = { ...this._wizardState, ...this._userRules.wizard_state };
+        }
         this._rulesModalOpen = true;
         this._render();
       };
@@ -9930,33 +9945,6 @@ class OtisCompanionCard extends HTMLElement {
             await this._fetchData();
           } catch (err) {
             this._showToast(`Failed to update training: ${err.message || err}`, true);
-          }
-        };
-      });
-
-      // People & Pets Delete Profile
-      root.querySelectorAll(".btn-delete-profile").forEach((btn) => {
-        btn.onclick = async () => {
-          const pid = btn.getAttribute("data-del-person");
-          if (!pid || !this._hass) return;
-          try {
-            await this._hass.callService("otis_ai", "remove_person_profile", {
-              person_id: pid,
-            });
-            const cleanPid = pid.toLowerCase();
-            const profiles = { ...(this._userRules?.person_profiles || {}) };
-            delete profiles[cleanPid];
-            const ignored = Array.from(new Set([...(this._userRules?.ignored_persons || []), cleanPid]));
-            this._userRules = {
-              ...this._userRules,
-              person_profiles: profiles,
-              ignored_persons: ignored,
-            };
-            this._showToast(`Removed profile for ${pid}`);
-            this._render();
-            await this._fetchData();
-          } catch (err) {
-            this._showToast(`Failed to delete profile: ${err.message || err}`, true);
           }
         };
       });
@@ -10851,7 +10839,7 @@ class OtisCompanionCard extends HTMLElement {
       let startPitch = this._floorplanPitch;
 
       floorplanViewport.onpointerdown = (e) => {
-        if (this._floorplanViewMode !== "3d" || this._editorActive) return;
+        if (this._floorplanViewMode !== "3d" || this._editorActive || this._floorplanOrbitLocked !== false) return;
         if (e.target.closest(".floorplan-device-pin, .floorplan-3d-hud, button, input, select, .room-info-card")) {
           return;
         }
@@ -10929,11 +10917,21 @@ class OtisCompanionCard extends HTMLElement {
       floorplanViewport.onpointercancel = finishOrbit;
 
       floorplanViewport.onwheel = (e) => {
+        if (this._floorplanOrbitLocked !== false) return;
         e.preventDefault();
         const delta = e.deltaY < 0 ? 0.05 : -0.05;
         this._floorplanScale = Math.max(0.6, Math.min(1.8, (this._floorplanScale || 1.0) + delta));
         applyCanvas3dTransform(false);
         try { localStorage.setItem("otis_floorplan_scale", String(this._floorplanScale)); } catch (_) {}
+      };
+    }
+
+    const btnToggle3dLock = root.querySelector("#btn-toggle-3d-lock");
+    if (btnToggle3dLock) {
+      btnToggle3dLock.onclick = (e) => {
+        e.stopPropagation();
+        this._floorplanOrbitLocked = this._floorplanOrbitLocked === false ? true : false;
+        this._render();
       };
     }
 
@@ -11776,16 +11774,16 @@ class OtisCompanionCard extends HTMLElement {
         svgViewport.querySelectorAll(".room-group").forEach((grp) => {
           grp.style.cursor = "pointer";
           grp.onclick = () => {
-            const areaId = grp.getAttribute("data-area-id");
-            const area = this._capabilityMap?.areas?.[areaId];
-            if (area) {
+            const areaId = grp.getAttribute("data-area-id") || grp.getAttribute("data-room-id");
+            if (areaId) {
+              const area = this._capabilityMap?.areas?.[areaId];
               const slug = areaId.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "room";
               this._selectedRoomInfo = {
                 areaId,
-                name: area.name || areaId,
+                name: area?.name || areaId,
                 slug,
                 zone: grp.getAttribute("data-zone") || "indoor",
-                entities: area.entities || [],
+                entities: area?.entities || [],
               };
               this._render();
             }

@@ -491,7 +491,6 @@ class SentinelManager:
             is_ble_node = (
                 ("bluetooth" in lower_name and ("proxy" in lower_name or "adapter" in lower_name or "dongle" in lower_name))
                 or ("ble" in lower_name and "proxy" in lower_name)
-                or attrs.get("source_type") == "bluetooth"
             )
             if not is_ble_node:
                 continue

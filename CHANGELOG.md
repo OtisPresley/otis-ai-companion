@@ -7,6 +7,30 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.55] - 2026-11-05
+
+### Fixed & Enhanced
+- **3D Floor Plan Orbit Lock & Wall Click-Through**:
+  - Added a **Lock button (`🔒 Locked` / `🔓 Unlocked`)** in the 3D Orbit & Pitch Controls box (`#btn-toggle-3d-lock`) that **starts locked by default**, preventing accidental 3D canvas rotation or movement while clicking entities and rooms.
+  - Set `pointer-events: none !important;` on `.floorplan-3d-room-shell` and `.floorplan-3d-wall` so hover and click events pass directly through 3D walls to the underlying room polygons and device pins.
+- **Smart EV Charging False Positive Suppression**:
+  - Excluded phone/watch/tablet chargers, iBeacons, and non-EV battery entities from `has_ev` detection in `energy_manager.py`, and restricted the Smart EV Charging section on the Command Center card to render only when `arbitrage.has_ev` is true.
+- **People & Pets Profile UI & Training Card Visibility**:
+  - Removed the redundant delete icon button (`.btn-delete-profile`) from People & Pets profile cards in favor of the `🚫 Exclude / Do Not Track` dropdown option.
+  - Added a `👥 People & Pets` (`presence`) filter chip in the Proactive Feed and elevated identity verification training cards (`confirm_person_identity`) to high priority.
+- **Rules Wizard Default Tab & Cache Freshness**:
+  - Set the Rules modal default tab to `🧙 Rules Wizard` (`wizard`) instead of `Persona & Tone`.
+  - Injected live `user_rules` into `capability_map` responses even on cache hits so saved wizard text and ignored profiles never revert on refresh.
+- **Energy Studio High-Draw Controllable Circuits**:
+  - Replaced substring matching with strict token-level matching for `controllable_power_eids`, excluding indicator LEDs (`switch.hall_lamps_led`), virtual/auto-update switches (`switch.theater_auto_update_enabled`), and media/DND toggles.
+- **Room Subview Camera Stream Selection**:
+  - Expanded canonical camera groups across all system cameras in `_build_room_subview()` so rooms like `Garage` select the live Reolink substream (`camera.driveway_fluent`) instead of the non-live Frigate entity (`camera.driveway`).
+- **Dashboard Regenerate Custom Card Preservation**:
+  - Updated `force_regenerate=True` (`⚡ Regenerate` button) to preserve user-configured custom cards (`custom:control4-mediaplayer-card`, `custom:mini-media-player`, etc.) across both view `cards` and `sections`.
+- **Assist Co-Pilot ULID Agent Routing & Prompt Grounding**:
+  - Resolved Home Assistant config entry domain/title for ULID conversation agent IDs so OpenRouter (`free_models_router`) triggers fast local LLM (`qwen2.5:3b`) prioritization and Groq receives compact prompts.
+  - Added strict prompt constraints forbidding CLI update commands (`cd /config`, `git pull`, `pip install`) and nonexistent `voice:` YAML blocks.
+
 ## [0.1.54] - 2026-11-05
 
 ### Fixed & Enhanced

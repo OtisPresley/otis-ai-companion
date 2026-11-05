@@ -399,8 +399,27 @@ class EnergyManager:
                         "estimated_watts": 1200,
                     })
 
-            # 6. EV Chargers & EVSE Infrastructure
-            if any(k in eid_lower or k in name_lower for k in ("charger", "evse", "wallbox", "easee", "zaptec", "chargepoint", "tesla_wall_connector")):
+            # Exclude personal/mobile devices, wearables, computers, and Bluetooth beacons from EV detection
+            is_personal_or_mobile = any(
+                p in eid_lower or p in name_lower
+                for p in (
+                    "phone", "watch", "tablet", "mobile", "wearos", "chromebook",
+                    "laptop", "macbook", "ipad", "iphone", "android", "pixel",
+                    "ibeacon", "beacon", "key_", "plug", "led", "auto_update", "auto_off",
+                    "signal_strength", "signal_level", "headphone", "earbud", "dock",
+                    "connector_type", "charger_type", "vendor",
+                )
+            )
+
+            # 6. EV Chargers & EVSE Infrastructure (Dedicated EV chargers only)
+            if not is_personal_or_mobile and any(
+                k in eid_lower or k in name_lower
+                for k in (
+                    "evse", "wallbox", "easee", "zaptec", "chargepoint",
+                    "tesla_wall_connector", "juicebox", "grizzl_e", "ocpp",
+                    "ev_charger", "car_charger", "wall_charger", "rivian_charger", "tesla_charger",
+                )
+            ):
                 if domain == "switch":
                     ev_chargers.append({
                         "entity_id": eid,
@@ -425,8 +444,11 @@ class EnergyManager:
                     })
 
             # 7. Connected Electric Vehicles
-            if any(b in eid_lower or b in name_lower for b in ("rivian", "tesla", "model_3", "model_y", "model_s", "model_x", "ioniq", "mach_e", "polestar", "ev_battery")):
-                if (domain == "sensor" and (device_class == "battery" or "battery" in eid_lower or "soc" in eid_lower)) or "battery_level" in eid_lower:
+            if not is_personal_or_mobile and any(
+                b in eid_lower or b in name_lower
+                for b in ("rivian", "tesla", "model_3", "model_y", "model_s", "model_x", "ioniq", "mach_e", "polestar", "ev_battery")
+            ):
+                if domain == "sensor" and (device_class == "battery" or "battery" in eid_lower or "soc" in eid_lower or "battery_level" in eid_lower):
                     try:
                         ev_soc = float(st.state) if st.state not in ("unavailable", "unknown") else 0.0
                     except (ValueError, TypeError):
