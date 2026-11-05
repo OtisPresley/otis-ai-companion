@@ -641,20 +641,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     media_dir = hass.config.path(".storage", DOMAIN, "media")
     await hass.async_add_executor_job(partial(os.makedirs, media_dir, exist_ok=True))
 
-    def _migrate_media_if_needed(w_dir: str, t_dir: str) -> None:
-        for fname in ("otis_floorplan.svg", "otis_floorplan_3d.svg"):
-            old_f = os.path.join(w_dir, fname)
-            new_f = os.path.join(t_dir, fname)
-            if os.path.isfile(old_f) and not os.path.isfile(new_f):
-                try:
-                    import shutil
-                    shutil.copy2(old_f, new_f)
-                except Exception:
-                    pass
-
-    www_dir = hass.config.path("www")
-    await hass.async_add_executor_job(_migrate_media_if_needed, www_dir, media_dir)
-
     if hasattr(hass, "http"):
         try:
             hass.http.register_view(
@@ -5384,7 +5370,7 @@ class DiscoveryEngine:
         for aid in areas_map:
             areas_map[aid]["adjacent_areas"] = spatial_graph.get("adjacencies", {}).get(aid, [])
 
-        if not getattr(self.floorplan_parser, "_initialized", False):
+        if not getattr(self.floorplan_parser, "_initialized", False) or not self.floorplan_parser.floorplan_exists():
             await self.floorplan_parser.async_load()
         has_floorplan = self.floorplan_parser.floorplan_exists()
         has_walkthrough = self.floorplan_parser.has_walkthrough()

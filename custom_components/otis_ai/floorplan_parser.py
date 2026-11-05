@@ -601,7 +601,8 @@ class FloorplanParser:
             except Exception:
                 pass
         self._initialized = True
-        await self.async_refresh_svg_cache()
+        svg_p = self._metadata.get("svg_path") or DEFAULT_OUTPUT_SVG_PATH
+        await self.async_refresh_svg_cache(svg_p)
         return self._metadata
 
     async def async_save_metadata(self, metadata: dict[str, Any]) -> None:

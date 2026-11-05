@@ -7,6 +7,14 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.47] - 2026-11-05
+
+### Fixed
+- **Floor Plan Restoration & Media File Clean-Up**:
+  - Ensured dynamic reload of floorplan metadata and SVG room bounds during capability map generation if not previously initialized.
+  - Resolved floor plan metadata resolution for paths in private storage (`.storage/otis_ai/media/`).
+  - Removed temporary migration code from integration startup.
+
 ## [0.1.46] - 2026-11-05
 
 ### Security & Compliance
