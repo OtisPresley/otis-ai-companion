@@ -7,19 +7,15 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.2] - 2026-11-08
-
-### Fixed & Hardened
-- **Local Edge Generation Token Ceiling**: Increased default `max_tokens` (Ollama `num_predict`) from `1024` to `2048` tokens and added `local_max_tokens` (`CONF_LOCAL_MAX_TOKENS`) to the options flow, preventing truncation during generation of complex scripts and automations.
-- **Auto-Close Truncated Code Blocks**: In `otis-companion-card.js`, added automatic unclosed code block detection and closure (`\n```\n`) in `_renderMarkdown(text)`. Prevents incomplete or truncated model output from failing markdown code block matching and falling through into broken unordered list bullet points (`•`).
-- **Prompt Anti-Duplication Directives**: Instructed local models to output exactly one unified configuration block per response, eliminating repetitive "Updated" and "Final" YAML regurgitation that exhausted generation token budgets.
-
 ## [0.3.0] - 2026-11-08
 
 ### Major Release & Cumulative Summary (Since v0.2.0)
 Otis AI Companion `v0.3.0` delivers major advancements across local edge intelligence, deterministic control fast-paths, whole-home media player discovery, proactive system diagnostics, and UI ergonomics.
 
 #### Hotfixes & Hardening (v0.3.0)
+- **Local Edge Generation Token Ceiling**: Increased default `max_tokens` (Ollama `num_predict`) from `1024` to `2048` tokens and added `local_max_tokens` (`CONF_LOCAL_MAX_TOKENS`) to the options flow, preventing truncation during generation of complex scripts and automations.
+- **Auto-Close Truncated Code Blocks**: In `otis-companion-card.js`, added automatic unclosed code block detection and closure (`\n```\n`) in `_renderMarkdown(text)`. Prevents incomplete or truncated model output from failing markdown code block matching and falling through into broken unordered list bullet points (`•`).
+- **Prompt Anti-Duplication Directives**: Instructed local models to output exactly one unified configuration block per response, eliminating repetitive "Updated" and "Final" YAML regurgitation that exhausted generation token budgets.
 - **Stale Agent Attribution Leak on Failure**: Fixed a bug where total inference failure or timeout across all local and cloud engines left `session_data["last_resolved_agent"]` populated with the prior turn's agent. `async_process` and `handle_chat` now explicitly clear stale resolutions on failure, and the frontend card renders a clean `⚠️ Unavailable` badge (`All AI Providers Unavailable`) instead of falsely attributing the failure error to Local Edge or prior models.
 - **Local Edge Context Budgeting (`compact_prompt`)**: Resolved a prompt explosion bug where multi-match YAML cross-referencing injected all matched configurations unbudgeted into the Local LLM prompt (>10,000 tokens), causing prompt truncation and CPU timeouts. Local Edge now uses a right-sized YAML context budgeted to the top 2 matches (max 1,500 chars each), reducing local prompt evaluation from ~38s down to <3s.
 - **Quoted Target Script & Automation Prioritization**: Added quoted string extraction (`re.findall(r'["\']([^"\']{3,})["\']', text)`) and a +200 relevance bonus in `automation_manager.py` so specific scripts or automations referenced by name in user requests (e.g. `"Notification: Automation Events"`) are ranked #1 ahead of generic keyword matches.
