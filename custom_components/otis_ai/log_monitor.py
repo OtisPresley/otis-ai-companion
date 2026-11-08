@@ -88,6 +88,11 @@ SELF_HEALING_KEYWORDS = (
     "failed to access api",
     "ssl: unexpected_record",
     "remote end closed connection",
+    "timeout while accessing",
+    "unable to fetch data",
+    "timeout while",
+    "failed to update media",
+    "failed to load img",
 )
 
 TRANSIENT_EXCEPTIONS = (
@@ -283,8 +288,12 @@ class LogMonitor:
             sig_text = f"{domain}:{msg_text[:120]}:{source}"
             error_id = hashlib.sha256(sig_text.encode("utf-8")).hexdigest()[:12]
 
-            # 1. Skip non-integration / user config domains (automation, script, template, etc.)
-            if domain in NON_INTEGRATION_DOMAINS or any(d in name for d in ("components.automation", "components.script", "helpers.script", "helpers.template")):
+            # 1. Skip non-integration / user config domains (automation, script, template, client frontend cards, etc.)
+            if (
+                domain in NON_INTEGRATION_DOMAINS
+                or name.startswith("frontend.")
+                or any(d in name for d in ("components.automation", "components.script", "helpers.script", "helpers.template"))
+            ):
                 continue
 
             # 2. Classify self-healing / transient connectivity drops & device offline states
