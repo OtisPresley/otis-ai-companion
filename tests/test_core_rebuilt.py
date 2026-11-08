@@ -5243,7 +5243,6 @@ action:
     def test_proactive_feed_local_edge_ai_model_recommendation(self):
         """Verify Proactive Feed surfaces a 1-click Local Edge AI model switch card when telemetry or hardware recommends another model."""
         from custom_components.otis_ai.local_llm import LocalLLMManager
-        from custom_components.otis_ai import AutomationManager
 
         llm_mgr = LocalLLMManager(self.hass, model="qwen2.5:3b")
         llm_mgr._last_benchmark = {
@@ -5507,7 +5506,6 @@ action:
         """Verify GitHub Device Flow token verification, issue tracking store, and view API."""
         from custom_components.otis_ai import OtisIssueReporterView
         from custom_components.otis_ai.log_monitor import LogMonitor
-        from custom_components.otis_ai.github_client import check_device_token, create_github_issue
 
         monitor = LogMonitor(self.hass)
         view = OtisIssueReporterView(self.hass, log_monitor=monitor)
