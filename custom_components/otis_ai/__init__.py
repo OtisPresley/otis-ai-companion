@@ -1593,8 +1593,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         sessions = hass.data.get(DOMAIN, {}).get("sessions", {})
         session_info = sessions.get(ret_conv_id, {}) or sessions.get("default", {})
-        resolved_agent = session_info.get("last_resolved_agent") or "Primary Cloud AI"
+        resolved_agent = session_info.get("last_resolved_agent")
         failover_occurred = session_info.get("last_failover_occurred", False)
+
+        is_error_response = (
+            not speech
+            or "experiencing high demand or downtime" in speech
+            or "Quota Exhausted" in speech
+            or "didn't receive a response" in speech
+        )
+        if is_error_response:
+            resolved_agent = None
+        elif not resolved_agent:
+            resolved_agent = "Primary Cloud AI"
 
         return {
             "response": speech or "I didn't receive a response from the agent.",
@@ -5813,6 +5824,7 @@ class OtisAIConversationAgent(AbstractAgent):
 
         # 3.2 Dynamic Cross-Referencing of Real Automations & Scripts
         matched_yaml_context = ""
+        compact_matched_yaml_context = ""
         if getattr(self, "automation_manager", None):
             try:
                 related = await self.automation_manager.async_cross_reference(user_input.text)
@@ -5830,7 +5842,24 @@ class OtisAIConversationAgent(AbstractAgent):
                         for err in related["recent_log_errors"]:
                             lines.append(f"• {err}")
                     matched_yaml_context = "\n".join(lines) + "\n\n"
-                    _LOGGER.info("Injected %d cross-referenced automation/script YAML blocks into conversation prompt", len(matches))
+
+                    # Budgeted YAML context for Local Edge & constrained models (max 2 items, max 1500 chars each)
+                    compact_lines = [
+                        "REAL SYSTEM AUTOMATIONS & SCRIPTS:",
+                        "CRITICAL: Inspect these configurations to answer the user:",
+                    ]
+                    for m in matches[:2]:
+                        yaml_str = m.get("yaml", "")
+                        if len(yaml_str) > 1500:
+                            yaml_str = yaml_str[:1500] + "\n  # ... [sequence truncated for brevity]"
+                        compact_lines.append(f"\n--- # {m['type'].upper()}: {m['name']} (ID: {m['id']})\n{yaml_str}")
+                    compact_matched_yaml_context = "\n".join(compact_lines) + "\n\n"
+
+                    _LOGGER.info(
+                        "Injected %d cross-referenced automation/script YAML blocks into conversation prompt (budgeted %d for local edge)",
+                        len(matches),
+                        min(len(matches), 2),
+                    )
             except Exception as cr_err:
                 _LOGGER.debug("Error cross-referencing automations: %s", cr_err)
 
@@ -5959,7 +5988,7 @@ System State:
 - Active Entities: {entity_summary}
 - Actionable Control Devices: {detailed_entities[:20]}
 
-{history_snippet}{matched_yaml_context}User Request: {user_input.text}"""
+{history_snippet}{compact_matched_yaml_context}User Request: {user_input.text}"""
 
         # 4. Delegate to prioritized AI agent pool (Paid Cloud -> Healthy Standard Cloud -> Local Qwen -> Restricted Free Tier)
         result = None
@@ -6002,7 +6031,7 @@ System State:
                             "Never tell the user to edit automations.yaml themselves; always offer to deploy and enable it for them."
                         ),
                         max_iterations=2,
-                        timeout=min(reasoning_timeout, 45.0),
+                        timeout=max(reasoning_timeout, 60.0),
                     )
                     if local_res.get("success") and (local_res.get("response") or local_res.get("executed_tools")):
                         resp_text = local_res.get("response", "")
@@ -6206,6 +6235,10 @@ System State:
             session_data["last_resolved_agent"] = resolved_agent_name or "Primary Cloud AI"
             session_data["last_resolved_agent_id"] = resolved_agent_id
             session_data["last_failover_occurred"] = failover_occurred
+        else:
+            session_data["last_resolved_agent"] = None
+            session_data["last_resolved_agent_id"] = None
+            session_data["last_failover_occurred"] = True
 
         if result is None:
             _LOGGER.error("All AI agents and local failovers failed. Last error: %s", last_error_msg)

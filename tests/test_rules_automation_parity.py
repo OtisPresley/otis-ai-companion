@@ -225,6 +225,35 @@ class TestRulesAndAutomationParity(unittest.TestCase):
         self.assertIn("Say 'yes' or 'apply' to confirm", speech_create)
         mock_auto_mgr.async_write_automation.assert_not_called()
 
+    def test_cross_reference_quoted_target_priority(self) -> None:
+        """Verify explicitly quoted script or automation names rank highest in cross-referencing."""
+        from custom_components.otis_ai.automation_manager import AutomationManager
+
+        auto_mgr = AutomationManager(self.hass)
+        auto_mgr.async_read_automations = AsyncMock(return_value=[
+            {"id": "auto_generic", "alias": "Generic Event Notification", "trigger": []},
+            {"id": "auto_other", "alias": "Other Push Notification", "trigger": []},
+        ])
+        auto_mgr.async_read_scripts = AsyncMock(return_value={
+            "notification_events": {
+                "alias": "Notification: Automation Events",
+                "sequence": [{"action": "notify.mobile_app"}]
+            },
+            "generic_sound": {
+                "alias": "Play Sound Events",
+                "sequence": []
+            }
+        })
+
+        query = 'Review my "Notification: Automation Events" script and logic'
+        result = asyncio.run(auto_mgr.async_cross_reference(query))
+        matches = result.get("matches", [])
+        self.assertTrue(len(matches) >= 1)
+        # The quoted script should be ranked #1
+        self.assertEqual(matches[0]["name"], "Notification: Automation Events")
+        self.assertEqual(matches[0]["type"], "script")
+        self.assertIn('quoted:"notification: automation events"', matches[0]["matched_terms"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -263,6 +263,11 @@ class AutomationManager:
                 phrases.add(parts[1])
                 phrases.add(parts[1].replace("_", " "))
 
+        # Extract explicitly quoted targets (e.g. "Notification: Automation Events")
+        quoted_targets = [q.strip() for q in re.findall(r'["\']([^"\']{3,})["\']', text_lower) if q.strip()]
+        for q in quoted_targets:
+            phrases.add(q)
+
         # Also search for multi-word phrases from text if keywords present
         for candidate in (
             "guest mode", "guest", "climate", "thermostat", "downstairs", "upstairs",
@@ -308,7 +313,10 @@ class AutomationManager:
                     matched_terms.append(em)
 
             for p in phrases:
-                if p in alias_lower:
+                if p in quoted_targets and (p in alias_lower or p in auto_id.lower()):
+                    score += 200.0
+                    matched_terms.append(f'quoted:"{p}"')
+                elif p in alias_lower:
                     score += 50.0
                     matched_terms.append(p)
                 elif p in dumped_lower and p not in entity_matches:
@@ -388,7 +396,10 @@ class AutomationManager:
                     matched_terms.append(em)
 
             for p in phrases:
-                if p in alias_lower or p == s_key:
+                if p in quoted_targets and (p in alias_lower or p in s_key.lower()):
+                    score += 200.0
+                    matched_terms.append(f'quoted:"{p}"')
+                elif p in alias_lower or p == s_key:
                     score += 50.0
                     matched_terms.append(p)
                 elif p in dumped_lower and p not in entity_matches:

@@ -487,6 +487,11 @@ class TestOtisAICore(unittest.TestCase):
         
         agent = OtisAIConversationAgent(self.hass, entry, engine, MagicMock())
         
+        # Pre-seed session with prior turn agent to verify attribution leak is prevented
+        self.hass.data.setdefault(DOMAIN, {}).setdefault("sessions", {})["test_conv_id"] = {
+            "last_resolved_agent": "Local Edge (qwen2.5:3b)"
+        }
+        
         user_input = MagicMock()
         user_input.text = "Hello"
         user_input.conversation_id = "test_conv_id"
@@ -502,6 +507,7 @@ class TestOtisAICore(unittest.TestCase):
         self.assertEqual(result.conversation_id, "test_conv_id")
         user_input.create_response.assert_called_once()
         self.assertIn("All available AI services are currently experiencing high demand or downtime", user_input.create_response.call_args[1]["speech"])
+        self.assertIsNone(self.hass.data[DOMAIN]["sessions"]["test_conv_id"].get("last_resolved_agent"))
 
     def test_conversation_agent_failover_503(self):
         """Test transparent failover when primary agent returns 503 high demand error."""
