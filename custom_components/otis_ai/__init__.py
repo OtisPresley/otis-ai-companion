@@ -979,6 +979,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "rules_manager": rules_manager,
         "local_llm_manager": local_llm_manager,
         "rag_manager": rag_manager,
+        "log_monitor": log_monitor,
         "mesh_manager": mesh_manager,
         "presence_fusion_manager": presence_fusion_manager,
         "agent_orchestrator": agent_orchestrator,
@@ -1067,6 +1068,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     def _get_agent_orchestrator() -> MultiAgentOrchestrator:
         return _get_entry_data().get("agent_orchestrator", agent_orchestrator)
+
+    def _get_local_llm_manager() -> LocalLLMManager | None:
+        return _get_entry_data().get("local_llm_manager", local_llm_manager)
+
+    def _get_log_monitor() -> LogMonitor | None:
+        return _get_entry_data().get("log_monitor", log_monitor)
 
     def _get_active_managers():
         return (
@@ -1266,18 +1273,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 if not area_id:
                     continue
                 try:
-                    entry = entity_reg.async_get(ent_id) if (ent_id and hasattr(entity_reg, "async_get")) else None
-                    actual_dev = dev_id or (getattr(entry, "device_id", None) if entry else None)
-                    has_own_name = bool(getattr(entry, "name", None))
+                    ent_entry = entity_reg.async_get(ent_id) if (ent_id and hasattr(entity_reg, "async_get")) else None
+                    actual_dev = dev_id or (getattr(ent_entry, "device_id", None) if ent_entry else None)
+                    has_own_name = bool(getattr(ent_entry, "name", None))
 
                     if actual_dev and hasattr(device_reg, "async_update_device"):
                         device_reg.async_update_device(actual_dev, area_id=area_id)
-                        if ent_id and getattr(entry, "area_id", None) is not None and hasattr(entity_reg, "async_update_entity"):
+                        if ent_id and getattr(ent_entry, "area_id", None) is not None and hasattr(entity_reg, "async_update_entity"):
                             entity_reg.async_update_entity(ent_id, area_id=None)
                         assigned_count += 1
                     elif ent_id and hasattr(entity_reg, "async_update_entity"):
                         if not has_own_name:
-                            own_name = getattr(entry, "original_name", None) or ent_id.split(".")[-1].replace("_", " ").title()
+                            own_name = getattr(ent_entry, "original_name", None) or ent_id.split(".")[-1].replace("_", " ").title()
                             entity_reg.async_update_entity(ent_id, area_id=area_id, name=own_name)
                         else:
                             entity_reg.async_update_entity(ent_id, area_id=area_id)
@@ -1299,18 +1306,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 if not ent_id or not area_id:
                     continue
                 try:
-                    entry = entity_reg.async_get(ent_id) if hasattr(entity_reg, "async_get") else None
-                    actual_dev = getattr(entry, "device_id", None) if entry else None
-                    has_own_name = bool(getattr(entry, "name", None))
+                    ent_entry = entity_reg.async_get(ent_id) if hasattr(entity_reg, "async_get") else None
+                    actual_dev = getattr(ent_entry, "device_id", None) if ent_entry else None
+                    has_own_name = bool(getattr(ent_entry, "name", None))
 
                     if actual_dev and hasattr(device_reg, "async_update_device"):
                         device_reg.async_update_device(actual_dev, area_id=area_id)
-                        if getattr(entry, "area_id", None) is not None and hasattr(entity_reg, "async_update_entity"):
+                        if getattr(ent_entry, "area_id", None) is not None and hasattr(entity_reg, "async_update_entity"):
                             entity_reg.async_update_entity(ent_id, area_id=None)
                         assigned_count += 1
                     elif hasattr(entity_reg, "async_update_entity"):
                         if not has_own_name:
-                            own_name = getattr(entry, "original_name", None) or ent_id.split(".")[-1].replace("_", " ").title()
+                            own_name = getattr(ent_entry, "original_name", None) or ent_id.split(".")[-1].replace("_", " ").title()
                             entity_reg.async_update_entity(ent_id, area_id=area_id, name=own_name)
                         else:
                             entity_reg.async_update_entity(ent_id, area_id=area_id)
@@ -1333,8 +1340,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _invalidate()
             return res
         elif action_type == "create_dashboard":
-            entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
-            d_mgr = entry_data.get("dashboard_manager", dashboard_manager)
+            d_mgr = _get_dashboard_manager()
             cap_map = await eng.async_build_capability_map()
             res = await d_mgr.async_create_professional_dashboard(payload, cap_map)
             _invalidate()
@@ -1519,6 +1525,67 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "action": "open_migration_modal",
                 "message": f"Proposed native Otis coordinator migration for '{alias}'. In Otis Rules, assign {area} to {target_coord} to coordinate automatically without legacy timer collisions.",
                 "payload": payload,
+            }
+        elif action_type == "switch_local_llm_model":
+            llm_mgr = _get_local_llm_manager()
+            target_model = payload.get("model") or payload.get("recommended_model")
+            if not target_model:
+                return {"success": False, "error": "No target model specified"}
+            if not llm_mgr:
+                return {"success": False, "error": "LocalLLMManager is not available on this host"}
+
+            st = await llm_mgr.async_get_ollama_status()
+            installed = [str(m).lower() for m in st.get("models", [])]
+            t_low = target_model.lower()
+            if any(t_low == m or t_low in m or m in t_low for m in installed):
+                res = await llm_mgr.async_manage_ollama_addon(action="set_model", model=target_model)
+            else:
+                res = await llm_mgr.async_manage_ollama_addon(action="pull_model", model=target_model)
+
+            _invalidate()
+            msg = res.get("message") or f"Local Edge AI model successfully switched to '{target_model}'."
+            return {
+                "success": res.get("success", True),
+                "message": msg,
+                "model": target_model,
+                "result": res,
+            }
+        elif action_type == "install_ollama_addon":
+            llm_mgr = _get_local_llm_manager()
+            if not llm_mgr:
+                return {"success": False, "error": "LocalLLMManager is not available on this host"}
+            res = await llm_mgr.async_manage_ollama_addon(action="install")
+            _invalidate()
+            msg = res.get("message") or "Otis Edge AI Supervisor Add-on installation and startup initiated."
+            return {
+                "success": res.get("success", True),
+                "message": msg,
+                "result": res,
+            }
+        elif action_type == "repair_blueprint_automation":
+            res = await mgr.async_improve_automation(payload)
+            _invalidate()
+            return res
+        elif action_type == "dismiss_self_healing_alert":
+            lm = _get_log_monitor()
+            err_id = payload.get("error_id")
+            if lm and err_id and hasattr(lm, "async_dismiss_error"):
+                await lm.async_dismiss_error(err_id)
+            _invalidate()
+            return {"success": True, "message": "Self-healing notice dismissed."}
+        elif action_type in ("github_report_issue", "tracked_github_issue"):
+            if action_type == "tracked_github_issue" and payload.get("issue_url"):
+                return {
+                    "success": True,
+                    "action": "open_url",
+                    "url": payload.get("issue_url"),
+                    "title": payload.get("title"),
+                }
+            return {
+                "success": True,
+                "action": "open_github_modal",
+                "payload": payload,
+                "message": "Ready to submit issue to GitHub.",
             }
 
         return {"success": False, "error": f"Unsupported action_type '{action_type}'"}

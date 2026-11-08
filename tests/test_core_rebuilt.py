@@ -1173,6 +1173,32 @@ class TestOtisAICore(unittest.TestCase):
         auto_mgr.async_write_automation.assert_called_once()
         auto_mgr.async_reload_automations.assert_called_once()
 
+        # Test apply_suggestion handler for switch_local_llm_model
+        llm_mgr = self.hass.data[DOMAIN][entry.entry_id]["local_llm_manager"]
+        llm_mgr.async_get_ollama_status = AsyncMock(return_value={"models": ["qwen2.5:3b", "qwen2.5:1.5b"]})
+        llm_mgr.async_manage_ollama_addon = AsyncMock(return_value={"success": True, "message": "Model switched."})
+
+        call_switch = MagicMock()
+        call_switch.data = {
+            "suggestion_id": "switch_local_llm_qwen2_5_1_5b",
+            "action_type": "switch_local_llm_model",
+            "action_payload": {"model": "qwen2.5:1.5b"},
+        }
+        res_switch = asyncio.run(apply_handler(call_switch))
+        self.assertTrue(res_switch["success"])
+        self.assertEqual(res_switch["model"], "qwen2.5:1.5b")
+        llm_mgr.async_manage_ollama_addon.assert_called_with(action="set_model", model="qwen2.5:1.5b")
+
+        # Test apply_suggestion handler for install_ollama_addon
+        call_install = MagicMock()
+        call_install.data = {
+            "suggestion_id": "install_ollama",
+            "action_type": "install_ollama_addon",
+        }
+        res_install = asyncio.run(apply_handler(call_install))
+        self.assertTrue(res_install["success"])
+        llm_mgr.async_manage_ollama_addon.assert_called_with(action="install")
+
     def test_async_setup_frontend_path(self):
         """Test async_setup registers the frontend static path for the Lovelace card."""
         import asyncio
