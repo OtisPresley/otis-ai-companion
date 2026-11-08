@@ -15,6 +15,7 @@ from typing import Any
 import uuid
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 
 from .const import (
     ATTR_AUDIO_FOLLOW_ACTIVE,
@@ -75,10 +76,738 @@ class AudioHandoffManager:
         self._active_audio_migration: dict[str, Any] | None = None
         self._media_sessions: dict[str, dict[str, Any]] = {}
         self._migration_unsub: Any = None
+        self._fav_store = Store(hass, 1, "otis_ai_media_favorites")
+        self._favorites_data: dict[str, Any] = {
+            "users": {},
+            "shared_favorites": [],
+        }
+        self._fav_loaded: bool = False
 
     def set_rules_manager(self, rules_manager: Any) -> None:
         """Set the user behavioral rules manager."""
         self.rules_manager = rules_manager
+
+    async def async_load_favorites(self) -> dict[str, Any]:
+        """Load per-user and shared media favorites from .storage/otis_ai_media_favorites."""
+        if self._fav_loaded:
+            return self._favorites_data
+        try:
+            stored = await self._fav_store.async_load()
+            if isinstance(stored, dict):
+                self._favorites_data = {
+                    "users": dict(stored.get("users") or {}),
+                    "shared_favorites": list(stored.get("shared_favorites") or []),
+                }
+        except Exception as err:
+            _LOGGER.debug("Could not load media favorites store: %s", err)
+        finally:
+            self._fav_loaded = True
+        return self._favorites_data
+
+    async def async_save_favorites(self) -> None:
+        """Persist media favorites to .storage/otis_ai_media_favorites."""
+        try:
+            await self._fav_store.async_save(self._favorites_data)
+        except Exception as err:
+            _LOGGER.debug("Could not save media favorites store: %s", err)
+
+    def get_input_mappings(self) -> dict[str, str]:
+        """Return configured or auto-inferred input-to-player mappings."""
+        configured: dict[str, str] = {}
+        if self.rules_manager:
+            rules = self.rules_manager.get_rules()
+            raw_map = rules.get("media_input_mappings")
+            if isinstance(raw_map, dict):
+                configured = {
+                    str(k).strip(): str(v).strip()
+                    for k, v in raw_map.items()
+                    if str(k).strip() and str(v).strip()
+                }
+        return configured
+
+    def resolve_effective_input_mappings(
+        self,
+        shared_sources: list[str] | None = None,
+        streamers: list[dict[str, Any]] | None = None,
+    ) -> dict[str, str]:
+        """Return input-to-player mappings combining explicit user mappings with smart auto-discovery."""
+        mappings = dict(self.get_input_mappings())
+        if not shared_sources and hasattr(self.hass, "states"):
+            discovered_sources: list[str] = []
+            for st in self.hass.states.async_all("media_player"):
+                s_list = (st.attributes or {}).get("source_list") or []
+                for s in s_list:
+                    if s and s not in discovered_sources:
+                        discovered_sources.append(str(s))
+            shared_sources = discovered_sources
+        if not shared_sources:
+            return mappings
+
+        avail_streamers = streamers or []
+        if not avail_streamers and hasattr(self.hass, "states"):
+            for st in self.hass.states.async_all("media_player"):
+                eid = st.entity_id
+                attrs = st.attributes or {}
+                avail_streamers.append({
+                    "entity_id": eid,
+                    "name": attrs.get("friendly_name", eid),
+                })
+
+        for src in shared_sources:
+            src_clean = str(src).strip()
+            if not src_clean or src_clean in mappings:
+                continue
+            src_low = src_clean.lower()
+            src_slug = src_low.replace(" ", "_")
+
+            # Auto-match known streamer entities by exact slug or friendly name match
+            for st in avail_streamers:
+                eid = str(st.get("entity_id") or "")
+                obj_id = eid.split(".", 1)[-1].lower()
+                st_name = str(st.get("name") or "").strip().lower()
+                if obj_id == src_slug or st_name == src_low:
+                    mappings[src_clean] = eid
+                    break
+            else:
+                # Secondary heuristic: e.g. "Server" -> music_assistant / vlc_telnet_2
+                if src_low in ("server", "media server", "music assistant", "stream 1"):
+                    for target_sub in ("vlc_telnet_2", "music_assistant", "study_group"):
+                        matched_eid = next(
+                            (
+                                str(st.get("entity_id") or "")
+                                for st in avail_streamers
+                                if target_sub in str(st.get("entity_id") or "").lower()
+                            ),
+                            None,
+                        )
+                        if not matched_eid and hasattr(self.hass, "states"):
+                            for h_st in self.hass.states.async_all("media_player"):
+                                if target_sub in h_st.entity_id.lower():
+                                    matched_eid = h_st.entity_id
+                                    break
+                        if matched_eid:
+                            mappings[src_clean] = matched_eid
+                            break
+                elif src_low in ("home assistant", "tts", "announcements"):
+                    for st in avail_streamers:
+                        eid = str(st.get("entity_id") or "")
+                        if eid.lower() == "media_player.vlc_telnet":
+                            mappings[src_clean] = eid
+                            break
+
+        return mappings
+
+    async def get_media_studio_data(
+        self,
+        user_id: str | None = None,
+        user_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Convenience alias for async_get_user_media_studio_state."""
+        return await self.async_get_user_media_studio_state(user_id=user_id, user_name=user_name)
+
+    def get_player_service_profile(self, player_eid: str) -> dict[str, Any]:
+        """Dynamically resolve the underlying platform and capabilities of a media player entity.
+
+        Zero hard-coding: resolves platform dynamically from Home Assistant's entity registry
+        and inspects registered services to determine capabilities.
+        """
+        if not player_eid:
+            return {
+                "platform": "",
+                "provider": "media_player",
+                "display_name": "Media Player",
+                "service": "media_player.play_media",
+                "supported_media_types": ["music", "custom"],
+                "supports_browse": False,
+                "supports_search": False,
+                "supports_voice": False,
+            }
+
+        plat = ""
+        try:
+            from homeassistant.helpers import entity_registry as er
+
+            ent_reg = er.async_get(self.hass)
+            ent = ent_reg.async_get(player_eid)
+            if ent and getattr(ent, "platform", None) and isinstance(ent.platform, str):
+                plat = str(ent.platform).strip().lower()
+        except Exception as ex:
+            _LOGGER.debug("Could not resolve entity registry platform for %s: %s", player_eid, ex)
+
+        # Check for Music Assistant platform or registered service
+        if plat in ("music_assistant", "mass") or (
+            self.hass.services.has_service("music_assistant", "play_media")
+            and ("mass" in player_eid.lower() or "music_assistant" in player_eid.lower())
+        ):
+            return {
+                "platform": plat or "music_assistant",
+                "provider": "music_assistant",
+                "display_name": "Music Assistant",
+                "service": "music_assistant.play_media" if self.hass.services.has_service("music_assistant", "play_media") else "media_player.play_media",
+                "supported_media_types": ["playlist", "radio", "artist", "album", "track", "music"],
+                "supports_browse": self.hass.services.has_service("music_assistant", "get_library"),
+                "supports_search": self.hass.services.has_service("music_assistant", "search"),
+                "supports_voice": False,
+            }
+
+        # Check for Alexa Media Player platform
+        if plat == "alexa_media" or "alexa" in player_eid.lower() or "echo" in player_eid.lower():
+            return {
+                "platform": plat or "alexa_media",
+                "provider": "alexa_media",
+                "display_name": "Alexa Media Player",
+                "service": "media_player.play_media",
+                "supported_media_types": ["custom", "phrase", "music"],
+                "supports_browse": False,
+                "supports_search": False,
+                "supports_voice": True,
+            }
+
+        # Check for Plex
+        if plat == "plex" or "plex" in player_eid.lower():
+            return {
+                "platform": plat or "plex",
+                "provider": "plex",
+                "display_name": "Plex Media Server",
+                "service": "media_player.play_media",
+                "supported_media_types": ["music", "playlist", "station", "audio"],
+                "supports_browse": True,
+                "supports_search": True,
+                "supports_voice": False,
+            }
+
+        # Check for Jellyfin
+        if plat == "jellyfin" or "jellyfin" in player_eid.lower():
+            return {
+                "platform": plat or "jellyfin",
+                "provider": "jellyfin",
+                "display_name": "Jellyfin Media",
+                "service": "media_player.play_media",
+                "supported_media_types": ["music", "playlist", "audio"],
+                "supports_browse": True,
+                "supports_search": False,
+                "supports_voice": False,
+            }
+
+        # Check for VLC Telnet virtual player
+        if plat == "vlc_telnet" or "vlc" in player_eid.lower():
+            return {
+                "platform": plat or "vlc_telnet",
+                "provider": "vlc_telnet",
+                "display_name": "VLC Virtual Audio",
+                "service": "media_player.play_media",
+                "supported_media_types": ["music", "url"],
+                "supports_browse": False,
+                "supports_search": False,
+                "supports_voice": False,
+            }
+
+        # Check for Cast / Android TV
+        if plat in ("cast", "androidtv", "androidtv_remote"):
+            return {
+                "platform": plat,
+                "provider": plat,
+                "display_name": "Google Cast / TV",
+                "service": "media_player.play_media",
+                "supported_media_types": ["music", "url", "channel"],
+                "supports_browse": False,
+                "supports_search": False,
+                "supports_voice": False,
+            }
+
+        # Check for Yamaha MusicCast
+        if plat in ("yamaha_musiccast", "yamaha_ynca"):
+            return {
+                "platform": plat,
+                "provider": plat,
+                "display_name": "Yamaha MusicCast",
+                "service": "media_player.play_media",
+                "supported_media_types": ["music", "net_radio", "url"],
+                "supports_browse": False,
+                "supports_search": False,
+                "supports_voice": False,
+            }
+
+        # Generic / fallback
+        display_name = plat.replace("_", " ").title() if plat else "Standard Media Player"
+        return {
+            "platform": plat or "media_player",
+            "provider": plat or "media_player",
+            "display_name": display_name,
+            "service": "media_player.play_media",
+            "supported_media_types": ["music", "custom"],
+            "supports_browse": False,
+            "supports_search": False,
+            "supports_voice": False,
+        }
+
+    async def async_browse_player_library(
+        self,
+        player_entity_id: str,
+        media_type: str = "playlist",
+        search_query: str | None = None,
+        limit: int = 40,
+    ) -> dict[str, Any]:
+        """Dynamically query media library items from the underlying service provider."""
+        # Normalize media_type to a valid Music Assistant MediaType
+        m_type_raw = str(media_type or "playlist").lower().strip()
+        if m_type_raw in ("playlists", "playlist"):
+            norm_type = "playlist"
+        elif m_type_raw in ("radios", "radio", "station", "stations"):
+            norm_type = "radio"
+        elif m_type_raw in ("artists", "artist"):
+            norm_type = "artist"
+        elif m_type_raw in ("albums", "album"):
+            norm_type = "album"
+        elif m_type_raw in ("tracks", "track", "songs", "song"):
+            norm_type = "track"
+        else:
+            norm_type = "playlist"
+
+        has_mass_service = self.hass.services.has_service("music_assistant", "get_library")
+        profile = self.get_player_service_profile(player_entity_id) if player_entity_id else {}
+        provider = profile.get("provider", "")
+
+        # Allow browsing Music Assistant if the player is backed by MASS or whenever MASS is installed in HA
+        if (provider == "music_assistant" or has_mass_service) and has_mass_service:
+            mass_entries = self.hass.config_entries.async_entries("music_assistant")
+            if not mass_entries:
+                mass_entries = self.hass.config_entries.async_entries("mass")
+            entry_id = mass_entries[0].entry_id if mass_entries else None
+
+            if entry_id:
+                try:
+                    service_data: dict[str, Any] = {
+                        "config_entry_id": entry_id,
+                        "media_type": norm_type,
+                        "limit": limit,
+                    }
+                    if search_query:
+                        service_data["search"] = search_query
+
+                    resp = await self.hass.services.async_call(
+                        "music_assistant",
+                        "get_library",
+                        service_data,
+                        blocking=True,
+                        return_response=True,
+                    )
+                    items = []
+                    raw_items = []
+                    if isinstance(resp, dict):
+                        raw_items = resp.get("items") or resp.get("library") or resp.get(norm_type) or []
+                        if not raw_items and "items" not in resp:
+                            for val in resp.values():
+                                if isinstance(val, list):
+                                    raw_items = val
+                                    break
+                    elif isinstance(resp, list):
+                        raw_items = resp
+
+                    for item in raw_items:
+                        if isinstance(item, dict):
+                            name = item.get("name") or "Unknown"
+                            uri = item.get("uri") or str(item.get("item_id") or name)
+                            art = item.get("artist") or ""
+                            if not art and isinstance(item.get("artists"), list) and item["artists"]:
+                                art = item["artists"][0].get("name", "")
+                            img = item.get("image")
+                            if isinstance(img, dict):
+                                img = img.get("path") or img.get("url")
+                            items.append({
+                                "id": uri,
+                                "name": name,
+                                "media_type": norm_type,
+                                "artist": art,
+                                "image": img or "",
+                            })
+
+                    return {
+                        "success": True,
+                        "provider": "music_assistant",
+                        "player_entity_id": player_entity_id,
+                        "media_type": norm_type,
+                        "items": items,
+                    }
+                except Exception as err:
+                    _LOGGER.warning("Failed to browse Music Assistant library: %s", err)
+                    return {
+                        "success": False,
+                        "error": str(err),
+                        "provider": "music_assistant",
+                        "items": [],
+                    }
+
+        return {
+            "success": False,
+            "error": f"Library browsing is not supported by provider '{provider}' for player '{player_entity_id}'",
+            "items": [],
+        }
+
+    async def async_get_user_media_studio_state(
+        self,
+        user_id: str | None = None,
+        user_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Return full Media Studio state including zones, inputs, mappings, and per-user favorites."""
+        await self.async_load_favorites()
+        uid = str(user_id or "default").strip()
+        users_dict = self._favorites_data.setdefault("users", {})
+        user_prof = users_dict.get(uid) or {
+            "name": user_name or "Resident",
+            "default_zone": "",
+            "favorites": [],
+        }
+        if user_name and not user_prof.get("name"):
+            user_prof["name"] = user_name
+
+        zones_data = await self.async_get_active_media_zones()
+        raw_matrix_zones = zones_data.get("matrix_zones", [])
+        dedicated_matrix_zones = [
+            z for z in raw_matrix_zones
+            if any(
+                k in z.get("entity_id", "").lower() or k in str(z.get("platform", "")).lower()
+                for k in ("matrix_amp", "control4", "russound", "monoprice", "dayton", "htd", "episode", "triad", "savant")
+            )
+        ]
+        non_dedicated_matrix = [z for z in raw_matrix_zones if z not in dedicated_matrix_zones]
+        matrix_zones = dedicated_matrix_zones if dedicated_matrix_zones else raw_matrix_zones
+        streamers = zones_data.get("input_streamers", [])
+        tv_players = zones_data.get("tv_cinema_players", [])
+        other_players = zones_data.get("other_players", [])
+        if dedicated_matrix_zones and non_dedicated_matrix:
+            other_players.extend(non_dedicated_matrix)
+
+        # Gather shared_sources across matrix zones
+        shared_sources: list[str] = []
+        for z in matrix_zones:
+            s_list = z.get("source_list") or []
+            for s in s_list:
+                if s and s not in shared_sources:
+                    shared_sources.append(str(s))
+
+        # Combine all candidate streaming and source players (including receiver secondary zones & bridges)
+        seen_cand_eids: set[str] = set()
+        all_candidate_players: list[dict[str, Any]] = []
+
+        for p in (streamers + other_players + tv_players):
+            peid = str(p.get("entity_id") or "")
+            if peid and peid not in seen_cand_eids:
+                seen_cand_eids.add(peid)
+                all_candidate_players.append(p)
+
+        # Ensure all media_players across Home Assistant are accessible candidates
+        if hasattr(self.hass, "states"):
+            for st in self.hass.states.async_all("media_player"):
+                if st.entity_id not in seen_cand_eids:
+                    seen_cand_eids.add(st.entity_id)
+                    all_candidate_players.append({
+                        "entity_id": st.entity_id,
+                        "name": (st.attributes or {}).get("friendly_name", st.entity_id),
+                        "platform": "",
+                        "state": st.state,
+                    })
+
+        all_candidate_players.sort(key=lambda x: str(x.get("name") or x.get("entity_id", "")).lower())
+
+        effective_mappings = self.resolve_effective_input_mappings(
+            shared_sources=shared_sources,
+            streamers=all_candidate_players,
+        )
+
+        # Enrich mapped player states for live Now Playing metadata & service profile
+        mapped_players_state: dict[str, dict[str, Any]] = {}
+        for inp_name, plr_eid in effective_mappings.items():
+            st = self.hass.states.get(plr_eid) if hasattr(self.hass, "states") else None
+            profile = self.get_player_service_profile(plr_eid)
+            if st:
+                attrs = st.attributes or {}
+                mapped_players_state[inp_name] = {
+                    "entity_id": plr_eid,
+                    "name": attrs.get("friendly_name", plr_eid),
+                    "state": st.state,
+                    "media_title": attrs.get("media_title"),
+                    "media_artist": attrs.get("media_artist"),
+                    "media_album_name": attrs.get("media_album_name"),
+                    "entity_picture": attrs.get("entity_picture"),
+                    "volume_level": attrs.get("volume_level"),
+                    "supported_features": attrs.get("supported_features", 0),
+                    "service_profile": profile,
+                }
+            elif plr_eid:
+                mapped_players_state[inp_name] = {
+                    "entity_id": plr_eid,
+                    "name": plr_eid,
+                    "state": "unknown",
+                    "service_profile": profile,
+                }
+
+        rules = self.rules_manager.get_rules() if self.rules_manager else {}
+        default_zone = (
+            user_prof.get("default_zone")
+            or rules.get("media_default_zone")
+            or (matrix_zones[0]["entity_id"] if matrix_zones else "")
+        )
+        unjoin_input = rules.get("media_unjoin_input") or "None"
+
+        user_favs_tagged = [
+            {**f, "scope": "user"} for f in (user_prof.get("favorites") or [])
+        ]
+        shared_favs_tagged = [
+            {**f, "scope": "shared"} for f in (self._favorites_data.get("shared_favorites") or [])
+        ]
+
+        return {
+            "success": True,
+            "user_id": uid,
+            "user_name": user_prof.get("name") or user_name or "Resident",
+            "default_zone": default_zone,
+            "household_default_zone": rules.get("media_default_zone") or "",
+            "unjoin_input": unjoin_input,
+            "zones": matrix_zones,
+            "matrix_zones": matrix_zones,
+            "shared_sources": shared_sources,
+            "effective_mappings": effective_mappings,
+            "input_mappings": effective_mappings,
+            "explicit_input_mappings": self.get_input_mappings(),
+            "mapped_players_state": mapped_players_state,
+            "candidate_players": [
+                {
+                    "entity_id": p["entity_id"],
+                    "name": p.get("name") or p["entity_id"],
+                    "platform": self.get_player_service_profile(p["entity_id"]).get("platform", p.get("platform", "")),
+                    "state": p.get("state", "unknown"),
+                    "service_profile": self.get_player_service_profile(p["entity_id"]),
+                }
+                for p in all_candidate_players
+            ],
+            "tv_cinema_players": tv_players,
+            "favorites": user_favs_tagged + shared_favs_tagged,
+            "user_favorites": user_favs_tagged,
+            "shared_favorites": shared_favs_tagged,
+        }
+
+    async def async_add_user_favorite(
+        self,
+        user_id: str,
+        name: str,
+        input_source: str = "",
+        player_entity_id: str = "",
+        media_content_id: str = "",
+        media_content_type: str = "custom",
+        zone_entity_id: str = "",
+        icon: str = "mdi:music-circle",
+        is_shared: bool = False,
+        user_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Add a favorite station, playlist, or track for the user (or shared household)."""
+        await self.async_load_favorites()
+        clean_name = str(name or "").strip()
+        if not clean_name:
+            return {"success": False, "error": "Favorite name is required."}
+
+        fav_item = {
+            "id": f"fav_{uuid.uuid4().hex[:8]}",
+            "name": clean_name,
+            "input": str(input_source or "").strip(),
+            "player": str(player_entity_id or "").strip(),
+            "media_content_id": str(media_content_id or clean_name).strip(),
+            "media_content_type": str(media_content_type or "custom").strip(),
+            "zone": str(zone_entity_id or "").strip(),
+            "icon": str(icon or "mdi:music-circle").strip(),
+            "created_at": int(time.time()),
+        }
+
+        if is_shared:
+            shared_list = self._favorites_data.setdefault("shared_favorites", [])
+            if not any(f.get("name", "").lower() == clean_name.lower() and f.get("input") == fav_item["input"] for f in shared_list):
+                shared_list.append(fav_item)
+        else:
+            uid = str(user_id or "default").strip()
+            users_dict = self._favorites_data.setdefault("users", {})
+            u_prof = users_dict.setdefault(uid, {
+                "name": user_name or "Resident",
+                "default_zone": "",
+                "favorites": [],
+            })
+            if user_name:
+                u_prof["name"] = user_name
+            u_favs = u_prof.setdefault("favorites", [])
+            if not any(f.get("name", "").lower() == clean_name.lower() and f.get("input") == fav_item["input"] for f in u_favs):
+                u_favs.append(fav_item)
+
+        await self.async_save_favorites()
+        return await self.async_get_user_media_studio_state(user_id=user_id, user_name=user_name)
+
+    async def async_remove_user_favorite(
+        self,
+        user_id: str,
+        fav_id: str,
+        is_shared: bool = False,
+        user_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Delete a favorite item by ID or name."""
+        await self.async_load_favorites()
+        target_id = str(fav_id or "").strip()
+        if not target_id:
+            return {"success": False, "error": "Favorite ID is required."}
+
+        if is_shared:
+            shared_list = self._favorites_data.get("shared_favorites") or []
+            self._favorites_data["shared_favorites"] = [
+                f for f in shared_list
+                if f.get("id") != target_id and f.get("name") != target_id
+            ]
+        else:
+            uid = str(user_id or "default").strip()
+            users_dict = self._favorites_data.get("users") or {}
+            if uid in users_dict:
+                u_favs = users_dict[uid].get("favorites") or []
+                users_dict[uid]["favorites"] = [
+                    f for f in u_favs
+                    if f.get("id") != target_id and f.get("name") != target_id
+                ]
+
+        await self.async_save_favorites()
+        return await self.async_get_user_media_studio_state(user_id=user_id, user_name=user_name)
+
+    async def async_set_user_default_zone(
+        self,
+        user_id: str,
+        zone_entity_id: str,
+        user_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Save the user's preferred default speaker zone."""
+        await self.async_load_favorites()
+        uid = str(user_id or "default").strip()
+        users_dict = self._favorites_data.setdefault("users", {})
+        u_prof = users_dict.setdefault(uid, {
+            "name": user_name or "Resident",
+            "default_zone": "",
+            "favorites": [],
+        })
+        u_prof["default_zone"] = str(zone_entity_id or "").strip()
+        if user_name:
+            u_prof["name"] = user_name
+        await self.async_save_favorites()
+        return await self.async_get_user_media_studio_state(user_id=user_id, user_name=user_name)
+
+    async def async_play_favorite(
+        self,
+        user_id: str,
+        fav_id: str | None = None,
+        favorite_data: dict[str, Any] | None = None,
+        target_zone: str | None = None,
+    ) -> dict[str, Any]:
+        """Route a zone to the favorite's input source and start playback on the mapped streaming player."""
+        await self.async_load_favorites()
+        uid = str(user_id or "default").strip()
+        fav = favorite_data
+
+        if not fav and fav_id:
+            u_favs = (self._favorites_data.get("users", {}).get(uid, {}).get("favorites") or [])
+            shared_favs = self._favorites_data.get("shared_favorites") or []
+            for candidate in u_favs + shared_favs:
+                if candidate.get("id") == fav_id or candidate.get("name") == fav_id:
+                    fav = candidate
+                    break
+
+        if not fav or not isinstance(fav, dict):
+            return {"success": False, "error": f"Favorite '{fav_id}' not found."}
+
+        zone_eid = str(target_zone or fav.get("zone") or "").strip()
+        input_name = str(fav.get("input") or "").strip()
+        mappings = self.resolve_effective_input_mappings(
+            shared_sources=[input_name] if input_name else []
+        )
+        player_eid = str(fav.get("player") or mappings.get(input_name) or "").strip()
+        media_cmd = str(fav.get("media_content_id") or fav.get("media_title") or fav.get("name") or "").strip()
+        media_type = str(fav.get("media_content_type") or "custom").strip()
+
+        actions: list[str] = []
+        try:
+            # 1. Turn on and route the speaker zone if specified
+            if zone_eid:
+                await self.hass.services.async_call(
+                    "media_player",
+                    "turn_on",
+                    {"entity_id": zone_eid},
+                    blocking=True,
+                )
+                actions.append(f"Turned on {zone_eid}")
+                if input_name:
+                    await self.hass.services.async_call(
+                        "media_player",
+                        "select_source",
+                        {"entity_id": zone_eid, "source": input_name},
+                        blocking=True,
+                    )
+                    actions.append(f"Routed {zone_eid} to input '{input_name}'")
+                self.record_media_session_owner(player_entity_id=zone_eid, user_id=uid)
+
+            # 2. Trigger playback on mapped streamer player
+            if player_eid and media_cmd:
+                self.record_media_session_owner(player_entity_id=player_eid, user_id=uid)
+                profile = self.get_player_service_profile(player_eid)
+                provider = profile.get("provider", "")
+
+                # Alexa voice/custom phrase dispatch
+                if provider == "alexa_media" or media_type in ("custom", "phrase"):
+                    cmd_str = media_cmd if media_cmd.lower().startswith("play ") else f"play {media_cmd}"
+                    await self.hass.services.async_call(
+                        "media_player",
+                        "play_media",
+                        {
+                            "entity_id": player_eid,
+                            "media_content_id": cmd_str,
+                            "media_content_type": "custom",
+                        },
+                        blocking=False,
+                    )
+                    actions.append(f"Dispatched '{cmd_str}' to {player_eid}")
+
+                # Music Assistant dispatch
+                elif provider == "music_assistant" and self.hass.services.has_service("music_assistant", "play_media"):
+                    effective_type = media_type if media_type not in ("custom", "phrase") else "playlist"
+                    await self.hass.services.async_call(
+                        "music_assistant",
+                        "play_media",
+                        {
+                            "entity_id": player_eid,
+                            "media_id": media_cmd,
+                            "media_type": effective_type,
+                        },
+                        blocking=False,
+                    )
+                    actions.append(f"Playing '{media_cmd}' ({effective_type}) via Music Assistant on {player_eid}")
+
+                # Standard media player dispatch
+                else:
+                    await self.hass.services.async_call(
+                        "media_player",
+                        "play_media",
+                        {
+                            "entity_id": player_eid,
+                            "media_content_id": media_cmd,
+                            "media_content_type": media_type if media_type != "custom" else "music",
+                        },
+                        blocking=False,
+                    )
+                    actions.append(f"Playing '{media_cmd}' on {player_eid}")
+
+            return {
+                "success": True,
+                "zone": zone_eid,
+                "input": input_name,
+                "routed_input": input_name,
+                "player": player_eid,
+                "favorite": fav,
+                "favorite_name": fav.get("name"),
+                "actions": actions,
+            }
+        except Exception as err:
+            _LOGGER.warning("Error playing favorite '%s': %s", fav.get("name"), err)
+            return {"success": False, "error": str(err), "actions": actions}
 
     def record_media_session_owner(
         self,
@@ -737,6 +1466,12 @@ class AudioHandoffManager:
                 pass
 
         # Check input streamers: if a streamer is playing, but NO matrix zones are listening, pause it
+        effective_mappings = self.resolve_effective_input_mappings()
+        mapped_active_players: set[str] = {
+            str(plr).strip().lower()
+            for inp, plr in effective_mappings.items()
+            if str(inp).strip().lower() in active_sources and plr
+        }
         for st in streamers:
             st_id = st["entity_id"]
             st_name = str(st["name"]).strip().lower()
@@ -744,9 +1479,12 @@ class AudioHandoffManager:
 
             if st_state in ("playing", "on"):
                 # Check if any active matrix zone is listening to this streamer
-                is_listened_to = any(
-                    (st_name in active_s or active_s in st_name or st_id.split(".")[-1] in active_s)
-                    for active_s in active_sources
+                is_listened_to = (
+                    st_id.lower() in mapped_active_players
+                    or any(
+                        (st_name in active_s or active_s in st_name or st_id.split(".")[-1] in active_s)
+                        for active_s in active_sources
+                    )
                 )
                 if not is_listened_to:
                     try:

@@ -1,7 +1,7 @@
 """Constants for the Otis AI Companion integration."""
 
 DOMAIN = "otis_ai"
-INTEGRATION_VERSION = "0.2.1"
+INTEGRATION_VERSION = "0.3.0"
 
 # Configuration Keys
 CONF_CONVERSATION_AGENT = "conversation_agent"
@@ -130,6 +130,7 @@ SERVICE_GET_VOICE_ASSIST_STATUS = "get_voice_assist_status"
 SERVICE_TEST_LOCAL_LLM = "test_local_llm"
 SERVICE_BENCHMARK_LOCAL_LLM = "benchmark_local_llm"
 SERVICE_PULL_LOCAL_LLM_MODEL = "pull_local_llm_model"
+SERVICE_MANAGE_LOCAL_LLM_ADDON = "manage_local_llm_addon"
 SERVICE_EXECUTE_TOOL_PLAN = "execute_tool_plan"
 
 # Local LLM Embedding-Based RAG & Knowledge Store Services (Roadmap Item 1 / Phase 5 Step 3)

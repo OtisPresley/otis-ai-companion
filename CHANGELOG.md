@@ -7,6 +7,192 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-08
+
+### Major Release & Cumulative Summary (Since v0.2.0)
+Otis AI Companion `v0.3.0` delivers major advancements across local edge intelligence, deterministic control fast-paths, whole-home media player discovery, proactive system diagnostics, and UI ergonomics.
+
+#### 1. 💻 Local Edge AI (Ollama) Supervisor Add-on & Benchmark Suite
+- **Native Supervisor Add-on (`otis_ollama`)**: Bundled a native Home Assistant Supervisor Add-on (`local_otis_ollama` at `http://local-otis-ollama:11434`) providing persistent model storage under `/share/ollama/models`.
+- **Hardware Suitability Verification**: Built-in non-blocking hardware assessment (`async_assess_host_ollama_suitability`) automatically evaluating CPU threads, total/free RAM, and disk storage to ensure reliable local inference.
+- **Add-on Lifecycle Service**: Implemented `otis_ai.manage_local_llm_addon` supporting `status`, `suitability`, `install`, `start`, `stop`, `restart`, `pull_model`, `set_model`, and `delete_model` directly from Home Assistant.
+- **Capabilities GUI Control Panel**: Added the interactive **Local Edge AI (Ollama) & Add-on Control** panel on the Capabilities tab featuring live add-on status, memory/RAM footprint metrics, 1-click model switching (`qwen2.5:1.5b`, `qwen2.5:3b`, `llama3.2:3b`), and real-time token throughput benchmarking.
+
+#### 2. ⚡ Assist Co-Pilot Deterministic Fast-Paths & Grounded Telemetry
+- **Sub-Second Device Control Fast-Path**: Implemented deterministic pattern resolution (`_resolve_control_target`) for home commands ("turn on", "turn off", "toggle", "lock", "unlock", "open", "close"), executing physical changes in ~80ms without cloud failover delays.
+- **Grounded Home Assistant Telemetry Fast-Path**: Instant sub-50ms responses for operational status queries ("What is the current status of HA Core?"), returning active health, climate, media, and lighting metrics with zero hallucinations.
+- **Contextual Tool Pruning**: Automatically filters tool definitions per conversation turn via `select_relevant_tools`, stripping ~2,500 tokens of schema overhead and cutting local CPU prompt evaluation from >25s to ~2s.
+- **Community Cloud Model Demotion**: Demoted rate-limited community models (`openrouter/free`, `free models router`) from automatic failovers to prevent queue stalls.
+- **Type-Safe Entity Resolution**: Fixed `NoneType` attribute errors during thermostat and area state inspections.
+
+#### 3. 🧠 Zero-Jump Reasoning Trace Accordion & Scroll Anchoring
+- **In-Place DOM Accordion Toggle**: Converted the purple "Thought for Xs (N steps)" reasoning trace toggle to use direct in-place visibility transitions (`display: none` / `display: flex`), eliminating full shadow DOM rebuilds.
+- **Rock-Solid Scroll Anchoring**: Solved scroll jumping to the top of the chat history when expanding or collapsing reasoning steps while scrolled up, maintaining the exact scroll position and cursor focus across multi-pass layout frames (`prevChatScrollTop`).
+
+#### 4. 🎵 Agnostic Media Studio, Matrix Routing & Music Assistant Picker
+- **Universal Player & Platform Discovery**: Dynamic registry inspection resolving underlying platforms (Music Assistant, Alexa Media Player, VLC Telnet, Google Cast, Yamaha MusicCast, Plex, Jellyfin) and unlocking candidate players across states, including AV receiver secondary zones (Yamaha Zone 2 & Zone 3).
+- **In-Card Music Assistant Library Browser**: Direct in-dashboard browsing and 1-click playback across Playlists, Radio Stations, Artists, and Albums.
+- **Interactive Favorite Station Picker**: Integrated an inline library picker inside the **+ Add Favorite** dialog, populating URIs, titles, and media types with a single click.
+- **Authenticated Favorites API**: Dedicated authenticated endpoint (`/api/otis_ai/media_studio`) for instant favorite deletion and real-time storage synchronization.
+- **Physical Matrix Input Mappings Editor**: Restored `⚙️ Input Mappings` configuration directly on the Media Studio card, enabling administrators to bind physical amplifier inputs to upstream players and designate default speaker zones.
+- **Decluttered Media Dashboard**: Removed redundant legacy grids in favor of the all-in-one Media Studio & Source-to-Zone Router card.
+
+#### 5. 🐙 HA Core Log Monitor & GitHub Device-Flow Issue Reporter
+- **Intelligent Log Monitoring**: In-memory inspection auditing `system_log` entries to accurately distinguish between transient self-healing reconnections (network drops, device sleep, ADB timeouts) and actionable integration bugs.
+- **Automated Privacy Sanitization**: Multi-layered sanitization engine stripping private IPv4 addresses, MAC addresses, Bearer tokens, secrets, emails, and host paths before display or submission.
+- **Zero-Token GitHub Device Flow**: Direct device-code authentication via `github.com/login/device` with modal verification and persistent issue tracking (`🟢 OPEN` / `🟣 CLOSED`) in the Proactive Feed.
+
+#### 6. 🎨 Dynamic Themes & Dashboard Polish
+- **Scoped Theme Studio**: Scoped Theme Studio strictly to the active logged-in user profile on subviews and room pages, while preserving multi-user scope targeting (`Current User`, `Specific User...`, `All Users`) on the primary Command Center card.
+- **Admin Rules Access**: Retained prominent `⚙️ Rules` button in the header of the AI Command Center admin card.
+- **Decluttered Room Views**: Stripped obsolete red-pin room telemetry markdown cards from all generated room subviews and cleaned existing storage files.
+- **Frosted Glassmorphism Consistency**: Unified glassmorphism styling across all cards, modals, and input controls.
+
+## [0.2.11] - 2026-11-08
+
+### Fixed & Enhanced
+- **Zero-Jump Reasoning Trace Accordion & Chat Scroll Anchoring (`otis-companion-card.js`)**:
+  - Eliminated disruptive scroll jumping to the top of the chat window when expanding or collapsing the purple "Thought for Xs (N steps)" reasoning trace pill in Assist Co-Pilot.
+  - Converted the reasoning trace toggle to perform direct, in-place DOM visibility transitions (`display: none` / `display: flex`) without destroying or recreating the shadow DOM tree, preserving the exact scroll position and cursor location.
+  - Re-architected scroll state restoration across card re-renders to strictly anchor to `prevChatScrollTop` on immediate, `requestAnimationFrame`, and delayed passes, preventing temporary unmeasured layout geometries from clamping scroll position to zero.
+- **Room Subview Header Cleanliness (`dashboard_manager.py`)**:
+  - Removed obsolete legacy markdown header cards (`📍 {area_name} — Room controls and live telemetry`) from all generated room subviews and cleaned existing instances across dashboard storage files (`lovelace.command-center` and `lovelace.otis_ai`).
+
+## [0.2.10] - 2026-11-08
+
+### Changed & Refined
+- **Context-Aware Theme Studio Scope (`otis-companion-card.js`)**:
+  - Scoped Theme Studio strictly to the logged-in user profile on all Command Center dashboard and subview pages (`media_studio`, `security`, `climate`, `energy`, `room_view`, `floorplan_studio`).
+  - Preserved the full multi-user scope selector (`Current User`, `Specific User...`, `All Users (Global Profile Sync)`) exclusively on the primary Otis AI Command Center card for administrator deployment.
+- **Header Cleanliness on Dashboard & Subview Pages (`otis-companion-card.js`)**:
+  - Removed redundant `↻ Refresh` buttons from all dashboard/view page headers (Media Studio, Security Center, Climate & Pool, Energy Studio, Room views, and Floor Plan Studio), keeping the header clean and uncluttered while retaining the Refresh action on the primary Command Center card.
+
+## [0.2.9] - 2026-11-08
+
+### Restored & Enhanced
+- **AI Command Center Admin Rules Button (`otis-companion-card.js`)**:
+  - Restored the prominent `⚙️ Rules` button in the header of the AI Command Center admin card (`card-header`), ensuring administrators have immediate access to full behavioral rules, occupancy models, and system configuration.
+- **Theme Studio Scope & Global Activation (`otis-companion-card.js`)**:
+  - Restored the full User Scope Selector (`Current User`, `Specific User...`, `All Users (Global Profile Sync)`) on the Command Center card, enabling administrators to deploy and synchronize dynamic AI-generated themes across all household user profiles.
+- **Media Studio Matrix Input-to-Player Mappings (`otis-companion-card.js`)**:
+  - Restored the `⚙️ Input Mappings` button and collapsible physical mapping editor directly in the Media Studio section of the card.
+  - Allows administrators to map physical matrix amplifier inputs (e.g. Server, Bridge, CD, TV) to upstream media players (Music Assistant, Alexa, VLC, Plex), select the unjoin/mute source, and configure the household default speaker zone with 1-click persistent storage sync.
+
+## [0.2.8] - 2026-11-08
+
+### Fixed & Enhanced
+- **Assist Co-Pilot Thermostat Area Safeguard (`__init__.py`)**:
+  - Guarded `area_to_thermostat` state inspection with type validation (`if t_eid and isinstance(t_eid, str) and hasattr(self.hass, "states"):`), eliminating `AttributeError: 'NoneType' object has no attribute 'lower'` when inspecting Home Assistant Core status for areas without thermostats.
+- **Accurate Log Classification & Noise Filtering (`log_monitor.py`)**:
+  - Filtered out non-integration user automation, script, template, and scene errors (`NON_INTEGRATION_DOMAINS`) from being presented as third-party GitHub integration bug reports.
+  - Reclassified transient device sleep, ADB command timeouts (`androidtv`), and network reconnect attempts as self-healing events rather than code bug reports.
+- **Media Studio Favorites Deletion (`__init__.py`, `otis-companion-card.js`)**:
+  - Corrected keyword parameter bindings in `OtisMediaStudioView.post` for `async_remove_user_favorite`, fixing the 500 error on favorite deletion.
+  - Hardened frontend API response parser in `_postMediaStudioAction` to handle non-JSON error bodies without JSON parsing exceptions.
+- **Interactive Music Assistant Library Picker in Add Favorite (`audio_manager.py`, `otis-companion-card.js`)**:
+  - Normalized media types and enabled global Music Assistant library browsing even when matrix input players are not actively bound.
+  - Added an interactive inline library picker directly inside the Add Favorite form allowing 1-click selection of playlists, radio stations, artists, and albums into favorite form inputs.
+- **Card Performance & Load Time Optimization (`__init__.py`, `otis-companion-card.js`)**:
+  - Increased `DiscoveryEngine.CAPABILITY_CACHE_TTL` to 120 seconds.
+  - Converted card `_fetchData` to use a stale-while-revalidate pattern, preventing blank screen flickers and loading spinners when capability data is already cached.
+  - Removed redundant `_fetchData` blocking execution on Capabilities tab navigation.
+
+## [0.2.7] - 2026-11-07
+
+### Fixed & Enhanced
+- **Local Edge AI (Ollama) Add-on Detection & Status Telemetry (`local_llm.py`, `__init__.py`, `otis-companion-card.js`)**:
+  - Populated `local_llm` capability map in `DiscoveryEngine.async_build_capability_map`, resolving the issue where Capabilities reported "Ollama Not Installed" and "Host Below Minimum Ollama Specs" due to undefined capability map state.
+  - Registered missing `manage_local_llm_addon` service in Home Assistant Core with complete support for add-on lifecycle actions (`status`, `suitability`, `install`, `start`, `stop`, `restart`, `pull_model`, `set_model`, `delete_model`).
+  - Added non-blocking async executor job and cached hardware suitability and status probing in `LocalLLMManager` with cache invalidation on lifecycle changes.
+  - Prevented frontend card `_fetchData` from clobbering live `local_llm` status telemetry.
+
+## [0.2.6] - 2026-11-07
+
+### Added & Enhanced
+- **Model Routing & Cloud Failover Demotion (`__init__.py`, `local_llm.py`)**:
+  - Direct Otis Grounded Engine telemetry fast-path for Home Assistant Core status queries ("What is the current status of HA Core?"), returning operational health, version, climate, media, and lights in <50ms with zero hallucinations.
+  - Fast-path for Proactive Feed and maturity guidance ("How do I Vision False-Positive Filter Calibrated...?"), delivering synthesized step-by-step guidance instantly.
+  - Demoted community rate-limited models (`openrouter/free`, `free models router`) from automatic failovers to prevent 60-second community queue stalls.
+  - Contextual tool trimming in `LocalLLMManager.async_chat_with_tools` using `select_relevant_tools(prompt)`, eliminating 2,500 tokens of schema overhead and reducing CPU prompt evaluation from >25s to ~2s.
+- **Agnostic Player-to-Service Platform Mapping (`audio_manager.py`, `otis-companion-card.js`)**:
+  - Dynamic registry inspection resolving underlying platforms (Music Assistant / `mass`, Alexa Media Player, VLC Telnet, Google Cast, Yamaha MusicCast, Plex, Jellyfin) with zero hard-coded entity IDs.
+  - Native service integration for Music Assistant (`music_assistant.play_media`, `music_assistant.get_library`) allowing direct in-card browsing of Playlists, Radio Stations, Artists, and Albums without leaving the dashboard.
+  - Provider capability pills and badges in the Now Playing streamer card with 1-click playback and personal favorite bookmarking.
+- **Command Center & Studio Header Permissions**:
+  - Removed exposure of normal-user `Rules` button/modal from the Command Center dashboard and all Studio views (Media Studio, Security Center, Climate & Pool, Energy Studio, and Room views).
+  - Enforced logged-in user scoping on Theme customization (`frontend.set_user_theme` / `frontend/set_user_data`), preventing global theme overrides.
+- **Media Studio View Clutter Reduction (`dashboard_manager.py`)**:
+  - Removed redundant grids ("Room Speaker & Amplifier Zones", "Upstream Audio Streamers & Bridges", "Audio Source & Speaker Routing Controls"), establishing the unified Media Studio & Source-to-Zone Router card as the single control center.
+- **Complete Frosted Glassmorphism Consistency (`otis-companion-card.js`)**:
+  - Standardized frosted glassmorphism across quick stats bar, glance strip chips, subviews launchpad, navigation tabs, chat history, user/assistant chat bubbles, and the chat input bar (`backdrop-filter: blur(16px)`, translucent gradients, inset highlights).
+
+## [0.2.5] - 2026-11-07
+
+### Added & Enhanced
+- **Assist Co-Pilot Direct Device Control Fast-Path (`__init__.py`)**:
+  - Implemented sub-second deterministic control fast-path (`_resolve_control_target`) for home control commands ("turn on", "turn off", "toggle", "lock", "unlock", "open", "close").
+  - Matches exact and fuzzy device/light/switch/fan/lock/cover friendly names and object IDs (e.g. `Study Fan Study Light` -> `light.study_fan_study_light`) with 0.08s execution time, eliminating long 60-second cloud failovers and OpenRouter queue delays.
+  - Resolves ambiguous multi-device requests with clean state inspection prompts and provides instant whole-room area control ("turn off Study").
+  - Fixed prompt context cross-referencing so raw `annotatedyaml` AST dictionaries are never dumped into prompts for conversational home control requests.
+- **Rules Dialog Background Persistence (`otis-companion-card.js`)**:
+  - Added module-level singleton state `OTIS_ACTIVE_RULES_STATE` preserving open dialog state, current tab, and draft inputs across background entity updates, data refetches, and dashboard tab navigation.
+  - Attached real-time continuous input listeners syncing draft changes on every keystroke and skipping destructive DOM re-renders while the modal is open.
+- **Unified Otis Card Styles Across All Command Center Views (`dashboard_manager.py`, `otis-companion-card.js`)**:
+  - Added studio banner header modes (`mode: "security"`, `mode: "climate"`, `mode: "energy"`, `mode: "room_view"`) with glowing status dots, back navigation, live state subtitles, and action toolbar buttons (`🎨 Themes`, `⚙️ Rules`, `↻ Refresh`).
+  - Integrated header cards across Security Center, Climate & Pool Studio, Energy Studio, and all 16 Room subviews.
+- **Dashboard Section Ordering Strict Compliance (`dashboard_manager.py`)**:
+  - Updated Command Center section construction to strictly respect `primary_content_focus` user settings (`glance_first`, `studios_first`, `balanced`), ensuring Active Rooms comes after Schedule & Weather when set to Schedule & Weather First.
+- **Audio Candidate Players & Multi-Zone Secondary Player Support (`audio_manager.py`, `otis-companion-card.js`)**:
+  - Unlocked candidate player discovery to include all Home Assistant `media_player` entities across registries and states, making Theater Yamaha Zone 2, Zone 3, and upstream streamers available for input-to-player mapping and default zone selection.
+
+## [0.2.4] - 2026-11-07
+
+### Added & Enhanced
+- **Phase 5: HA Core Log Monitor & GitHub Device-Flow Issue Reporter (`log_monitor.py`, `github_client.py`, `__init__.py`, `otis-companion-card.js`)**:
+  - Added the **HA Core Log Monitor** (`log_monitor.py`) auditing in-memory `system_log` error and warning records, distinguishing between self-healing transient connectivity drops (`TimeoutError`, `403 handshake`, `ClientConnectorError`, automatic retries) and actionable unhandled integration bugs.
+  - Built-in multi-layered **Sanitization Engine** (`sanitize_log_data`) redacting private internal IPv4 addresses (`10.x.x.x`, `192.168.x.x`, `172.16-31.x.x` -> `[LOCAL_IP]`), MAC addresses, Bearer tokens, secrets, email addresses, and local system paths (`/home/<user>/` -> `/config/`).
+  - Implemented **GitHub Device Flow Verification** (`github_client.py`, `OtisIssueReporterView` at `/api/otis_ai/issue_reporter`) allowing users to authenticate directly via `github.com/login/device` with a one-time code and open sanitized bug reports on GitHub without manually creating Personal Access Tokens.
+  - Added interactive GitHub issue creation modal (`_renderGitHubIssueModal`) in `otis-companion-card.js` with sanitized diagnostic review, one-click copyable device code, live authorization polling, and automatic submission.
+  - Added persistent issue tracking (`.storage/otis_ai_tracked_issues`) with live state badges (`🟢 OPEN` / `🟣 CLOSED`) and 1-click **🔗 View on GitHub** actions surfaced in the Proactive Feed.
+- **Audio Rules & Media Studio Candidate Players Discovery Fix (`matrix_presets.py`, `audio_manager.py`, `otis-companion-card.js`)**:
+  - Fixed overly broad Monoprice preset substring patterns (`"zone_1"`, `"zone_2"`, `"zone_3"`) in `matrix_presets.py` that incorrectly classified multi-zone AV receivers (e.g., Yamaha Zone 2, Zone 3, Denon, Marantz) as Monoprice matrix amplifiers.
+  - Expanded `AudioHandoffManager.async_get_user_media_studio_state()` and frontend `_getResolvedCandidatePlayers` to include all Home Assistant `media_player` entities across registries and states (excluding only active matrix output zones) regardless of state, ensuring Theater Yamaha Zone 2, Zone 3, and any upstream player are immediately available for input-to-player mapping.
+- **Media Studio View Cleanup (`dashboard_manager.py`)**:
+  - Removed redundant `custom:control4-mediaplayer-card` generations from Media Studio dashboard views and hubs, providing a unified, cohesive experience powered exclusively by the upgraded Otis Media Studio card (`custom:otis-companion-card` with `mode: "media_studio"`).
+
+## [0.2.3] - 2026-11-07
+
+### Added & Enhanced
+- **Media Studio Redesign, Matrix Input-to-Player Mapping & Non-Admin Per-User Favorites (`audio_manager.py`, `__init__.py`, `rules_manager.py`, `dashboard_manager.py`, `otis-companion-card.js`)**:
+  - Added configurable **Matrix Input-to-Player Mapping** (`media_input_mappings`, `media_default_zone`, `media_unjoin_input`) in Otis AI Rules & Settings (`Voice & Media`) and directly inside the Media Studio (`⚙️ Input Mappings`), with automatic discovery fallback (`resolve_effective_input_mappings`) matching shared amplifier inputs (`Bridge`, `Gym Bridge`, `Server`, `Home Assistant`) to upstream streaming `media_player` entities.
+  - Added persistent per-user and shared household media storage (`.storage/otis_ai_media_favorites`) and an authenticated non-admin `HomeAssistantView` endpoint (`/api/otis_ai/media_studio`) keyed by `request["hass_user"].id`, allowing any resident to save, play, and delete personal favorite stations/playlists and set their personal default speaker zone without requiring Home Assistant Administrator privileges.
+  - Added the **🎵 Media Studio** tab and `mode: "media_studio"` view in `otis-companion-card.js` featuring live Now Playing metadata & transport controls on the mapped streamer, multi-room zone volume mixer, target speaker zone & matrix input routing, 1-click multi-room link/unlink chips, and 1-click per-user & household favorites.
+- **Proactive Feed Local Edge AI Model Recommendation Card (`local_llm.py`, `__init__.py`, `otis-companion-card.js`)**:
+  - Enhanced `LocalLLMManager.async_assess_host_ollama_suitability()` to combine host hardware profiling with live inference metrics (`_record_inference_telemetry`) and benchmark telemetry (`_last_benchmark`), automatically recommending `qwen2.5:1.5b` when CPU generation on a `3b+` model is below 10 tok/s or above 10s latency.
+  - Surfaced a Proactive Feed recommendation card (`⚡ Switch Local Edge AI Model to <model>`) with a 1-click **⚡ Pull & Activate Model** button (`switch_local_llm_model`) when a different Local Edge AI model is recommended.
+- **Smart Dashboard Entity Classification & Live Registry Watcher (`__init__.py`, `dashboard_manager.py`)**:
+  - Recovered `switch.*` entities with orphaned `hidden_by: "integration"` where no active `switch_as_x` wrapper exists (e.g., `switch.rear_flood_2`, `switch.deck_kitchen_2`, `switch.crawl_space`), and deduplicated switches that have an active `switch_as_x` light wrapper.
+  - Added semantic classification for `switch.*` entities in Room Views: lighting switches (`_light`, `lamp`, `flood`, `sconce`, wall-switch models) into **Lighting**, fan/ventilation switches (`_fan`, `exhaust`, `vent`) into **Fans & Air Comfort**, and outlets/plugs/appliances into **Power & Outlets**.
+  - Subscribed to `entity_registry_updated`, `device_registry_updated`, and `area_registry_updated` with an event-loop-safe (`async def _on_registry_updated`) 3-second debounced auto-regeneration task so Admin Companion and User Command Center dashboards stay in sync automatically.
+  - Updated the `otis_ollama` Supervisor Add-on `icon.png` and `logo.png` (`Settings -> Apps`) to use the high-contrast `dark_icon@2x` / `dark_logo@2x` artwork on a rounded dark-slate badge (`#0b1120`) with a glowing cyan border (`#38bdf8`) so it is crisp in both Dark Mode and Light Mode.
+- **Onboarding Banner Load Guard (`otis-companion-card.js`, `rules_manager.py`)**:
+  - Suppressed the initial setup/onboarding banner while `_isLoading` / `_loadingSuggestions` or before `_capabilityMap` and `_userRules` finish loading, and automatically mark `onboarding_completed = True` when existing custom rules, wizard state, or person profiles are present.
+- **Assist Co-Pilot `⏹️ Stop` Control & Navigation Persistence (`otis-companion-card.js`, `__init__.py`)**:
+  - Added a `⏹️ Stop` button in the Assist Co-Pilot input bar, thinking banner, and thinking bubble header to immediately abort in-flight reasoning on both the frontend and backend (`otis_ai.chat` task cancellation).
+  - Added module-level `OTIS_ACTIVE_CHAT` session tracking and `connectedCallback()` synchronization so Assist Co-Pilot reasoning continues uninterrupted if the user switches tabs or navigates away to another Lovelace view and returns.
+
+## [0.2.2] - 2026-11-07
+
+### Added & Enhanced
+- **Assist Co-Pilot Speed & Grounded System/Feature Intelligence (`__init__.py`, `local_llm.py`)**:
+  - Added intent-aware tool schema filtering (`select_relevant_tools`) in `local_llm.py` so informational, status, setup-guide, and YAML-authoring queries do not inject 2,500+ tokens of 12-tool JSON schemas (`DEFAULT_OTIS_TOOLS`), and prevented timeout duplicate requests in `LocalLLMManager.async_generate`.
+  - Added instant grounded handlers in `async_process` for Home Assistant Core / System / Otis AI status queries, Otis AI Companion feature & architecture inquiries, and `How do I ...? Give me step-by-step guidance.` setup-guide modal prompts (including `🎯 Vision False-Positive Filter Calibrated (<Room>)` with verified room binary sensors, cameras, and modern HA YAML).
+  - Improved multi-subentry cloud agent deduplication, shared health scoring, and retry cooldowns in `async_get_prioritized_agents()`.
+- **Native Otis Edge AI (Ollama) Supervisor Add-on & GUI Control Panel (`otis_ollama/`, `local_llm.py`, `otis-companion-card.js`)**:
+  - Added native Home Assistant Supervisor Add-on (`otis_ollama` / `local_otis_ollama`) with `/dev/dri` GPU/iGPU passthrough, persistent model storage in `/share/otis_ollama`, and automatic default model provisioning.
+  - Added non-blocking host hardware suitability assessment (`async_assess_host_ollama_suitability`) verifying Supervisor availability, CPU cores/threads, total & free RAM, free NVMe/disk storage, and GPU/iGPU presence before surfacing the `🧠 Install & Start Otis Edge AI (Ollama) Supervisor Add-on` Proactive Feed recommendation.
+  - Added `otis_ai.manage_local_llm_addon` service and the **🧠 Local Edge AI (Ollama) & Add-on Control** panel on the Capabilities tab with 1-click **Install & Start**, **Start**, **Stop**, **Restart**, **Refresh Status**, **Benchmark**, active `/api/ps` memory inspection, and model switcher/puller/deleter controls.
+
 ## [0.2.1] - 2026-11-05
 
 ### Fixed

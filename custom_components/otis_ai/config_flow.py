@@ -231,39 +231,27 @@ class OtisAIOptionsFlowHandler(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Manage the options."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            merged_options = dict(self._config_entry.options)
+            merged_options.pop(CONF_CONVERSATION_AGENT, None)
+            merged_options.update(user_input)
+            return self.async_create_entry(title="", data=merged_options)
 
         options = self._config_entry.options
         data = self._config_entry.data
 
-        # Get list of available conversation agents
-        agents = _get_agents(self.hass)
-        agent_options = [{"value": agent.id, "label": agent.name} for agent in agents]
-        
-        default_agent = options.get(CONF_CONVERSATION_AGENT) or data.get(CONF_CONVERSATION_AGENT)
-        if not default_agent and agents:
-            default_agent = agents[0].id
+        active_llm_url = options.get(CONF_LOCAL_LLM_URL, data.get(CONF_LOCAL_LLM_URL, DEFAULT_LOCAL_LLM_URL))
+        active_llm_model = options.get(CONF_LOCAL_LLM_MODEL, data.get(CONF_LOCAL_LLM_MODEL, DEFAULT_LOCAL_LLM_MODEL))
+        if self.hass and isinstance(getattr(self.hass, "data", None), dict):
+            entry_store = self.hass.data.get(DOMAIN, {}).get(self._config_entry.entry_id, {})
+            if isinstance(entry_store, dict):
+                llm_mgr = entry_store.get("local_llm_manager")
+                if llm_mgr is not None:
+                    if getattr(llm_mgr, "url", None):
+                        active_llm_url = llm_mgr.url
+                    if getattr(llm_mgr, "model", None):
+                        active_llm_model = llm_mgr.model
 
-        schema_dict = {}
-        if agents:
-            schema_dict[vol.Optional(CONF_CONVERSATION_AGENT, default=default_agent)] = selector({
-                "select": {
-                    "options": agent_options,
-                    "mode": "dropdown",
-                }
-            })
-        else:
-            schema_dict[vol.Optional(CONF_CONVERSATION_AGENT, default="")] = cv.string
-
-        schema_dict.update({
-            vol.Optional(
-                CONF_SPATIAL_MAP_PATH,
-                default=options.get(CONF_SPATIAL_MAP_PATH, data.get(CONF_SPATIAL_MAP_PATH, DEFAULT_SPATIAL_MAP_PATH))
-            ): cv.string,
-            vol.Optional(
-                CONF_THEME_NAME,
-                default=options.get(CONF_THEME_NAME, data.get(CONF_THEME_NAME, DEFAULT_THEME_NAME))
-            ): cv.string,
+        schema_dict = {
             vol.Optional(
                 CONF_REASONING_TIMEOUT,
                 default=options.get(CONF_REASONING_TIMEOUT, data.get(CONF_REASONING_TIMEOUT, DEFAULT_REASONING_TIMEOUT))
@@ -282,11 +270,11 @@ class OtisAIOptionsFlowHandler(config_entries.OptionsFlow):
             ): cv.boolean,
             vol.Optional(
                 CONF_LOCAL_LLM_URL,
-                default=options.get(CONF_LOCAL_LLM_URL, data.get(CONF_LOCAL_LLM_URL, DEFAULT_LOCAL_LLM_URL))
+                default=active_llm_url
             ): cv.string,
             vol.Optional(
                 CONF_LOCAL_LLM_MODEL,
-                default=options.get(CONF_LOCAL_LLM_MODEL, data.get(CONF_LOCAL_LLM_MODEL, DEFAULT_LOCAL_LLM_MODEL))
+                default=active_llm_model
             ): cv.string,
             vol.Optional(
                 CONF_CAMERA_STREAM_STRATEGY,
@@ -305,7 +293,7 @@ class OtisAIOptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_AUDIO_FOLLOW_ENABLED,
                 default=options.get(CONF_AUDIO_FOLLOW_ENABLED, data.get(CONF_AUDIO_FOLLOW_ENABLED, True))
             ): cv.boolean,
-        })
+        }
 
         schema = vol.Schema(schema_dict)
 

@@ -6,16 +6,21 @@ Compatible with Ollama, vLLM, LocalAI, and OpenAI-compatible inference servers.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
+import os
 import re
+import shutil
 import time
 from typing import Any
 
 from aiohttp import ClientSession, ClientTimeout
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -303,6 +308,97 @@ DEFAULT_OTIS_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+def select_relevant_tools(user_text: str) -> list[dict[str, Any]]:
+    """Select only the subset of DEFAULT_OTIS_TOOLS relevant to the user's message.
+
+    Avoids injecting ~2,500 tokens of tool JSON schemas into Local Edge LLM prompts
+    for informational, status, guidance, or YAML-authoring queries.
+    """
+    text_low = (user_text or "").strip().lower()
+    if not text_low:
+        return []
+
+    # Informational / guidance / YAML-generation queries do not execute direct tools
+    if any(
+        text_low.startswith(p)
+        for p in (
+            "what ",
+            "how ",
+            "why ",
+            "where ",
+            "when ",
+            "who ",
+            "explain ",
+            "describe ",
+            "write ",
+            "create an automation",
+            "create a script",
+            "draft ",
+            "tell me ",
+            "list ",
+        )
+    ) and not any(k in text_low for k in ("manual", "handbook", "spec", "reset")):
+        return []
+
+    tool_by_name = {
+        t["function"]["name"]: t
+        for t in DEFAULT_OTIS_TOOLS
+        if isinstance(t, dict) and isinstance(t.get("function"), dict) and t["function"].get("name")
+    }
+    selected: list[str] = []
+
+    if any(k in text_low for k in ("unpin", "remove pin")):
+        selected.append("unpin_floorplan_entity")
+    elif any(k in text_low for k in ("pin ", "floorplan", "floor plan")):
+        selected.append("pin_floorplan_entity")
+
+    if any(k in text_low for k in ("sentinel", "anomaly", "anomalies", "watchdog")):
+        selected.append("run_sentinel_watchdog")
+    if any(k in text_low for k in ("stuck", "runaway", "left on")):
+        selected.append("turn_off_stuck_actuator")
+    if any(k in text_low for k in ("ble proxy", "bluetooth proxy")):
+        selected.append("restart_ble_proxy")
+    if any(k in text_low for k in ("heal ", "z-wave", "zwave", "zigbee", "mesh")):
+        selected.append("heal_mesh_node")
+    if any(k in text_low for k in ("regenerate", "rebuild")) and any(
+        k in text_low for k in ("dashboard", "command center", "studio")
+    ):
+        selected.append("regenerate_dashboards")
+    if any(k in text_low for k in ("camera", "snapshot", "doorbell", "porch")):
+        selected.append("analyze_camera")
+    if any(k in text_low for k in ("macro", "movie night", "goodnight", "party mode", "lockdown")):
+        selected.append("execute_macro")
+    if any(k in text_low for k in ("manual", "documentation", "reset", "troubleshoot")):
+        selected.append("query_knowledge_base")
+    if any(k in text_low for k in ("battery", "arbitrage", "solar", "tou")):
+        selected.extend(["optimize_battery_schedule", "get_energy_arbitrage_plan"])
+    if any(
+        k in text_low
+        for k in (
+            "turn on",
+            "turn off",
+            "switch on",
+            "switch off",
+            "toggle",
+            "dim ",
+            "brighten",
+            "set temperature",
+            "set thermostat",
+            "lock ",
+            "unlock ",
+            "open ",
+            "close ",
+            "volume",
+            "mute",
+            "pause",
+            "play ",
+        )
+    ):
+        selected.append("call_ha_service")
+
+    return [tool_by_name[name] for name in selected if name in tool_by_name]
+
+
 def extract_tool_calls(
     text: str = "", raw_tool_calls: list[dict[str, Any]] | None = None
 ) -> list[dict[str, Any]]:
@@ -474,6 +570,40 @@ class LocalLLMManager:
         self.rag_manager = rag_manager
         self._last_health: dict[str, Any] = {"status": "unknown"}
         self._embedding_unavailable_until: float = 0.0
+        self._last_benchmark: dict[str, Any] | None = None
+        self._metrics: dict[str, Any] = {
+            "total_requests": 0,
+            "last_tokens_per_sec": 0.0,
+            "avg_tokens_per_sec": 0.0,
+            "last_latency_s": 0.0,
+            "avg_latency_s": 0.0,
+            "last_model": "",
+        }
+        self._last_status: dict[str, Any] | None = None
+        self._last_status_ts: float = 0.0
+        self._last_suitability: dict[str, Any] | None = None
+        self._last_suitability_ts: float = 0.0
+
+    def _record_inference_telemetry(self, model_name: str, tokens_per_sec: float, duration_s: float) -> None:
+        """Record local LLM inference speed and latency telemetry for suitability recommendations."""
+        try:
+            prev_n = int(self._metrics.get("total_requests", 0))
+            prev_model = str(self._metrics.get("last_model") or "")
+            if prev_model and prev_model.lower() != str(model_name or "").lower():
+                prev_n = 0
+            n = prev_n + 1
+            prev_avg_tps = float(self._metrics.get("avg_tokens_per_sec", 0.0)) if prev_n > 0 else 0.0
+            prev_avg_lat = float(self._metrics.get("avg_latency_s", 0.0)) if prev_n > 0 else 0.0
+            self._metrics = {
+                "total_requests": n,
+                "last_tokens_per_sec": round(float(tokens_per_sec), 1),
+                "avg_tokens_per_sec": round(((prev_avg_tps * prev_n) + float(tokens_per_sec)) / n, 1),
+                "last_latency_s": round(float(duration_s), 2),
+                "avg_latency_s": round(((prev_avg_lat * prev_n) + float(duration_s)) / n, 2),
+                "last_model": str(model_name or self.model or ""),
+            }
+        except Exception:
+            pass
 
     def _get_headers(self) -> dict[str, str]:
         """Build request headers."""
@@ -572,6 +702,18 @@ class LocalLLMManager:
         except Exception as err:
             _LOGGER.debug("OpenAI /v1/models check failed at %s: %s", base_url, err)
 
+        # 3. If default check failed on a legacy URL and running under HA Supervisor, auto-probe local add-on endpoints
+        if target_url is None and os.environ.get("SUPERVISOR_TOKEN"):
+            for cand_url in ("http://local-otis-ollama:11434", "http://127.0.0.1:11434", "http://172.30.32.1:11434"):
+                if cand_url.rstrip("/") == base_url:
+                    continue
+                cand_res = await self.async_health_check(target_url=cand_url)
+                if cand_res.get("status") == "online":
+                    self.url = cand_url
+                    self._persist_config_options()
+                    self._last_health = cand_res
+                    return cand_res
+
         latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
         result = {
             "status": "offline",
@@ -636,6 +778,499 @@ class LocalLLMManager:
                 "error": str(err),
                 "duration_s": elapsed,
             }
+
+    async def async_delete_model(self, model_name: str, target_url: str | None = None) -> dict[str, Any]:
+        """Delete a model from the local Ollama instance."""
+        base_url = (target_url or self.url).rstrip("/")
+        session = self._get_session()
+        headers = self._get_headers()
+        try:
+            ollama_url = f"{base_url}/api/delete"
+            async with session.delete(
+                ollama_url,
+                json={"name": model_name},
+                headers=headers,
+                timeout=ClientTimeout(total=30.0),
+            ) as resp:
+                if resp.status == 200:
+                    await self.async_health_check(target_url=base_url)
+                    return {"success": True, "model": model_name, "status": "deleted"}
+                err_text = await resp.text()
+                return {"success": False, "model": model_name, "error": f"HTTP {resp.status}: {err_text[:200]}"}
+        except Exception as err:
+            return {"success": False, "model": model_name, "error": str(err)}
+
+    async def async_get_running_models(self, target_url: str | None = None) -> list[dict[str, Any]]:
+        """Query Ollama /api/ps for models currently loaded in RAM/VRAM."""
+        base_url = (target_url or self.url).rstrip("/")
+        session = self._get_session()
+        headers = self._get_headers()
+        try:
+            async with session.get(
+                f"{base_url}/api/ps",
+                headers=headers,
+                timeout=ClientTimeout(total=3.0),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    loaded = []
+                    for m in data.get("models", []):
+                        if isinstance(m, dict):
+                            size_mb = round((m.get("size") or 0) / (1024 * 1024), 1)
+                            vram_mb = round((m.get("size_vram") or 0) / (1024 * 1024), 1)
+                            loaded.append({
+                                "name": m.get("name"),
+                                "size_mb": size_mb,
+                                "vram_mb": vram_mb,
+                                "expires_at": m.get("expires_at"),
+                            })
+                    return loaded
+        except Exception:
+            pass
+        return []
+
+    @staticmethod
+    def _probe_host_hardware_sync() -> dict[str, Any]:
+        """Inspect host CPU, RAM, disk, and GPU capabilities synchronously (run via executor)."""
+        cpu_model = "Unknown CPU"
+        cpu_cores = os.cpu_count() or 1
+        try:
+            if os.path.exists("/proc/cpuinfo"):
+                with open("/proc/cpuinfo", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        if "model name" in line or "Hardware" in line or "Processor" in line:
+                            parts = line.split(":", 1)
+                            if len(parts) > 1 and parts[1].strip():
+                                cpu_model = parts[1].strip()
+                                break
+        except Exception:
+            pass
+
+        ram_total_gb = 0.0
+        ram_available_gb = 0.0
+        try:
+            if os.path.exists("/proc/meminfo"):
+                with open("/proc/meminfo", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        if line.startswith("MemTotal:"):
+                            kb = int(re.findall(r"\d+", line)[0])
+                            ram_total_gb = round(kb / (1024 * 1024), 1)
+                        elif line.startswith("MemAvailable:"):
+                            kb = int(re.findall(r"\d+", line)[0])
+                            ram_available_gb = round(kb / (1024 * 1024), 1)
+        except Exception:
+            pass
+
+        disk_free_gb = 0.0
+        try:
+            target_path = "/config" if os.path.exists("/config") else "/"
+            usage = shutil.disk_usage(target_path)
+            disk_free_gb = round(usage.free / (1024 ** 3), 1)
+        except Exception:
+            pass
+
+        gpu_detected = os.path.exists("/dev/dri/renderD128") or os.path.exists("/dev/nvidia0")
+        gpu_type = (
+            "NVIDIA GPU"
+            if os.path.exists("/dev/nvidia0")
+            else ("Intel/DRM iGPU (/dev/dri/renderD128)" if os.path.exists("/dev/dri/renderD128") else "CPU Only")
+        )
+        return {
+            "cpu_model": cpu_model,
+            "cpu_cores": cpu_cores,
+            "ram_total_gb": ram_total_gb,
+            "ram_available_gb": ram_available_gb,
+            "disk_free_gb": disk_free_gb,
+            "gpu_detected": gpu_detected,
+            "gpu_type": gpu_type,
+        }
+
+    async def async_assess_host_ollama_suitability(self, force_refresh: bool = False) -> dict[str, Any]:
+        """Verify whether the local Home Assistant host can, and is recommended to, run the Otis Ollama Add-on."""
+        now = time.monotonic()
+        if not force_refresh and self._last_suitability is not None and (now - self._last_suitability_ts) < 30.0:
+            return dict(self._last_suitability)
+
+        if self.hass and hasattr(self.hass, "async_add_executor_job"):
+            hw_res = self.hass.async_add_executor_job(self._probe_host_hardware_sync)
+            hw = await hw_res if asyncio.iscoroutine(hw_res) or hasattr(hw_res, "__await__") else self._probe_host_hardware_sync()
+        else:
+            hw = self._probe_host_hardware_sync()
+
+        sup_token = os.environ.get("SUPERVISOR_TOKEN")
+        supervisor_available = False
+        addon_installed = False
+        addon_state = "not_installed"
+        addon_slug = "local_otis_ollama"
+        addon_version = None
+
+        if sup_token:
+            session = self._get_session()
+            sup_headers = {"Authorization": f"Bearer {sup_token}", "Content-Type": "application/json"}
+            try:
+                async with session.get(
+                    "http://supervisor/addons",
+                    headers=sup_headers,
+                    timeout=ClientTimeout(total=4.0),
+                ) as resp:
+                    if resp.status == 200:
+                        supervisor_available = True
+                        payload = await resp.json()
+                        addons_list = (payload.get("data") or {}).get("addons") or []
+                        for a in addons_list:
+                            if not isinstance(a, dict):
+                                continue
+                            slug = str(a.get("slug") or "")
+                            name = str(a.get("name") or "").lower()
+                            if slug in ("local_otis_ollama", "otis_ollama") or "ollama" in slug.lower() or "ollama" in name:
+                                addon_slug = slug
+                                addon_version = a.get("version")
+                                if "installed" in a:
+                                    addon_installed = bool(a.get("installed"))
+                                else:
+                                    addon_installed = bool(addon_version)
+                                addon_state = str(a.get("state") or ("installed" if addon_installed else "not_installed"))
+                                break
+            except Exception as err:
+                _LOGGER.debug("Supervisor add-ons check notice: %s", err)
+
+        cpu_cores = int(hw.get("cpu_cores", 1))
+        ram_total = float(hw.get("ram_total_gb", 0.0))
+        ram_avail = float(hw.get("ram_available_gb", hw.get("ram_avail_gb", 0.0)))
+        disk_free = float(hw.get("disk_free_gb", 0.0))
+        gpu_detected = bool(hw.get("gpu_detected", False))
+
+        can_run = bool(
+            supervisor_available
+            and cpu_cores >= 4
+            and ram_total >= 6.0
+            and disk_free >= 6.0
+        )
+        recommended = bool(
+            can_run
+            and cpu_cores >= 6
+            and ram_total >= 7.5
+            and ram_avail >= 2.5
+            and disk_free >= 10.0
+        )
+
+        if ram_total >= 12.0 and cpu_cores >= 8:
+            recommended_model = "qwen2.5:3b"
+            model_recommendation_reason = (
+                f"Host hardware ({hw.get('cpu_model')}, {cpu_cores} threads, {ram_total} GB RAM) "
+                "supports higher-reasoning 'qwen2.5:3b' local inference."
+            )
+        else:
+            recommended_model = "qwen2.5:1.5b"
+            model_recommendation_reason = (
+                f"Host memory/CPU profile ({cpu_cores} threads, {ram_total} GB RAM) "
+                "is best suited for the fast, lightweight 'qwen2.5:1.5b' model."
+            )
+
+        # Evaluate recent benchmark or live inference telemetry for CPU responsiveness overrides
+        bench = getattr(self, "_last_benchmark", None)
+        metrics = getattr(self, "_metrics", None) or {}
+        measured_model = ""
+        measured_tps = 0.0
+        measured_lat = 0.0
+        if isinstance(bench, dict) and bench.get("success"):
+            measured_model = str(bench.get("model") or "")
+            measured_tps = float(bench.get("tokens_per_second") or 0.0)
+            measured_lat = float(bench.get("total_latency_seconds") or 0.0)
+        elif int(metrics.get("total_requests", 0)) >= 2:
+            measured_model = str(metrics.get("last_model") or "")
+            measured_tps = float(metrics.get("avg_tokens_per_sec") or 0.0)
+            measured_lat = float(metrics.get("avg_latency_s") or 0.0)
+
+        if measured_model and any(sz in measured_model.lower() for sz in ("3b", "7b", "8b", "14b", "32b")):
+            if (0.0 < measured_tps < 10.0) or (measured_lat > 10.0):
+                recommended_model = "qwen2.5:1.5b"
+                model_recommendation_reason = (
+                    f"Recent local inference telemetry on '{measured_model}' measured {measured_tps:.1f} tok/s "
+                    f"({measured_lat:.1f}s latency). Switching to 'qwen2.5:1.5b' roughly doubles local Edge AI responsiveness on CPU."
+                )
+
+        active_model = (self.model or "").strip()
+        model_switch_recommended = bool(
+            can_run
+            and active_model
+            and active_model.lower() != recommended_model.lower()
+        )
+
+        reasons: list[str] = []
+        if not supervisor_available:
+            reasons.append("Home Assistant Supervisor API not detected (Container/Core-only install).")
+        if cpu_cores < 4:
+            reasons.append(f"Insufficient CPU cores ({cpu_cores} detected, minimum 4 required).")
+        if ram_total < 7.5:
+            reasons.append(f"Total RAM ({ram_total} GB) is below the 8 GB recommended threshold.")
+        if ram_avail < 2.5:
+            reasons.append(f"Available free RAM ({ram_avail} GB) is below the 2.5 GB safety margin.")
+        if disk_free < 10.0:
+            reasons.append(f"Free storage ({disk_free} GB) is below the 10 GB recommended threshold.")
+
+        if recommended:
+            summary = (
+                f"Recommended — {hw.get('cpu_model')} ({cpu_cores} threads), "
+                f"{ram_total} GB RAM ({ram_avail} GB free), {disk_free} GB free storage, {hw.get('gpu_type', 'CPU/iGPU')}."
+            )
+        elif can_run:
+            summary = f"Capable (Light Model Only) — {', '.join(reasons) or 'Meets minimum requirements.'}"
+        else:
+            summary = f"Not Recommended — {' '.join(reasons) or 'Hardware or Supervisor requirements not met.'}"
+
+        gpu_devices = hw.get("gpu_devices") or (["renderD128"] if gpu_detected else [])
+        res = {
+            **hw,
+            "ram_available_gb": ram_avail,
+            "ram_avail_gb": ram_avail,
+            "gpu_devices": gpu_devices,
+            "supervisor_available": supervisor_available,
+            "can_run": can_run,
+            "recommended": recommended,
+            "recommended_model": recommended_model,
+            "active_model": active_model,
+            "model_switch_recommended": model_switch_recommended,
+            "model_recommendation_reason": model_recommendation_reason,
+            "last_benchmark": getattr(self, "_last_benchmark", None),
+            "metrics": getattr(self, "_metrics", None),
+            "addon_slug": addon_slug,
+            "addon_installed": addon_installed,
+            "addon_state": addon_state,
+            "addon_version": addon_version,
+            "reasons": reasons,
+            "blockers": reasons if not can_run else [],
+            "summary": summary,
+        }
+        self._last_suitability = res
+        self._last_suitability_ts = now
+        return res
+
+    async def async_get_ollama_status(self, force_refresh: bool = False) -> dict[str, Any]:
+        """Return comprehensive GUI status combining endpoint health, loaded models (/api/ps), host suitability, and Supervisor add-on telemetry."""
+        now = time.monotonic()
+        if not force_refresh and self._last_status is not None and (now - self._last_status_ts) < 20.0:
+            return dict(self._last_status)
+
+        suitability = await self.async_assess_host_ollama_suitability(force_refresh=force_refresh)
+        health = await self.async_health_check()
+
+        # If configured URL is offline and local Supervisor add-on is started, auto-probe local add-on URLs
+        if health.get("status") != "online" and suitability.get("addon_state") == "started":
+            for candidate_url in ("http://local-otis-ollama:11434", "http://127.0.0.1:11434", "http://172.30.32.1:11434"):
+                cand_health = await self.async_health_check(target_url=candidate_url)
+                if cand_health.get("status") == "online":
+                    self.url = candidate_url
+                    self._persist_config_options()
+                    health = cand_health
+                    break
+
+        is_online = health.get("status") == "online"
+        running_models = await self.async_get_running_models() if is_online else []
+        addon_stats: dict[str, Any] = {}
+        sup_token = os.environ.get("SUPERVISOR_TOKEN")
+        if sup_token and suitability.get("addon_installed") and suitability.get("addon_state") == "started":
+            slug = suitability.get("addon_slug", "local_otis_ollama")
+            try:
+                async with self._get_session().get(
+                    f"http://supervisor/addons/{slug}/stats",
+                    headers={"Authorization": f"Bearer {sup_token}"},
+                    timeout=ClientTimeout(total=3.0),
+                ) as resp:
+                    if resp.status == 200:
+                        st_data = (await resp.json()).get("data") or {}
+                        addon_stats = {
+                            "cpu_percent": round(float(st_data.get("cpu_percent") or 0.0), 1),
+                            "memory_mb": round(float(st_data.get("memory_usage") or 0) / (1024 * 1024), 1),
+                            "memory_percent": round(float(st_data.get("memory_percent") or 0.0), 1),
+                        }
+            except Exception:
+                pass
+
+        res = {
+            "online": is_online,
+            "provider": health.get("provider", "ollama"),
+            "endpoint_url": health.get("url") or self.url,
+            "active_model": health.get("active_model") or self.model,
+            "available_models": health.get("models") or [],
+            "latency_ms": health.get("latency_ms", 0.0),
+            "health": health,
+            "running_models": running_models,
+            "suitability": suitability,
+            "addon_stats": addon_stats,
+            "configured_url": self.url,
+            "configured_model": self.model,
+        }
+        self._last_status = res
+        self._last_status_ts = now
+        return res
+
+    def _persist_config_options(self) -> None:
+        """Persist active local_llm_url and local_llm_model into the Otis AI config entry options."""
+        try:
+            if (
+                self.hass is not None
+                and hasattr(self.hass, "config_entries")
+                and hasattr(self.hass.config_entries, "async_entries")
+                and hasattr(self.hass.config_entries, "async_update_entry")
+            ):
+                entries = self.hass.config_entries.async_entries(DOMAIN)
+                if isinstance(entries, list) and entries:
+                    entry = entries[0]
+                    opts = dict(getattr(entry, "options", None) or {})
+                    opts["local_llm_enabled"] = True
+                    opts["local_llm_url"] = self.url
+                    opts["local_llm_model"] = self.model
+                    self.hass.config_entries.async_update_entry(entry, options=opts)
+        except Exception as err:
+            _LOGGER.debug("Could not persist local LLM config options: %s", err)
+
+    async def async_manage_ollama_addon(self, action: str, model: str | None = None) -> dict[str, Any]:
+        """Manage the Otis Edge AI (Ollama) Supervisor Add-on lifecycle and models."""
+        act = (action or "status").strip().lower()
+        if act == "suitability":
+            suit = await self.async_assess_host_ollama_suitability(force_refresh=True)
+            return {"success": True, "action": act, "suitability": suit, "message": suit.get("summary")}
+
+        if act == "status":
+            st = await self.async_get_ollama_status(force_refresh=True)
+            return {"success": True, "action": act, "status": st, **st}
+
+        if act == "delete_model" and model:
+            del_res = await self.async_delete_model(model)
+            st = await self.async_get_ollama_status(force_refresh=True)
+            return {
+                **del_res,
+                "action": act,
+                "status": st,
+                "message": f"Deleted model '{model}'." if del_res.get("success") else del_res.get("error"),
+                **st,
+            }
+
+        if act in ("pull_model", "pull") and model:
+            pull_res = await self.async_pull_model(model.strip())
+            if pull_res.get("success"):
+                self.model = model.strip()
+                self._persist_config_options()
+            st = await self.async_get_ollama_status(force_refresh=True)
+            return {
+                **pull_res,
+                "action": act,
+                "status": st,
+                "message": f"Pulled and activated model '{model.strip()}'." if pull_res.get("success") else pull_res.get("error"),
+                **st,
+            }
+
+        if act in ("set_model", "switch_model") and model:
+            self.model = model.strip()
+            self._persist_config_options()
+            st = await self.async_get_ollama_status(force_refresh=True)
+            return {
+                "success": True,
+                "action": act,
+                "active_model": self.model,
+                "status": st,
+                "message": f"Active Local Edge AI model set to '{self.model}'.",
+                **st,
+            }
+
+        sup_token = os.environ.get("SUPERVISOR_TOKEN")
+        if not sup_token:
+            return {"success": False, "action": act, "error": "Home Assistant Supervisor API is not available on this host."}
+
+        suitability = await self.async_assess_host_ollama_suitability()
+        slug = suitability.get("addon_slug") or "local_otis_ollama"
+        session = self._get_session()
+        sup_headers = {"Authorization": f"Bearer {sup_token}", "Content-Type": "application/json"}
+
+        try:
+            if act == "install":
+                if not suitability.get("can_run"):
+                    return {
+                        "success": False,
+                        "action": act,
+                        "error": f"Host hardware check failed: {suitability.get('summary')}",
+                    }
+                # 1. Reload Supervisor store so /addons/otis_ollama is discovered
+                async with session.post(
+                    "http://supervisor/store/reload",
+                    headers=sup_headers,
+                    timeout=ClientTimeout(total=30.0),
+                ) as _:
+                    pass
+
+                # 2. Install local_otis_ollama if not yet installed
+                if not suitability.get("addon_installed"):
+                    async with session.post(
+                        f"http://supervisor/addons/{slug}/install",
+                        headers=sup_headers,
+                        timeout=ClientTimeout(total=300.0),
+                    ) as resp:
+                        if resp.status != 200:
+                            err_txt = await resp.text()
+                            return {"success": False, "action": act, "error": f"Supervisor install HTTP {resp.status}: {err_txt[:200]}"}
+
+                # 3. Start the add-on
+                async with session.post(
+                    f"http://supervisor/addons/{slug}/start",
+                    headers=sup_headers,
+                    timeout=ClientTimeout(total=60.0),
+                ) as resp:
+                    if resp.status != 200:
+                        err_txt = await resp.text()
+                        return {"success": False, "action": act, "error": f"Supervisor start HTTP {resp.status}: {err_txt[:200]}"}
+
+                # 4. Wait briefly for Ollama REST API to come online and bind URL
+                for _ in range(10):
+                    await asyncio.sleep(1.5)
+                    for cand_url in ("http://local-otis-ollama:11434", "http://127.0.0.1:11434", "http://172.30.32.1:11434"):
+                        h = await self.async_health_check(target_url=cand_url)
+                        if h.get("status") == "online":
+                            self.url = cand_url
+                            self._persist_config_options()
+                            break
+                    if self._last_health.get("status") == "online" and self.url in ("http://local-otis-ollama:11434", "http://127.0.0.1:11434", "http://172.30.32.1:11434"):
+                        break
+
+                st = await self.async_get_ollama_status(force_refresh=True)
+                return {
+                    "success": True,
+                    "action": act,
+                    "status": st,
+                    "message": "Otis Edge AI (Ollama) Supervisor Add-on installed and started!",
+                    **st,
+                }
+
+            if act in ("start", "stop", "restart", "uninstall"):
+                async with session.post(
+                    f"http://supervisor/addons/{slug}/{act}",
+                    headers=sup_headers,
+                    timeout=ClientTimeout(total=60.0),
+                ) as resp:
+                    if resp.status != 200:
+                        err_txt = await resp.text()
+                        return {"success": False, "action": act, "error": f"Supervisor {act} HTTP {resp.status}: {err_txt[:200]}"}
+                if act in ("start", "restart"):
+                    await asyncio.sleep(2.0)
+                    for cand_url in ("http://local-otis-ollama:11434", "http://127.0.0.1:11434", "http://172.30.32.1:11434"):
+                        h = await self.async_health_check(target_url=cand_url)
+                        if h.get("status") == "online":
+                            self.url = cand_url
+                            self._persist_config_options()
+                            break
+                st = await self.async_get_ollama_status(force_refresh=True)
+                return {
+                    "success": True,
+                    "action": act,
+                    "status": st,
+                    "message": f"Otis Edge AI (Ollama) Add-on action '{act}' completed!",
+                    **st,
+                }
+
+            return {"success": False, "action": act, "error": f"Unsupported action: {act}"}
+        except Exception as err:
+            _LOGGER.error("Error managing Ollama add-on (%s): %s", act, err)
+            return {"success": False, "action": act, "error": str(err)}
 
     async def async_get_embedding(
         self,
@@ -761,7 +1396,8 @@ class LocalLLMManager:
                     msg_list[i]["images"] = list(existing) + clean_images
                     break
 
-        # Try Ollama /api/chat
+        # Try Ollama /api/chat (skip if server was already identified as openai_compatible)
+        known_provider = self._last_health.get("provider") if isinstance(self._last_health, dict) else None
         ollama_endpoint = f"{self.url}/api/chat"
         payload: dict[str, Any] = {
             "model": chosen_model,
@@ -771,49 +1407,74 @@ class LocalLLMManager:
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
-                "num_ctx": 8192,
+                "num_ctx": 4096,
                 "stop": ["<|im_end|>", "<|endoftext|>", "Observation:", "User:"],
             },
         }
         if tools:
             payload["tools"] = tools
 
-        try:
-            async with session.post(
-                ollama_endpoint,
-                json=payload,
-                headers=headers,
-                timeout=ClientTimeout(total=req_timeout),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    total_time = max(0.001, time.perf_counter() - t0)
-                    msg_obj = data.get("message", {})
-                    msg = msg_obj.get("content", "") or ""
-                    raw_tools = msg_obj.get("tool_calls", [])
-                    extracted_tools = extract_tool_calls(msg, raw_tools)
+        if known_provider != "openai_compatible":
+            try:
+                async with session.post(
+                    ollama_endpoint,
+                    json=payload,
+                    headers=headers,
+                    timeout=ClientTimeout(total=req_timeout),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        total_time = max(0.001, time.perf_counter() - t0)
+                        msg_obj = data.get("message", {})
+                        msg = msg_obj.get("content", "") or ""
+                        raw_tools = msg_obj.get("tool_calls", [])
+                        extracted_tools = extract_tool_calls(msg, raw_tools)
 
-                    eval_count = data.get("eval_count", 0)
-                    prompt_eval_count = data.get("prompt_eval_count", 0)
-                    eval_duration = data.get("eval_duration", 0) / 1e9  # nanoseconds to seconds
-                    tokens_per_sec = (
-                        round(eval_count / eval_duration, 1) if eval_duration > 0 else round(eval_count / total_time, 1)
-                    )
+                        eval_count = data.get("eval_count", 0)
+                        prompt_eval_count = data.get("prompt_eval_count", 0)
+                        eval_duration = data.get("eval_duration", 0) / 1e9  # nanoseconds to seconds
+                        tokens_per_sec = (
+                            round(eval_count / eval_duration, 1) if eval_duration > 0 else round(eval_count / total_time, 1)
+                        )
+                        if eval_count > 0:
+                            self._record_inference_telemetry(chosen_model, tokens_per_sec, total_time)
 
+                        return {
+                            "success": True,
+                            "response": msg,
+                            "tool_calls": extracted_tools,
+                            "raw_tool_calls": raw_tools,
+                            "model": chosen_model,
+                            "tokens_generated": eval_count,
+                            "tokens_evaluated": prompt_eval_count,
+                            "tokens_per_sec": tokens_per_sec,
+                            "total_duration_s": round(total_time, 2),
+                            "provider": "ollama",
+                        }
+                    if known_provider == "ollama" and resp.status not in (404, 405, 501):
+                        err_text = await resp.text()
+                        return {
+                            "success": False,
+                            "error": f"HTTP {resp.status}: {err_text[:200]}",
+                            "model": chosen_model,
+                            "total_duration_s": round(time.perf_counter() - t0, 2),
+                        }
+            except (asyncio.TimeoutError, TimeoutError):
+                return {
+                    "success": False,
+                    "error": f"Local LLM request timed out after {int(req_timeout)}s",
+                    "model": chosen_model,
+                    "total_duration_s": round(time.perf_counter() - t0, 2),
+                }
+            except Exception as err:
+                if known_provider == "ollama":
                     return {
-                        "success": True,
-                        "response": msg,
-                        "tool_calls": extracted_tools,
-                        "raw_tool_calls": raw_tools,
+                        "success": False,
+                        "error": str(err),
                         "model": chosen_model,
-                        "tokens_generated": eval_count,
-                        "tokens_evaluated": prompt_eval_count,
-                        "tokens_per_sec": tokens_per_sec,
-                        "total_duration_s": round(total_time, 2),
-                        "provider": "ollama",
+                        "total_duration_s": round(time.perf_counter() - t0, 2),
                     }
-        except Exception as err:
-            _LOGGER.debug("Ollama /api/chat attempt failed: %s; trying OpenAI format", err)
+                _LOGGER.debug("Ollama /api/chat attempt failed: %s; trying OpenAI format", err)
 
         # Fallback to OpenAI-compatible /v1/chat/completions
         try:
@@ -845,7 +1506,7 @@ class LocalLLMManager:
                 v1_endpoint,
                 json=v1_payload,
                 headers=headers,
-                timeout=ClientTimeout(total=self.timeout),
+                timeout=ClientTimeout(total=req_timeout),
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -859,6 +1520,8 @@ class LocalLLMManager:
                     usage = data.get("usage", {})
                     completion_tokens = usage.get("completion_tokens", len(content.split()) * 1.3)
                     tokens_per_sec = round(completion_tokens / total_time, 1)
+                    if completion_tokens > 0:
+                        self._record_inference_telemetry(chosen_model, tokens_per_sec, total_time)
 
                     return {
                         "success": True,
@@ -964,7 +1627,7 @@ class LocalLLMManager:
         timeout: float | None = None,
     ) -> dict[str, Any]:
         """Autonomous multi-turn tool-calling loop using local LLMs."""
-        chosen_tools = tools if tools is not None else DEFAULT_OTIS_TOOLS
+        chosen_tools = tools if tools is not None else select_relevant_tools(prompt)
         default_sys = (
             "You are Otis AI, the ultimate smart home butler and co-pilot. "
             "You have direct access to smart home tools to inspect cameras, heal network nodes, "
@@ -1074,7 +1737,7 @@ class LocalLLMManager:
         total_time = round(time.perf_counter() - t0, 2)
         health = await self.async_health_check()
 
-        return {
+        bench_res = {
             "success": result.get("success", False),
             "model": result.get("model", target_model),
             "provider": result.get("provider", health.get("provider")),
@@ -1083,7 +1746,10 @@ class LocalLLMManager:
             "total_latency_seconds": total_time,
             "endpoint_health": health,
             "sample_output": result.get("response", result.get("error", "")),
+            "timestamp": time.time(),
         }
+        self._last_benchmark = bench_res
+        return bench_res
 
     def _parse_vision_response(self, text: str) -> dict[str, Any]:
         """Parse structured detection, perimeter zone, and anomaly results from vision LLM response."""

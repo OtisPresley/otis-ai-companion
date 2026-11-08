@@ -60,6 +60,9 @@ DEFAULT_RULES: dict[str, Any] = {
     "agent_health_metrics": {},
     "vision_training_feedback": [],
     "recent_room_verifications": {},
+    "media_input_mappings": {},
+    "media_default_zone": "",
+    "media_unjoin_input": "None",
 }
 
 
@@ -129,6 +132,12 @@ class BehavioralRulesManager:
                         self._rules["wizard_state"] = w
                 except Exception as rec_err:
                     _LOGGER.debug("Could not recover wizard_state: %s", rec_err)
+            if not self._rules.get("onboarding_completed") and (
+                (self._rules.get("custom_instructions") and str(self._rules.get("custom_instructions")).strip())
+                or (isinstance(self._rules.get("wizard_state"), dict) and len(self._rules.get("wizard_state")) > 0)
+                or (isinstance(self._rules.get("person_profiles"), dict) and len(self._rules.get("person_profiles")) > 0)
+            ):
+                self._rules["onboarding_completed"] = True
             self._sync_audio_follow_switch()
             self._sync_voice_announcements_switch()
 
@@ -228,6 +237,16 @@ class BehavioralRulesManager:
             merged["learned_instructions"] = list(dict.fromkeys(str(x).strip() for x in new_rules["learned_instructions"] if x))[-30:]
         if "agent_health_metrics" in new_rules and isinstance(new_rules["agent_health_metrics"], dict):
             merged["agent_health_metrics"] = dict(new_rules["agent_health_metrics"])
+        if "media_input_mappings" in new_rules and isinstance(new_rules["media_input_mappings"], dict):
+            merged["media_input_mappings"] = {
+                str(k).strip(): str(v).strip()
+                for k, v in new_rules["media_input_mappings"].items()
+                if str(k).strip() and str(v).strip()
+            }
+        if "media_default_zone" in new_rules:
+            merged["media_default_zone"] = str(new_rules["media_default_zone"] or "").strip()
+        if "media_unjoin_input" in new_rules:
+            merged["media_unjoin_input"] = str(new_rules["media_unjoin_input"] or "None").strip()
 
         self._rules = merged
         await self._store.async_save(self._rules)
@@ -461,8 +480,14 @@ class BehavioralRulesManager:
                 feats.update(visual_features)
                 profile["features"] = feats
         else:
-            cur_conf = float(profile.get("confidence", 0.50))
-            profile["confidence"] = round(max(0.10, cur_conf - 0.15), 2)
+            if visual_features and isinstance(visual_features, dict) and visual_features.get("reset"):
+                profile["samples"] = 0
+                profile["confidence"] = 0.50
+                profile["tracks"] = []
+                profile["verified_rooms"] = []
+            else:
+                cur_conf = float(profile.get("confidence", 0.50))
+                profile["confidence"] = round(max(0.10, cur_conf - 0.15), 2)
 
         profiles[clean_pid] = profile
         self._rules["person_profiles"] = profiles
@@ -638,6 +663,12 @@ class BehavioralRulesManager:
         d_layout = self._rules.get("dashboard_layout", "modern_sections").replace("_", " ").title()
         n_style = self._rules.get("navigation_style", "sleek_buttons").replace("_", " ").title()
         lines.append(f"- Dashboard & Layout Preference: {d_layout} with {n_style}.")
+
+        mappings = self._rules.get("media_input_mappings")
+        if isinstance(mappings, dict) and mappings:
+            map_str = ", ".join(f"{inp} -> {plr}" for inp, plr in mappings.items() if inp and plr)
+            if map_str:
+                lines.append(f"- Matrix Audio Input-to-Streamer Mappings: {map_str}.")
 
         if custom_inst:
             lines.append(f"- Custom Household Rules & Notes:\n{custom_inst}")

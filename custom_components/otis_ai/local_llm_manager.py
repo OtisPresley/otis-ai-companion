@@ -14,6 +14,7 @@ from .local_llm import (
     LocalLLMManager,
     extract_tool_calls,
     normalize_image_base64,
+    select_relevant_tools,
     validate_tool_call,
 )
 
@@ -26,6 +27,7 @@ __all__ = [
     "LocalLLMManager",
     "extract_tool_calls",
     "normalize_image_base64",
+    "select_relevant_tools",
     "validate_tool_call",
 ]
 

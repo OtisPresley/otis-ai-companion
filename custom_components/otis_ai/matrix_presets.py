@@ -42,7 +42,7 @@ MATRIX_PRESETS: dict[str, dict[str, Any]] = {
         "vendor": "Monoprice / Dayton Audio",
         "description": "Monoprice 6-Zone Multi-Zone Amplifier (MPR-6ZHMA) and Dayton Audio DAX66 matrix controllers.",
         "platforms": ["monoprice", "daytonaudio", "dax66"],
-        "entity_patterns": ["monoprice", "dayton", "dax66", "zone_1", "zone_2", "zone_3", "zone_4", "zone_5", "zone_6"],
+        "entity_patterns": ["monoprice", "dayton", "dax66", "mpr_6zhma"],
         "default_sources": ["Source 1", "Source 2", "Source 3", "Source 4", "Source 5", "Source 6"],
         "min_zones": 2,
     },

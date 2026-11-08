@@ -8,6 +8,7 @@ from custom_components.otis_ai.local_llm import (
     DEFAULT_LOCAL_LLM_MODEL,
     DEFAULT_LOCAL_LLM_URL,
     LocalLLMManager,
+    select_relevant_tools,
 )
 from custom_components.otis_ai.sentinel_manager import SentinelManager
 
@@ -486,5 +487,153 @@ def test_async_chat_with_tools_multi_turn():
     assert chat_res["executed_tools"][0]["tool"] == "run_sentinel_watchdog"
     assert "Sentinel watchdog completed" in chat_res["response"]
     assert hass.services.async_call.called
+
+
+def test_select_relevant_tools_filtering():
+    """Test that informational queries skip tool schema bloat while action queries select targeted tools."""
+    assert select_relevant_tools("What is the current status of Home Assistant Core?") == []
+    assert (
+        select_relevant_tools(
+            "How do I 🎯 Vision False-Positive Filter Calibrated (Great Room)? Give me step-by-step guidance."
+        )
+        == []
+    )
+    pin_tools = select_relevant_tools("Pin light.chandelier to dining room on the floorplan")
+    assert len(pin_tools) == 1
+    assert pin_tools[0]["function"]["name"] == "pin_floorplan_entity"
+
+    svc_tools = select_relevant_tools("Turn on the study lights")
+    assert any(t["function"]["name"] == "call_ha_service" for t in svc_tools)
+
+
+def test_generate_timeout_does_not_duplicate_request():
+    """Test that a timeout on Ollama /api/chat does not fire a second duplicate /v1/chat/completions call."""
+    hass = MagicMock()
+    mgr = LocalLLMManager(hass, model="qwen2.5:3b")
+
+    mock_session = MagicMock()
+    mock_session.post.side_effect = asyncio.TimeoutError("Request timed out")
+
+    with patch("custom_components.otis_ai.local_llm.async_get_clientsession", return_value=mock_session):
+        res = asyncio.run(mgr.async_generate(prompt="Test timeout", timeout=10.0))
+        assert res["success"] is False
+        assert "timed out" in res["error"].lower()
+        assert mock_session.post.call_count == 1
+
+
+def test_assess_host_ollama_suitability_recommended():
+    """Test hardware suitability verification confirms capable & recommended HA server."""
+    hass = MagicMock()
+    hass.async_add_executor_job = AsyncMock(
+        return_value={
+            "cpu_model": "12th Gen Intel(R) Core(TM) i7-12650H",
+            "cpu_cores": 16,
+            "ram_total_gb": 15.6,
+            "ram_avail_gb": 7.2,
+            "disk_free_gb": 1400.0,
+            "gpu_detected": True,
+            "gpu_devices": ["card0", "renderD128"],
+        }
+    )
+    mgr = LocalLLMManager(hass, model="qwen2.5:3b")
+
+    mock_resp = AsyncMock()
+    mock_resp.status = 200
+    mock_resp.json = AsyncMock(
+        return_value={
+            "data": {
+                "addons": [
+                    {
+                        "slug": "local_otis_ollama",
+                        "name": "Otis Edge AI (Ollama)",
+                        "installed": False,
+                        "state": "unknown",
+                        "version": "1.0.0",
+                    }
+                ]
+            }
+        }
+    )
+    mock_session = MagicMock()
+    mock_session.get.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
+
+    with patch.dict("os.environ", {"SUPERVISOR_TOKEN": "test_sup_token"}), \
+         patch("custom_components.otis_ai.local_llm.async_get_clientsession", return_value=mock_session):
+        suit = asyncio.run(mgr.async_assess_host_ollama_suitability())
+        assert suit["can_run"] is True
+        assert suit["recommended"] is True
+        assert suit["supervisor_available"] is True
+        assert suit["cpu_cores"] == 16
+        assert suit["gpu_detected"] is True
+        assert suit["recommended_model"] == "qwen2.5:3b"
+
+
+def test_assess_host_ollama_suitability_insufficient_hardware():
+    """Test hardware suitability verification rejects low-RAM / low-CPU systems."""
+    hass = MagicMock()
+    hass.async_add_executor_job = AsyncMock(
+        return_value={
+            "cpu_model": "ARM Cortex-A53",
+            "cpu_cores": 2,
+            "ram_total_gb": 2.0,
+            "ram_avail_gb": 0.8,
+            "disk_free_gb": 3.5,
+            "gpu_detected": False,
+            "gpu_devices": [],
+        }
+    )
+    mgr = LocalLLMManager(hass, model="qwen2.5:3b")
+
+    with patch.dict("os.environ", {}, clear=False):
+        suit = asyncio.run(mgr.async_assess_host_ollama_suitability())
+        assert suit["can_run"] is False
+        assert suit["recommended"] is False
+        assert len(suit["blockers"]) >= 2
+
+
+def test_manage_ollama_addon_set_model():
+    """Test manage_ollama_addon set_model updates active model and returns status."""
+    hass = MagicMock()
+    hass.config_entries.async_entries = MagicMock(return_value=[])
+    mgr = LocalLLMManager(hass, model="qwen2.5:1.5b")
+    mgr.async_get_ollama_status = AsyncMock(
+        return_value={"online": True, "active_model": "qwen2.5:3b"}
+    )
+
+    res = asyncio.run(mgr.async_manage_ollama_addon(action="set_model", model="qwen2.5:3b"))
+    assert res["success"] is True
+    assert mgr.model == "qwen2.5:3b"
+    assert res["status"]["active_model"] == "qwen2.5:3b"
+
+
+def test_ollama_status_caching():
+    """Test that async_get_ollama_status caches results within TTL."""
+    hass = MagicMock()
+    mgr = LocalLLMManager(hass, model="qwen2.5:3b")
+    mgr.async_assess_host_ollama_suitability = AsyncMock(
+        return_value={"can_run": True, "recommended": True}
+    )
+    mgr.async_health_check = AsyncMock(
+        return_value={"status": "online", "provider": "ollama", "models": ["qwen2.5:3b"]}
+    )
+    mgr.async_get_running_models = AsyncMock(return_value=[])
+
+    st1 = asyncio.run(mgr.async_get_ollama_status())
+    assert st1["online"] is True
+    assert mgr.async_health_check.call_count == 1
+
+    # Second call within TTL should return cached status
+    st2 = asyncio.run(mgr.async_get_ollama_status())
+    assert st2["online"] is True
+    assert mgr.async_health_check.call_count == 1
+
+    # Force refresh bypasses cache
+    st3 = asyncio.run(mgr.async_get_ollama_status(force_refresh=True))
+    assert st3["online"] is True
+    assert mgr.async_health_check.call_count == 2
+
+
+
 
 

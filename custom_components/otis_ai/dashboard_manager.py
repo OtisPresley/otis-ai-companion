@@ -80,6 +80,45 @@ class DashboardManager:
                             pass
         return {}
 
+    def _get_active_switch_as_x_targets(self, entity_iter: Any) -> set[str]:
+        """Return set of switch entity_ids and registry UUIDs that have an active switch_as_x wrapper."""
+        active_wrapper_config_entries: set[str] = set()
+        for ent_item in entity_iter:
+            if getattr(ent_item, "platform", None) == "switch_as_x" and getattr(ent_item, "disabled_by", None) is None:
+                ce_id = getattr(ent_item, "config_entry_id", None)
+                if ce_id:
+                    active_wrapper_config_entries.add(str(ce_id))
+
+        active_targets: set[str] = set()
+        if hasattr(self, "hass") and self.hass and hasattr(self.hass, "config_entries"):
+            try:
+                for ce in self.hass.config_entries.async_entries("switch_as_x"):
+                    if getattr(ce, "disabled_by", None) is None and (
+                        not active_wrapper_config_entries or ce.entry_id in active_wrapper_config_entries
+                    ):
+                        target_eid = (getattr(ce, "options", None) or {}).get("entity_id") or (
+                            getattr(ce, "data", None) or {}
+                        ).get("entity_id")
+                        if target_eid:
+                            active_targets.add(str(target_eid))
+            except Exception:
+                pass
+        return active_targets
+
+    def _resolve_effective_hidden_by(self, entry: Any, active_switch_as_x_targets: set[str]) -> Any:
+        """Recover switches with orphaned hidden_by='integration' and deduplicate switches with active switch_as_x wrappers."""
+        raw_hidden = getattr(entry, "hidden_by", None)
+        domain = getattr(entry, "domain", None) or str(getattr(entry, "entity_id", "")).split(".")[0]
+        if domain == "switch":
+            eid = str(getattr(entry, "entity_id", "") or "")
+            ent_uuid = str(getattr(entry, "id", "") or "")
+            has_wrapper = eid in active_switch_as_x_targets or (bool(ent_uuid) and ent_uuid in active_switch_as_x_targets)
+            if raw_hidden is not None and str(raw_hidden).lower().endswith("integration") and not has_wrapper:
+                return None
+            if raw_hidden is None and has_wrapper:
+                return "integration"
+        return raw_hidden
+
     def _storage_dir(self) -> str | None:
         """Return the path to Home Assistant's .storage directory if available."""
         if hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
@@ -122,8 +161,6 @@ class DashboardManager:
             items = data.get("data", {}).get("items", []) if isinstance(data, dict) else []
             for item in items:
                 url = str(item.get("url", "")).lower()
-                if "control4-mediaplayer-card" in url:
-                    detected.add("custom:control4-mediaplayer-card")
                 if "mini-media-player" in url:
                     detected.add("custom:mini-media-player")
                 if "universal-remote-card" in url:
@@ -161,8 +198,6 @@ class DashboardManager:
                 str(i.get("domain", "") if isinstance(i, dict) else i).lower()
                 for i in active_integrations
             }
-            if "control4_mediaplayer" in active_domains:
-                cards.add("custom:control4-mediaplayer-card")
             if "snmp_network_manager" in active_domains:
                 cards.add("custom:snmp-network-manager-card")
             if "snmp_switch_manager" in active_domains:
@@ -362,10 +397,13 @@ class DashboardManager:
                     "cards": [card],
                 })
             else:
-                sections.append({
+                sec_obj = {
                     "type": "grid",
                     "cards": [card],
-                })
+                }
+                if c_type == "custom:otis-companion-card" and card.get("mode") in ("media_studio", "floorplan_studio", "floorplan_control"):
+                    sec_obj["column_span"] = 2
+                sections.append(sec_obj)
             i += 1
         return sections
 
@@ -384,6 +422,7 @@ class DashboardManager:
             "path": path,
             "icon": icon,
             "subview": True,
+            "theme": self._get_user_rules().get("theme") or "otis_generate_midnight_slate",
             "badges": [],
             "cards": cards,
         }
@@ -409,13 +448,16 @@ class DashboardManager:
                 device_reg = dr.async_get(self.hass)
                 entity_reg = er.async_get(self.hass)
                 raw_devices = getattr(device_reg, "devices", {})
-                device_iter = raw_devices.values() if isinstance(raw_devices, dict) else raw_devices
+                device_iter = list(raw_devices.values() if isinstance(raw_devices, dict) else raw_devices)
                 dev_areas = {d.id: d.area_id for d in device_iter}
+                dev_models = {d.id: getattr(d, "model", None) for d in device_iter}
                 areas_map = {a.id: {"name": a.name, "entities": []} for a in area_reg.async_list_areas()}
                 raw_entities = getattr(entity_reg, "entities", {})
-                entity_iter = raw_entities.values() if isinstance(raw_entities, dict) else raw_entities
+                entity_iter = list(raw_entities.values() if isinstance(raw_entities, dict) else raw_entities)
+                active_switch_targets = self._get_active_switch_as_x_targets(entity_iter)
                 for entry in entity_iter:
-                    if entry.disabled_by or entry.hidden_by:
+                    eff_hidden = self._resolve_effective_hidden_by(entry, active_switch_targets)
+                    if entry.disabled_by or eff_hidden:
                         continue
                     aid = entry.area_id or dev_areas.get(entry.device_id)
                     st = self.hass.states.get(entry.entity_id) if hasattr(self.hass, "states") else None
@@ -423,9 +465,13 @@ class DashboardManager:
                     e_info = {
                         "entity_id": entry.entity_id,
                         "name": entry.name or entry.original_name,
+                        "domain": getattr(entry, "domain", None) or entry.entity_id.split(".")[0],
+                        "platform": getattr(entry, "platform", None),
+                        "device_id": getattr(entry, "device_id", None),
+                        "device_model": dev_models.get(getattr(entry, "device_id", None)),
                         "area_id": aid,
                         "disabled_by": entry.disabled_by,
-                        "hidden_by": entry.hidden_by,
+                        "hidden_by": eff_hidden,
                         "state": e_state,
                     }
                     entities_list.append(e_info)
@@ -440,7 +486,7 @@ class DashboardManager:
             if e.get("entity_id")
             and not e.get("disabled_by")
             and not e.get("hidden_by")
-            and e.get("state") not in ("unknown", "unavailable", None, "")
+            and (e.get("state") not in ("unknown", "unavailable", None, "") or e.get("recovered_orphaned_hide"))
         }
         entities_by_id = {e["entity_id"]: e for e in entities_list}
         entities_by_area: dict[str, list[dict[str, Any]]] = {}
@@ -611,15 +657,8 @@ class DashboardManager:
             ],
         }
 
-        # Order sections according to primary_content_focus
-        if content_focus == "glance_first":
-            sections = [glance_sec, studios_sec, rooms_sec]
-        elif content_focus == "studios_first":
-            sections = [studios_sec, rooms_sec, glance_sec]
-        else:  # "balanced"
-            sections = [studios_sec, glance_sec, rooms_sec]
-
-        # Contextual Presence-Based Room Cards (Elevates occupied rooms to the top)
+        # Order sections strictly according to primary_content_focus
+        # Contextual Presence-Based Room Cards (Active Rooms)
         presence_enabled = user_rules.get("presence_room_cards", True)
         active_room_cards = (
             self._build_contextual_presence_room_cards(
@@ -628,6 +667,7 @@ class DashboardManager:
             if presence_enabled
             else []
         )
+        active_rooms_sec = None
         if active_room_cards:
             active_rooms_sec = {
                 "type": "grid",
@@ -651,9 +691,40 @@ class DashboardManager:
                     *active_room_cards,
                 ],
             }
-            sections = [active_rooms_sec, *sections]
+
+        # Order sections strictly respecting primary_content_focus
+        if content_focus == "glance_first":
+            # Schedule & Weather First -> Active Rooms (if occupied) -> Studios -> Rooms
+            sections = [glance_sec]
+            if active_rooms_sec:
+                sections.append(active_rooms_sec)
+            sections.extend([studios_sec, rooms_sec])
+        elif content_focus == "studios_first":
+            # Studios First -> Active Rooms -> Rooms -> Schedule & Weather
+            sections = [studios_sec]
+            if active_rooms_sec:
+                sections.append(active_rooms_sec)
+            sections.extend([rooms_sec, glance_sec])
+        else:  # "balanced"
+            # Studios Launchpad -> Schedule & Weather -> Active Rooms -> Rooms
+            sections = [studios_sec, glance_sec]
+            if active_rooms_sec:
+                sections.append(active_rooms_sec)
+            sections.append(rooms_sec)
 
         # Traditional cards list (clean fallback and for tools expecting view.cards)
+        active_rooms_card = (
+            {
+                "type": "grid",
+                "title": "Active Rooms",
+                "columns": 1,
+                "square": False,
+                "cards": active_room_cards,
+            }
+            if active_room_cards
+            else None
+        )
+
         markdown_card = {
             "type": "markdown",
             "content": "# 🏠 Home Command Center\nSelect a studio or room below for full interactive control.",
@@ -684,11 +755,15 @@ class DashboardManager:
         if content_focus == "glance_first":
             if glance_card:
                 home_cards.append(glance_card)
+            if active_rooms_card:
+                home_cards.append(active_rooms_card)
             home_cards.append(studios_card)
             if rooms_card:
                 home_cards.append(rooms_card)
         elif content_focus == "studios_first":
             home_cards.append(studios_card)
+            if active_rooms_card:
+                home_cards.append(active_rooms_card)
             if rooms_card:
                 home_cards.append(rooms_card)
             if glance_card:
@@ -697,25 +772,16 @@ class DashboardManager:
             home_cards.append(studios_card)
             if glance_card:
                 home_cards.append(glance_card)
+            if active_rooms_card:
+                home_cards.append(active_rooms_card)
             if rooms_card:
                 home_cards.append(rooms_card)
-
-        if active_room_cards:
-            home_cards.insert(
-                1,
-                {
-                    "type": "grid",
-                    "title": "Active Rooms",
-                    "columns": 1,
-                    "square": False,
-                    "cards": active_room_cards,
-                },
-            )
 
         home_view: dict[str, Any] = {
             "title": "Home",
             "path": "home",
             "icon": "mdi:home-variant-outline",
+            "theme": user_rules.get("theme") or "otis_generate_midnight_slate",
             "badges": [],
         }
         if layout_style == "modern_sections":
@@ -797,6 +863,7 @@ class DashboardManager:
 
         return {
             "title": "Command Center",
+            "theme": user_rules.get("theme") or "otis_generate_midnight_slate",
             "views": views,
         }
 
@@ -815,6 +882,7 @@ class DashboardManager:
                 "icon": "mdi:robot-outline",
                 "type": "panel",
                 "panel": True,
+                "theme": user_rules.get("theme") or "otis_generate_midnight_slate",
                 "badges": [],
                 "cards": [
                     {
@@ -913,13 +981,16 @@ class DashboardManager:
                 device_reg = dr.async_get(self.hass)
                 entity_reg = er.async_get(self.hass)
                 raw_devices = getattr(device_reg, "devices", {})
-                device_iter = raw_devices.values() if isinstance(raw_devices, dict) else raw_devices
+                device_iter = list(raw_devices.values() if isinstance(raw_devices, dict) else raw_devices)
                 dev_areas = {d.id: d.area_id for d in device_iter}
+                dev_models = {d.id: getattr(d, "model", None) for d in device_iter}
                 areas_map = {a.id: {"name": a.name, "entities": []} for a in area_reg.async_list_areas()}
                 raw_entities = getattr(entity_reg, "entities", {})
-                entity_iter = raw_entities.values() if isinstance(raw_entities, dict) else raw_entities
+                entity_iter = list(raw_entities.values() if isinstance(raw_entities, dict) else raw_entities)
+                active_switch_targets = self._get_active_switch_as_x_targets(entity_iter)
                 for entry in entity_iter:
-                    if entry.disabled_by or entry.hidden_by:
+                    eff_hidden = self._resolve_effective_hidden_by(entry, active_switch_targets)
+                    if entry.disabled_by or eff_hidden:
                         continue
                     aid = entry.area_id or dev_areas.get(entry.device_id)
                     st = self.hass.states.get(entry.entity_id) if hasattr(self.hass, "states") else None
@@ -927,9 +998,13 @@ class DashboardManager:
                     e_info = {
                         "entity_id": entry.entity_id,
                         "name": entry.name or entry.original_name,
+                        "domain": getattr(entry, "domain", None) or entry.entity_id.split(".")[0],
+                        "platform": getattr(entry, "platform", None),
+                        "device_id": getattr(entry, "device_id", None),
+                        "device_model": dev_models.get(getattr(entry, "device_id", None)),
                         "area_id": aid,
                         "disabled_by": entry.disabled_by,
-                        "hidden_by": entry.hidden_by,
+                        "hidden_by": eff_hidden,
                         "state": e_state,
                     }
                     entities_list.append(e_info)
@@ -945,7 +1020,7 @@ class DashboardManager:
                 if e.get("entity_id")
                 and not e.get("disabled_by")
                 and not e.get("hidden_by")
-                and e.get("state") not in ("unknown", "unavailable", None, "")
+                and (e.get("state") not in ("unknown", "unavailable", None, "") or e.get("recovered_orphaned_hide"))
             }
             entities_by_id = {e["entity_id"]: e for e in entities_list}
             entities_by_area: dict[str, list[dict[str, Any]]] = {}
@@ -979,6 +1054,7 @@ class DashboardManager:
 
         return {
             "title": OTIS_DASHBOARD_TITLE,
+            "theme": user_rules.get("theme") or "otis_generate_midnight_slate",
             "views": views,
         }
 
@@ -1083,6 +1159,8 @@ class DashboardManager:
                                     merged_home_cards.append(ex_card)
 
                     merged_home = dict(existing_home_view)
+                    if "theme" in new_views[0] and ("theme" not in merged_home or force_regenerate):
+                        merged_home["theme"] = new_views[0]["theme"]
                     if new_views[0].get("type") == "sections" and "sections" in new_views[0]:
                         merged_home["type"] = "sections"
                         merged_home["max_columns"] = new_views[0].get("max_columns", 3)
@@ -1174,10 +1252,17 @@ class DashboardManager:
                     elif prop in fresh_v:
                         merged_v[prop] = fresh_v[prop]
 
-                ex_cards = list(ex_v.get("cards", []))
-                fresh_cards = list(fresh_v.get("cards", []))
+                def _is_obsolete(c: Any) -> bool:
+                    if not isinstance(c, dict):
+                        return False
+                    return c.get("type") == "markdown" and "Room controls and live telemetry" in str(c.get("content", ""))
+
+                ex_cards = [c for c in ex_v.get("cards", []) if not _is_obsolete(c)]
+                fresh_cards = [c for c in fresh_v.get("cards", []) if not _is_obsolete(c)]
                 if not ex_cards:
                     merged_v["cards"] = fresh_cards
+                    if merged_v.get("type") == "sections":
+                        merged_v["sections"] = self._convert_cards_to_sections(fresh_cards)
                     return merged_v
 
                 ex_keys = {_c_key(c) for c in ex_cards}
@@ -1198,6 +1283,12 @@ class DashboardManager:
                         merged_cards.append(fc)
 
                 merged_v["cards"] = merged_cards
+                if merged_v.get("type") == "sections" and fresh_cards:
+                    merged_v["sections"] = self._convert_cards_to_sections(merged_cards)
+                elif "sections" in merged_v and isinstance(merged_v["sections"], list):
+                    for sec in merged_v["sections"]:
+                        if isinstance(sec, dict) and isinstance(sec.get("cards"), list):
+                            sec["cards"] = [c for c in sec["cards"] if not _is_obsolete(c)]
                 return merged_v
 
             # Merge Studio and Room subviews preserving user customizations
@@ -1222,6 +1313,8 @@ class DashboardManager:
                     new_views.append(ex_v)
 
             merged = dict(new_config)
+            if "theme" in new_config and ("theme" not in merged or force_regenerate):
+                merged["theme"] = new_config["theme"]
             merged["views"] = new_views
             return merged
         except Exception as err:
@@ -2027,7 +2120,7 @@ class DashboardManager:
             if e.get("entity_id")
             and not e.get("disabled_by")
             and not e.get("hidden_by")
-            and e.get("state") not in ("unknown", "unavailable", None, "")
+            and (e.get("state") not in ("unknown", "unavailable", None, "") or e.get("recovered_orphaned_hide"))
         }
         entities_by_area: dict[str, list[dict[str, Any]]] = {}
         for e in entities_list:
@@ -2331,14 +2424,51 @@ class DashboardManager:
         }
 
         room_cards: list[dict[str, Any]] = [
-            nav_grid_card,
             {
-                "type": "markdown",
-                "content": f"## 📍 {area_name}\nRoom controls and live telemetry for {area_name}.",
-            }
+                "type": "custom:otis-companion-card",
+                "mode": "room_view",
+                "area_id": area_id,
+                "title": f"📍 {area_name}",
+            },
+            nav_grid_card,
         ]
 
-        # 1. Lighting (Filter out AP LEDs, indicator LEDs, fan controllers)
+        # 1. Lighting & Semantic Switch Classification
+        CAMERA_CONFIG_KEYWORDS = (
+            "detect", "motion", "recording", "snapshot", "audio_detection", "infrared",
+            "siren", "email_on_event", "ftp_upload", "push_notification", "review_alert",
+            "auto_track", "night_vision", "record_audio", "ptz", "hdr", "doorbell_ring",
+            "pir_", "smart_detection", "record", "push", "email", "ftp", "review",
+            "snapshots", "recordings",
+        )
+        NETWORK_INFRA_KEYWORDS = (
+            "snmp", "switch-", "switch_", "port_", "poe_", "nat_", "filter_rule",
+            "service_", "firewall", "router", "gateway", "vlan", "poe", "ethernet",
+            "managed_switch", "interface_", "nat_outbound", "filter_rules", "_igc",
+            "_lo0", "_tun_", "_gi1_", "_vl", "amazon_kids", "customized_cleaning",
+            "auto_dust_collecting", "cleaning_sequence", "super_sleep_pause_mode",
+            "no_command_mode", "fan_sleep_mode", "auto_off_enabled", "auto_update_enabled",
+        )
+        POOL_HVAC_KEYWORDS = (
+            "pool", "_spa", "spa_", " spa", "spa ", "pump", "heater", "thermostat",
+            "chlorinator", "bubbler", "waterfall", "blower", "cleaner", "filter_cycle",
+            "heat_mode", "standby_mode", "hold_mode", "spa_temp", "pool_temp",
+            "temperature_range", "spaclient",
+        )
+        LED_KEYWORDS = ("_led", "ap_", "indicator", "keypad_light", "status_led")
+        FAN_SWITCH_KEYWORDS = ("_fan", "fan_", " fan", "fan ", "exhaust", "vent", "ventilat", "blower_fan")
+        LIGHT_SWITCH_KEYWORDS = (
+            "_light", "light_", " light", "light ", "lamp", "flood", "sconce",
+            "chandelier", "lantern", "vanity", "pendant", "recessed", "can_light",
+            "porch", "deck_kitchen", "crawl_space", "pathway", "exterior_light",
+        )
+        WALL_SWITCH_MODELS = ("KS200", "KS205", "HS200", "HS210", "HS220", "KS220", "KS230")
+        OUTLET_APPLIANCE_KEYWORDS = (
+            "outlet", "plug", "receptacle", "socket", "power_strip", "coffee",
+            "melter", "tree", "fireplace", "processor_power", "amp_power", "cubed_ice",
+            "fridge", "appliance", "charger",
+        )
+
         lights: list[str] = []
         for e in active_entities:
             if e.get("domain") != "light":
@@ -2354,44 +2484,9 @@ class DashboardManager:
                 continue
             lights.append(e["entity_id"])
 
-        if lights:
-            room_cards.append({
-                "type": "grid",
-                "title": "Lighting",
-                "columns": min(2, len(lights)),
-                "square": False,
-                "cards": [
-                    {
-                        "type": "tile",
-                        "entity": eid,
-                        "features": [{"type": "light-brightness"}],
-                    }
-                    for eid in lights
-                ],
-            })
-
-        # 2. Power & Outlets (Filter out camera toggles, SNMP network ports, firewall rules, and LED status)
-        CAMERA_CONFIG_KEYWORDS = (
-            "detect", "motion", "recording", "snapshot", "audio_detection", "infrared",
-            "siren", "email_on_event", "ftp_upload", "push_notification", "review_alert",
-            "auto_track", "night_vision", "record_audio", "ptz", "hdr", "doorbell_ring",
-            "pir_", "smart_detection", "record", "push", "email", "ftp", "review",
-            "snapshots", "recordings",
-        )
-        NETWORK_INFRA_KEYWORDS = (
-            "snmp", "switch-", "switch_", "port_", "poe_", "nat_", "filter_rule",
-            "service_", "firewall", "router", "gateway", "vlan", "poe", "ethernet",
-            "managed_switch", "interface_", "nat_outbound", "filter_rules",
-        )
-        POOL_HVAC_KEYWORDS = (
-            "pool", "spa", "pump", "heater", "thermostat", "chlorinator", "bubbler",
-            "waterfall", "blower", "cleaner", "filter_cycle", "heat_mode", "standby_mode",
-            "hold_mode", "spa_temp", "pool_temp",
-        )
-        LED_KEYWORDS = ("_led", "ap_", "indicator", "keypad_light", "status_led")
-
         switches: list[str] = []
         pool_switches: list[str] = []
+        fan_switches: list[str] = []
         for e in active_entities:
             if e.get("domain") != "switch":
                 continue
@@ -2399,10 +2494,12 @@ class DashboardManager:
                 continue
             eid = e.get("entity_id", "").lower()
             name = str(e.get("name") or "").lower()
+            dev_model = str(e.get("device_model") or "").upper()
             combined = f"{eid} {name}"
 
-            # Check for pool/spa switches
-            if any(k in combined for k in POOL_HVAC_KEYWORDS) and not any(k in combined for k in NETWORK_INFRA_KEYWORDS):
+            # Check for pool/spa switches (exclude 'space' so crawl_space/workspace never match '_spa')
+            combined_pool_check = combined.replace("crawl_space", "").replace("workspace", "").replace("space", "")
+            if any(k in combined_pool_check for k in POOL_HVAC_KEYWORDS) and not any(k in combined for k in NETWORK_INFRA_KEYWORDS):
                 pool_switches.append(e["entity_id"])
                 continue
 
@@ -2413,24 +2510,62 @@ class DashboardManager:
             if any(k in combined for k in LED_KEYWORDS):
                 continue
 
+            # Semantically classify fan/exhaust/ventilation switches
+            if any(k in combined for k in FAN_SWITCH_KEYWORDS):
+                fan_switches.append(e["entity_id"])
+                continue
+
+            # Semantically classify lighting switches (_light, lamp, flood, sconce, or wall switch model not marked as outlet)
+            is_light_switch = any(k in combined for k in LIGHT_SWITCH_KEYWORDS) or (
+                any(dev_model.startswith(m) for m in WALL_SWITCH_MODELS)
+                and not any(k in combined for k in OUTLET_APPLIANCE_KEYWORDS)
+            )
+            if is_light_switch and not any(k in combined for k in ("outlet", "plug", "receptacle")):
+                if e["entity_id"] not in lights:
+                    lights.append(e["entity_id"])
+                continue
+
             switches.append(e["entity_id"])
 
+        if lights:
+            light_cards: list[dict[str, Any]] = []
+            for eid in lights:
+                if eid.startswith("light."):
+                    light_cards.append({
+                        "type": "tile",
+                        "entity": eid,
+                        "features": [{"type": "light-brightness"}],
+                    })
+                else:
+                    light_cards.append({
+                        "type": "tile",
+                        "entity": eid,
+                    })
+            room_cards.append({
+                "type": "grid",
+                "title": "Lighting",
+                "columns": min(2, len(light_cards)),
+                "square": False,
+                "cards": light_cards,
+            })
+
+        # 2. Power & Outlets
         if switches:
             room_cards.append({
                 "type": "grid",
                 "title": "Power & Outlets",
-                "columns": min(2, len(switches[:8])),
+                "columns": min(2, len(switches[:24])),
                 "square": False,
-                "cards": [{"type": "tile", "entity": eid} for eid in switches[:8]],
+                "cards": [{"type": "tile", "entity": eid} for eid in switches[:24]],
             })
 
         if pool_switches:
             room_cards.append({
                 "type": "grid",
                 "title": "Pool & Spa Controls",
-                "columns": min(2, len(pool_switches[:8])),
+                "columns": min(2, len(pool_switches[:16])),
                 "square": False,
-                "cards": [{"type": "tile", "entity": eid} for eid in pool_switches[:8]],
+                "cards": [{"type": "tile", "entity": eid} for eid in pool_switches[:16]],
             })
 
         # 3. Media & Audio (Prominent primary media-control card + compact secondary audio zones)
@@ -2478,6 +2613,9 @@ class DashboardManager:
         # 4. Climate & Comfort
         climates = [e["entity_id"] for e in active_entities if e.get("domain") == "climate"]
         fans = [e["entity_id"] for e in active_entities if e.get("domain") in ("fan", "humidifier")]
+        for f_sw in fan_switches:
+            if f_sw not in fans:
+                fans.append(f_sw)
         climate_sensors = [
             e["entity_id"]
             for e in active_entities
@@ -2683,6 +2821,7 @@ class DashboardManager:
             "path": f"area_{slug}",
             "icon": room_icon,
             "subview": True,
+            "theme": user_rules.get("theme") or "otis_generate_midnight_slate",
             "badges": [],
             "cards": room_cards,
         }
@@ -2749,12 +2888,12 @@ class DashboardManager:
                 return eid_list
             return [eid for eid in eid_list if eid in valid_eids]
 
-        matrix_zones = _filter_valid([z["entity_id"] for z in media_topo.get("matrix_zones", [])])
-        streamers = _filter_valid([s["entity_id"] for s in media_topo.get("input_streamers", [])])
+        matrix_zones = _filter_valid([z["entity_id"] if isinstance(z, dict) else str(z) for z in media_topo.get("matrix_zones", [])])
+        streamers = _filter_valid([s["entity_id"] if isinstance(s, dict) else str(s) for s in media_topo.get("input_streamers", [])])
         tvs = _filter_valid([
-            t["entity_id"]
+            t["entity_id"] if isinstance(t, dict) else str(t)
             for t in media_topo.get("tv_cinema_zones", [])
-            if not any(z in t.get("entity_id", "").lower() for z in ("_zone_3", "_zone_4", "_zone3", "_zone4"))
+            if not any(z in (t.get("entity_id", "") if isinstance(t, dict) else str(t)).lower() for z in ("_zone_3", "_zone_4", "_zone3", "_zone4"))
         ])
         helpers = _filter_valid([
             e["entity_id"]
@@ -2770,19 +2909,8 @@ class DashboardManager:
 
         # Auto-detect available custom Lovelace cards
         detected_cards = installed_cards if installed_cards is not None else self._cached_installed_cards
-        active_integrations = capability_map.get("integrations", [])
-        active_domains = {
-            str(i.get("domain", "") if isinstance(i, dict) else i).lower()
-            for i in active_integrations
-        }
-        has_c4_card = (
-            "custom:control4-mediaplayer-card" in detected_cards
-            or "control4_mediaplayer" in active_domains
-            or any("matrix_amp" in zid.lower() for zid in matrix_zones)
-        )
         has_mmp = "custom:mini-media-player" in detected_cards
         has_remote = "custom:universal-remote-card" in detected_cards
-        has_mushroom = "custom:mushroom-media-player-card" in detected_cards
 
         cards: list[dict[str, Any]] = [
             nav_card,
@@ -2812,83 +2940,14 @@ class DashboardManager:
             },
         ]
 
-        # 1. Premier Matrix Controller Card (Control4 Card if installed / available)
-        if has_c4_card and matrix_zones:
-            cards.append({
-                "type": "custom:control4-mediaplayer-card",
-                "title": "Whole-Home Matrix Audio Controller",
-            })
+        # 1. Otis Media Studio & Source-to-Zone Matrix Controller (Primary all-in-one matrix, streaming player & zone routing interface)
+        cards.append({
+            "type": "custom:otis-companion-card",
+            "mode": "media_studio",
+            "title": "Media Studio & Source-to-Zone Router",
+        })
 
-        # 2. Upstream Audio Streamers & Bridges
-        if streamers:
-            streamer_cards = []
-            for s in streamers[:4]:
-                if has_mmp:
-                    streamer_cards.append({
-                        "type": "custom:mini-media-player",
-                        "entity": s,
-                        "artwork": "cover",
-                        "source": "full",
-                        "sound_mode": "full",
-                        "info": "short",
-                    })
-                elif has_mushroom:
-                    streamer_cards.append({
-                        "type": "custom:mushroom-media-player-card",
-                        "entity": s,
-                        "use_media_artwork": True,
-                        "show_volume_level": True,
-                    })
-                else:
-                    streamer_cards.append({"type": "media-control", "entity": s})
-
-            cards.append({
-                "type": "grid",
-                "title": "Upstream Audio Streamers & Bridges",
-                "columns": min(2, len(streamer_cards)),
-                "square": False,
-                "cards": streamer_cards,
-            })
-
-        # 3. Room Speaker & Amplifier Zones
-        if matrix_zones:
-            zone_cards = []
-            for zid in matrix_zones:
-                if has_mmp:
-                    zone_cards.append({
-                        "type": "custom:mini-media-player",
-                        "entity": zid,
-                        "artwork": "cover",
-                        "source": "full",
-                        "sound_mode": "full",
-                        "group": False,
-                        "volume_stateless": False,
-                    })
-                else:
-                    zone_cards.append({
-                        "type": "tile",
-                        "entity": zid,
-                        "features": [{"type": "media-player-volume-slider"}],
-                    })
-
-            cards.append({
-                "type": "grid",
-                "title": "Room Speaker & Amplifier Zones",
-                "columns": 2,
-                "square": False,
-                "cards": zone_cards,
-            })
-
-        # 4. Audio Routing Helpers
-        if helpers:
-            cards.append({
-                "type": "entities",
-                "title": "Audio Source & Speaker Routing Controls",
-                "state_color": True,
-                "entities": helpers[:10],
-            })
-
-        # 5. Cinema & Room Displays
+        # 2. Cinema & Room Displays
         if tvs:
             tv_cards = []
             for idx, tv in enumerate(tvs[:6]):
@@ -3008,6 +3067,11 @@ class DashboardManager:
         )
 
         cards: list[dict[str, Any]] = [
+            {
+                "type": "custom:otis-companion-card",
+                "mode": "energy",
+                "title": "⚡ Energy, Solar & Grid Studio",
+            },
             nav_card,
             {
                 "type": "markdown",
@@ -3165,6 +3229,11 @@ class DashboardManager:
         cameras = deduped_sec_cameras
 
         cards: list[dict[str, Any]] = [
+            {
+                "type": "custom:otis-companion-card",
+                "mode": "security",
+                "title": "🛡️ Security, Locks & Perimeter Center",
+            },
             nav_card,
             {
                 "type": "markdown",
@@ -3339,6 +3408,11 @@ class DashboardManager:
         ])
 
         cards: list[dict[str, Any]] = [
+            {
+                "type": "custom:otis-companion-card",
+                "mode": "climate",
+                "title": "🌡️ Climate, HVAC & Pool Studio",
+            },
             nav_card,
             {
                 "type": "markdown",
@@ -3468,7 +3542,7 @@ class DashboardManager:
                 if e.get("entity_id")
                 and not e.get("disabled_by")
                 and not e.get("hidden_by")
-                and e.get("state") not in ("unknown", "unavailable", None, "")
+                and (e.get("state") not in ("unknown", "unavailable", None, "") or e.get("recovered_orphaned_hide"))
             }
             entities_by_id = {e["entity_id"]: e for e in entities_list}
             entities_by_area: dict[str, list[dict[str, Any]]] = {}
@@ -3557,7 +3631,7 @@ class DashboardManager:
                 if e.get("entity_id")
                 and not e.get("disabled_by")
                 and not e.get("hidden_by")
-                and e.get("state") not in ("unknown", "unavailable", None, "")
+                and (e.get("state") not in ("unknown", "unavailable", None, "") or e.get("recovered_orphaned_hide"))
             }
 
             def _filter_valid(eid_list: list[str]) -> list[str]:
@@ -3583,16 +3657,6 @@ class DashboardManager:
                 matrix_zones = [m for m in all_mps if m not in tvs and m not in streamers]
 
             detected_cards = installed_cards if installed_cards is not None else self._cached_installed_cards
-            active_integrations = capability_map.get("integrations", [])
-            active_domains = {
-                str(i.get("domain", "") if isinstance(i, dict) else i).lower()
-                for i in active_integrations
-            }
-            has_c4_card = (
-                "custom:control4-mediaplayer-card" in detected_cards
-                or "control4_mediaplayer" in active_domains
-                or any("matrix_amp" in zid.lower() for zid in matrix_zones)
-            )
             has_mmp = "custom:mini-media-player" in detected_cards
             has_remote = "custom:universal-remote-card" in detected_cards
             has_mushroom = "custom:mushroom-media-player-card" in detected_cards
@@ -3604,11 +3668,11 @@ class DashboardManager:
                     "content": "## 🔊 Matrix & Speaker Zones\nIndependent volume, source selection, and power management for every room zone.",
                 }
             ]
-            if has_c4_card and matrix_zones:
-                zones_cards.append({
-                    "type": "custom:control4-mediaplayer-card",
-                    "title": "Control4 Audio Matrix Controller",
-                })
+            zones_cards.append({
+                "type": "custom:otis-companion-card",
+                "mode": "media_studio",
+                "title": "Media Studio & Source-to-Zone Router",
+            })
 
             if matrix_zones:
                 zone_cards = []
@@ -3795,11 +3859,11 @@ class DashboardManager:
                 },
             ]
 
-            if has_c4_card and matrix_zones:
-                hub_cards.append({
-                    "type": "custom:control4-mediaplayer-card",
-                    "title": "Whole-Home Matrix Audio Controller",
-                })
+            hub_cards.append({
+                "type": "custom:otis-companion-card",
+                "mode": "media_studio",
+                "title": "Media Studio & Source-to-Zone Router",
+            })
 
             if streamers:
                 hub_streamer_cards = []
@@ -3873,7 +3937,7 @@ class DashboardManager:
                 if e.get("entity_id")
                 and not e.get("disabled_by")
                 and not e.get("hidden_by")
-                and e.get("state") not in ("unknown", "unavailable", None, "")
+                and (e.get("state") not in ("unknown", "unavailable", None, "") or e.get("recovered_orphaned_hide"))
             }
 
             def _filter_valid(eid_list: list[str]) -> list[str]:

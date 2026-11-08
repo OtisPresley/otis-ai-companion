@@ -36,6 +36,30 @@ def _read_blueprint_snippet(full_path: str, max_lines: int = 120) -> str | None:
         return None
 
 
+class SafeNoAliasDumper(yaml.SafeDumper):
+    """Safe dumper that prevents YAML anchors and aliases (&id001/*id001)."""
+
+    def ignore_aliases(self, data: Any) -> bool:
+        return True
+
+
+def clean_yaml_dict(obj: Any) -> Any:
+    """Recursively strip internal Home Assistant annotatedyaml AST nodes and line metadata."""
+    if isinstance(obj, dict):
+        clean_d = {}
+        for k, v in obj.items():
+            k_str = str(k)
+            if k_str in ("__config_file__", "line", "col"):
+                continue
+            clean_d[k_str] = clean_yaml_dict(v)
+        return clean_d
+    elif isinstance(obj, (list, tuple, set)):
+        return [clean_yaml_dict(x) for x in obj]
+    elif hasattr(obj, "__str__") and type(obj).__module__.startswith("annotatedyaml"):
+        return str(obj)
+    return obj
+
+
 class AutomationManager:
     """Manages reading user automations/scripts and managing integration configurations via .storage."""
 
@@ -267,10 +291,11 @@ class AutomationManager:
             auto_id = str(auto.get("id", ""))
             alias = str(auto.get("alias", ""))
 
+            clean_auto = clean_yaml_dict(auto)
             try:
-                dumped = yaml.dump(auto, sort_keys=False, default_flow_style=False)
+                dumped = yaml.dump(clean_auto, Dumper=SafeNoAliasDumper, sort_keys=False, default_flow_style=False)
             except Exception:
-                dumped = str(auto)
+                dumped = str(clean_auto)
             dumped_lower = dumped.lower()
             alias_lower = alias.lower()
 
@@ -346,10 +371,11 @@ class AutomationManager:
             if not isinstance(s_data, dict):
                 continue
             alias = str(s_data.get("alias", s_key))
+            clean_script = clean_yaml_dict({s_key: s_data})
             try:
-                dumped = yaml.dump({s_key: s_data}, sort_keys=False, default_flow_style=False)
+                dumped = yaml.dump(clean_script, Dumper=SafeNoAliasDumper, sort_keys=False, default_flow_style=False)
             except Exception:
-                dumped = str({s_key: s_data})
+                dumped = str(clean_script)
             dumped_lower = dumped.lower()
             alias_lower = alias.lower()
 

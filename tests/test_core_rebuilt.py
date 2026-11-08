@@ -106,12 +106,17 @@ class DummyStore:
 mock_storage.Store = DummyStore
 sys.modules['homeassistant.helpers.storage'] = mock_storage
 sys.modules['homeassistant.components.conversation'] = mock_conversation
-sys.modules['homeassistant.components.http'] = MagicMock()
+mock_http = MagicMock()
+class DummyHomeAssistantView:
+    pass
+mock_http.HomeAssistantView = DummyHomeAssistantView
+sys.modules['homeassistant.components.http'] = mock_http
 mock_aiohttp_client = MagicMock()
 mock_aiohttp_client.async_get_clientsession = MagicMock()
 sys.modules['homeassistant.helpers.aiohttp_client'] = mock_aiohttp_client
 mock_aiohttp = MagicMock()
 mock_aiohttp.web = MagicMock()
+mock_aiohttp.web.json_response = MagicMock(side_effect=lambda data, status=200: MagicMock(status=status, data=data))
 sys.modules['aiohttp'] = mock_aiohttp
 sys.modules['aiohttp.web'] = mock_aiohttp.web
 sys.modules['homeassistant.util'] = MagicMock()
@@ -4300,12 +4305,19 @@ class TestModernSectionsDashboardGeneration(unittest.TestCase):
         home_view = user_cfg["views"][0]
         sections = home_view["sections"]
 
-        # Should have 4 sections: Active Rooms (Elevated), Studios, Glance & Schedule, Rooms
+        # Should have 4 sections: Studios, Glance & Schedule, Active Rooms, Rooms (balanced default)
         self.assertEqual(len(sections), 4)
 
-        # Section 0: Active Rooms
-        active_sec = sections[0]
+        # Active Rooms section is dynamically placed according to primary_content_focus
+        active_sec = [s for s in sections if s.get("cards") and any(c.get("card", {}).get("heading") == "Active Rooms" for c in s.get("cards", []))][0]
         self.assertEqual(active_sec["type"], "grid")
+
+        # Verify glance_first places Schedule & Weather before Active Rooms
+        rm._rules["primary_content_focus"] = "glance_first"
+        glance_cfg = dm._build_user_command_center_dashboard_config(cap_map)
+        glance_sections = glance_cfg["views"][0]["sections"]
+        self.assertEqual(glance_sections[0]["cards"][0]["heading"], "Schedule & Glance")
+        self.assertEqual(glance_sections[1]["cards"][0]["card"]["heading"], "Active Rooms")
 
         # Heading is conditionally shown based on otis_active_occupancy
         sec_heading_cond = active_sec["cards"][0]
@@ -5227,6 +5239,384 @@ action:
         res_conv_scan = asyncio.run(agent.async_process(u_scan))
         speech_scan = res_conv_scan.response.speech.get("plain", {}).get("speech", "")
         self.assertIn("Otis Sentinel", speech_scan)
+
+    def test_proactive_feed_local_edge_ai_model_recommendation(self):
+        """Verify Proactive Feed surfaces a 1-click Local Edge AI model switch card when telemetry or hardware recommends another model."""
+        from custom_components.otis_ai.local_llm import LocalLLMManager
+        from custom_components.otis_ai import AutomationManager
+
+        llm_mgr = LocalLLMManager(self.hass, model="qwen2.5:3b")
+        llm_mgr._last_benchmark = {
+            "success": True,
+            "model": "qwen2.5:3b",
+            "tokens_per_second": 4.2,
+            "total_latency_seconds": 14.5,
+        }
+        fake_hw = {
+            "cpu_model": "Intel Core i7-12650H",
+            "cpu_cores": 16,
+            "ram_total_gb": 16.0,
+            "ram_available_gb": 7.2,
+            "disk_free_gb": 50.0,
+            "gpu_detected": True,
+            "gpu_type": "Intel/DRM iGPU (/dev/dri/renderD128)",
+        }
+        with unittest.mock.patch.object(llm_mgr, "_probe_host_hardware_sync", return_value=fake_hw), \
+             unittest.mock.patch.dict("os.environ", {"SUPERVISOR_TOKEN": "test_token"}):
+            mock_resp = MagicMock()
+            mock_resp.status = 200
+            mock_resp.json = AsyncMock(return_value={
+                "data": {"addons": [{"slug": "local_otis_ollama", "name": "Otis Edge AI (Ollama)", "installed": True, "state": "started", "version": "1.0.0"}]}
+            })
+            mock_cm = MagicMock()
+            mock_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+            mock_cm.__aexit__ = AsyncMock(return_value=None)
+            mock_session = MagicMock()
+            mock_session.get = MagicMock(return_value=mock_cm)
+            with unittest.mock.patch.object(llm_mgr, "_get_session", return_value=mock_session):
+                suit = asyncio.run(llm_mgr.async_assess_host_ollama_suitability())
+
+        self.assertTrue(suit["can_run"])
+        self.assertEqual(suit["recommended_model"], "qwen2.5:1.5b")
+        self.assertTrue(suit["model_switch_recommended"])
+
+        from custom_components.otis_ai import DiscoveryEngine
+
+        eng = DiscoveryEngine(self.hass)
+        eng.local_llm_manager = llm_mgr
+        cap_map = {
+            "areas": {},
+            "entities": [],
+            "local_llm": {
+                "online": True,
+                "active_model": "qwen2.5:3b",
+                "suitability": suit,
+            },
+        }
+        with unittest.mock.patch.object(eng, "async_fetch_ha_official_news", new=AsyncMock(return_value=[])):
+            suggestions = asyncio.run(eng.async_generate_proactive_suggestions(cap_map))
+
+        switch_cards = [s for s in suggestions if s.get("action_type") == "switch_local_llm_model"]
+        self.assertEqual(len(switch_cards), 1)
+        self.assertEqual(switch_cards[0]["action_payload"]["model"], "qwen2.5:1.5b")
+        self.assertEqual(switch_cards[0]["action_payload"]["current_model"], "qwen2.5:3b")
+
+    def test_phase4_media_studio_mappings_and_per_user_favorites(self):
+        """Test Phase 4 input-to-player mappings, per-user non-admin favorites, and OtisMediaStudioView."""
+        from custom_components.otis_ai.audio_manager import AudioHandoffManager
+        from custom_components.otis_ai.rules_manager import BehavioralRulesManager
+        from custom_components.otis_ai import OtisMediaStudioView, DOMAIN
+
+        rules_mgr = BehavioralRulesManager(self.hass)
+        rules_mgr._store.async_save = AsyncMock()
+        audio_mgr = AudioHandoffManager(self.hass, rules_manager=rules_mgr)
+        audio_mgr._fav_store.async_save = AsyncMock()
+
+        # Set up mock matrix zones and upstream streamers on self.hass.states
+        z_study = MagicMock()
+        z_study.entity_id = "media_player.matrix_amp_1_study"
+        z_study.state = "on"
+        z_study.attributes = {
+            "friendly_name": "Matrix Amp 1 Study",
+            "source": "Bridge",
+            "source_list": ["Input 1", "Server", "Bridge", "Gym Bridge", "None"],
+            "volume_level": 0.35,
+            "is_volume_muted": False,
+        }
+        p_bridge = MagicMock()
+        p_bridge.entity_id = "media_player.bridge"
+        p_bridge.state = "playing"
+        p_bridge.attributes = {
+            "friendly_name": "Bridge",
+            "media_title": "Take Five",
+            "media_artist": "Dave Brubeck",
+        }
+        p_server = MagicMock()
+        p_server.entity_id = "media_player.vlc_telnet_2"
+        p_server.state = "idle"
+        p_server.attributes = {"friendly_name": "VLC-TELNET"}
+
+        self.hass.states.async_all = MagicMock(return_value=[z_study, p_bridge, p_server])
+        state_map = {
+            z_study.entity_id: z_study,
+            p_bridge.entity_id: p_bridge,
+            p_server.entity_id: p_server,
+        }
+        self.hass.states.get = MagicMock(side_effect=lambda eid: state_map.get(eid))
+        self.hass.services.async_call = AsyncMock()
+
+        # 1. Verify smart input-to-player auto-discovery
+        mappings = audio_mgr.resolve_effective_input_mappings()
+        self.assertEqual(mappings.get("Bridge"), "media_player.bridge")
+        self.assertEqual(mappings.get("Server"), "media_player.vlc_telnet_2")
+
+        # 2. Verify non-admin per-user favorites isolation & playback via OtisMediaStudioView
+        self.hass.data[DOMAIN] = {
+            "entry_media_test": {
+                "audio_manager": audio_mgr,
+                "rules_manager": rules_mgr,
+            }
+        }
+        view = OtisMediaStudioView(self.hass, audio_mgr, rules_mgr)
+
+        non_admin_user = MagicMock()
+        non_admin_user.id = "user_amy_nonadmin"
+        non_admin_user.name = "Amy"
+        non_admin_user.is_admin = False
+        non_admin_user.is_owner = False
+
+        # Non-admin adds a personal favorite
+        req_add = MagicMock()
+        req_add.get = MagicMock(side_effect=lambda k, d=None: non_admin_user if k == "hass_user" else d)
+        req_add.__getitem__ = MagicMock(side_effect=lambda k: non_admin_user if k == "hass_user" else None)
+        req_add.json = AsyncMock(return_value={
+            "action": "add_favorite",
+            "name": "Smooth Jazz",
+            "input": "Bridge",
+            "command": "play smooth jazz",
+            "shared": True,  # Should be forced False for non-admin
+        })
+        resp_add = asyncio.run(view.post(req_add))
+        self.assertEqual(resp_add.status, 200)
+        user_favs = audio_mgr._favorites_data["users"]["user_amy_nonadmin"]["favorites"]
+        self.assertEqual(len(user_favs), 1)
+        self.assertEqual(user_favs[0]["name"], "Smooth Jazz")
+        self.assertEqual(len(audio_mgr._favorites_data["shared_favorites"]), 0)
+
+        # Non-admin plays the favorite on Study zone
+        fav_id = user_favs[0]["id"]
+        req_play = MagicMock()
+        req_play.get = MagicMock(side_effect=lambda k, d=None: non_admin_user if k == "hass_user" else d)
+        req_play.json = AsyncMock(return_value={
+            "action": "play_favorite",
+            "favorite_id": fav_id,
+            "zone_entity_id": "media_player.matrix_amp_1_study",
+        })
+        resp_play = asyncio.run(view.post(req_play))
+        self.assertEqual(resp_play.status, 200)
+        self.hass.services.async_call.assert_any_call(
+            "media_player",
+            "select_source",
+            {"entity_id": "media_player.matrix_amp_1_study", "source": "Bridge"},
+            blocking=True,
+        )
+
+        # Non-admin attempting save_mappings is rejected with 403
+        req_map_deny = MagicMock()
+        req_map_deny.get = MagicMock(side_effect=lambda k, d=None: non_admin_user if k == "hass_user" else d)
+        req_map_deny.json = AsyncMock(return_value={
+            "action": "save_mappings",
+            "mappings": {"Input 1": "media_player.bridge"},
+        })
+        resp_deny = asyncio.run(view.post(req_map_deny))
+        self.assertEqual(resp_deny.status, 403)
+
+        # Admin attempting save_mappings succeeds with 200
+        admin_user = MagicMock()
+        admin_user.id = "user_jamie_admin"
+        admin_user.name = "Jamie"
+        admin_user.is_admin = True
+        admin_user.is_owner = True
+        req_map_ok = MagicMock()
+        req_map_ok.get = MagicMock(side_effect=lambda k, d=None: admin_user if k == "hass_user" else d)
+        req_map_ok.json = AsyncMock(return_value={
+            "action": "save_mappings",
+            "mappings": {"Input 1": "media_player.bridge"},
+            "unjoin_input": "None",
+            "default_zone": "media_player.matrix_amp_1_study",
+        })
+        resp_ok = asyncio.run(view.post(req_map_ok))
+        self.assertEqual(resp_ok.status, 200)
+        self.assertEqual(rules_mgr.get_rules()["media_input_mappings"].get("Input 1"), "media_player.bridge")
+
+    def test_log_sanitization_and_classification(self):
+        """Verify that sensitive IP, token, and path data are sanitized, and errors correctly classified."""
+        import time
+        from custom_components.otis_ai.log_monitor import sanitize_log_data, LogMonitor
+
+        raw_trace = (
+            "Traceback (most recent call last):\n"
+            "  File \"/home/jamie/custom_components/test/init.py\", line 42, in async_setup\n"
+            "    conn = await connect('10.0.12.246', token='secret_token_1234567890abcdef', email='user@home.com')\n"
+            "AttributeError: 'NoneType' object has no attribute 'connect'"
+        )
+        sanitized = sanitize_log_data(raw_trace)
+        self.assertNotIn("10.0.12.246", sanitized)
+        self.assertIn("[LOCAL_IP]", sanitized)
+        self.assertNotIn("/home/jamie/", sanitized)
+        self.assertIn("/config/", sanitized)
+        self.assertNotIn("user@home.com", sanitized)
+        self.assertIn("[REDACTED_EMAIL]", sanitized)
+
+        # Test LogMonitor classification
+        monitor = LogMonitor(self.hass)
+        self.hass.data["system_log"] = MagicMock()
+        self.hass.data["system_log"].records = MagicMock()
+        self.hass.data["system_log"].records.to_list = MagicMock(return_value=[
+            {
+                "name": "homeassistant.components.tplink",
+                "message": ["Unable to communicate with the device connect: Device 10.0.12.147 responded with 403 to handshake1; Retrying in 600 seconds"],
+                "level": "INFO",
+                "exception": "",
+                "count": 3,
+                "timestamp": time.time(),
+                "source": ["components/tplink/__init__.py", 100],
+            },
+            {
+                "name": "custom_components.otis_ai",
+                "message": ["Unexpected error in audio coordinator"],
+                "level": "ERROR",
+                "exception": raw_trace,
+                "count": 1,
+                "timestamp": time.time(),
+                "source": ["custom_components/otis_ai/audio_manager.py", 42],
+            },
+            {
+                "name": "homeassistant.components.automation.theme_set_on_startup",
+                "message": ["Error while executing automation: UndefinedError: 'entity' is undefined"],
+                "level": "ERROR",
+                "exception": "jinja2.exceptions.UndefinedError: 'entity' is undefined",
+                "count": 1,
+                "timestamp": time.time(),
+                "source": ["components/automation/__init__.py", 700],
+            },
+            {
+                "name": "homeassistant.components.androidtv",
+                "message": ["Failed to execute an ADB command. ADB connection re-establishing attempt in the next update..."],
+                "level": "ERROR",
+                "exception": "adb_shell.exceptions.AdbTimeoutError: Command timed out",
+                "count": 2,
+                "timestamp": time.time(),
+                "source": ["components/androidtv/__init__.py", 150],
+            },
+        ])
+
+        audit = asyncio.run(monitor.async_audit_logs())
+        # tplink and androidtv (transient ADB connection retry) are self-healing
+        self.assertEqual(len(audit["self_healing"]), 2)
+        domains_self_healing = [s["domain"] for s in audit["self_healing"]]
+        self.assertIn("tplink", domains_self_healing)
+        self.assertIn("androidtv", domains_self_healing)
+        # automation is in NON_INTEGRATION_DOMAINS and excluded; only otis_ai is a real bug
+        self.assertEqual(len(audit["integration_bugs"]), 1)
+        self.assertEqual(audit["integration_bugs"][0]["domain"], "otis_ai")
+        self.assertEqual(audit["integration_bugs"][0]["target_repo"], "OtisPresley/otis-ai-companion")
+        self.assertIn("[LOCAL_IP]", audit["integration_bugs"][0]["sanitized_body"])
+
+    def test_github_device_flow_and_issue_tracking(self):
+        """Verify GitHub Device Flow token verification, issue tracking store, and view API."""
+        from custom_components.otis_ai import OtisIssueReporterView
+        from custom_components.otis_ai.log_monitor import LogMonitor
+        from custom_components.otis_ai.github_client import check_device_token, create_github_issue
+
+        monitor = LogMonitor(self.hass)
+        view = OtisIssueReporterView(self.hass, log_monitor=monitor)
+
+        # GET diagnostics
+        req_get = MagicMock()
+        req_get.query = {"action": "diagnostics"}
+        resp_get = asyncio.run(view.get(req_get))
+        self.assertEqual(resp_get.status, 200)
+
+        # POST track and dismiss issue
+        req_track = MagicMock()
+        req_track.json = AsyncMock(return_value={
+            "action": "submit_issue",
+            "token": "gho_mock_token",
+            "repo": "OtisPresley/otis-ai-companion",
+            "title": "[Bug Report] otis_ai: Audio Error",
+            "body": "Sample sanitized body",
+            "error_id": "test_err_123",
+        })
+
+        with patch("custom_components.otis_ai.create_github_issue", new_callable=AsyncMock) as mock_create:
+            mock_create.return_value = {
+                "success": True,
+                "number": 99,
+                "html_url": "https://github.com/OtisPresley/otis-ai-companion/issues/99",
+                "state": "open",
+                "title": "[Bug Report] otis_ai: Audio Error",
+                "repo": "OtisPresley/otis-ai-companion",
+            }
+            resp_post = asyncio.run(view.post(req_track))
+            self.assertEqual(resp_post.status, 200)
+
+        # Verify tracked issues in store
+        tracked = monitor._tracked_issues
+        self.assertIn("OtisPresley/otis-ai-companion#99", tracked)
+        self.assertEqual(tracked["OtisPresley/otis-ai-companion#99"]["number"], 99)
+
+        # Proactive cards should now include the tracked issue
+        cards = asyncio.run(monitor.async_get_proactive_cards())
+        card_titles = [c["title"] for c in cards]
+        self.assertTrue(any("Issue #99" in t for t in card_titles))
+
+        # Dismiss issue
+        req_dismiss = MagicMock()
+        req_dismiss.json = AsyncMock(return_value={
+            "action": "dismiss_issue",
+            "track_id": "OtisPresley/otis-ai-companion#99",
+        })
+        resp_dismiss = asyncio.run(view.post(req_dismiss))
+        self.assertEqual(resp_dismiss.status, 200)
+        self.assertTrue(monitor._tracked_issues["OtisPresley/otis-ai-companion#99"]["dismissed"])
+
+    def test_audio_candidate_players_and_dashboard_cleanup(self):
+        """Verify that Theater Yamaha Zone 2 & 3 are in candidate players and Control4 card is removed from media views."""
+        from custom_components.otis_ai.audio_manager import AudioHandoffManager
+        from custom_components.otis_ai.matrix_presets import is_matrix_entity
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+
+        # 1. Monoprice pattern fix: Yamaha zone 2/3 should NOT match matrix entity
+        self.assertFalse(is_matrix_entity("media_player.theater_yamaha_zone_2", "yamaha_musiccast"))
+        self.assertFalse(is_matrix_entity("media_player.theater_yamaha_zone_3", "yamaha_musiccast"))
+
+        # 2. Candidate players discovery
+        audio_mgr = AudioHandoffManager(self.hass)
+        st_matrix = MagicMock()
+        st_matrix.entity_id = "media_player.matrix_amp_1_great_room"
+        st_matrix.state = "playing"
+        st_matrix.attributes = {"source": "Bridge", "source_list": ["Bridge", "Server"], "friendly_name": "Matrix Amp Great Room"}
+
+        st_y2 = MagicMock()
+        st_y2.entity_id = "media_player.theater_yamaha_zone_2"
+        st_y2.state = "idle"
+        st_y2.attributes = {"friendly_name": "Theater Yamaha Zone 2"}
+
+        st_y3 = MagicMock()
+        st_y3.entity_id = "media_player.theater_yamaha_zone_3"
+        st_y3.state = "off"
+        st_y3.attributes = {"friendly_name": "Theater Yamaha Zone 3"}
+
+        self.hass.states.async_all = MagicMock(return_value=[st_matrix, st_y2, st_y3])
+        self.hass.states.get = MagicMock(side_effect=lambda eid: {
+            "media_player.matrix_amp_1_great_room": st_matrix,
+            "media_player.theater_yamaha_zone_2": st_y2,
+            "media_player.theater_yamaha_zone_3": st_y3,
+        }.get(eid))
+
+        state = asyncio.run(audio_mgr.async_get_user_media_studio_state())
+        cand_eids = {p["entity_id"] for p in state["candidate_players"]}
+        self.assertIn("media_player.theater_yamaha_zone_2", cand_eids)
+        self.assertIn("media_player.theater_yamaha_zone_3", cand_eids)
+
+        # 3. Dashboard Manager: Control4 card is no longer added to Media Studio view
+        dash_mgr = DashboardManager(self.hass)
+        cap_map = {
+            "integrations": [{"domain": "control4_mediaplayer"}],
+            "media_topology": {
+                "matrix_zones": ["media_player.matrix_amp_1_great_room"],
+                "input_mappings": {"Bridge": "media_player.bridge"},
+            },
+            "installed_custom_cards": ["custom:control4-mediaplayer-card"],
+        }
+        views = dash_mgr._build_media_view_cards(
+            capability_map=cap_map,
+            installed_cards={"custom:control4-mediaplayer-card"},
+        )
+        card_types = [c.get("type") for c in views]
+        self.assertNotIn("custom:control4-mediaplayer-card", card_types)
+        self.assertIn("custom:otis-companion-card", card_types)
 
 
 if __name__ == "__main__":

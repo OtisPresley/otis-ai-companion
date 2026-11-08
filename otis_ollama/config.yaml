@@ -1,0 +1,34 @@
+name: "Otis Edge AI (Ollama)"
+version: "1.0.0"
+slug: "otis_ollama"
+description: "Local Edge LLM & Vision inference engine (Ollama) managed by Otis AI Companion with hardware acceleration and persistent model storage."
+url: "https://github.com/OtisPresley/otis-ai-companion"
+arch:
+  - amd64
+  - aarch64
+init: false
+startup: services
+boot: auto
+host_network: false
+ports:
+  11434/tcp: 11434
+ports_description:
+  11434/tcp: "Ollama Edge AI REST API"
+video: true
+map:
+  - share:rw
+environment:
+  OLLAMA_HOST: "0.0.0.0:11434"
+  OLLAMA_MODELS: "/share/ollama/models"
+  OLLAMA_KEEP_ALIVE: "30m"
+  OLLAMA_FLASH_ATTENTION: "1"
+  OLLAMA_KV_CACHE_TYPE: "q8_0"
+options:
+  default_model: "qwen2.5:1.5b"
+  keep_alive: "30m"
+  num_parallel: 1
+schema:
+  default_model: str
+  keep_alive: str
+  num_parallel: "int(1,4)"
+

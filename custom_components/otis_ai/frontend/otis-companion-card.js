@@ -1,6 +1,6 @@
 /**
  * Otis AI Companion - Lovelace Dashboard Card
- * Version: 0.2.1
+ * Version: 0.2.4
  * 
  * An interactive, proactive smart home co-pilot card featuring:
  * - Frosted glassmorphism with Sky Cyan & Lavender Purple neon accents
@@ -13,12 +13,32 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.2.1";
+const CARD_VERSION = "0.3.0";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
   "background: #1e293b; color: #38bdf8; font-weight: bold; border-radius: 0 4px 4px 0; padding: 2px 6px;"
 );
+
+const OTIS_ACTIVE_CHAT = {
+  isSending: false,
+  requestId: 0,
+  cancelled: false,
+  abortReject: null,
+  reasoningStartTime: null,
+  reasoningSteps: [],
+  activeReasoningStep: 0,
+  conversationId: null,
+  instances: new Set(),
+};
+
+const OTIS_ACTIVE_RULES_STATE = {
+  isOpen: false,
+  activeTab: "dashboard",
+  draft: null,
+  wizardState: null,
+  wizardStep: 1,
+};
 
 class OtisCompanionCard extends HTMLElement {
   constructor() {
@@ -26,6 +46,7 @@ class OtisCompanionCard extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._config = {};
     this._hass = null;
+    this._isLoading = true;
     this._capabilityMap = null;
     this._suggestions = [];
     this._dismissedIds = this._loadDismissedIds();
@@ -33,11 +54,11 @@ class OtisCompanionCard extends HTMLElement {
     this._loadingSuggestions = false;
     this._applyingIds = new Set();
     this._chatMessages = this._loadChatMessages();
-    this._isSendingChat = false;
-    this._reasoningSteps = [];
-    this._reasoningStartTime = null;
+    this._isSendingChat = Boolean(OTIS_ACTIVE_CHAT.isSending);
+    this._reasoningSteps = OTIS_ACTIVE_CHAT.isSending ? JSON.parse(JSON.stringify(OTIS_ACTIVE_CHAT.reasoningSteps || [])) : [];
+    this._reasoningStartTime = OTIS_ACTIVE_CHAT.isSending ? OTIS_ACTIVE_CHAT.reasoningStartTime : null;
     this._reasoningTimer = null;
-    this._activeReasoningStep = 0;
+    this._activeReasoningStep = OTIS_ACTIVE_CHAT.isSending ? OTIS_ACTIVE_CHAT.activeReasoningStep : 0;
     this._expandedReasoningIds = new Set();
     this._unsubReasoningEvents = null;
     this._pendingAttachments = [];
@@ -50,6 +71,7 @@ class OtisCompanionCard extends HTMLElement {
     this._cachedAgentId = null;
     this._draftChatText = "";
     this._previewDismissed = false;
+    this._chatInitialScrolled = false;
 
     // Phase 8: Multi-Modal Vision & Presence
     this._cameraAudits = {};
@@ -59,10 +81,10 @@ class OtisCompanionCard extends HTMLElement {
     this._floorplanModalOpen = false;
     this._themeModalOpen = false;
     this._failoverModalOpen = false;
-    this._rulesModalOpen = false;
-    this._rulesActiveTab = "wizard";
-    this._rulesDraft = null;
-    this._wizardStep = 1;
+    this._rulesModalOpen = Boolean(OTIS_ACTIVE_RULES_STATE.isOpen);
+    this._rulesActiveTab = OTIS_ACTIVE_RULES_STATE.activeTab || "dashboard";
+    this._rulesDraft = OTIS_ACTIVE_RULES_STATE.draft ? { ...OTIS_ACTIVE_RULES_STATE.draft } : null;
+    this._wizardStep = OTIS_ACTIVE_RULES_STATE.wizardStep || 1;
     try {
       const savedLock = localStorage.getItem("otis_floorplan_orbit_locked");
       this._floorplanOrbitLocked = savedLock !== null ? savedLock !== "false" : true;
@@ -167,6 +189,36 @@ class OtisCompanionCard extends HTMLElement {
     this._guideModalOpen = false;
     this._currentGuide = null;
     this._lovelaceEditMode = false;
+
+    // Phase 4 (v0.2.3): Media Studio & Source-to-Zone Router + Per-User Favorites
+    this._mediaStudioData = null;
+    this._selectedMediaZoneId = null;
+    this._selectedMediaInput = null;
+    this._mediaOptimisticVolumes = {};
+    this._mediaOptimisticMutes = {};
+    this._mediaOptimisticSources = {};
+    this._showAddFavoriteForm = false;
+    this._showMediaMappingsEditor = false;
+    this._favFormName = "";
+    this._favFormInput = "";
+    this._favFormCommand = "";
+    this._favFormType = "playlist";
+    this._favFormShared = false;
+    this._mediaBrowseOpen = false;
+    this._mediaBrowseType = "playlist";
+    this._mediaBrowsePlayerId = "";
+    this._mediaBrowseItems = [];
+    this._mediaBrowseLoading = false;
+    this._mediaBrowseError = null;
+
+    // Phase 5: GitHub Device Flow & Issue Reporter
+    this._githubModalOpen = false;
+    this._githubModalStep = "review"; // 'review' | 'device_code' | 'submitting' | 'success' | 'error'
+    this._githubModalData = null; // { repo, title, body, error_id, domain }
+    this._githubDeviceCode = null; // { device_code, user_code, verification_uri, expires_in }
+    this._githubCreatedIssue = null; // { number, html_url, title, repo }
+    this._githubErrorMsg = null;
+    this._githubPollTimer = null;
   }
 
   set editMode(editMode) {
@@ -187,7 +239,7 @@ class OtisCompanionCard extends HTMLElement {
   _loadActiveTab() {
     try {
       const saved = sessionStorage.getItem("otis_active_tab");
-      if (saved && ["suggestions", "chat", "capabilities", "floorplan", "vision"].includes(saved)) {
+      if (saved && ["suggestions", "chat", "capabilities", "floorplan", "vision", "media"].includes(saved)) {
         return saved;
       }
     } catch (_) {}
@@ -195,7 +247,7 @@ class OtisCompanionCard extends HTMLElement {
   }
 
   _saveActiveTab(tab) {
-    if (["suggestions", "chat", "capabilities", "floorplan", "vision"].includes(tab)) {
+    if (["suggestions", "chat", "capabilities", "floorplan", "vision", "media"].includes(tab)) {
       this._activeTab = tab;
       try {
         sessionStorage.setItem("otis_active_tab", tab);
@@ -264,12 +316,104 @@ class OtisCompanionCard extends HTMLElement {
 
     // Load initial capability map and suggestions if not loaded
     if (!oldHass && hass) {
+      OTIS_ACTIVE_CHAT.instances.add(this);
+      this._syncActiveChatState();
       this._fetchData();
       this._subscribeReasoningEvents();
       this._subscribeRuleEvents();
     } else if (hass && this.shadowRoot) {
+      if (this._rulesModalOpen || OTIS_ACTIVE_RULES_STATE.isOpen) {
+        // Skip background re-renders while the user is actively working in the Rules dialog
+        return;
+      }
       this._updateFloorplanPinStates();
+      if (this._config?.mode === "media_studio" || this._activeTab === "media") {
+        const activeEl = this.shadowRoot.activeElement;
+        const isEditingInput = activeEl && ["INPUT", "SELECT", "TEXTAREA"].includes(activeEl.tagName);
+        if (!isEditingInput && oldHass?.states && hass?.states) {
+          let mediaChanged = false;
+          for (const k of Object.keys(hass.states)) {
+            if (k.startsWith("media_player.") && oldHass.states[k] !== hass.states[k]) {
+              mediaChanged = true;
+              break;
+            }
+          }
+          if (mediaChanged) {
+            this._render();
+          }
+        }
+      }
     }
+  }
+
+  connectedCallback() {
+    OTIS_ACTIVE_CHAT.instances.add(this);
+    this._chatMessages = this._loadChatMessages();
+    this._syncActiveChatState();
+    if (this._hass) {
+      this._subscribeReasoningEvents();
+      this._subscribeRuleEvents();
+    }
+    this._render();
+  }
+
+  _syncActiveChatState() {
+    if (OTIS_ACTIVE_CHAT.isSending) {
+      this._isSendingChat = true;
+      this._reasoningStartTime = OTIS_ACTIVE_CHAT.reasoningStartTime || Date.now();
+      this._reasoningSteps = OTIS_ACTIVE_CHAT.reasoningSteps || [];
+      this._activeReasoningStep = OTIS_ACTIVE_CHAT.activeReasoningStep || 0;
+      if (OTIS_ACTIVE_CHAT.conversationId) {
+        this._conversationId = OTIS_ACTIVE_CHAT.conversationId;
+      }
+      this._startReasoningTimer();
+    } else if (this._isSendingChat) {
+      this._isSendingChat = false;
+      if (this._reasoningTimer) {
+        clearInterval(this._reasoningTimer);
+        this._reasoningTimer = null;
+      }
+    }
+  }
+
+  _startReasoningTimer() {
+    if (this._reasoningTimer) clearInterval(this._reasoningTimer);
+    this._reasoningTimer = setInterval(() => {
+      if (!OTIS_ACTIVE_CHAT.isSending || !this._isSendingChat || !this._reasoningStartTime) {
+        clearInterval(this._reasoningTimer);
+        this._reasoningTimer = null;
+        return;
+      }
+      const elapsed = (Date.now() - this._reasoningStartTime) / 1000;
+      if (elapsed >= 0.8 && this._activeReasoningStep === 0) {
+        this._advanceReasoningStep(1, elapsed);
+      } else if (elapsed >= 2.0 && this._activeReasoningStep === 1) {
+        this._advanceReasoningStep(2, elapsed);
+      } else if (elapsed >= 3.8 && this._activeReasoningStep === 2) {
+        this._advanceReasoningStep(3, elapsed);
+      } else if (elapsed >= 6.5 && this._activeReasoningStep === 3) {
+        this._advanceReasoningStep(4, elapsed);
+      }
+      OTIS_ACTIVE_CHAT.reasoningSteps = this._reasoningSteps;
+      OTIS_ACTIVE_CHAT.activeReasoningStep = this._activeReasoningStep;
+      this._updateThinkingDisplay(elapsed);
+    }, 200);
+  }
+
+  _shouldShowOnboardingBanner() {
+    if (this._isLoading || this._loadingSuggestions || !this._capabilityMap || !this._userRules) {
+      return false;
+    }
+    if (this._onboardingDismissed || this._userRules.onboarding_completed) {
+      return false;
+    }
+    const hasCustomInstructions = Boolean(this._userRules.custom_instructions && String(this._userRules.custom_instructions).trim());
+    const hasWizardState = Boolean(this._userRules.wizard_state && Object.keys(this._userRules.wizard_state).length > 0);
+    const hasPersonProfiles = Boolean(this._userRules.person_profiles && Object.keys(this._userRules.person_profiles).length > 0);
+    if (hasCustomInstructions || hasWizardState || hasPersonProfiles) {
+      return false;
+    }
+    return true;
   }
 
   _getPinActiveColor(entityId) {
@@ -333,6 +477,7 @@ class OtisCompanionCard extends HTMLElement {
   }
 
   disconnectedCallback() {
+    OTIS_ACTIVE_CHAT.instances.delete(this);
     if (this._unsubReasoningEvents) {
       try {
         this._unsubReasoningEvents();
@@ -423,6 +568,8 @@ class OtisCompanionCard extends HTMLElement {
       });
       this._activeReasoningStep = this._reasoningSteps.length - 1;
     }
+    OTIS_ACTIVE_CHAT.reasoningSteps = this._reasoningSteps;
+    OTIS_ACTIVE_CHAT.activeReasoningStep = this._activeReasoningStep;
     this._updateThinkingDisplay(elapsed);
   }
 
@@ -532,6 +679,9 @@ class OtisCompanionCard extends HTMLElement {
     } else if (config.mode === "floorplan_studio" || config.mode === "floorplan_control") {
       this._activeTab = "floorplan";
       this._saveActiveTab("floorplan");
+    } else if (config.mode === "media_studio") {
+      this._activeTab = "media";
+      this._saveActiveTab("media");
     } else {
       this._activeTab = this._loadActiveTab();
     }
@@ -583,14 +733,21 @@ class OtisCompanionCard extends HTMLElement {
 
   async _fetchData() {
     if (!this._hass) return;
-    this._loadingSuggestions = true;
-    this._render();
+    const isInitialLoad = !this._capabilityMap;
+    if (isInitialLoad) {
+      this._loadingSuggestions = true;
+      this._render();
+    }
 
     try {
       // Call get_capability_map service
       const res = await this._hass.callService("otis_ai", "get_capability_map", {}, undefined, true, true);
       const capMap = res?.response || res || {};
-      this._capabilityMap = capMap;
+      this._capabilityMap = {
+        ...(this._capabilityMap || {}),
+        ...capMap,
+        local_llm: (capMap.local_llm && Object.keys(capMap.local_llm).length > 0) ? capMap.local_llm : (this._capabilityMap?.local_llm || capMap.local_llm),
+      };
       if (capMap.conversation_agent_id) {
         this._conversationAgentId = capMap.conversation_agent_id;
       }
@@ -641,6 +798,8 @@ class OtisCompanionCard extends HTMLElement {
       } else if (capMap.floorplan?.exists && !this._floorplanSvg && !this._loadingFloorplan) {
         await this._loadFloorplanSvg(capMap.floorplan.url);
       }
+
+      await this._fetchMediaStudioState();
     } catch (err) {
       console.warn("Otis Companion Card: Could not fetch capability map directly, attempting get_suggestions:", err);
       try {
@@ -649,9 +808,46 @@ class OtisCompanionCard extends HTMLElement {
       } catch (e2) {
         console.error("Otis Companion Card: Failed to fetch suggestions:", e2);
       }
+      await this._fetchMediaStudioState();
     } finally {
+      this._isLoading = false;
       this._loadingSuggestions = false;
-      this._render();
+      if (!this._rulesModalOpen && !OTIS_ACTIVE_RULES_STATE.isOpen) {
+        this._render();
+      }
+    }
+  }
+
+  async _fetchMediaStudioState() {
+    if (!this._hass) return;
+    try {
+      const resp =
+        typeof this._hass.fetchWithAuth === "function"
+          ? await this._hass.fetchWithAuth("/api/otis_ai/media_studio")
+          : await fetch("/api/otis_ai/media_studio");
+      if (resp && resp.ok) {
+        const data = await resp.json();
+        if (data && data.success) {
+          this._mediaStudioData = data;
+          const zones = data.zones || [];
+          const unjoinInput = data.unjoin_input || "None";
+          if (!this._selectedMediaZoneId || !zones.some((z) => z.entity_id === this._selectedMediaZoneId)) {
+            if (data.default_zone && zones.some((z) => z.entity_id === data.default_zone)) {
+              this._selectedMediaZoneId = data.default_zone;
+            } else {
+              const activeZone = zones.find(
+                (z) =>
+                  (z.state === "playing" || z.state === "on") &&
+                  z.source &&
+                  z.source !== unjoinInput
+              );
+              this._selectedMediaZoneId = activeZone?.entity_id || zones[0]?.entity_id || null;
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.debug("Otis Media Studio state fetch warning:", err);
     }
   }
 
@@ -933,6 +1129,12 @@ class OtisCompanionCard extends HTMLElement {
     }
 
     this._applyingIds.add(sId);
+    if (suggestion.action_type === "install_ollama_addon") {
+      this._showToast("🧠 Installing & starting Otis Edge AI (Ollama) Supervisor Add-on... This may take up to a minute.");
+    } else if (suggestion.action_type === "switch_local_llm_model") {
+      const targetModel = suggestion.action_payload?.model || "recommended model";
+      this._showToast(`⚡ Pulling & activating Local Edge AI model (${targetModel})... This may take up to a minute if downloading.`);
+    }
     this._render();
 
     try {
@@ -1160,13 +1362,40 @@ class OtisCompanionCard extends HTMLElement {
     }
   }
 
+  _stopChatGeneration() {
+    if (!this._isSendingChat && !OTIS_ACTIVE_CHAT.isSending) return;
+    OTIS_ACTIVE_CHAT.cancelled = true;
+    OTIS_ACTIVE_CHAT.isSending = false;
+    if (typeof OTIS_ACTIVE_CHAT.abortReject === "function") {
+      try {
+        OTIS_ACTIVE_CHAT.abortReject(new Error("__OTIS_STOPPED__"));
+      } catch (_) {}
+      OTIS_ACTIVE_CHAT.abortReject = null;
+    }
+    if (this._hass) {
+      try {
+        this._hass.callService(
+          "otis_ai",
+          "chat",
+          {
+            cancel: true,
+            conversation_id: this._conversationId || OTIS_ACTIVE_CHAT.conversationId || undefined,
+          },
+          undefined,
+          false,
+          true
+        );
+      } catch (_) {}
+    }
+  }
+
   async _sendChatMessage(text, explicitAttachments = null) {
     const userText = (text || "").trim();
     if (explicitAttachments && Array.isArray(explicitAttachments)) {
       this._pendingAttachments = [...explicitAttachments];
     }
     const hasAttachments = this._pendingAttachments && this._pendingAttachments.length > 0;
-    if ((!userText && !hasAttachments) || !this._hass || this._isSendingChat) return;
+    if ((!userText && !hasAttachments) || !this._hass || this._isSendingChat || OTIS_ACTIVE_CHAT.isSending) return;
 
     const attachmentsToSend = this._pendingAttachments ? [...this._pendingAttachments] : [];
     this._pendingAttachments = [];
@@ -1211,29 +1440,19 @@ class OtisCompanionCard extends HTMLElement {
       { id: "synthesizing", title: "Synthesizing Actions", detail: "Validating action safety guards & formatting plan", status: "pending", time: "" },
     ];
 
+    const currentReqId = ++OTIS_ACTIVE_CHAT.requestId;
+    OTIS_ACTIVE_CHAT.isSending = true;
+    OTIS_ACTIVE_CHAT.cancelled = false;
+    OTIS_ACTIVE_CHAT.reasoningStartTime = this._reasoningStartTime;
+    OTIS_ACTIVE_CHAT.reasoningSteps = this._reasoningSteps;
+    OTIS_ACTIVE_CHAT.activeReasoningStep = 0;
+    OTIS_ACTIVE_CHAT.conversationId = this._conversationId;
+
     this._render();
     this._scrollChatToBottom();
 
     // Start timer for real-time stopwatch & step advancement
-    if (this._reasoningTimer) clearInterval(this._reasoningTimer);
-    this._reasoningTimer = setInterval(() => {
-      if (!this._isSendingChat || !this._reasoningStartTime) {
-        clearInterval(this._reasoningTimer);
-        this._reasoningTimer = null;
-        return;
-      }
-      const elapsed = (Date.now() - this._reasoningStartTime) / 1000;
-      if (elapsed >= 0.8 && this._activeReasoningStep === 0) {
-        this._advanceReasoningStep(1, elapsed);
-      } else if (elapsed >= 2.0 && this._activeReasoningStep === 1) {
-        this._advanceReasoningStep(2, elapsed);
-      } else if (elapsed >= 3.8 && this._activeReasoningStep === 2) {
-        this._advanceReasoningStep(3, elapsed);
-      } else if (elapsed >= 6.5 && this._activeReasoningStep === 3) {
-        this._advanceReasoningStep(4, elapsed);
-      }
-      this._updateThinkingDisplay(elapsed);
-    }, 200);
+    this._startReasoningTimer();
 
     const extractSpeech = (resObj) => {
       if (!resObj) return "";
@@ -1257,6 +1476,12 @@ class OtisCompanionCard extends HTMLElement {
       return resObj.resolved_agent || resObj.response?.resolved_agent || null;
     };
 
+    const isCancelledRes = (resObj) => {
+      if (!resObj || typeof resObj !== "object") return false;
+      return Boolean(resObj.cancelled || resObj.response?.cancelled);
+    };
+
+    const hassRef = this._hass;
     const callPromise = (async () => {
       let speech = "";
       let resolvedAgent = null;
@@ -1270,7 +1495,7 @@ class OtisCompanionCard extends HTMLElement {
 
       // 1. Direct call to otis_ai.chat service
       try {
-        const directRes = await this._hass.callService(
+        const directRes = await hassRef.callService(
           "otis_ai",
           "chat",
           directPayload,
@@ -1278,37 +1503,55 @@ class OtisCompanionCard extends HTMLElement {
           true,
           true
         );
+        if (isCancelledRes(directRes) || OTIS_ACTIVE_CHAT.cancelled) {
+          throw new Error("__OTIS_STOPPED__");
+        }
         speech = extractSpeech(directRes);
         const cid = extractConvId(directRes);
-        if (cid) this._conversationId = cid;
+        if (cid) {
+          this._conversationId = cid;
+          OTIS_ACTIVE_CHAT.conversationId = cid;
+        }
         const rAgent = extractResolvedAgent(directRes);
         if (rAgent) resolvedAgent = rAgent;
       } catch (serviceErr) {
+        if (serviceErr?.message === "__OTIS_STOPPED__" || OTIS_ACTIVE_CHAT.cancelled) {
+          throw new Error("__OTIS_STOPPED__");
+        }
         console.debug("otis_ai.chat callService failed, attempting callWS:", serviceErr);
       }
 
       // 2. WebSocket call_service fallback
-      if (!speech && this._hass.callWS) {
+      if (!speech && !OTIS_ACTIVE_CHAT.cancelled && hassRef.callWS) {
         try {
-          const wsRes = await this._hass.callWS({
+          const wsRes = await hassRef.callWS({
             type: "call_service",
             domain: "otis_ai",
             service: "chat",
             service_data: directPayload,
             return_response: true,
           });
+          if (isCancelledRes(wsRes) || OTIS_ACTIVE_CHAT.cancelled) {
+            throw new Error("__OTIS_STOPPED__");
+          }
           speech = extractSpeech(wsRes);
           const cid = extractConvId(wsRes);
-          if (cid) this._conversationId = cid;
+          if (cid) {
+            this._conversationId = cid;
+            OTIS_ACTIVE_CHAT.conversationId = cid;
+          }
           const rAgent = extractResolvedAgent(wsRes);
           if (rAgent) resolvedAgent = rAgent;
         } catch (wsErr) {
+          if (wsErr?.message === "__OTIS_STOPPED__" || OTIS_ACTIVE_CHAT.cancelled) {
+            throw new Error("__OTIS_STOPPED__");
+          }
           console.debug("otis_ai.chat callWS failed, attempting conversation.process:", wsErr);
         }
       }
 
       // 3. Fallback to conversation.process
-      if (!speech) {
+      if (!speech && !OTIS_ACTIVE_CHAT.cancelled) {
         const agentId = await this._getConversationAgentId();
         let promptWithFiles = displayText;
         if (attachmentsToSend.length > 0) {
@@ -1321,22 +1564,25 @@ class OtisCompanionCard extends HTMLElement {
         if (agentId) payload.agent_id = agentId;
         if (this._conversationId) payload.conversation_id = this._conversationId;
 
-        if (this._hass.callWS) {
+        if (hassRef.callWS) {
           try {
-            const cRes = await this._hass.callWS({
+            const cRes = await hassRef.callWS({
               type: "conversation/process",
               ...payload,
             });
             speech = extractSpeech(cRes);
             const cid = extractConvId(cRes);
-            if (cid) this._conversationId = cid;
+            if (cid) {
+              this._conversationId = cid;
+              OTIS_ACTIVE_CHAT.conversationId = cid;
+            }
           } catch (cErr) {
             console.debug("conversation/process callWS failed:", cErr);
           }
         }
 
-        if (!speech) {
-          const res = await this._hass.callService(
+        if (!speech && !OTIS_ACTIVE_CHAT.cancelled) {
+          const res = await hassRef.callService(
             "conversation",
             "process",
             payload,
@@ -1346,8 +1592,15 @@ class OtisCompanionCard extends HTMLElement {
           );
           speech = extractSpeech(res);
           const cid = extractConvId(res);
-          if (cid) this._conversationId = cid;
+          if (cid) {
+            this._conversationId = cid;
+            OTIS_ACTIVE_CHAT.conversationId = cid;
+          }
         }
+      }
+
+      if (OTIS_ACTIVE_CHAT.cancelled) {
+        throw new Error("__OTIS_STOPPED__");
       }
 
       return {
@@ -1364,19 +1617,39 @@ class OtisCompanionCard extends HTMLElement {
         clientTimeoutMs
       )
     );
+    const abortPromise = new Promise((_, reject) => {
+      OTIS_ACTIVE_CHAT.abortReject = reject;
+    });
+
+    const persistChatMsgAcrossInstances = (msgObj) => {
+      const latestMessages = this._loadChatMessages();
+      latestMessages.push(msgObj);
+      try {
+        sessionStorage.setItem("otis_chat_messages", JSON.stringify(latestMessages.slice(-50)));
+      } catch (_) {}
+      this._chatMessages = latestMessages;
+      OTIS_ACTIVE_CHAT.instances.forEach((inst) => {
+        inst._chatMessages = latestMessages;
+      });
+    };
 
     try {
-      const { speech, resolvedAgent } = await Promise.race([callPromise, timeoutPromise]);
-      const totalElapsedSec = ((Date.now() - this._reasoningStartTime) / 1000).toFixed(1);
-      this._reasoningSteps.forEach((s) => {
+      const { speech, resolvedAgent } = await Promise.race([callPromise, timeoutPromise, abortPromise]);
+      if (OTIS_ACTIVE_CHAT.requestId !== currentReqId || OTIS_ACTIVE_CHAT.cancelled) {
+        return;
+      }
+      const startTs = OTIS_ACTIVE_CHAT.reasoningStartTime || this._reasoningStartTime || Date.now();
+      const totalElapsedSec = ((Date.now() - startTs) / 1000).toFixed(1);
+      const activeSteps = OTIS_ACTIVE_CHAT.reasoningSteps || this._reasoningSteps || [];
+      activeSteps.forEach((s) => {
         s.status = "done";
         if (!s.time) s.time = `${totalElapsedSec}s`;
       });
       if (
         resolvedAgent &&
-        !this._reasoningSteps.some((s) => s.id === "agent_resolution" || (s.title && s.title.startsWith("Resolved by")))
+        !activeSteps.some((s) => s.id === "agent_resolution" || (s.title && s.title.startsWith("Resolved by")))
       ) {
-        this._reasoningSteps.push({
+        activeSteps.push({
           id: "agent_resolution",
           title: `Resolved by ${resolvedAgent}`,
           detail: `Response generated by ${resolvedAgent} (${totalElapsedSec}s)`,
@@ -1386,17 +1659,16 @@ class OtisCompanionCard extends HTMLElement {
       }
 
       const otisMsgId = "otis_" + Date.now();
-      this._chatMessages.push({
+      persistChatMsgAcrossInstances({
         id: otisMsgId,
         sender: "otis",
         text: speech,
         timestamp: new Date().toISOString(),
         reasoning: {
           duration: `${totalElapsedSec}s`,
-          steps: JSON.parse(JSON.stringify(this._reasoningSteps)),
+          steps: JSON.parse(JSON.stringify(activeSteps)),
         },
       });
-      this._saveChatMessages();
 
       if (
         speech &&
@@ -1407,22 +1679,40 @@ class OtisCompanionCard extends HTMLElement {
         this._fetchData();
       }
     } catch (err) {
-      console.error("Error sending message to Otis:", err);
-      const totalElapsedSec = this._reasoningStartTime ? ((Date.now() - this._reasoningStartTime) / 1000).toFixed(1) : "0.0";
-      const otisErrId = "otis_err_" + Date.now();
-      this._chatMessages.push({
-        id: otisErrId,
-        sender: "otis",
-        text: `⚠️ **Assist Co-Pilot:** ${err.message || "Failed to connect to the AI agent. Please try again."}`,
-        timestamp: new Date().toISOString(),
-        isError: true,
-        reasoning: {
-          duration: `${totalElapsedSec}s`,
-          steps: JSON.parse(JSON.stringify(this._reasoningSteps || [])),
-        },
-      });
-      this._saveChatMessages();
+      const isStopped = err?.message === "__OTIS_STOPPED__" || OTIS_ACTIVE_CHAT.cancelled;
+      const startTs = OTIS_ACTIVE_CHAT.reasoningStartTime || this._reasoningStartTime || Date.now();
+      const totalElapsedSec = ((Date.now() - startTs) / 1000).toFixed(1);
+      const activeSteps = OTIS_ACTIVE_CHAT.reasoningSteps || this._reasoningSteps || [];
+      if (isStopped) {
+        persistChatMsgAcrossInstances({
+          id: "otis_stop_" + Date.now(),
+          sender: "otis",
+          text: "⏹️ *Reasoning stopped by user.*",
+          timestamp: new Date().toISOString(),
+          reasoning: {
+            duration: `${totalElapsedSec}s (stopped)`,
+            steps: JSON.parse(JSON.stringify(activeSteps)),
+          },
+        });
+      } else {
+        console.error("Error sending message to Otis:", err);
+        persistChatMsgAcrossInstances({
+          id: "otis_err_" + Date.now(),
+          sender: "otis",
+          text: `⚠️ **Assist Co-Pilot:** ${err.message || "Failed to connect to the AI agent. Please try again."}`,
+          timestamp: new Date().toISOString(),
+          isError: true,
+          reasoning: {
+            duration: `${totalElapsedSec}s`,
+            steps: JSON.parse(JSON.stringify(activeSteps)),
+          },
+        });
+      }
     } finally {
+      if (OTIS_ACTIVE_CHAT.requestId === currentReqId) {
+        OTIS_ACTIVE_CHAT.isSending = false;
+        OTIS_ACTIVE_CHAT.abortReject = null;
+      }
       if (this._reasoningTimer) {
         clearInterval(this._reasoningTimer);
         this._reasoningTimer = null;
@@ -1430,6 +1720,13 @@ class OtisCompanionCard extends HTMLElement {
       this._isSendingChat = false;
       this._render();
       this._scrollChatToBottom();
+      OTIS_ACTIVE_CHAT.instances.forEach((inst) => {
+        if (inst !== this) {
+          inst._syncActiveChatState();
+          inst._render();
+          inst._scrollChatToBottom();
+        }
+      });
     }
   }
 
@@ -1770,19 +2067,19 @@ class OtisCompanionCard extends HTMLElement {
     });
 
     // 7. Headings
-    src = src.replace(/^[ \t]*######[ \t]+(.*)$/gm, "<h6>$1</h6>");
-    src = src.replace(/^[ \t]*#####[ \t]+(.*)$/gm, "<h5>$1</h5>");
-    src = src.replace(/^[ \t]*####[ \t]+(.*)$/gm, "<h4>$1</h4>");
-    src = src.replace(/^[ \t]*###[ \t]+(.*)$/gm, "<h3>$1</h3>");
-    src = src.replace(/^[ \t]*##[ \t]+(.*)$/gm, "<h2>$1</h2>");
-    src = src.replace(/^[ \t]*#[ \t]+(.*)$/gm, "<h1>$1</h1>");
+    src = src.replace(/^[ \t]*######[ \t]+(.*)$/gm, "\n\n<h6>$1</h6>\n\n");
+    src = src.replace(/^[ \t]*#####[ \t]+(.*)$/gm, "\n\n<h5>$1</h5>\n\n");
+    src = src.replace(/^[ \t]*####[ \t]+(.*)$/gm, "\n\n<h4>$1</h4>\n\n");
+    src = src.replace(/^[ \t]*###[ \t]+(.*)$/gm, "\n\n<h3>$1</h3>\n\n");
+    src = src.replace(/^[ \t]*##[ \t]+(.*)$/gm, "\n\n<h2>$1</h2>\n\n");
+    src = src.replace(/^[ \t]*#[ \t]+(.*)$/gm, "\n\n<h1>$1</h1>\n\n");
 
-    // 8. Lists (Unordered & Ordered)
-    src = src.replace(/(?:^[ \t]*[-*+][ \t]+[^\n]+(?:\n|$))+/gm, (match) => {
+    // 8. Lists (Unordered & Ordered, including • bullets)
+    src = src.replace(/(?:^[ \t]*(?:[-*+]|•)[ \t]+[^\n]+(?:\n|$))+/gm, (match) => {
       const items = match
         .trim()
         .split("\n")
-        .map((line) => line.replace(/^[ \t]*[-*+][ \t]+/, "").trim())
+        .map((line) => line.replace(/^[ \t]*(?:[-*+]|•)[ \t]+/, "").trim())
         .filter(Boolean)
         .map((item) => {
           if (item.startsWith("[ ] ")) {
@@ -1794,7 +2091,7 @@ class OtisCompanionCard extends HTMLElement {
           return `<li>${item}</li>`;
         })
         .join("");
-      return `<ul>${items}</ul>\n`;
+      return `\n\n<ul>${items}</ul>\n\n`;
     });
 
     src = src.replace(/(?:^[ \t]*\d+[.)][ \t]+[^\n]+(?:\n|$))+/gm, (match) => {
@@ -1805,7 +2102,7 @@ class OtisCompanionCard extends HTMLElement {
         .filter(Boolean)
         .map((item) => `<li>${item}</li>`)
         .join("");
-      return `<ol>${items}</ol>\n`;
+      return `\n\n<ol>${items}</ol>\n\n`;
     });
 
     // 9. Bold, Italic & Strikethrough (word-boundary safe)
@@ -1913,10 +2210,12 @@ class OtisCompanionCard extends HTMLElement {
                   <div style="width: ${progPct}%; height: 100%; background: ${barColor}; transition: width 0.3s ease;"></div>
                 </div>
                 <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.69rem; color: var(--otis-text-muted);">
-                  <span>${samples}/5 samples • ${confPct}% conf</span>
-                  <button type="button" class="btn-quick-verify-person" data-person-id="${this._escapeHtml(pid)}" data-person-label="${this._escapeHtml(p.label || pid)}" style="background: rgba(56,189,248,0.18); color: #38bdf8; border: 1px solid rgba(56,189,248,0.4); border-radius: 4px; padding: 1px 6px; font-size: 0.66rem; font-weight: 600; cursor: pointer;">
-                    + Verify
-                  </button>
+                  <span>${samples}/5 camera samples • ${confPct}% conf</span>
+                  ${samples > 0 ? `
+                    <button type="button" class="btn-reset-person-training" data-person-id="${this._escapeHtml(pid)}" data-person-label="${this._escapeHtml(p.label || pid)}" style="background: rgba(245,158,11,0.15); color: #f59e0b; border: 1px solid rgba(245,158,11,0.35); border-radius: 4px; padding: 1px 6px; font-size: 0.66rem; font-weight: 600; cursor: pointer;" title="Reset training samples for this profile">
+                      ↺ Reset
+                    </button>
+                  ` : `<span style="font-size: 0.65rem; color: var(--otis-text-muted);">📸 Verify via camera card</span>`}
                 </div>
                 <div style="font-size: 0.66rem; color: var(--otis-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${this._escapeHtml(roomsList)}">
                   📍 ${this._escapeHtml(roomsList)}
@@ -2150,6 +2449,10 @@ class OtisCompanionCard extends HTMLElement {
         return "💬 Optimize in Assist";
       case "configure_agent":
         return "⚙️ Configure AI Failover";
+      case "install_ollama_addon":
+        return "🧠 Install & Start Ollama Add-on";
+      case "switch_local_llm_model":
+        return "⚡ Pull & Activate Model";
       default:
         return "⚡ Apply with 1-Click";
     }
@@ -2214,17 +2517,20 @@ class OtisCompanionCard extends HTMLElement {
     const themeClass = `theme-${preset.replace(/_/g, "-")}`;
     const isControlMode = this._config.mode === "floorplan_control";
     const isStudioMode = this._config.mode === "floorplan_studio" || isControlMode;
+    const isMediaStudioMode = this._config.mode === "media_studio";
+    const isSecurityMode = this._config.mode === "security";
+    const isClimateMode = this._config.mode === "climate";
+    const isEnergyMode = this._config.mode === "energy";
+    const isRoomMode = this._config.mode === "room_view";
+    const isStudioHeaderMode = isSecurityMode || isClimateMode || isEnergyMode || isRoomMode;
     const isAdmin = Boolean(this._hass?.user?.is_admin || this._hass?.user?.is_owner);
 
     const prevChatEl = this.shadowRoot ? this.shadowRoot.querySelector("#chat-history") : null;
     const wasChatScrolledUp = Boolean(
       prevChatEl &&
-      this._chatInitialScrolled &&
       (prevChatEl.scrollHeight - prevChatEl.scrollTop - prevChatEl.clientHeight > 60)
     );
-    const prevChatBottomOffset = prevChatEl
-      ? Math.max(0, prevChatEl.scrollHeight - prevChatEl.scrollTop)
-      : 0;
+    const prevChatScrollTop = prevChatEl ? prevChatEl.scrollTop : 0;
 
     this.shadowRoot.innerHTML = `
       <style>
@@ -2551,9 +2857,12 @@ class OtisCompanionCard extends HTMLElement {
           gap: 8px;
           margin-bottom: 16px;
           background: var(--otis-surface);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
           border-radius: 12px;
           padding: 8px 12px;
           border: 1px solid var(--otis-surface-border);
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.08);
         }
 
         .stat-item {
@@ -2593,19 +2902,22 @@ class OtisCompanionCard extends HTMLElement {
           align-items: center;
           gap: 12px;
           background: var(--otis-surface);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
           border: 1px solid var(--otis-surface-border);
           border-radius: 12px;
           padding: 10px 14px;
           cursor: pointer;
           transition: all 0.25s ease;
           user-select: none;
+          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.06);
         }
 
         .glance-chip:hover {
           border-color: var(--otis-primary);
           background: color-mix(in srgb, var(--otis-primary) 8%, var(--otis-surface));
           transform: translateY(-1px);
-          box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25), 0 0 10px var(--otis-glow);
+          box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28), 0 0 12px var(--otis-glow);
         }
 
         .glance-icon {
@@ -2649,8 +2961,11 @@ class OtisCompanionCard extends HTMLElement {
           margin-bottom: 12px;
           padding: 8px 10px;
           background: color-mix(in srgb, var(--otis-surface) 60%, transparent);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
           border: 1px solid var(--otis-surface-border);
           border-radius: 8px;
+          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.06);
         }
 
         .launchpad-row {
@@ -2810,10 +3125,13 @@ class OtisCompanionCard extends HTMLElement {
           display: flex;
           gap: 6px;
           background: var(--otis-surface);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
           border-radius: 10px;
           padding: 4px;
           margin-bottom: 16px;
           border: 1px solid var(--otis-surface-border);
+          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.06);
         }
 
         .tab-btn {
@@ -2897,6 +3215,8 @@ class OtisCompanionCard extends HTMLElement {
         .suggestion-card {
           position: relative;
           background: var(--otis-surface);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
           border: 1px solid var(--otis-surface-border);
           border-radius: 14px;
           padding: 14px;
@@ -2904,6 +3224,7 @@ class OtisCompanionCard extends HTMLElement {
           display: flex;
           flex-direction: column;
           gap: 8px;
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.06);
         }
 
         .suggestion-card:hover {
@@ -3452,6 +3773,9 @@ class OtisCompanionCard extends HTMLElement {
           color: var(--otis-user-bubble-text);
           border-bottom-right-radius: 3px;
           border: 1px solid var(--otis-surface-border);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.08);
           padding-right: 36px;
         }
 
@@ -3532,7 +3856,9 @@ class OtisCompanionCard extends HTMLElement {
           color: var(--otis-text);
           border-bottom-left-radius: 3px;
           border: 1px solid color-mix(in srgb, var(--otis-primary) 20%, transparent);
-          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.08);
           padding-top: 26px;
         }
 
@@ -4062,12 +4388,15 @@ class OtisCompanionCard extends HTMLElement {
           display: flex;
           align-items: flex-end;
           background: var(--otis-input-bg);
+          backdrop-filter: blur(16px);
+          -webkit-backdrop-filter: blur(16px);
           border: 1px solid var(--otis-input-border);
           border-radius: 12px;
           padding: 8px 12px;
           min-height: 42px;
           box-sizing: border-box;
           transition: all 0.2s ease;
+          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.06);
         }
 
         .chat-input-wrapper:focus-within {
@@ -4167,13 +4496,39 @@ class OtisCompanionCard extends HTMLElement {
         }
 
         .send-btn.sending {
-          background: linear-gradient(135deg, rgba(168, 85, 247, 0.5) 0%, rgba(59, 130, 246, 0.5) 100%);
-          border: 1px solid rgba(168, 85, 247, 0.6);
-          color: #f1f5f9;
-          opacity: 0.9 !important;
-          cursor: wait !important;
+          background: linear-gradient(135deg, rgba(239, 68, 68, 0.28) 0%, rgba(225, 29, 72, 0.35) 100%);
+          border: 1px solid rgba(248, 113, 113, 0.65);
+          color: #fecaca;
+          opacity: 1 !important;
+          cursor: pointer !important;
           gap: 6px;
           padding: 8px 12px;
+        }
+
+        .send-btn.sending:hover {
+          background: linear-gradient(135deg, rgba(239, 68, 68, 0.45) 0%, rgba(225, 29, 72, 0.5) 100%);
+          border-color: #f87171;
+          color: #ffffff;
+        }
+
+        .chat-stop-btn {
+          margin-left: auto;
+          background: rgba(239, 68, 68, 0.18);
+          border: 1px solid rgba(248, 113, 113, 0.5);
+          color: #fecaca;
+          font-size: 0.72rem;
+          font-weight: 600;
+          padding: 3px 9px;
+          border-radius: 6px;
+          cursor: pointer;
+          transition: all 0.18s ease;
+          white-space: nowrap;
+        }
+
+        .chat-stop-btn:hover {
+          background: rgba(239, 68, 68, 0.35);
+          border-color: #f87171;
+          color: #ffffff;
         }
 
         .mic-btn {
@@ -5822,9 +6177,64 @@ class OtisCompanionCard extends HTMLElement {
         }
       </style>
 
-      <ha-card class="card-container ${themeClass} ${isStudioMode ? "mode-floorplan-studio" : ""}">
+      <ha-card class="card-container ${themeClass} ${isStudioMode ? "mode-floorplan-studio" : ""} ${isMediaStudioMode ? "mode-media-studio" : ""}">
         ${
-          isStudioMode
+          isMediaStudioMode
+            ? `
+          <!-- Media Studio Header -->
+          <div class="studio-header">
+            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+              <button type="button" class="btn-toolbar" id="btn-back-dashboard" title="Return to Dashboard">
+                ← Back
+              </button>
+              <div class="title-group">
+                <span class="main-title">${this._escapeHtml(this._config.title || "🎵 Media Studio & Source-to-Zone Router")}</span>
+                <span class="sub-title">
+                  <span class="status-dot"></span>
+                  Multi-Room Matrix Routing • Input-to-Player Mapping • Per-User Favorites
+                </span>
+              </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <button type="button" class="icon-btn" id="btn-open-themes" title="Dynamic AI Theme Studio">
+                🎨 Themes
+              </button>
+            </div>
+          </div>
+          ${this._renderMediaStudioTab()}
+        `
+            : isStudioHeaderMode
+            ? `
+          <!-- Unified Studio / Room Header -->
+          <div class="studio-header">
+            <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+              <button type="button" class="btn-toolbar" id="btn-back-dashboard" title="Return to Dashboard">
+                ← Back
+              </button>
+              <div class="title-group">
+                <span class="main-title">${this._escapeHtml(this._config.title || (isSecurityMode ? "🛡️ Security Center" : (isClimateMode ? "🌡️ Climate & Pool Studio" : (isEnergyMode ? "⚡ Energy Studio" : "📍 Room View"))))}</span>
+                <span class="sub-title">
+                  <span class="status-dot"></span>
+                  ${this._escapeHtml(
+                    isSecurityMode
+                      ? "Perimeter Sentinel • Smart Locks • Motion & Occupancy Security"
+                      : isClimateMode
+                      ? "HVAC Dual-Setpoints • Ceiling Fans • Pool & Spa Controls"
+                      : isEnergyMode
+                      ? "Predictive Load Shedding • Solar & Inverter • TOU Tariff Management"
+                      : "Live Room Telemetry • Smart Lighting • Environmental Controls"
+                  )}
+                </span>
+              </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <button type="button" class="icon-btn" id="btn-open-themes" title="Dynamic AI Theme Studio">
+                🎨 Themes
+              </button>
+            </div>
+          </div>
+        `
+            : isStudioMode
             ? `
           ${
             !isControlMode
@@ -5856,12 +6266,6 @@ class OtisCompanionCard extends HTMLElement {
               <button type="button" class="icon-btn" id="btn-open-themes" title="Dynamic AI Theme Studio">
                 🎨 Themes
               </button>
-              <button type="button" class="icon-btn" id="btn-open-rules" title="Configure Household Persona, Rules & Behavioral Guidelines">
-                ⚙️ Rules
-              </button>
-              <button type="button" class="icon-btn" id="refresh-btn" title="Refresh floor plan">
-                ↻ Refresh
-              </button>
             </div>
           </div>
           `
@@ -5888,11 +6292,11 @@ class OtisCompanionCard extends HTMLElement {
               </div>
             </div>
             <div class="header-actions">
+              <button type="button" class="icon-btn" id="btn-open-rules" title="Otis Behavioral Rules & Configuration">
+                ⚙️ Rules
+              </button>
               <button type="button" class="icon-btn" id="btn-open-themes" title="Dynamic AI Theme Studio">
                 🎨 Themes
-              </button>
-              <button type="button" class="icon-btn" id="btn-open-rules" title="Configure Household Persona, Rules & Behavioral Guidelines">
-                ⚙️ Rules
               </button>
               <button type="button" class="icon-btn" id="refresh-btn" title="Refresh intelligence">
                 ↻ Refresh
@@ -5933,7 +6337,7 @@ class OtisCompanionCard extends HTMLElement {
           ${this._renderPreconditioningChip()}
 
           ${
-            !this._userRules?.onboarding_completed && !this._onboardingDismissed
+            this._shouldShowOnboardingBanner()
               ? `
             <!-- Onboarding Wizard Callout Banner -->
             <div class="onboarding-banner" id="onboarding-banner" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; margin-bottom: 12px; background: linear-gradient(135deg, rgba(14, 165, 233, 0.15), rgba(168, 85, 247, 0.15)); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.2);">
@@ -6008,6 +6412,9 @@ class OtisCompanionCard extends HTMLElement {
             `
                 : ""
             }
+            <button type="button" class="tab-btn ${this._activeTab === "media" ? "active" : ""}" id="tab-media">
+              🎵 Media
+            </button>
             <button type="button" class="tab-btn ${this._activeTab === "floorplan" ? "active" : ""}" id="tab-floorplan">
               Floor Plan
               ${this._capabilityMap?.floorplan?.exists ? "" : `<span class="tab-badge" style="background: var(--otis-accent, #a855f7);">New</span>`}
@@ -6022,6 +6429,7 @@ class OtisCompanionCard extends HTMLElement {
 
           ${this._activeTab === "suggestions" ? this._renderSuggestionsTab(visibleSuggestions) : ""}
           ${this._activeTab === "chat" ? this._renderChatTab() : ""}
+          ${this._activeTab === "media" ? this._renderMediaStudioTab() : ""}
           ${this._activeTab === "capabilities" ? this._renderCapabilitiesTab(stats) : ""}
           ${this._activeTab === "floorplan" ? this._renderFloorplanTab() : ""}
           ${this._activeTab === "vision" ? this._renderVisionTab() : ""}
@@ -6040,6 +6448,7 @@ class OtisCompanionCard extends HTMLElement {
       ${this._guideModalOpen ? this._renderGuideModal() : ""}
       ${this._failoverModalOpen ? this._renderFailoverModal() : ""}
       ${this._rulesModalOpen ? this._renderRulesModal() : ""}
+      ${this._githubModalOpen ? this._renderGitHubIssueModal() : ""}
     `;
 
     this._bindEvents();
@@ -6052,7 +6461,17 @@ class OtisCompanionCard extends HTMLElement {
           chatHistoryEl.scrollTop = chatHistoryEl.scrollHeight;
           this._scrollChatToBottom();
         } else {
-          chatHistoryEl.scrollTop = Math.max(0, chatHistoryEl.scrollHeight - prevChatBottomOffset);
+          this._chatInitialScrolled = true;
+          const restoreScroll = () => {
+            const el = this.shadowRoot ? this.shadowRoot.querySelector("#chat-history") : null;
+            if (el) {
+              el.scrollTop = prevChatScrollTop;
+            }
+          };
+          chatHistoryEl.scrollTop = prevChatScrollTop;
+          requestAnimationFrame(restoreScroll);
+          setTimeout(restoreScroll, 60);
+          setTimeout(restoreScroll, 180);
         }
       }
     }
@@ -6334,6 +6753,36 @@ class OtisCompanionCard extends HTMLElement {
                             </div>
                           </div>
                         `
+                            : s.action_type === "github_report_issue"
+                            ? `
+                          <div style="display: flex; gap: 8px; flex-wrap: wrap; width: 100%;">
+                            <button type="button" class="apply-btn btn-report-github" data-suggestion-id="${this._escapeHtml(s.id)}" style="padding: 5px 12px; font-size: 0.76rem; background: linear-gradient(135deg, #1f2937 0%, #0284c7 100%); color: #fff; border: 1px solid rgba(255,255,255,0.2);">
+                              🚀 Report to GitHub
+                            </button>
+                            ${
+                              isDismissed
+                                ? `<button type="button" class="btn-restore" data-restore="${this._escapeHtml(s.id)}">↺ Restore</button>`
+                                : `<button type="button" class="btn-dismiss-card" data-dismiss="${this._escapeHtml(s.id)}" title="Ignore this error">Ignore</button>`
+                            }
+                          </div>
+                        `
+                            : s.action_type === "tracked_github_issue"
+                            ? `
+                          <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; width: 100%;">
+                            <a href="${this._escapeHtml(s.action_payload?.issue_url || '#')}" target="_blank" rel="noopener noreferrer" class="apply-btn" style="text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; font-size: 0.76rem; background: rgba(14, 165, 233, 0.15); border: 1px solid var(--otis-primary); color: #38bdf8;">
+                              🔗 View on GitHub ↗
+                            </a>
+                            <button type="button" class="btn-toolbar btn-dismiss-tracked-issue" data-track-id="${this._escapeHtml(s.action_payload?.track_id || '')}" style="padding: 5px 10px; font-size: 0.74rem;">
+                              ✕ Dismiss Tracking
+                            </button>
+                          </div>
+                        `
+                            : s.action_type === "dismiss_self_healing_alert"
+                            ? `
+                          <div style="display: flex; gap: 8px; width: 100%;">
+                            <button type="button" class="btn-dismiss-card" data-dismiss="${this._escapeHtml(s.id)}">Acknowledge</button>
+                          </div>
+                        `
                             : `
                           <button type="button" class="apply-btn" data-apply="${s.id}" ${isApplying ? "disabled" : ""}>
                             ${isApplying ? `<div class="spinner"></div> Applying...` : btnLabel}
@@ -6358,11 +6807,15 @@ class OtisCompanionCard extends HTMLElement {
   _renderChatActionButtons(m) {
     if (m.sender !== "otis" || m.isError) return "";
     const txt = m.text || "";
+    const hasConfirmPrompt =
+      /Say\s+(?:['"`*]+)?yes(?:['"`*]+)?\s+or\s+(?:['"`*]+)?(?:apply|confirm)(?:['"`*]+)?/i.test(txt) ||
+      txt.includes("Would you like me to deploy and enable") ||
+      txt.includes("Would you like me to create and enable");
     if (
       txt.includes("Would you like me to update and deploy this blueprint") ||
       txt.includes("Would you like me to update this blueprint") ||
       txt.includes("Would you like me to create this blueprint") ||
-      (txt.includes("blueprint") && (txt.includes("Say 'yes' or 'apply'") || txt.includes("Say 'yes' or 'confirm'")))
+      (txt.toLowerCase().includes("blueprint") && hasConfirmPrompt)
     ) {
       return `
         <div class="chat-macro-actions">
@@ -6373,7 +6826,8 @@ class OtisCompanionCard extends HTMLElement {
     }
     if (
       txt.includes("Would you like me to create and enable this automation") ||
-      (txt.includes("automation") && (txt.includes("Say 'yes' or 'apply'") || txt.includes("Say 'yes' or 'confirm'")))
+      txt.includes("Would you like me to deploy and enable") ||
+      ((txt.toLowerCase().includes("automation") || /```yaml[\s\S]*?(?:trigger|triggers):[\s\S]*?(?:action|actions):/i.test(txt)) && hasConfirmPrompt)
     ) {
       return `
         <div class="chat-macro-actions">
@@ -6384,7 +6838,7 @@ class OtisCompanionCard extends HTMLElement {
     }
     if (
       txt.includes("Would you like me to create this script") ||
-      (txt.includes("script") && (txt.includes("Say 'yes' or 'apply'") || txt.includes("Say 'yes' or 'confirm'")))
+      (txt.toLowerCase().includes("script") && hasConfirmPrompt)
     ) {
       return `
         <div class="chat-macro-actions">
@@ -6393,7 +6847,7 @@ class OtisCompanionCard extends HTMLElement {
         </div>
       `;
     }
-    if (txt.includes("Say 'yes' or 'confirm'") || txt.includes("Say 'yes' or 'apply'")) {
+    if (hasConfirmPrompt) {
       return `
         <div class="chat-macro-actions">
           <button type="button" class="macro-action-btn confirm" data-chip="apply">✅ Confirm & Deploy</button>
@@ -6433,34 +6887,28 @@ class OtisCompanionCard extends HTMLElement {
           <span class="reasoning-summary-text">Thought for ${this._escapeHtml(m.reasoning.duration || "a moment")} (${steps.length} steps)${agentBadge}</span>
           <svg class="reasoning-chevron" viewBox="0 0 24 24"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
         </button>
-        ${
-          isExpanded
-            ? `
-          <div class="reasoning-steps-list">
-            ${steps
-              .map(
-                (s) => {
-                  const isResolution = s.id === "agent_resolution" || (s.title && s.title.startsWith("Resolved by"));
-                  const isLocal = isResolution && (s.title.toLowerCase().includes("local") || s.title.toLowerCase().includes("edge"));
-                  const checkIcon = isResolution ? (isLocal ? "⚡" : "☁️") : "✓";
-                  const itemClass = isResolution ? "reasoning-step-item done resolution" : "reasoning-step-item done";
-                  return `
-              <div class="${itemClass}">
-                <span class="step-check">${checkIcon}</span>
-                <div class="step-content">
-                  <div class="step-title">${this._escapeHtml(s.title || "Step")}</div>
-                  <div class="step-detail">${this._escapeHtml(s.detail || "")}</div>
-                </div>
-                <span class="step-time">${this._escapeHtml(s.time || "")}</span>
+        <div class="reasoning-steps-list" style="${isExpanded && steps.length > 0 ? "" : "display: none;"}">
+          ${steps
+            .map(
+              (s) => {
+                const isResolution = s.id === "agent_resolution" || (s.title && s.title.startsWith("Resolved by"));
+                const isLocal = isResolution && (s.title.toLowerCase().includes("local") || s.title.toLowerCase().includes("edge"));
+                const checkIcon = isResolution ? (isLocal ? "⚡" : "☁️") : "✓";
+                const itemClass = isResolution ? "reasoning-step-item done resolution" : "reasoning-step-item done";
+                return `
+            <div class="${itemClass}">
+              <span class="step-check">${checkIcon}</span>
+              <div class="step-content">
+                <div class="step-title">${this._escapeHtml(s.title || "Step")}</div>
+                <div class="step-detail">${this._escapeHtml(s.detail || "")}</div>
               </div>
-            `;
-                }
-              )
-              .join("")}
-          </div>
-        `
-            : ""
-        }
+              <span class="step-time">${this._escapeHtml(s.time || "")}</span>
+            </div>
+          `;
+              }
+            )
+            .join("")}
+        </div>
       </div>
     `;
   }
@@ -6554,6 +7002,7 @@ class OtisCompanionCard extends HTMLElement {
                   <span id="thinking-pill-text">Reasoning</span>
                 </span>
                 <span class="thinking-timer" id="thinking-elapsed-timer">⏱️ 0.0s</span>
+                <button type="button" class="chat-stop-btn" id="btn-stop-thinking-bubble" title="Stop reasoning">⏹️ Stop</button>
               </div>
               <div class="thinking-steps-stream" id="thinking-steps-stream">
                 ${this._renderThinkingStepsStream()}
@@ -6595,11 +7044,7 @@ class OtisCompanionCard extends HTMLElement {
               <div class="thinking-title" id="thinking-banner-title">Otis is reasoning: ${this._escapeHtml(this._getCurrentThinkingTitle())}</div>
               <div class="thinking-subtitle" id="thinking-banner-sub">${this._escapeHtml(this._getCurrentThinkingStatus())}</div>
             </div>
-            <div class="thinking-dots">
-              <span></span>
-              <span></span>
-              <span></span>
-            </div>
+            <button type="button" class="chat-stop-btn" id="btn-stop-thinking-banner" title="Stop reasoning">⏹️ Stop</button>
           </div>
         `
             : ""
@@ -6662,10 +7107,10 @@ class OtisCompanionCard extends HTMLElement {
               <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
             </svg>
           </button>
-          <button type="button" class="send-btn ${this._isSendingChat ? "sending" : ""}" id="chat-send" ${this._isSendingChat ? "disabled" : ""}>
+          <button type="button" class="send-btn ${this._isSendingChat ? "sending" : ""}" id="chat-send" title="${this._isSendingChat ? "Stop in-flight reasoning" : "Send message"}">
             ${
               this._isSendingChat
-                ? `<div class="spinner" style="display:inline-block; vertical-align:middle; width:12px; height:12px;"></div> Thinking...`
+                ? "⏹️ Stop"
                 : "Send"
             }
           </button>
@@ -6950,6 +7395,125 @@ class OtisCompanionCard extends HTMLElement {
                   </div>
                 `
             }
+          </div>
+        </div>
+
+        <div class="cap-block">
+          <div class="cap-title">
+            <span>🧠 Local Edge AI (Ollama) &amp; Add-on Control</span>
+            <span style="font-weight: 700; color: ${this._capabilityMap?.local_llm?.online ? '#4ade80' : (this._capabilityMap?.local_llm?.suitability?.addon_installed ? '#fbbf24' : 'var(--otis-text-muted)')};">
+              ${(() => {
+                const llm = this._capabilityMap?.local_llm || {};
+                const suit = llm.suitability || {};
+                if (llm.online) {
+                  return `🟢 Online (${llm.latency_ms ?? 0}ms) • ${this._escapeHtml(llm.active_model || "qwen2.5:3b")}`;
+                }
+                if (suit.addon_installed) {
+                  return `🟡 Add-on ${this._escapeHtml((suit.addon_state || "stopped").toUpperCase())}`;
+                }
+                return "⚪ Offline / Add-on Not Installed";
+              })()}
+            </span>
+          </div>
+          <div style="font-size: 0.75rem; line-height: 1.45;">
+            ${(() => {
+              const llm = this._capabilityMap?.local_llm || {};
+              const suit = llm.suitability || {};
+              const statsObj = llm.addon_stats || {};
+              const runningModels = Array.isArray(llm.running_models) ? llm.running_models : [];
+              const availModels = Array.isArray(llm.available_models) ? llm.available_models : [];
+              const defaultChoices = ["qwen2.5:3b", "qwen2.5:1.5b", "llama3.2-vision:latest"];
+              const modelOptions = Array.from(new Set([...availModels, ...defaultChoices, llm.active_model || "qwen2.5:3b"])).filter(Boolean);
+              const activeModel = llm.active_model || suit.recommended_model || "qwen2.5:3b";
+              const gpuBadge = suit.gpu_detected
+                ? `🎮 GPU/iGPU (${(suit.gpu_devices || []).map((d) => this._escapeHtml(d)).join(", ") || "DRI"})`
+                : "💻 CPU Inference";
+              const suitBadgeColor = suit.can_run && suit.recommended ? "#4ade80" : (suit.can_run ? "#fbbf24" : "#f87171");
+              const suitLabel = suit.can_run && suit.recommended
+                ? "✅ Host Hardware Verified & Recommended"
+                : (suit.can_run ? "⚠️ Host Capable (Lightweight Model Recommended)" : "❌ Host Below Minimum Ollama Specs");
+
+              return `
+                <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 6px; padding: 6px 8px; margin-bottom: 8px;">
+                  <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px;">
+                    <strong style="color: ${suitBadgeColor};">${suitLabel}</strong>
+                    <span class="topo-tag" style="font-size: 0.66rem;">${gpuBadge}</span>
+                  </div>
+                  <div style="color: var(--otis-text-muted); font-size: 0.71rem; margin-top: 3px;">
+                    <strong>CPU:</strong> ${this._escapeHtml(suit.cpu_model || "Detected Host CPU")} (${suit.cpu_cores || 0} threads) •
+                    <strong>RAM:</strong> ${suit.ram_avail_gb ?? 0} GB free / ${suit.ram_total_gb ?? 0} GB total •
+                    <strong>Disk:</strong> ${suit.disk_free_gb ?? 0} GB free
+                  </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 6px; margin-bottom: 8px;">
+                  <div style="background: rgba(14, 165, 233, 0.06); border: 1px solid rgba(56, 189, 248, 0.16); border-radius: 6px; padding: 5px 8px;">
+                    <div style="font-size: 0.68rem; color: var(--otis-text-muted);">Endpoint &amp; Add-on State</div>
+                    <div style="font-weight: 600; color: var(--otis-text); word-break: break-all;">
+                      ${this._escapeHtml(llm.endpoint_url || "http://127.0.0.1:11434")}
+                    </div>
+                    <div style="font-size: 0.69rem; color: var(--otis-text-muted); margin-top: 2px;">
+                      Add-on: <strong>${suit.addon_installed ? `${this._escapeHtml(suit.addon_slug || "local_otis_ollama")} (${this._escapeHtml(suit.addon_state || "stopped")})` : "Not Installed"}</strong>
+                      ${statsObj.memory_mb !== undefined ? ` • CPU ${statsObj.cpu_percent ?? 0}% • RAM ${statsObj.memory_mb} MB` : ""}
+                    </div>
+                  </div>
+                  <div style="background: rgba(168, 85, 247, 0.06); border: 1px solid rgba(168, 85, 247, 0.16); border-radius: 6px; padding: 5px 8px;">
+                    <div style="font-size: 0.68rem; color: var(--otis-text-muted);">Active Memory (/api/ps) &amp; Installed Models</div>
+                    <div style="font-weight: 600; color: var(--otis-text);">
+                      ${runningModels.length > 0
+                        ? runningModels.map((rm) => `${this._escapeHtml(rm.name)} (${rm.size_mb} MB • ${this._escapeHtml(rm.processor || "CPU")})`).join(", ")
+                        : "Idle (0 MB in RAM — loads on demand)"}
+                    </div>
+                    <div style="font-size: 0.69rem; color: var(--otis-text-muted); margin-top: 2px;">
+                      Pulled (${availModels.length}): ${availModels.length > 0 ? availModels.map((m) => this._escapeHtml(m)).join(", ") : "None"}
+                      ${llm.last_benchmark?.tokens_per_second ? ` • ⚡ ${llm.last_benchmark.tokens_per_second} tok/s` : ""}
+                    </div>
+                  </div>
+                </div>
+
+                <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 8px;">
+                  ${!suit.addon_installed && suit.supervisor_available && suit.can_run ? `
+                    <button type="button" class="btn-toolbar btn-ollama-addon-action" data-ollama-action="install" style="padding: 4px 10px; font-size: 0.72rem; color: #38bdf8; border-color: #38bdf8; font-weight: 700;">
+                      📦 Install &amp; Start Add-on
+                    </button>
+                  ` : ""}
+                  <button type="button" class="btn-toolbar btn-ollama-addon-action" data-ollama-action="start" style="padding: 4px 9px; font-size: 0.71rem; color: #4ade80; border-color: rgba(74, 222, 128, 0.45);">
+                    ▶️ Start
+                  </button>
+                  <button type="button" class="btn-toolbar btn-ollama-addon-action" data-ollama-action="stop" style="padding: 4px 9px; font-size: 0.71rem; color: #f87171; border-color: rgba(248, 113, 113, 0.45);">
+                    ⏹️ Stop
+                  </button>
+                  <button type="button" class="btn-toolbar btn-ollama-addon-action" data-ollama-action="restart" style="padding: 4px 9px; font-size: 0.71rem; color: #fbbf24; border-color: rgba(251, 191, 36, 0.45);">
+                    🔄 Restart
+                  </button>
+                  <button type="button" class="btn-toolbar btn-ollama-addon-action" data-ollama-action="status" style="padding: 4px 9px; font-size: 0.71rem;">
+                    🩺 Refresh Status
+                  </button>
+                  <button type="button" class="btn-toolbar" id="btn-ollama-benchmark" style="padding: 4px 9px; font-size: 0.71rem; color: var(--otis-primary); border-color: var(--otis-primary);">
+                    ⚡ Benchmark
+                  </button>
+                </div>
+
+                <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
+                  <select id="ollama-model-select" style="background: rgba(15, 23, 42, 0.75); color: var(--otis-text); border: 1px solid rgba(148, 163, 184, 0.3); border-radius: 6px; padding: 4px 8px; font-size: 0.72rem; flex: 1; min-width: 150px;">
+                    ${modelOptions.map((m) => `
+                      <option value="${this._escapeHtml(m)}" ${m === activeModel ? "selected" : ""}>
+                        ${this._escapeHtml(m)}${availModels.includes(m) ? " (Installed)" : " (Available to Pull)"}
+                      </option>
+                    `).join("")}
+                  </select>
+                  <button type="button" class="btn-toolbar" id="btn-ollama-set-model" style="padding: 4px 9px; font-size: 0.71rem;">
+                    ✓ Set Active
+                  </button>
+                  <button type="button" class="btn-toolbar" id="btn-ollama-pull-model" style="padding: 4px 9px; font-size: 0.71rem; color: #38bdf8; border-color: rgba(56, 189, 248, 0.45);">
+                    ⬇️ Pull Model
+                  </button>
+                  <button type="button" class="btn-toolbar" id="btn-ollama-delete-model" style="padding: 4px 9px; font-size: 0.71rem; color: #f87171; border-color: rgba(248, 113, 113, 0.35);">
+                    🗑️ Delete
+                  </button>
+                </div>
+              `;
+            })()}
           </div>
         </div>
 
@@ -7966,6 +8530,20 @@ class OtisCompanionCard extends HTMLElement {
     `;
   }
 
+  _isSubviewMode() {
+    const mode = this._config?.mode;
+    if (!mode || mode === "command_center") return false;
+    return [
+      "media_studio",
+      "security",
+      "climate",
+      "energy",
+      "room_view",
+      "floorplan_studio",
+      "floorplan_control",
+    ].includes(mode);
+  }
+
   _getAvailableUsers() {
     const userMap = new Map();
     // Strictly discover registered person.* entities from Home Assistant states
@@ -7987,6 +8565,7 @@ class OtisCompanionCard extends HTMLElement {
   }
 
   _renderThemeModal() {
+    const isSubview = this._isSubviewMode();
     const presets = this._capabilityMap?.theme_presets || [
       { key: "cyberpunk", name: "Cyberpunk Neon", preview: { primary: "#00f0ff", accent: "#f43f5e", background: "#070b14", card_bg: "#0f172a" } },
       { key: "midnight_slate", name: "Midnight Slate", preview: { primary: "#38bdf8", accent: "#818cf8", background: "#0b1120", card_bg: "#1e293b" } },
@@ -8008,52 +8587,66 @@ class OtisCompanionCard extends HTMLElement {
                 <span>Dynamic AI Theme Studio</span>
               </div>
               <div class="modal-subtitle">
-                Collaborative natural language styling & instant live theme application
+                ${isSubview ? "Personalize your appearance • Scoped strictly to your profile" : "Collaborative natural language styling & instant live theme application"}
               </div>
             </div>
             <button type="button" class="modal-close-btn" id="theme-modal-close-btn">✕</button>
           </div>
 
-          <!-- User Scope Selector -->
-          <div style="display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 8px; font-size: 0.78rem;">
-            <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
-              <span style="color: var(--otis-text-muted); font-weight: 600;">Apply Scope:</span>
-              <div style="display: flex; gap: 14px; align-items: center; flex-wrap: wrap;">
-                <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--otis-text);">
-                  <input type="radio" name="theme-scope" id="scope-current" value="current" ${this._themeApplyScope === "current" || !this._themeApplyScope ? "checked" : ""} />
-                  Current User (${this._escapeHtml(this._hass?.user?.name || "Me")})
-                </label>
-                <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--otis-text);">
-                  <input type="radio" name="theme-scope" id="scope-specific" value="specific" ${this._themeApplyScope === "specific" ? "checked" : ""} />
-                  Specific User...
-                </label>
-                <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--otis-text);">
-                  <input type="radio" name="theme-scope" id="scope-all" value="all" ${this._themeApplyScope === "all" ? "checked" : ""} />
-                  All Users (Global Profile Sync)
-                </label>
-              </div>
+          ${
+            isSubview
+              ? `
+            <!-- User Scope (Logged In User Only for Dashboard Views & Subviews) -->
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 8px; font-size: 0.78rem;">
+              <span style="color: var(--otis-text-muted); font-weight: 600;">Theme Scope:</span>
+              <span style="color: var(--otis-primary); font-weight: 700; display: inline-flex; align-items: center; gap: 5px;">
+                👤 Current User (${this._escapeHtml(this._hass?.user?.name || "Logged In User")})
+              </span>
             </div>
-            ${
-              this._themeApplyScope === "specific"
-                ? `
-              <div style="display: flex; align-items: center; gap: 10px; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--otis-surface-border);">
-                <span style="color: var(--otis-text-muted); font-size: 0.75rem; font-weight: 600;">Select User:</span>
-                <select id="theme-user-select" style="flex: 1; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--otis-surface-border); background: var(--otis-card-bg); color: var(--otis-text); font-size: 0.80rem;">
-                  ${this._getAvailableUsers()
-                    .map(
-                      (u) => `
-                    <option value="${this._escapeHtml(u.id)}" ${u.id === this._selectedThemeUserId ? "selected" : ""}>
-                      👤 ${this._escapeHtml(u.name)}${u.id === this._hass?.user?.id ? " (You)" : ""}
-                    </option>
-                  `
-                    )
-                    .join("")}
-                </select>
+          `
+              : `
+            <!-- User Scope Selector (Otis AI Command Center Card: Available for All Uses) -->
+            <div style="display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 8px; font-size: 0.78rem;">
+              <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+                <span style="color: var(--otis-text-muted); font-weight: 600;">Apply Scope:</span>
+                <div style="display: flex; gap: 14px; align-items: center; flex-wrap: wrap;">
+                  <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--otis-text);">
+                    <input type="radio" name="theme-scope" id="scope-current" value="current" ${this._themeApplyScope === "current" || !this._themeApplyScope ? "checked" : ""} />
+                    Current User (${this._escapeHtml(this._hass?.user?.name || "Me")})
+                  </label>
+                  <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--otis-text);">
+                    <input type="radio" name="theme-scope" id="scope-specific" value="specific" ${this._themeApplyScope === "specific" ? "checked" : ""} />
+                    Specific User...
+                  </label>
+                  <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--otis-text);">
+                    <input type="radio" name="theme-scope" id="scope-all" value="all" ${this._themeApplyScope === "all" ? "checked" : ""} />
+                    All Users (Global Profile Sync)
+                  </label>
+                </div>
               </div>
-            `
-                : ""
-            }
-          </div>
+              ${
+                this._themeApplyScope === "specific"
+                  ? `
+                <div style="display: flex; align-items: center; gap: 10px; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--otis-surface-border);">
+                  <span style="color: var(--otis-text-muted); font-size: 0.75rem; font-weight: 600;">Select User:</span>
+                  <select id="theme-user-select" style="flex: 1; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--otis-surface-border); background: var(--otis-card-bg); color: var(--otis-text); font-size: 0.80rem;">
+                    ${this._getAvailableUsers()
+                      .map(
+                        (u) => `
+                      <option value="${this._escapeHtml(u.id)}" ${u.id === this._selectedThemeUserId ? "selected" : ""}>
+                        👤 ${this._escapeHtml(u.name)}${u.id === this._hass?.user?.id ? " (You)" : ""}
+                      </option>
+                    `
+                      )
+                      .join("")}
+                  </select>
+                </div>
+              `
+                  : ""
+              }
+            </div>
+          `
+          }
 
           <!-- AI Natural Language Generator Prompt -->
           <div class="guide-box" style="display: flex; flex-direction: column; gap: 8px;">
@@ -8642,6 +9235,90 @@ class OtisCompanionCard extends HTMLElement {
           <input type="text" id="rules-input-speaker" value="${this._escapeHtml(preferredSpeaker)}" placeholder="e.g. media_player.great_room or Study" style="width: 100%; padding: 6px 8px; margin-top: 6px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
         </div>
 
+        ${(() => {
+          const mediaTopo = this._capabilityMap?.media_topology || {};
+          const studioData = this._mediaStudioData || {};
+          const sharedSources = studioData.shared_sources || mediaTopo.shared_sources || [];
+          const candidatePlayers = this._getResolvedCandidatePlayers(studioData, mediaTopo);
+          const effectiveMappings = {
+            ...(mediaTopo.input_mappings || {}),
+            ...(studioData.effective_mappings || {}),
+            ...(rules.media_input_mappings || {}),
+          };
+          const unjoinInput = rules.media_unjoin_input || studioData.unjoin_input || "None";
+          const filteredInputs = sharedSources.filter((s) => s && s.toLowerCase() !== unjoinInput.toLowerCase());
+          if (filteredInputs.length === 0) return "";
+          return `
+            <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 8px;">🔗 Matrix Input-to-Player Mapping (Separate Speakers &amp; Streamers):</div>
+            <div style="font-size: 0.73rem; color: var(--otis-text-muted); line-height: 1.4;">
+              Map physical amplifier/matrix inputs (Control4 Matrix Amp, Sonos, Heos, etc.) to the upstream streaming media player connected to each input (Music Assistant, Alexa Bridge, Plex, VLC, etc.).
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 6px; background: rgba(0,0,0,0.18); padding: 10px; border-radius: 8px; border: 1px solid var(--otis-surface-border);">
+              ${filteredInputs
+                .map((inpName) => {
+                  const mappedEid = effectiveMappings[inpName] || "";
+                  return `
+                    <div style="display: grid; grid-template-columns: minmax(120px, 1fr) 2fr; gap: 10px; align-items: center;">
+                      <span style="font-size: 0.78rem; font-weight: 600; color: var(--otis-text);">🔌 ${this._escapeHtml(inpName)}</span>
+                      <select class="rules-media-mapping-select" data-input-name="${this._escapeHtml(inpName)}" style="width: 100%; padding: 5px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;">
+                        <option value="">-- Unmapped / Auto-Detect --</option>
+                        ${candidatePlayers
+                          .map(
+                            (cp) => `
+                          <option value="${this._escapeHtml(cp.entity_id)}" ${mappedEid === cp.entity_id ? "selected" : ""}>
+                            🎵 ${this._escapeHtml(cp.name)} (${this._escapeHtml(cp.entity_id)})
+                          </option>
+                        `
+                          )
+                          .join("")}
+                      </select>
+                    </div>
+                  `;
+                })
+                .join("")}
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.06);">
+                <div>
+                  <div style="font-size: 0.72rem; color: var(--otis-text-muted); margin-bottom: 3px;">Unjoin / Idle Input Name:</div>
+                  <input type="text" id="rules-input-media-unjoin" value="${this._escapeHtml(unjoinInput)}" placeholder="None" style="width: 100%; box-sizing: border-box; padding: 5px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;" />
+                </div>
+                <div>
+                  <div style="font-size: 0.72rem; color: var(--otis-text-muted); margin-bottom: 3px;">Household Default Zone:</div>
+                  <select id="rules-input-media-default-zone" style="width: 100%; padding: 5px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;">
+                    <option value="">-- Auto (Active Zone) --</option>
+                    ${(() => {
+                      const zoneMap = new Map();
+                      (studioData.zones || mediaTopo.matrix_zones || []).forEach((z) => {
+                        const eid = typeof z === "string" ? z : z.entity_id;
+                        if (eid) zoneMap.set(eid, z.name || eid);
+                      });
+                      if (this._hass && this._hass.states) {
+                        Object.keys(this._hass.states).forEach((eid) => {
+                          if (eid.startsWith("media_player.") && !zoneMap.has(eid)) {
+                            const st = this._hass.states[eid];
+                            const fn = st?.attributes?.friendly_name || eid;
+                            if (fn.toLowerCase().includes("zone") || eid.includes("zone_")) {
+                              zoneMap.set(eid, fn);
+                            }
+                          }
+                        });
+                      }
+                      return Array.from(zoneMap.entries())
+                        .map(
+                          ([zeid, zname]) => `
+                        <option value="${this._escapeHtml(zeid)}" ${(rules.media_default_zone || studioData.household_default_zone) === zeid ? "selected" : ""}>
+                          🔊 ${this._escapeHtml(zname)}
+                        </option>
+                      `
+                        )
+                        .join("");
+                    })()}
+                  </select>
+                </div>
+              </div>
+            </div>
+          `;
+        })()}
+
         <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 10px;">Multi-Agent Specialists & Voice Satellites (Phase 9):</div>
         <div style="background: rgba(14,165,233,0.06); border: 1px solid rgba(14,165,233,0.2); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px;">
           <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.78rem;">
@@ -9002,11 +9679,11 @@ class OtisCompanionCard extends HTMLElement {
                   </div>
                   <div style="display: flex; align-items: center; gap: 8px;">
                     <span style="font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; background: ${isTrained ? 'rgba(16,185,129,0.2)' : 'rgba(56,189,248,0.2)'}; color: ${isTrained ? '#10b981' : 'var(--otis-primary)'}; font-weight: 600;">
-                      ${stageLabel} • ${confPct}% Confidence (${samples}/5 samples)
+                      ${stageLabel} • ${confPct}% Confidence (${samples}/5 camera samples)
                     </span>
-                    ${isTraining ? `
-                      <button type="button" class="btn-quick-verify-person" data-person-id="${this._escapeHtml(pid)}" data-person-label="${this._escapeHtml(p.label || pid)}" style="background: rgba(56,189,248,0.18); color: #38bdf8; border: 1px solid rgba(56,189,248,0.4); border-radius: 6px; padding: 2px 8px; font-size: 0.70rem; font-weight: 600; cursor: pointer;" title="Record a verified recognition training sample">
-                        + Verify Sample
+                    ${samples > 0 ? `
+                      <button type="button" class="btn-reset-person-training" data-person-id="${this._escapeHtml(pid)}" data-person-label="${this._escapeHtml(p.label || pid)}" style="background: rgba(245,158,11,0.16); color: #f59e0b; border: 1px solid rgba(245,158,11,0.38); border-radius: 6px; padding: 2px 8px; font-size: 0.70rem; font-weight: 600; cursor: pointer;" title="Reset training samples and confidence back to baseline">
+                        ↺ Reset Training
                       </button>
                     ` : ""}
                   </div>
@@ -9292,9 +9969,13 @@ class OtisCompanionCard extends HTMLElement {
     this._render();
 
     try {
+      const isSubview = this._isSubviewMode();
+      const isAll = !isSubview && this._themeApplyScope === "all";
+      const targetId = isSubview ? this._hass?.user?.id : (isAll ? null : this._themeApplyScope === "specific" ? this._selectedThemeUserId : this._hass?.user?.id);
       const payload = {
         prompt: prompt || (presetKey ? `Generate ${presetKey} theme` : "Otis Custom Theme"),
         apply_immediately: true,
+        user_id: isAll ? "all" : targetId,
       };
       if (presetKey) {
         payload.base_palette = presetKey;
@@ -9306,7 +9987,7 @@ class OtisCompanionCard extends HTMLElement {
         this._showToast(`✨ Generated and applying "${data.title}"...`);
         await this._fetchData();
         if (data.theme_key) {
-          await this._applyThemeDirect(data.theme_key);
+          await this._applyThemeDirect(data.theme_key, targetId, isAll);
         }
       } else {
         this._showToast(data.error || "Could not generate theme", true);
@@ -9323,28 +10004,25 @@ class OtisCompanionCard extends HTMLElement {
   async _applyThemeDirect(themeKey, targetUserId = null, applyAllUsers = false) {
     if (!this._hass || !themeKey) return;
     try {
-      const isAll = applyAllUsers || this._themeApplyScope === "all";
-      const targetId = targetUserId || (this._themeApplyScope === "specific" ? this._selectedThemeUserId : null);
-      const isMeOrAll = isAll || !targetId || targetId === this._hass?.user?.id;
+      const isSubview = this._isSubviewMode();
+      const curUserId = this._hass?.user?.id;
+      const isAll = !isSubview && Boolean(applyAllUsers || this._themeApplyScope === "all");
+      const targetId = isSubview ? curUserId : (targetUserId || curUserId);
 
       // 1. Call backend services
-      if (isMeOrAll) {
-        try {
-          await this._hass.callService("frontend", "set_theme", { name: themeKey });
-        } catch (_) {}
-      }
+      try {
+        await this._hass.callService("frontend", "set_theme", { name: themeKey });
+      } catch (_) {}
 
       try {
-        const payload = { name: themeKey };
-        if (targetId) payload.user_id = targetId;
-        if (isAll) payload.all_users = true;
+        const payload = { name: themeKey, user_id: isAll ? "all" : targetId };
         await this._hass.callService("otis_ai", "apply_theme", payload);
       } catch (svcErr) {
         console.warn("Could not call otis_ai.apply_theme:", svcErr);
       }
 
-      // 2. Set user theme directly in Home Assistant per-user profile storage via WebSocket if targeting current user or all
-      if (isMeOrAll && this._hass.callWS) {
+      // 2. Set user theme directly in Home Assistant per-user profile storage via WebSocket
+      if (this._hass.callWS) {
         try {
           await this._hass.callWS({
             type: "frontend/set_user_data",
@@ -9357,30 +10035,28 @@ class OtisCompanionCard extends HTMLElement {
       }
 
       // 3. Dispatch standard Home Assistant settheme events to update active browser session immediately
-      if (isMeOrAll) {
-        const setthemeEvent = new CustomEvent("settheme", {
-          detail: { theme: themeKey },
-          bubbles: true,
-          composed: true,
-        });
-        this.dispatchEvent(setthemeEvent);
-        window.dispatchEvent(setthemeEvent);
-        const ha = document.querySelector("home-assistant");
-        if (ha) {
-          ha.dispatchEvent(setthemeEvent);
-          ha.dispatchEvent(new CustomEvent("settheme", { detail: themeKey, bubbles: true, composed: true }));
-        }
-
-        // 4. Update localStorage if HA tracks selected theme
-        try {
-          const existing = JSON.parse(localStorage.getItem("selectedTheme") || "{}");
-          localStorage.setItem("selectedTheme", JSON.stringify({ ...existing, theme: themeKey }));
-        } catch (_) {}
+      const setthemeEvent = new CustomEvent("settheme", {
+        detail: { theme: themeKey },
+        bubbles: true,
+        composed: true,
+      });
+      this.dispatchEvent(setthemeEvent);
+      window.dispatchEvent(setthemeEvent);
+      const ha = document.querySelector("home-assistant");
+      if (ha) {
+        ha.dispatchEvent(setthemeEvent);
+        ha.dispatchEvent(new CustomEvent("settheme", { detail: themeKey, bubbles: true, composed: true }));
       }
+
+      // 4. Update localStorage if HA tracks selected theme
+      try {
+        const existing = JSON.parse(localStorage.getItem("selectedTheme") || "{}");
+        localStorage.setItem("selectedTheme", JSON.stringify({ ...existing, theme: themeKey }));
+      } catch (_) {}
 
       const users = this._getAvailableUsers();
       const targetUser = targetId ? users.find((u) => u.id === targetId) : null;
-      const scopeDesc = isAll ? "for all users" : targetUser ? `for ${targetUser.name}` : "for your profile";
+      const scopeDesc = isAll ? "for all users (Global Sync)" : targetUser ? `for ${targetUser.name}` : "for your profile";
       this._showToast(`🎨 Theme applied ${scopeDesc}: ${themeKey}`);
     } catch (err) {
       console.error("Error applying theme:", err);
@@ -9398,6 +10074,1177 @@ class OtisCompanionCard extends HTMLElement {
       console.error("Error deleting theme:", err);
       this._showToast("Error deleting theme", true);
     }
+  }
+
+  async _postMediaStudioAction(payload) {
+    if (!this._hass) return null;
+    try {
+      const opts = {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      };
+      const resp =
+        typeof this._hass.fetchWithAuth === "function"
+          ? await this._hass.fetchWithAuth("/api/otis_ai/media_studio", opts)
+          : await fetch("/api/otis_ai/media_studio", opts);
+      if (!resp) return null;
+      let data = {};
+      const ct = resp.headers?.get?.("content-type") || "";
+      if (ct.includes("application/json")) {
+        data = await resp.json();
+      } else {
+        const text = await resp.text();
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = { error: text || `HTTP ${resp.status}` };
+        }
+      }
+      if (!resp.ok || data.error) {
+        this._showToast(data.error || `Media Studio error (${resp.status})`, true);
+        return null;
+      }
+      if (data.zones) {
+        this._mediaStudioData = data;
+      } else {
+        await this._fetchMediaStudioState();
+      }
+      this._render();
+      return data;
+    } catch (err) {
+      console.error("Media Studio API error:", err);
+      this._showToast(`Media Studio request failed: ${err.message || err}`, true);
+      return null;
+    }
+  }
+
+  async _fetchMediaLibrary(playerId = "", mediaType = "playlist") {
+    if (!this._hass) return;
+    this._mediaBrowseLoading = true;
+    this._mediaBrowseError = null;
+    this._mediaBrowseItems = [];
+    this._mediaBrowseType = mediaType;
+    this._mediaBrowsePlayerId = playerId;
+    this._mediaBrowseOpen = true;
+    this._render();
+
+    try {
+      const opts = {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "browse_library",
+          player_entity_id: playerId,
+          media_type: mediaType,
+          limit: 50,
+        }),
+      };
+      const resp =
+        typeof this._hass.fetchWithAuth === "function"
+          ? await this._hass.fetchWithAuth("/api/otis_ai/media_studio", opts)
+          : await fetch("/api/otis_ai/media_studio", opts);
+
+      if (!resp) throw new Error("No response from server");
+      let data = {};
+      const ct = resp.headers?.get?.("content-type") || "";
+      if (ct.includes("application/json")) {
+        data = await resp.json();
+      } else {
+        const text = await resp.text();
+        try {
+          data = JSON.parse(text);
+        } catch {
+          data = { error: text || `HTTP ${resp.status}` };
+        }
+      }
+      if (!resp.ok || !data.success) {
+        throw new Error(data.error || `HTTP ${resp.status}`);
+      }
+      this._mediaBrowseItems = Array.isArray(data.items) ? data.items : [];
+    } catch (err) {
+      console.warn("[Otis AI] Failed to browse media library:", err);
+      this._mediaBrowseError = err.message || String(err);
+    } finally {
+      this._mediaBrowseLoading = false;
+      this._render();
+    }
+  }
+
+  _getResolvedCandidatePlayers(studioData = {}, mediaTopo = {}) {
+    const rawCandidates = [
+      ...(studioData.candidate_players || []),
+      ...(mediaTopo.candidate_players || []),
+    ];
+    const candMap = new Map();
+    rawCandidates.forEach((c) => {
+      if (c && c.entity_id) candMap.set(c.entity_id, c);
+    });
+
+    const rawZones = studioData.zones || mediaTopo.matrix_zones || [];
+    const matrixZoneIds = new Set(
+      rawZones.map((z) => (typeof z === "string" ? z : z.entity_id)).filter(Boolean)
+    );
+
+    if (this._hass && this._hass.states) {
+      Object.keys(this._hass.states).forEach((eid) => {
+        if (eid.startsWith("media_player.") && !candMap.has(eid)) {
+          const st = this._hass.states[eid];
+          candMap.set(eid, {
+            entity_id: eid,
+            name: st?.attributes?.friendly_name || eid,
+            state: st?.state || "unknown",
+          });
+        }
+      });
+    }
+
+    return Array.from(candMap.values()).sort((a, b) =>
+      (a.name || a.entity_id).localeCompare(b.name || b.entity_id)
+    );
+  }
+
+  _renderGitHubIssueModal() {
+    const data = this._githubModalData || {};
+    const step = this._githubModalStep || "review";
+    const repo = data.repo || "OtisPresley/otis-ai-companion";
+    const title = data.title || "[Bug Report]";
+    const body = data.body || "";
+    const errorMsg = this._githubErrorMsg || "";
+    const dc = this._githubDeviceCode || {};
+
+    let contentHtml = "";
+
+    if (step === "review") {
+      contentHtml = `
+        <div class="modal-subtitle" style="margin-bottom: 12px;">
+          Otis AI detected an actionable integration bug in Home Assistant logs. Review the automatically sanitized bug report below before authorizing GitHub submission.
+        </div>
+        <div style="background: rgba(14, 165, 233, 0.08); border: 1px solid var(--otis-primary); border-radius: 8px; padding: 10px; margin-bottom: 12px; font-size: 0.76rem; color: #38bdf8; display: flex; gap: 8px; align-items: center;">
+          <span style="font-size: 1.1rem;">🔒</span>
+          <div><strong>Privacy Guard Active:</strong> All internal IP addresses, access tokens, and local filesystem paths have been stripped from this report.</div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 10px;">
+          <div>
+            <label style="font-size: 0.74rem; font-weight: 600; color: var(--otis-text-muted); display: block; margin-bottom: 4px;">Target GitHub Repository:</label>
+            <input type="text" id="gh-modal-repo" value="${this._escapeHtml(repo)}" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.8rem; font-family: monospace;" />
+          </div>
+          <div>
+            <label style="font-size: 0.74rem; font-weight: 600; color: var(--otis-text-muted); display: block; margin-bottom: 4px;">Issue Title:</label>
+            <input type="text" id="gh-modal-title" value="${this._escapeHtml(title)}" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.8rem;" />
+          </div>
+          <div>
+            <label style="font-size: 0.74rem; font-weight: 600; color: var(--otis-text-muted); display: block; margin-bottom: 4px;">Sanitized Report Body (Markdown):</label>
+            <textarea id="gh-modal-body" rows="9" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem; font-family: monospace; resize: vertical;">${this._escapeHtml(body)}</textarea>
+          </div>
+        </div>
+        ${errorMsg ? `<div style="margin-top: 10px; color: #f87171; font-size: 0.76rem;">${this._escapeHtml(errorMsg)}</div>` : ""}
+        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px;">
+          <button type="button" class="btn-toolbar" id="btn-cancel-github-modal">Cancel</button>
+          <button type="button" class="apply-btn" id="btn-proceed-github-auth" style="background: linear-gradient(135deg, #24292e 0%, #0ea5e9 100%);">
+            ⚡ Continue to GitHub Verification
+          </button>
+        </div>
+      `;
+    } else if (step === "device_code") {
+      const userCode = dc.user_code || "FETCHING...";
+      const uri = dc.verification_uri || "https://github.com/login/device";
+      contentHtml = `
+        <div class="modal-subtitle" style="margin-bottom: 14px;">
+          Authenticate with GitHub using the official Device Flow. No Personal Access Token or manual permissions setup needed!
+        </div>
+        <div style="background: rgba(0,0,0,0.35); border: 1px dashed var(--otis-primary); border-radius: 12px; padding: 18px; text-align: center; margin-bottom: 14px;">
+          <div style="font-size: 0.74rem; color: var(--otis-text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">Your One-Time Device Code:</div>
+          <div id="gh-user-code-display" style="font-family: monospace; font-size: 1.8rem; font-weight: 800; letter-spacing: 5px; color: #38bdf8; margin-bottom: 12px; user-select: all;">
+            ${this._escapeHtml(userCode)}
+          </div>
+          <div style="display: flex; justify-content: center; gap: 10px;">
+            <button type="button" class="btn-toolbar" id="btn-copy-gh-code" style="padding: 6px 14px; font-size: 0.76rem;">
+              📋 Copy Code
+            </button>
+            <a href="${this._escapeHtml(uri)}" target="_blank" rel="noopener noreferrer" class="apply-btn" style="text-decoration: none; padding: 6px 14px; font-size: 0.76rem; background: #0284c7; color: #fff;">
+              🌐 Open github.com/login/device ↗
+            </a>
+          </div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 8px; font-size: 0.75rem; color: var(--otis-text-muted); background: rgba(255,255,255,0.03); padding: 12px; border-radius: 8px;">
+          <div>1. Click <strong>Copy Code</strong> above.</div>
+          <div>2. Click <strong>Open github.com/login/device</strong> to open GitHub in a new tab.</div>
+          <div>3. Paste the code and click <strong>Authorize</strong> on GitHub.</div>
+          <div style="margin-top: 4px; color: #38bdf8; display: flex; align-items: center; gap: 8px;">
+            <div class="spinner" style="width: 14px; height: 14px; border-width: 2px;"></div>
+            <span>Waiting for your authorization on GitHub... (polling automatically)</span>
+          </div>
+        </div>
+        ${errorMsg ? `<div style="margin-top: 10px; color: #f87171; font-size: 0.76rem;">${this._escapeHtml(errorMsg)}</div>` : ""}
+        <div style="display: flex; justify-content: flex-end; margin-top: 16px;">
+          <button type="button" class="btn-toolbar" id="btn-cancel-github-modal">Cancel</button>
+        </div>
+      `;
+    } else if (step === "submitting") {
+      contentHtml = `
+        <div style="text-align: center; padding: 32px 16px; display: flex; flex-direction: column; align-items: center; gap: 14px;">
+          <div class="spinner" style="width: 32px; height: 32px; border-width: 3px;"></div>
+          <div style="font-size: 0.95rem; font-weight: 600; color: var(--otis-text);">Submitting Sanitized Bug Report to GitHub...</div>
+          <div style="font-size: 0.76rem; color: var(--otis-text-muted);">Opening issue on ${this._escapeHtml(repo)} and registering tracking.</div>
+        </div>
+      `;
+    } else if (step === "success") {
+      const issue = this._githubCreatedIssue || {};
+      contentHtml = `
+        <div style="text-align: center; padding: 20px 10px; display: flex; flex-direction: column; align-items: center; gap: 12px;">
+          <div style="font-size: 2.4rem;">🎉</div>
+          <div style="font-size: 1.05rem; font-weight: 700; color: #34d399;">GitHub Issue Opened Successfully!</div>
+          <div style="font-size: 0.8rem; color: var(--otis-text);">
+            <strong>Issue #${this._escapeHtml(String(issue.number || ""))}</strong> on <code>${this._escapeHtml(repo)}</code>
+          </div>
+          <div style="font-size: 0.74rem; color: var(--otis-text-muted); max-width: 400px; line-height: 1.4;">
+            Otis AI will now track the status of this issue directly in your Proactive Feed and notify you when resolved by developers.
+          </div>
+          <div style="display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; justify-content: center;">
+            <a href="${this._escapeHtml(issue.html_url || '#')}" target="_blank" rel="noopener noreferrer" class="apply-btn" style="text-decoration: none; padding: 7px 16px; background: #0284c7; color: #fff;">
+              🔗 View on GitHub ↗
+            </a>
+            <button type="button" class="btn-toolbar" id="btn-close-github-success" style="padding: 7px 16px;">
+              Done &amp; Track in Feed
+            </button>
+          </div>
+        </div>
+      `;
+    } else if (step === "error") {
+      contentHtml = `
+        <div style="text-align: center; padding: 20px 10px; display: flex; flex-direction: column; align-items: center; gap: 12px;">
+          <div style="font-size: 2.2rem; color: #f87171;">❌</div>
+          <div style="font-size: 1.0rem; font-weight: 700; color: #f87171;">Submission Failed</div>
+          <div style="font-size: 0.76rem; color: var(--otis-text-muted); max-width: 400px; line-height: 1.4;">
+            ${this._escapeHtml(errorMsg || "An error occurred communicating with GitHub.")}
+          </div>
+          <div style="display: flex; gap: 10px; margin-top: 14px;">
+            <button type="button" class="apply-btn" id="btn-retry-github-flow">↺ Retry</button>
+            <button type="button" class="btn-toolbar" id="btn-cancel-github-modal">Cancel</button>
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="modal-overlay" id="github-modal-backdrop">
+        <div class="modal-card" style="max-width: 580px;">
+          <div class="modal-header">
+            <div class="modal-title">
+              <span>🐙</span>
+              <span>GitHub Issue Reporter</span>
+            </div>
+            <button type="button" class="modal-close-btn" id="btn-close-gh-modal-header" title="Close">✕</button>
+          </div>
+          ${contentHtml}
+        </div>
+      </div>
+    `;
+  }
+
+  async _startGitHubDeviceFlow() {
+    this._githubModalStep = "device_code";
+    this._githubErrorMsg = null;
+    this._render();
+
+    try {
+      const resp =
+        this._hass && typeof this._hass.fetchWithAuth === "function"
+          ? await this._hass.fetchWithAuth("/api/otis_ai/issue_reporter", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "request_device_code" }),
+            })
+          : await fetch("/api/otis_ai/issue_reporter", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "request_device_code" }),
+            });
+
+      if (!resp.ok) {
+        throw new Error(`Server returned HTTP ${resp.status}`);
+      }
+      const data = await resp.json();
+      if (!data.success || !data.device_code) {
+        throw new Error(data.error || "Failed to retrieve GitHub device code");
+      }
+
+      this._githubDeviceCode = data;
+      this._render();
+
+      if (this._githubPollTimer) {
+        clearInterval(this._githubPollTimer);
+        this._githubPollTimer = null;
+      }
+
+      const pollInterval = (data.interval || 5) * 1000;
+      const deviceCode = data.device_code;
+      const startTime = Date.now();
+      const maxDuration = (data.expires_in || 900) * 1000;
+
+      this._githubPollTimer = setInterval(async () => {
+        if (!this._githubModalOpen || this._githubModalStep !== "device_code") {
+          clearInterval(this._githubPollTimer);
+          this._githubPollTimer = null;
+          return;
+        }
+
+        if (Date.now() - startTime > maxDuration) {
+          clearInterval(this._githubPollTimer);
+          this._githubPollTimer = null;
+          this._githubModalStep = "error";
+          this._githubErrorMsg = "Device code expired. Please retry.";
+          this._render();
+          return;
+        }
+
+        try {
+          const chkResp =
+            this._hass && typeof this._hass.fetchWithAuth === "function"
+              ? await this._hass.fetchWithAuth("/api/otis_ai/issue_reporter", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ action: "check_device_token", device_code: deviceCode }),
+                })
+              : await fetch("/api/otis_ai/issue_reporter", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ action: "check_device_token", device_code: deviceCode }),
+                });
+
+          if (chkResp.ok) {
+            const chkData = await chkResp.json();
+            if (chkData.status === "success" && chkData.token) {
+              clearInterval(this._githubPollTimer);
+              this._githubPollTimer = null;
+              await this._submitGitHubIssueWithToken(chkData.token);
+            } else if (chkData.status === "expired" || chkData.status === "error") {
+              clearInterval(this._githubPollTimer);
+              this._githubPollTimer = null;
+              this._githubModalStep = "error";
+              this._githubErrorMsg = chkData.error || "GitHub authorization failed";
+              this._render();
+            }
+          }
+        } catch (_) {}
+      }, pollInterval);
+    } catch (err) {
+      this._githubModalStep = "error";
+      this._githubErrorMsg = err.message || String(err);
+      this._render();
+    }
+  }
+
+  async _submitGitHubIssueWithToken(token) {
+    this._githubModalStep = "submitting";
+    this._render();
+
+    const data = this._githubModalData || {};
+    try {
+      const payload = {
+        action: "submit_issue",
+        token: token,
+        repo: data.repo || "OtisPresley/otis-ai-companion",
+        title: data.title,
+        body: data.body,
+        error_id: data.error_id,
+      };
+
+      const resp =
+        this._hass && typeof this._hass.fetchWithAuth === "function"
+          ? await this._hass.fetchWithAuth("/api/otis_ai/issue_reporter", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            })
+          : await fetch("/api/otis_ai/issue_reporter", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+
+      const resData = await resp.json();
+      if (resp.ok && resData.success && resData.issue) {
+        this._githubCreatedIssue = resData.issue;
+        this._githubModalStep = "success";
+        this._showToast(`🎉 GitHub Issue #${resData.issue.number} created!`);
+        await this._fetchData();
+      } else {
+        this._githubModalStep = "error";
+        this._githubErrorMsg = resData.error || "Failed to create issue on GitHub";
+      }
+    } catch (err) {
+      this._githubModalStep = "error";
+      this._githubErrorMsg = err.message || String(err);
+    }
+    this._render();
+  }
+
+  _renderMediaStudioTab() {
+    const mediaTopo = this._capabilityMap?.media_topology || {};
+    const studioData = this._mediaStudioData || {};
+    const rawZones =
+      (studioData.zones && studioData.zones.length > 0 ? studioData.zones : mediaTopo.matrix_zones) || [];
+    const candidatePlayers = this._getResolvedCandidatePlayers(studioData, mediaTopo);
+    const effectiveMappings = {
+      ...(mediaTopo.input_mappings || {}),
+      ...(studioData.effective_mappings || {}),
+      ...(this._userRules?.media_input_mappings || {}),
+    };
+    const unjoinInput =
+      studioData.unjoin_input || this._userRules?.media_unjoin_input || "None";
+    const userName = studioData.user_name || this._hass?.user?.name || "Resident";
+    const isAdmin = Boolean(this._hass?.user?.is_admin || this._hass?.user?.is_owner);
+
+    // Enrich zones with live Home Assistant states and optimistic overrides
+    const zones = rawZones.map((z) => {
+      const eid = z.entity_id;
+      const st = this._hass?.states?.[eid];
+      const liveSource =
+        this._mediaOptimisticSources[eid] !== undefined
+          ? this._mediaOptimisticSources[eid]
+          : st?.attributes?.source ?? z.source ?? "";
+      const liveVol =
+        this._mediaOptimisticVolumes[eid] !== undefined
+          ? this._mediaOptimisticVolumes[eid]
+          : st?.attributes?.volume_level !== undefined
+          ? Number(st.attributes.volume_level)
+          : z.volume_level !== undefined && z.volume_level !== null
+          ? Number(z.volume_level)
+          : 0.25;
+      const liveMuted =
+        this._mediaOptimisticMutes[eid] !== undefined
+          ? this._mediaOptimisticMutes[eid]
+          : Boolean(st?.attributes?.is_volume_muted ?? z.is_volume_muted);
+      const liveState = st?.state || z.state || "off";
+      const sourceList = st?.attributes?.source_list || z.source_list || studioData.shared_sources || mediaTopo.shared_sources || [];
+      return {
+        ...z,
+        entity_id: eid,
+        name: (st?.attributes?.friendly_name || z.name || eid).replace(/^Matrix Amp \d+\s+/i, ""),
+        full_name: st?.attributes?.friendly_name || z.name || eid,
+        state: liveState,
+        source: liveSource,
+        source_list: sourceList,
+        volume_level: liveVol,
+        is_volume_muted: liveMuted,
+      };
+    });
+
+    if (zones.length === 0) {
+      return `
+        <div style="padding: 28px; text-align: center; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 14px; color: var(--otis-text-muted);">
+          <div style="font-size: 2rem; margin-bottom: 8px;">🎵</div>
+          <div style="font-weight: 700; color: var(--otis-text); font-size: 0.95rem;">No Multi-Zone Audio Amplifiers Discovered</div>
+          <div style="font-size: 0.8rem; margin-top: 4px;">Connect a matrix amplifier or multi-room speaker system (Control4, Sonos, Heos, Music Assistant) to enable Source-to-Zone routing.</div>
+        </div>
+      `;
+    }
+
+    let selectedZone =
+      zones.find((z) => z.entity_id === this._selectedMediaZoneId) ||
+      zones.find((z) => z.entity_id === studioData.default_zone) ||
+      zones[0];
+    if (selectedZone && this._selectedMediaZoneId !== selectedZone.entity_id) {
+      this._selectedMediaZoneId = selectedZone.entity_id;
+    }
+
+    const allInputs = Array.from(
+      new Set([
+        ...(selectedZone?.source_list || []),
+        ...(studioData.shared_sources || []),
+        ...(mediaTopo.shared_sources || []),
+      ])
+    ).filter(Boolean);
+
+    const activeInput =
+      this._selectedMediaInput ||
+      (selectedZone?.source && selectedZone.source !== unjoinInput ? selectedZone.source : "") ||
+      allInputs.find((inp) => inp !== unjoinInput && effectiveMappings[inp]) ||
+      allInputs.find((inp) => inp !== unjoinInput) ||
+      allInputs[0] ||
+      "";
+
+    const mappedPlayerId = activeInput ? effectiveMappings[activeInput] || "" : "";
+    const mappedSt = mappedPlayerId ? this._hass?.states?.[mappedPlayerId] : null;
+    const fallbackMappedInfo = (studioData.mapped_players_state || {})[activeInput] || {};
+    const serviceProfile =
+      fallbackMappedInfo.service_profile ||
+      candidatePlayers.find((c) => c.entity_id === mappedPlayerId)?.service_profile ||
+      {};
+    const serviceProvider = serviceProfile.display_name || serviceProfile.provider || "Media Player";
+    const supportsBrowse = Boolean(serviceProfile.supports_browse || serviceProfile.provider === "music_assistant");
+    const hasMassInHome =
+      supportsBrowse ||
+      candidatePlayers.some(
+        (c) =>
+          c.service_profile?.provider === "music_assistant" ||
+          (c.entity_id && (c.entity_id.includes("mass") || c.entity_id.includes("music_assistant")))
+      ) ||
+      Boolean(
+        this._hass &&
+          Object.keys(this._hass.states || {}).some(
+            (k) => k.startsWith("media_player.") && (k.includes("mass") || k.includes("music_assistant"))
+          )
+      );
+    const canBrowse = supportsBrowse || hasMassInHome;
+    const supportsVoice = Boolean(serviceProfile.supports_voice || serviceProfile.provider === "alexa_media");
+    const supportedTypes = serviceProfile.supported_media_types || ["custom", "music", "playlist", "radio"];
+    const playerState = mappedSt?.state || fallbackMappedInfo.state || selectedZone?.state || "idle";
+    const playerName =
+      mappedSt?.attributes?.friendly_name ||
+      fallbackMappedInfo.friendly_name ||
+      fallbackMappedInfo.name ||
+      (mappedPlayerId ? mappedPlayerId : "Unmapped Matrix Input");
+    const mediaTitle =
+      mappedSt?.attributes?.media_title ||
+      fallbackMappedInfo.media_title ||
+      (this._hass?.states?.[selectedZone.entity_id]?.attributes?.media_title) ||
+      (playerState === "playing" ? `Streaming on ${activeInput}` : `Ready on ${activeInput || "Matrix"}`);
+    const mediaArtist =
+      mappedSt?.attributes?.media_artist ||
+      mappedSt?.attributes?.media_album_name ||
+      fallbackMappedInfo.media_artist ||
+      (mappedPlayerId ? `${playerName} (${playerState})` : "Select an input or favorite to start playback");
+    const entityPic =
+      mappedSt?.attributes?.entity_picture ||
+      fallbackMappedInfo.entity_picture ||
+      this._hass?.states?.[selectedZone.entity_id]?.attributes?.entity_picture ||
+      "";
+
+    // Linked zones currently routed to the same activeInput (when activeInput != unjoinInput)
+    const isZoneLinked = (z) =>
+      Boolean(
+        activeInput &&
+          activeInput.toLowerCase() !== unjoinInput.toLowerCase() &&
+          z.state !== "off" &&
+          z.state !== "unavailable" &&
+          String(z.source || "").toLowerCase() === activeInput.toLowerCase()
+      );
+
+    const mixerZones = [
+      selectedZone,
+      ...zones.filter((z) => z.entity_id !== selectedZone.entity_id && isZoneLinked(z)),
+    ];
+
+    const favorites = studioData.favorites || [];
+    const isDefaultZone = studioData.default_zone === selectedZone.entity_id;
+    const isZoneOn =
+      selectedZone.state !== "off" &&
+      selectedZone.state !== "unavailable" &&
+      String(selectedZone.source || "").toLowerCase() !== unjoinInput.toLowerCase();
+
+    return `
+      <div class="media-studio-wrapper" style="display: flex; flex-direction: column; gap: 16px;">
+        ${
+          this._mediaBrowseOpen
+            ? `
+          <!-- Agnostic Media Provider Library Browser Panel -->
+          <div class="media-library-browser-panel" style="background: var(--otis-surface); border: 1px solid var(--otis-primary); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); box-shadow: 0 8px 32px rgba(0,0,0,0.35);">
+            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                <span style="font-size: 0.84rem; font-weight: 700; color: var(--otis-primary);">
+                  🎵 ${this._escapeHtml(serviceProvider)} Library
+                </span>
+                <div style="display: flex; gap: 4px;">
+                  ${["playlist", "radio", "artist", "album"]
+                    .map(
+                      (t) => `
+                    <button type="button" class="btn-toolbar btn-browse-type ${this._mediaBrowseType === t ? "active" : ""}" data-type="${t}" data-player-id="${this._escapeHtml(mappedPlayerId)}" style="padding: 2px 8px; font-size: 0.68rem; text-transform: capitalize; ${this._mediaBrowseType === t ? "background: var(--otis-primary); color: #fff; border-color: var(--otis-primary);" : ""}">
+                      ${t === "playlist" ? "🎵 Playlists" : t === "radio" ? "📻 Radio" : t === "artist" ? "🎤 Artists" : "💿 Albums"}
+                    </button>
+                  `
+                    )
+                    .join("")}
+                </div>
+              </div>
+              <button type="button" class="btn-toolbar" id="btn-media-browse-close" style="padding: 2px 8px; font-size: 0.72rem;">✕ Close</button>
+            </div>
+
+            ${
+              this._mediaBrowseLoading
+                ? `
+              <div style="padding: 20px; text-align: center; color: var(--otis-text-muted); font-size: 0.8rem;">
+                <span style="display: inline-block; animation: otis-spin 0.8s linear infinite; margin-right: 8px;">🔄</span>
+                Loading ${this._escapeHtml(this._mediaBrowseType)}s from ${this._escapeHtml(serviceProvider)}...
+              </div>
+            `
+                : this._mediaBrowseError
+                ? `
+              <div style="padding: 12px; border-radius: 8px; background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; font-size: 0.76rem;">
+                ⚠️ ${this._escapeHtml(this._mediaBrowseError)}
+              </div>
+            `
+                : this._mediaBrowseItems.length === 0
+                ? `
+              <div style="padding: 16px; text-align: center; color: var(--otis-text-muted); font-size: 0.76rem;">
+                No items found in ${this._escapeHtml(serviceProvider)} for category "${this._escapeHtml(this._mediaBrowseType)}".
+              </div>
+            `
+                : `
+              <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; max-height: 280px; overflow-y: auto; padding-right: 4px;">
+                ${this._mediaBrowseItems
+                  .map(
+                    (item) => `
+                  <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; border-radius: 8px; background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.06);">
+                    <div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
+                      <span style="font-size: 0.76rem; font-weight: 600; color: var(--otis-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${this._escapeHtml(item.name)}">
+                        ${this._escapeHtml(item.name)}
+                      </span>
+                      ${
+                        item.artist
+                          ? `
+                        <span style="font-size: 0.66rem; color: var(--otis-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                          ${this._escapeHtml(item.artist)}
+                        </span>
+                      `
+                          : ""
+                      }
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
+                      <button type="button" class="btn-toolbar btn-play-library-item" data-id="${this._escapeHtml(item.id)}" data-name="${this._escapeHtml(item.name)}" data-type="${this._escapeHtml(item.media_type || this._mediaBrowseType)}" data-player-id="${this._escapeHtml(mappedPlayerId)}" data-zone-id="${this._escapeHtml(selectedZone.entity_id)}" data-input="${this._escapeHtml(activeInput)}" title="Play now in ${this._escapeHtml(selectedZone.name)}" style="padding: 3px 8px; font-size: 0.68rem; background: var(--otis-primary); color: #fff; border-color: var(--otis-primary);">
+                        ▶️ Play
+                      </button>
+                      <button type="button" class="btn-toolbar btn-fav-library-item" data-id="${this._escapeHtml(item.id)}" data-name="${this._escapeHtml(item.name)}" data-type="${this._escapeHtml(item.media_type || this._mediaBrowseType)}" data-input="${this._escapeHtml(activeInput)}" title="Save as favorite" style="padding: 3px 6px; font-size: 0.68rem;">
+                        ⭐
+                      </button>
+                    </div>
+                  </div>
+                `
+                  )
+                  .join("")}
+              </div>
+            `
+            }
+          </div>
+        `
+            : ""
+        }
+
+        <!-- Main 2-Column Media Studio Grid -->
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 16px; align-items: start;">
+          <!-- Left Column: Now Playing + Active Zone Volume Mixer -->
+          <div style="display: flex; flex-direction: column; gap: 14px;">
+            <!-- Now Playing & Streamer Transport Card -->
+            <div style="background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 14px; position: relative; overflow: hidden;">
+              <div style="display: flex; align-items: center; gap: 14px;">
+                <div style="width: 78px; height: 78px; border-radius: 12px; background: linear-gradient(135deg, rgba(14,165,233,0.22), rgba(168,85,247,0.22)); border: 1px solid rgba(56,189,248,0.35); display: flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0; box-shadow: 0 4px 14px rgba(0,0,0,0.3);">
+                  ${
+                    entityPic
+                      ? `<img src="${this._escapeHtml(entityPic)}" alt="Album Art" style="width: 100%; height: 100%; object-fit: cover;" onerror="this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='flex';" />`
+                      : ""
+                  }
+                  <span style="display: ${entityPic ? "none" : "flex"}; font-size: 2rem;">🎵</span>
+                </div>
+                <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
+                  <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                    <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: rgba(56, 189, 248, 0.16); border: 1px solid rgba(56, 189, 248, 0.35); color: var(--otis-primary);">
+                      🔌 ${this._escapeHtml(activeInput || "No Input")} ➔ 🎵 ${this._escapeHtml(playerName)}
+                    </span>
+                    <span style="font-size: 0.65rem; font-weight: 700; padding: 2px 7px; border-radius: 6px; background: rgba(168, 85, 247, 0.18); border: 1px solid rgba(168, 85, 247, 0.4); color: #c084fc;">
+                      ${this._escapeHtml(serviceProvider)}
+                    </span>
+                    <span style="font-size: 0.66rem; font-weight: 700; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; background: ${playerState === "playing" ? "rgba(16,185,129,0.2)" : "rgba(255,255,255,0.07)"}; color: ${playerState === "playing" ? "#34d399" : "var(--otis-text-muted)"};">
+                      ${this._escapeHtml(playerState)}
+                    </span>
+                  </div>
+                  <div style="font-size: 1rem; font-weight: 700; color: var(--otis-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${this._escapeHtml(mediaTitle)}">
+                    ${this._escapeHtml(mediaTitle)}
+                  </div>
+                  <div style="font-size: 0.78rem; color: var(--otis-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${this._escapeHtml(mediaArtist)}">
+                    ${this._escapeHtml(mediaArtist)}
+                  </div>
+                </div>
+              </div>
+
+              <!-- Transport Controls Row -->
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.07);">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <button type="button" class="btn-toolbar btn-media-transport" data-transport="media_previous_track" data-player-id="${this._escapeHtml(mappedPlayerId || selectedZone.entity_id)}" title="Previous Track" style="padding: 6px 12px; font-size: 0.85rem;">
+                    ⏮️
+                  </button>
+                  <button type="button" class="btn-toolbar btn-media-transport" data-transport="media_play_pause" data-player-id="${this._escapeHtml(mappedPlayerId || selectedZone.entity_id)}" title="Play / Pause" style="padding: 6px 16px; font-size: 0.9rem; background: var(--otis-primary); color: #fff; border-color: var(--otis-primary);">
+                    ${playerState === "playing" ? "⏸️ Pause" : "▶️ Play"}
+                  </button>
+                  <button type="button" class="btn-toolbar btn-media-transport" data-transport="media_next_track" data-player-id="${this._escapeHtml(mappedPlayerId || selectedZone.entity_id)}" title="Next Track" style="padding: 6px 12px; font-size: 0.85rem;">
+                    ⏭️
+                  </button>
+                </div>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <button type="button" class="btn-toolbar" id="btn-media-save-current-track" data-title="${this._escapeHtml(mediaTitle)}" data-artist="${this._escapeHtml(mediaArtist)}" data-input="${this._escapeHtml(activeInput)}" title="Save currently playing track or station to your personal favorites" style="padding: 5px 10px; font-size: 0.72rem;">
+                    ⭐ Save Track
+                  </button>
+                  <button type="button" class="btn-toolbar" id="btn-media-browse-player" data-player-id="${this._escapeHtml(mappedPlayerId || selectedZone.entity_id)}" title="Open Media Browser & Player Controls" style="padding: 5px 10px; font-size: 0.72rem;">
+                    📂 Controls
+                  </button>
+                </div>
+              </div>
+
+              <!-- Provider Capability Shortcuts Row -->
+              ${
+                supportsBrowse
+                  ? `
+                <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding-top: 8px; border-top: 1px dashed rgba(255,255,255,0.07);">
+                  <span style="font-size: 0.71rem; color: var(--otis-text-muted); font-weight: 600;">
+                    ${this._escapeHtml(serviceProvider)}:
+                  </span>
+                  <div style="display: flex; align-items: center; gap: 5px; flex-wrap: wrap;">
+                    <button type="button" class="btn-toolbar btn-browse-action" data-type="playlist" data-player-id="${this._escapeHtml(mappedPlayerId)}" style="padding: 3px 8px; font-size: 0.68rem;">
+                      🎵 Playlists
+                    </button>
+                    <button type="button" class="btn-toolbar btn-browse-action" data-type="radio" data-player-id="${this._escapeHtml(mappedPlayerId)}" style="padding: 3px 8px; font-size: 0.68rem;">
+                      📻 Radio
+                    </button>
+                    <button type="button" class="btn-toolbar btn-browse-action" data-type="artist" data-player-id="${this._escapeHtml(mappedPlayerId)}" style="padding: 3px 8px; font-size: 0.68rem;">
+                      🎤 Artists
+                    </button>
+                    <button type="button" class="btn-toolbar btn-browse-action" data-type="album" data-player-id="${this._escapeHtml(mappedPlayerId)}" style="padding: 3px 8px; font-size: 0.68rem;">
+                      💿 Albums
+                    </button>
+                  </div>
+                </div>
+              `
+                  : supportsVoice
+                  ? `
+                <div style="padding-top: 8px; border-top: 1px dashed rgba(255,255,255,0.07); font-size: 0.71rem; color: var(--otis-text-muted);">
+                  🗣️ <em>Accepts voice phrases via ${this._escapeHtml(serviceProvider)} (e.g. "play smooth jazz on Spotify", "play BBC news")</em>
+                </div>
+              `
+                  : ""
+              }
+            </div>
+
+            <!-- Active Zone & Linked Rooms Volume Mixer -->
+            <div style="background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;">
+              <div style="display: flex; align-items: center; justify-content: space-between;">
+                <span style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">🎚️ Active Zone &amp; Multi-Room Volume Mixer</span>
+                <span style="font-size: 0.7rem; color: var(--otis-text-muted);">${mixerZones.length} ${mixerZones.length === 1 ? "room" : "rooms"} active</span>
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 10px;">
+                ${mixerZones
+                  .map((mz) => {
+                    const volPct = Math.round(Math.max(0, Math.min(1, Number(mz.volume_level || 0))) * 100);
+                    const isPrimary = mz.entity_id === selectedZone.entity_id;
+                    return `
+                      <div style="display: flex; flex-direction: column; gap: 5px; padding: 8px 10px; border-radius: 10px; background: rgba(0,0,0,0.2); border: 1px solid ${isPrimary ? "rgba(56,189,248,0.35)" : "rgba(255,255,255,0.06)"};">
+                        <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
+                          <div style="display: flex; align-items: center; gap: 6px;">
+                            <span>${this._getRoomEmoji(mz.name)}</span>
+                            <span style="font-size: 0.8rem; font-weight: 700; color: var(--otis-text);">${this._escapeHtml(mz.name)}</span>
+                            <span style="font-size: 0.64rem; padding: 1px 6px; border-radius: 4px; background: ${isPrimary ? "rgba(56,189,248,0.18)" : "rgba(16,185,129,0.18)"}; color: ${isPrimary ? "var(--otis-primary)" : "#34d399"}; font-weight: 700;">
+                              ${isPrimary ? "PRIMARY" : "LINKED"}
+                            </span>
+                          </div>
+                          <div style="display: flex; align-items: center; gap: 8px;">
+                            <button type="button" class="btn-toolbar btn-media-mute-toggle" data-zone-id="${this._escapeHtml(mz.entity_id)}" data-muted="${mz.is_volume_muted ? "true" : "false"}" title="${mz.is_volume_muted ? "Unmute" : "Mute"}" style="padding: 2px 7px; font-size: 0.76rem; ${mz.is_volume_muted ? "background: rgba(239,68,68,0.22); border-color: rgba(239,68,68,0.5); color: #f87171;" : ""}">
+                              ${mz.is_volume_muted ? "🔇 Muted" : "🔊"}
+                            </button>
+                            <span class="media-vol-label" data-zone-vol-label="${this._escapeHtml(mz.entity_id)}" style="font-size: 0.76rem; font-weight: 700; color: var(--otis-primary); min-width: 34px; text-align: right;">
+                              ${volPct}%
+                            </span>
+                          </div>
+                        </div>
+                        <input type="range" class="media-zone-vol-slider" data-zone-id="${this._escapeHtml(mz.entity_id)}" min="0" max="100" value="${volPct}" style="width: 100%; cursor: pointer; accent-color: var(--otis-primary);" />
+                      </div>
+                    `;
+                  })
+                  .join("")}
+              </div>
+            </div>
+          </div>
+
+          <!-- Right Column: Zone & Input Routing + Multi-Room Link Grid + Per-User Favorites -->
+          <div style="display: flex; flex-direction: column; gap: 14px;">
+            <!-- Speaker Zone & Input Source Routing Card -->
+            <div style="background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+                <span style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">🔊 Speaker Zone &amp; Matrix Source Routing</span>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <button type="button" class="btn-toolbar" id="btn-toggle-media-mappings" title="Configure matrix input-to-player mappings" style="padding: 3px 8px; font-size: 0.7rem; ${this._showMediaMappingsEditor ? "background: rgba(14,165,233,0.22); border-color: rgba(56,189,248,0.5); color: var(--otis-primary);" : ""}">
+                    ${this._showMediaMappingsEditor ? "✕ Close Mappings" : "⚙️ Input Mappings"}
+                  </button>
+                  <button type="button" class="btn-toolbar" id="btn-media-set-default-zone" data-zone-id="${this._escapeHtml(selectedZone.entity_id)}" title="Save this room as your personal default zone" style="padding: 3px 8px; font-size: 0.7rem; ${isDefaultZone ? "background: rgba(16,185,129,0.2); border-color: rgba(16,185,129,0.45); color: #34d399;" : ""}">
+                    ${isDefaultZone ? "✓ My Default Zone" : "📌 Set as My Default"}
+                  </button>
+                  <button type="button" class="btn-toolbar" id="btn-media-zone-power" data-zone-id="${this._escapeHtml(selectedZone.entity_id)}" data-is-on="${isZoneOn ? "true" : "false"}" style="padding: 3px 9px; font-size: 0.72rem; ${isZoneOn ? "background: rgba(16,185,129,0.22); border-color: rgba(16,185,129,0.5); color: #34d399;" : "background: rgba(239,68,68,0.15); border-color: rgba(239,68,68,0.35); color: #f87171;"}">
+                    ⏻ ${isZoneOn ? "Zone ON" : "Zone OFF"}
+                  </button>
+                </div>
+              </div>
+
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                  <label style="font-size: 0.72rem; color: var(--otis-text-muted); font-weight: 600;">Target Speaker Zone:</label>
+                  <select id="media-studio-zone-select" style="width: 100%; padding: 8px 10px; border-radius: 8px; background: rgba(0,0,0,0.3); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.8rem; font-weight: 600;">
+                    ${zones
+                      .map((z) => {
+                        const zOn = z.state !== "off" && z.state !== "unavailable" && String(z.source || "").toLowerCase() !== unjoinInput.toLowerCase();
+                        return `
+                          <option value="${this._escapeHtml(z.entity_id)}" ${z.entity_id === selectedZone.entity_id ? "selected" : ""}>
+                            ${this._getRoomEmoji(z.name)} ${this._escapeHtml(z.name)} ${zOn && z.source ? `(${this._escapeHtml(z.source)})` : "(Off)"}
+                          </option>
+                        `;
+                      })
+                      .join("")}
+                  </select>
+                </div>
+
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                  <label style="font-size: 0.72rem; color: var(--otis-text-muted); font-weight: 600;">Matrix Input Source:</label>
+                  <select id="media-studio-input-select" data-zone-id="${this._escapeHtml(selectedZone.entity_id)}" style="width: 100%; padding: 8px 10px; border-radius: 8px; background: rgba(0,0,0,0.3); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.8rem; font-weight: 600;">
+                    ${allInputs
+                      .map((inp) => {
+                        const mpId = effectiveMappings[inp];
+                        const mpName = mpId
+                          ? this._hass?.states?.[mpId]?.attributes?.friendly_name ||
+                            candidatePlayers.find((c) => c.entity_id === mpId)?.name ||
+                            mpId
+                          : "";
+                        return `
+                          <option value="${this._escapeHtml(inp)}" ${inp === activeInput ? "selected" : ""}>
+                            🔌 ${this._escapeHtml(inp)}${mpName ? ` ➔ ${this._escapeHtml(mpName)}` : ""}
+                          </option>
+                        `;
+                      })
+                      .join("")}
+                  </select>
+                </div>
+              </div>
+
+              <!-- Multi-Room Linked Zones Grid -->
+              <div style="display: flex; flex-direction: column; gap: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.06);">
+                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px;">
+                  <span style="font-size: 0.75rem; font-weight: 700; color: var(--otis-text-muted);">
+                    🔗 Link Additional Rooms to "${this._escapeHtml(activeInput || "Input")}":
+                  </span>
+                  <div style="display: flex; gap: 6px;">
+                    <button type="button" class="btn-toolbar" id="btn-media-link-all" data-input="${this._escapeHtml(activeInput)}" style="padding: 2px 8px; font-size: 0.68rem;">
+                      + Link All
+                    </button>
+                    <button type="button" class="btn-toolbar" id="btn-media-unlink-others" style="padding: 2px 8px; font-size: 0.68rem;">
+                      ✕ Unlink Others
+                    </button>
+                  </div>
+                </div>
+                <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                  ${zones
+                    .filter((z) => z.entity_id !== selectedZone.entity_id)
+                    .map((z) => {
+                      const linked = isZoneLinked(z);
+                      return `
+                        <button type="button" class="subview-chip btn-media-link-zone ${linked ? "active" : ""}" data-zone-id="${this._escapeHtml(z.entity_id)}" data-linked="${linked ? "true" : "false"}" data-input="${this._escapeHtml(activeInput)}" style="padding: 5px 10px; font-size: 0.74rem; border-radius: 8px; ${linked ? "background: rgba(16, 185, 129, 0.22); border-color: #10b981; color: #34d399; font-weight: 700;" : ""}">
+                          ${linked ? "✓ " : "+ "}${this._getRoomEmoji(z.name)} ${this._escapeHtml(z.name)}
+                        </button>
+                      `;
+                    })
+                    .join("")}
+                </div>
+              </div>
+            </div>
+
+            ${
+              this._showMediaMappingsEditor
+                ? `
+              <!-- Physical Matrix Input-to-Player Mapping Editor Card -->
+              <div style="background: var(--otis-surface); border: 1px solid var(--otis-primary); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
+                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+                  <div>
+                    <div style="font-size: 0.84rem; font-weight: 700; color: var(--otis-primary);">
+                      🔗 Physical Matrix Input-to-Player Mappings
+                    </div>
+                    <div style="font-size: 0.72rem; color: var(--otis-text-muted);">
+                      Map physical matrix amplifier inputs to upstream streaming players (Music Assistant, Alexa, VLC, Plex, etc.).
+                    </div>
+                  </div>
+                  <button type="button" class="btn-toolbar" id="btn-save-media-mappings" style="background: var(--otis-primary); color: #fff; border-color: var(--otis-primary); font-weight: 700; padding: 5px 14px; font-size: 0.74rem;">
+                    💾 Save Mappings
+                  </button>
+                </div>
+
+                <div style="display: flex; flex-direction: column; gap: 8px; max-height: 280px; overflow-y: auto; padding-right: 4px;">
+                  ${allInputs
+                    .filter((inp) => inp.toLowerCase() !== unjoinInput.toLowerCase())
+                    .map((inpName) => {
+                      const mappedEid = effectiveMappings[inpName] || "";
+                      return `
+                        <div style="display: grid; grid-template-columns: minmax(130px, 1fr) 2fr; gap: 8px; align-items: center; background: rgba(0,0,0,0.22); padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.06);">
+                          <span style="font-size: 0.76rem; font-weight: 600; color: var(--otis-text);">🔌 ${this._escapeHtml(inpName)}</span>
+                          <select class="studio-media-mapping-select" data-input-name="${this._escapeHtml(inpName)}" style="width: 100%; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;">
+                            <option value="">-- Unmapped / Auto-Detect --</option>
+                            ${candidatePlayers
+                              .map(
+                                (p) => `
+                              <option value="${this._escapeHtml(p.entity_id)}" ${p.entity_id === mappedEid ? "selected" : ""}>
+                                ${this._escapeHtml(p.name)} (${this._escapeHtml(p.entity_id)}) [${this._escapeHtml(p.service_profile?.display_name || p.platform || "Player")}]
+                              </option>
+                            `
+                              )
+                              .join("")}
+                          </select>
+                        </div>
+                      `;
+                    })
+                    .join("")}
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.06);">
+                  <div style="display: flex; flex-direction: column; gap: 4px;">
+                    <label style="font-size: 0.7rem; color: var(--otis-text-muted); font-weight: 600;">Unjoin / Mute Input Source:</label>
+                    <select id="studio-media-unjoin-input" style="width: 100%; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;">
+                      <option value="None" ${unjoinInput === "None" ? "selected" : ""}>None</option>
+                      ${allInputs
+                        .map(
+                          (inp) => `
+                        <option value="${this._escapeHtml(inp)}" ${inp.toLowerCase() === unjoinInput.toLowerCase() ? "selected" : ""}>
+                          ${this._escapeHtml(inp)}
+                        </option>
+                      `
+                        )
+                        .join("")}
+                    </select>
+                  </div>
+
+                  <div style="display: flex; flex-direction: column; gap: 4px;">
+                    <label style="font-size: 0.7rem; color: var(--otis-text-muted); font-weight: 600;">Default Speaker Zone:</label>
+                    <select id="studio-media-default-zone" style="width: 100%; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;">
+                      <option value="">-- Auto-Select First Zone --</option>
+                      ${zones
+                        .map(
+                          (z) => `
+                        <option value="${this._escapeHtml(z.entity_id)}" ${z.entity_id === (studioData.default_zone || selectedZone.entity_id) ? "selected" : ""}>
+                          ${this._escapeHtml(z.name)} (${this._escapeHtml(z.entity_id)})
+                        </option>
+                      `
+                        )
+                        .join("")}
+                    </select>
+                  </div>
+                </div>
+              </div>
+            `
+                : ""
+            }
+
+            <!-- Per-User & Household Favorites Card -->
+            <div style="background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+                <div>
+                  <div style="display: flex; align-items: center; gap: 6px;">
+                    <span style="font-size: 0.84rem; font-weight: 700; color: var(--otis-primary);">⭐ ${this._escapeHtml(userName)}'s Favorites &amp; Stations</span>
+                    <span style="font-size: 0.64rem; padding: 1px 6px; border-radius: 999px; background: rgba(168,85,247,0.18); border: 1px solid rgba(168,85,247,0.4); color: #c084fc; font-weight: 700;">
+                      Per-User Synced
+                    </span>
+                  </div>
+                  <div style="font-size: 0.71rem; color: var(--otis-text-muted);">1-click routes "${this._escapeHtml(selectedZone.name)}" to the saved input &amp; starts your station or playlist.</div>
+                </div>
+                <button type="button" class="btn-toolbar" id="btn-media-toggle-add-fav" style="background: rgba(14,165,233,0.18); border-color: rgba(56,189,248,0.45); color: var(--otis-primary); font-size: 0.74rem; padding: 5px 10px;">
+                  ${this._showAddFavoriteForm ? "✕ Close" : "+ Add Favorite"}
+                </button>
+              </div>
+
+              ${
+                this._showAddFavoriteForm
+                  ? `
+                <!-- Inline Add Favorite Form (Non-Admin Safe & Agnostic Provider Types) -->
+                <div style="background: rgba(0,0,0,0.28); border: 1px solid rgba(56,189,248,0.35); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px;">
+                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                    <div>
+                      <label style="font-size: 0.7rem; color: var(--otis-text-muted); display: block; margin-bottom: 3px;">Favorite Label *</label>
+                      <input type="text" id="fav-form-name" value="${this._escapeHtml(this._favFormName)}" placeholder="e.g. Smooth Jazz, NPR, 80s Rock" style="width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;" />
+                    </div>
+                    <div>
+                      <label style="font-size: 0.7rem; color: var(--otis-text-muted); display: block; margin-bottom: 3px;">Matrix Input Source *</label>
+                      <select id="fav-form-input" style="width: 100%; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;">
+                        ${allInputs
+                          .filter((inp) => inp.toLowerCase() !== unjoinInput.toLowerCase())
+                          .map(
+                            (inp) => `
+                          <option value="${this._escapeHtml(inp)}" ${(this._favFormInput || activeInput) === inp ? "selected" : ""}>
+                            🔌 ${this._escapeHtml(inp)}
+                          </option>
+                        `
+                          )
+                          .join("")}
+                      </select>
+                    </div>
+                  </div>
+                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                    <div>
+                      <label style="font-size: 0.7rem; color: var(--otis-text-muted); display: block; margin-bottom: 3px;">Category / Media Type</label>
+                      <select id="fav-form-type" style="width: 100%; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;">
+                        ${supportedTypes
+                          .map(
+                            (t) => `
+                          <option value="${this._escapeHtml(t)}" ${(this._favFormType || "playlist") === t ? "selected" : ""}>
+                            ${
+                              t === "playlist"
+                                ? "🎵 Playlist"
+                                : t === "radio"
+                                ? "📻 Radio Station"
+                                : t === "artist"
+                                ? "🎤 Artist"
+                                : t === "album"
+                                ? "💿 Album"
+                                : t === "custom" || t === "phrase"
+                                ? "🗣️ Voice / TTS Phrase"
+                                : t.toUpperCase()
+                            }
+                          </option>
+                        `
+                          )
+                          .join("")}
+                      </select>
+                    </div>
+                    <div style="display: flex; flex-direction: column; justify-content: flex-end;">
+                      ${
+                        canBrowse
+                          ? `
+                        <button type="button" class="btn-toolbar" id="btn-fav-choose-library" data-player-id="${this._escapeHtml(mappedPlayerId)}" style="width: 100%; padding: 6px 8px; font-size: 0.74rem; background: rgba(56,189,248,0.15); border-color: rgba(56,189,248,0.35); color: var(--otis-primary);">
+                          📂 Choose from ${this._escapeHtml(supportsBrowse ? serviceProvider : "Music Assistant")}
+                        </button>
+                      `
+                          : ""
+                      }
+                    </div>
+                  </div>
+                  ${
+                    this._mediaBrowseOpen
+                      ? `
+                    <div class="fav-library-picker" style="background: rgba(0,0,0,0.45); border: 1px solid var(--otis-primary); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px;">
+                      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px;">
+                        <span style="font-size: 0.75rem; font-weight: 700; color: var(--otis-primary);">
+                          🎵 Choose from ${this._escapeHtml(supportsBrowse ? serviceProvider : "Music Assistant")}:
+                        </span>
+                        <div style="display: flex; gap: 4px; flex-wrap: wrap;">
+                          ${["playlist", "radio", "artist", "album"]
+                            .map(
+                              (t) => `
+                            <button type="button" class="btn-toolbar btn-fav-picker-type ${this._mediaBrowseType === t ? "active" : ""}" data-type="${t}" style="padding: 2px 7px; font-size: 0.65rem; text-transform: capitalize; ${this._mediaBrowseType === t ? "background: var(--otis-primary); color: #fff; border-color: var(--otis-primary);" : ""}">
+                              ${t === "playlist" ? "Playlists" : t === "radio" ? "Radio" : t === "artist" ? "Artists" : "Albums"}
+                            </button>
+                          `
+                            )
+                            .join("")}
+                          <button type="button" class="btn-toolbar" id="btn-fav-picker-close" style="padding: 2px 7px; font-size: 0.65rem;">✕ Close</button>
+                        </div>
+                      </div>
+
+                      ${
+                        this._mediaBrowseLoading
+                          ? `
+                        <div style="padding: 12px; text-align: center; color: var(--otis-text-muted); font-size: 0.74rem;">
+                          <span style="display: inline-block; animation: otis-spin 0.8s linear infinite; margin-right: 6px;">🔄</span>
+                          Loading ${this._escapeHtml(this._mediaBrowseType)}s...
+                        </div>
+                      `
+                          : this._mediaBrowseError
+                          ? `
+                        <div style="padding: 8px; border-radius: 6px; background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; font-size: 0.72rem;">
+                          ⚠️ ${this._escapeHtml(this._mediaBrowseError)}
+                        </div>
+                      `
+                          : this._mediaBrowseItems.length === 0
+                          ? `
+                        <div style="padding: 10px; text-align: center; color: var(--otis-text-muted); font-size: 0.72rem;">
+                          No items found for "${this._escapeHtml(this._mediaBrowseType)}".
+                        </div>
+                      `
+                          : `
+                        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px; max-height: 200px; overflow-y: auto; padding-right: 2px;">
+                          ${this._mediaBrowseItems
+                            .map(
+                              (item) => `
+                            <div class="fav-picker-item" data-id="${this._escapeHtml(item.id)}" data-name="${this._escapeHtml(item.name)}" data-type="${this._escapeHtml(item.media_type || this._mediaBrowseType)}" style="cursor: pointer; padding: 6px 8px; border-radius: 6px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); display: flex; flex-direction: column; gap: 2px; transition: background 0.15s ease;" title="Click to select ${this._escapeHtml(item.name)}">
+                              <span style="font-size: 0.74rem; font-weight: 600; color: var(--otis-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                                🎵 ${this._escapeHtml(item.name)}
+                              </span>
+                              ${
+                                item.artist
+                                  ? `<span style="font-size: 0.64rem; color: var(--otis-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${this._escapeHtml(item.artist)}</span>`
+                                  : ""
+                              }
+                            </div>
+                          `
+                            )
+                            .join("")}
+                        </div>
+                      `
+                      }
+                    </div>
+                  `
+                      : ""
+                  }
+                  <div>
+                    <label style="font-size: 0.7rem; color: var(--otis-text-muted); display: block; margin-bottom: 3px;">Station / Playlist / Voice Command</label>
+                    <input type="text" id="fav-form-command" value="${this._escapeHtml(this._favFormCommand)}" placeholder="${supportsVoice ? 'e.g. play smooth jazz on Spotify, NPR News' : 'e.g. Playlist or Station URI / Name'}" style="width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;" />
+                  </div>
+                  <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+                    ${
+                      isAdmin
+                        ? `
+                      <label style="display: flex; align-items: center; gap: 6px; font-size: 0.73rem; color: var(--otis-text-muted); cursor: pointer;">
+                        <input type="checkbox" id="fav-form-shared" ${this._favFormShared ? "checked" : ""} style="cursor: pointer;" />
+                        <span>🏠 Share with all household users</span>
+                      </label>
+                    `
+                        : `<span></span>`
+                    }
+                    <div style="display: flex; gap: 6px;">
+                      <button type="button" class="btn-toolbar" id="btn-fav-form-cancel" style="padding: 5px 10px; font-size: 0.73rem;">Cancel</button>
+                      <button type="button" class="btn-toolbar" id="btn-fav-form-submit" style="background: var(--otis-primary); color: #fff; border-color: var(--otis-primary); font-weight: 700; padding: 5px 14px; font-size: 0.73rem;">
+                        ⭐ Save Favorite
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              `
+                  : ""
+              }
+
+              ${
+                favorites.length === 0
+                  ? `
+                <div style="padding: 16px; text-align: center; border-radius: 10px; background: rgba(0,0,0,0.16); border: 1px dashed rgba(255,255,255,0.12); font-size: 0.76rem; color: var(--otis-text-muted);">
+                  No favorites saved yet for ${this._escapeHtml(userName)}. Click <strong>+ Add Favorite</strong> or <strong>⭐ Save Track</strong> while music is playing!
+                </div>
+              `
+                  : `
+                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(155px, 1fr)); gap: 8px;">
+                  ${favorites
+                    .map((fav) => {
+                      const canDelete = fav.scope === "user" || isAdmin;
+                      return `
+                        <div class="media-fav-card" style="position: relative; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px 10px; border-radius: 10px; background: rgba(0,0,0,0.22); border: 1px solid var(--otis-surface-border); transition: all 0.15s ease;">
+                          <button type="button" class="btn-media-play-fav" data-fav-id="${this._escapeHtml(fav.id)}" data-zone-id="${this._escapeHtml(selectedZone.entity_id)}" title="Play ${this._escapeHtml(fav.name)} on ${this._escapeHtml(selectedZone.name)} (Input: ${this._escapeHtml(fav.input || activeInput)})" style="background: transparent; border: none; color: var(--otis-text); text-align: left; cursor: pointer; flex: 1; min-width: 0; padding: 0; display: flex; flex-direction: column; gap: 2px;">
+                            <div style="font-size: 0.78rem; font-weight: 700; color: var(--otis-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                              ▶️ ${this._escapeHtml(fav.name)}
+                            </div>
+                            <div style="font-size: 0.66rem; color: var(--otis-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                              🔌 ${this._escapeHtml(fav.input || "Auto")}${fav.scope === "shared" ? " • 🏠 Shared" : ""}
+                            </div>
+                          </button>
+                          ${
+                            canDelete
+                              ? `
+                            <button type="button" class="btn-media-delete-fav" data-fav-id="${this._escapeHtml(fav.id)}" data-fav-scope="${this._escapeHtml(fav.scope || "user")}" title="Remove favorite" style="background: transparent; border: none; color: var(--otis-text-muted); cursor: pointer; font-size: 0.75rem; padding: 2px 4px; border-radius: 4px;">
+                              ✕
+                            </button>
+                          `
+                              : ""
+                          }
+                        </div>
+                      `;
+                    })
+                    .join("")}
+                </div>
+              `
+              }
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
   }
 
   _renderVisionTab() {
@@ -9652,6 +11499,10 @@ class OtisCompanionCard extends HTMLElement {
           this._wizardState = { ...this._wizardState, ...this._userRules.wizard_state };
         }
         this._rulesModalOpen = true;
+        OTIS_ACTIVE_RULES_STATE.isOpen = true;
+        OTIS_ACTIVE_RULES_STATE.activeTab = this._rulesActiveTab;
+        OTIS_ACTIVE_RULES_STATE.draft = this._rulesDraft;
+        OTIS_ACTIVE_RULES_STATE.wizardState = this._wizardState;
         this._render();
       };
     });
@@ -9722,6 +11573,172 @@ class OtisCompanionCard extends HTMLElement {
         } catch (err) {
           console.error("Federation sync failed:", err);
           this._showToast(`Federation sync failed: ${err.message || err}`, true);
+        }
+      };
+    }
+
+    // Local Edge AI (Ollama) Add-on & Model Control Buttons
+    root.querySelectorAll(".btn-ollama-addon-action").forEach((btn) => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        const act = btn.getAttribute("data-ollama-action") || "status";
+        const modelSel = root.querySelector("#ollama-model-select");
+        const modelVal = modelSel ? modelSel.value : undefined;
+        try {
+          const actionLabels = {
+            install: "📦 Installing & starting Otis Edge AI (Ollama) Supervisor Add-on...",
+            start: "▶️ Starting Otis Edge AI (Ollama) Add-on...",
+            stop: "⏹️ Stopping Otis Edge AI (Ollama) Add-on...",
+            restart: "🔄 Restarting Otis Edge AI (Ollama) Add-on...",
+            status: "🩺 Refreshing Local Edge AI status & hardware telemetry...",
+          };
+          this._showToast(actionLabels[act] || `Executing ${act} on Local Edge AI...`);
+          const res = await this._hass.callService(
+            "otis_ai",
+            "manage_local_llm_addon",
+            { action: act, model: modelVal },
+            undefined,
+            true,
+            true
+          );
+          const data = res?.response || res || {};
+          if (data.status && this._capabilityMap) {
+            this._capabilityMap.local_llm = data.status;
+          }
+          if (data.success === false) {
+            this._showToast(data.error || `Ollama action '${act}' failed`, true);
+          } else {
+            this._showToast(data.message || `✨ Local Edge AI (${act}) complete!`);
+          }
+          await this._fetchData();
+        } catch (err) {
+          console.error("Ollama add-on action failed:", err);
+          this._showToast(`Local Edge AI action failed: ${err.message || err}`, true);
+        }
+      };
+    });
+
+    const btnOllamaBench = root.querySelector("#btn-ollama-benchmark");
+    if (btnOllamaBench) {
+      btnOllamaBench.onclick = async (e) => {
+        e.stopPropagation();
+        const modelSel = root.querySelector("#ollama-model-select");
+        const modelVal = modelSel ? modelSel.value : undefined;
+        try {
+          this._showToast(`⚡ Benchmarking Local Edge AI (${modelVal || "active model"})...`);
+          const res = await this._hass.callService(
+            "otis_ai",
+            "benchmark_local_llm",
+            modelVal ? { model: modelVal } : {},
+            undefined,
+            true,
+            true
+          );
+          const data = res?.response || res || {};
+          if (data.success) {
+            this._showToast(`⚡ Benchmark: ${data.tokens_per_second} tok/s (TTFT: ${data.ttft_ms}ms) on ${data.model}`);
+          } else {
+            this._showToast(data.error || "Benchmark failed — ensure Ollama is online", true);
+          }
+          await this._fetchData();
+        } catch (err) {
+          this._showToast(`Benchmark failed: ${err.message || err}`, true);
+        }
+      };
+    }
+
+    const btnOllamaSetModel = root.querySelector("#btn-ollama-set-model");
+    if (btnOllamaSetModel) {
+      btnOllamaSetModel.onclick = async (e) => {
+        e.stopPropagation();
+        const modelSel = root.querySelector("#ollama-model-select");
+        const modelVal = modelSel ? modelSel.value : "";
+        if (!modelVal) return;
+        try {
+          this._showToast(`✓ Setting active Local Edge AI model to ${modelVal}...`);
+          const res = await this._hass.callService(
+            "otis_ai",
+            "manage_local_llm_addon",
+            { action: "set_model", model: modelVal },
+            undefined,
+            true,
+            true
+          );
+          const data = res?.response || res || {};
+          if (data.status && this._capabilityMap) {
+            this._capabilityMap.local_llm = data.status;
+          }
+          this._showToast(data.message || `✨ Active model set to ${modelVal}`);
+          await this._fetchData();
+        } catch (err) {
+          this._showToast(`Failed to set model: ${err.message || err}`, true);
+        }
+      };
+    }
+
+    const btnOllamaPullModel = root.querySelector("#btn-ollama-pull-model");
+    if (btnOllamaPullModel) {
+      btnOllamaPullModel.onclick = async (e) => {
+        e.stopPropagation();
+        const modelSel = root.querySelector("#ollama-model-select");
+        const modelVal = modelSel ? modelSel.value : "";
+        if (!modelVal) return;
+        try {
+          this._showToast(`⬇️ Pulling model '${modelVal}' into Local Edge AI (this may take a few minutes)...`);
+          const res = await this._hass.callService(
+            "otis_ai",
+            "manage_local_llm_addon",
+            { action: "pull_model", model: modelVal },
+            undefined,
+            true,
+            true
+          );
+          const data = res?.response || res || {};
+          if (data.status && this._capabilityMap) {
+            this._capabilityMap.local_llm = data.status;
+          }
+          if (data.success === false) {
+            this._showToast(data.error || `Failed to pull ${modelVal}`, true);
+          } else {
+            this._showToast(data.message || `✨ Model ${modelVal} pulled and activated!`);
+          }
+          await this._fetchData();
+        } catch (err) {
+          this._showToast(`Failed to pull model: ${err.message || err}`, true);
+        }
+      };
+    }
+
+    const btnOllamaDeleteModel = root.querySelector("#btn-ollama-delete-model");
+    if (btnOllamaDeleteModel) {
+      btnOllamaDeleteModel.onclick = async (e) => {
+        e.stopPropagation();
+        const modelSel = root.querySelector("#ollama-model-select");
+        const modelVal = modelSel ? modelSel.value : "";
+        if (!modelVal) return;
+        if (!confirm(`Delete model '${modelVal}' from Local Edge AI storage?`)) return;
+        try {
+          this._showToast(`🗑️ Deleting model '${modelVal}'...`);
+          const res = await this._hass.callService(
+            "otis_ai",
+            "manage_local_llm_addon",
+            { action: "delete_model", model: modelVal },
+            undefined,
+            true,
+            true
+          );
+          const data = res?.response || res || {};
+          if (data.status && this._capabilityMap) {
+            this._capabilityMap.local_llm = data.status;
+          }
+          if (data.success === false) {
+            this._showToast(data.error || `Failed to delete ${modelVal}`, true);
+          } else {
+            this._showToast(data.message || `🗑️ Deleted model ${modelVal}`);
+          }
+          await this._fetchData();
+        } catch (err) {
+          this._showToast(`Failed to delete model: ${err.message || err}`, true);
         }
       };
     }
@@ -9829,6 +11846,10 @@ class OtisCompanionCard extends HTMLElement {
         this._rulesDraft = { ...(this._userRules || {}) };
         this._rulesModalOpen = true;
         this._rulesActiveTab = "dashboard";
+        OTIS_ACTIVE_RULES_STATE.isOpen = true;
+        OTIS_ACTIVE_RULES_STATE.activeTab = "dashboard";
+        OTIS_ACTIVE_RULES_STATE.draft = this._rulesDraft;
+        OTIS_ACTIVE_RULES_STATE.wizardState = this._wizardState;
         this._render();
       };
     }
@@ -9882,6 +11903,8 @@ class OtisCompanionCard extends HTMLElement {
     if (this._rulesModalOpen) {
       const closeRules = () => {
         this._rulesModalOpen = false;
+        OTIS_ACTIVE_RULES_STATE.isOpen = false;
+        OTIS_ACTIVE_RULES_STATE.draft = null;
         this._render();
       };
       const rulesCloseBtn = root.querySelector("#rules-modal-close-btn");
@@ -9893,6 +11916,12 @@ class OtisCompanionCard extends HTMLElement {
         rulesBackdrop.onclick = (e) => {
           if (e.target === rulesBackdrop) closeRules();
         };
+        rulesBackdrop.addEventListener("input", () => {
+          _harvestAllInputs();
+        });
+        rulesBackdrop.addEventListener("change", () => {
+          _harvestAllInputs();
+        });
       }
 
       // Rules Tab Switching & Input Harvesters
@@ -9973,6 +12002,30 @@ class OtisCompanionCard extends HTMLElement {
         if (presenceCardsToggle) draft.presence_room_cards = presenceCardsToggle.checked;
         if (showIgnoredCheck) draft.show_ignored_recommendations = showIgnoredCheck.checked;
         if (timeoutInput && timeoutInput.value) draft.reasoning_timeout = parseInt(timeoutInput.value, 10);
+
+        const mappingSelects = root.querySelectorAll(".rules-media-mapping-select");
+        if (mappingSelects.length > 0) {
+          const mappings = { ...(draft.media_input_mappings || {}) };
+          mappingSelects.forEach((sel) => {
+            const inpName = sel.getAttribute("data-input-name");
+            if (inpName) {
+              if (sel.value) {
+                mappings[inpName] = sel.value;
+              } else {
+                delete mappings[inpName];
+              }
+            }
+          });
+          draft.media_input_mappings = mappings;
+        }
+        const mediaUnjoinInput = root.querySelector("#rules-input-media-unjoin");
+        if (mediaUnjoinInput) {
+          draft.media_unjoin_input = mediaUnjoinInput.value.trim() || "None";
+        }
+        const mediaDefaultZone = root.querySelector("#rules-input-media-default-zone");
+        if (mediaDefaultZone) {
+          draft.media_default_zone = mediaDefaultZone.value.trim();
+        }
 
         // If wizard state has any values and instructions are empty or wizard active, synthesize instructions
         const w = this._wizardState || {};
@@ -10101,6 +12154,8 @@ class OtisCompanionCard extends HTMLElement {
             this._userRules = saved;
             this._rulesDraft = { ...saved };
             this._rulesModalOpen = false;
+            OTIS_ACTIVE_RULES_STATE.isOpen = false;
+            OTIS_ACTIVE_RULES_STATE.draft = null;
 
             this._showToast("✨ Household Rules wizard preferences saved & applied!");
             await this._fetchData();
@@ -10421,6 +12476,8 @@ class OtisCompanionCard extends HTMLElement {
             this._userRules = saved;
             this._rulesDraft = { ...saved };
             this._rulesModalOpen = false;
+            OTIS_ACTIVE_RULES_STATE.isOpen = false;
+            OTIS_ACTIVE_RULES_STATE.draft = null;
 
             this._showToast("✨ Preferences saved!");
             await this._fetchData();
@@ -10564,7 +12621,10 @@ class OtisCompanionCard extends HTMLElement {
     root.querySelectorAll(".btn-apply-theme").forEach((btn) => {
       btn.onclick = () => {
         const k = btn.getAttribute("data-theme-key");
-        if (k) this._applyThemeDirect(k);
+        const isSubview = this._isSubviewMode();
+        const isAll = !isSubview && this._themeApplyScope === "all";
+        const targetId = isSubview ? this._hass?.user?.id : (isAll ? null : this._themeApplyScope === "specific" ? this._selectedThemeUserId : this._hass?.user?.id);
+        if (k) this._applyThemeDirect(k, targetId, isAll);
       };
     });
     root.querySelectorAll(".btn-delete-theme").forEach((btn) => {
@@ -10627,7 +12687,9 @@ class OtisCompanionCard extends HTMLElement {
         if (e) e.preventDefault();
         this._saveActiveTab("capabilities");
         this._render();
-        this._fetchData(); // Trigger fresh recalculation on tab switch
+        if (!this._capabilityMap) {
+          this._fetchData();
+        }
       };
     }
 
@@ -10653,6 +12715,593 @@ class OtisCompanionCard extends HTMLElement {
         this._render();
       };
     }
+
+    const tabMedia = root.querySelector("#tab-media");
+    if (tabMedia) {
+      tabMedia.onclick = (e) => {
+        if (e) e.preventDefault();
+        if (this._isListening) this._stopVoiceRecording();
+        this._saveActiveTab("media");
+        this._render();
+        this._fetchMediaStudioState();
+      };
+    }
+
+    // --- Media Studio & Source-to-Zone Router Event Listeners ---
+    const btnToggleMappings = root.querySelector("#btn-toggle-media-mappings");
+    if (btnToggleMappings) {
+      btnToggleMappings.onclick = () => {
+        this._showMediaMappingsEditor = !this._showMediaMappingsEditor;
+        this._render();
+      };
+    }
+
+    const btnSaveMappings = root.querySelector("#btn-save-media-mappings");
+    if (btnSaveMappings) {
+      btnSaveMappings.onclick = async () => {
+        const mappings = {};
+        root.querySelectorAll(".studio-media-mapping-select").forEach((sel) => {
+          const inpName = sel.getAttribute("data-input-name");
+          if (inpName && sel.value) {
+            mappings[inpName] = sel.value;
+          }
+        });
+        const unjoinVal = root.querySelector("#studio-media-unjoin-input")?.value?.trim() || "None";
+        const defaultZoneVal = root.querySelector("#studio-media-default-zone")?.value?.trim() || "";
+        this._showToast("💾 Saving Input-to-Player mappings...");
+        const res = await this._postMediaStudioAction({
+          action: "save_mappings",
+          mappings,
+          unjoin_input: unjoinVal,
+          default_zone: defaultZoneVal,
+        });
+        if (res && res.success) {
+          this._showMediaMappingsEditor = false;
+          this._showToast("✨ Input-to-Player mappings saved & synced!");
+          await this._fetchData();
+        }
+      };
+    }
+
+    const mediaZoneSelect = root.querySelector("#media-studio-zone-select");
+    if (mediaZoneSelect) {
+      mediaZoneSelect.onchange = (e) => {
+        const zId = e.target.value;
+        this._selectedMediaZoneId = zId;
+        const st = this._hass?.states?.[zId];
+        const unjoinInput = this._mediaStudioData?.unjoin_input || this._userRules?.media_unjoin_input || "None";
+        const src = st?.attributes?.source || "";
+        if (src && src.toLowerCase() !== unjoinInput.toLowerCase()) {
+          this._selectedMediaInput = src;
+        }
+        this._render();
+      };
+    }
+
+    const mediaInputSelect = root.querySelector("#media-studio-input-select");
+    if (mediaInputSelect) {
+      mediaInputSelect.onchange = async (e) => {
+        const newInput = e.target.value;
+        const zId = mediaInputSelect.getAttribute("data-zone-id") || this._selectedMediaZoneId;
+        this._selectedMediaInput = newInput;
+        if (zId && this._hass) {
+          this._mediaOptimisticSources[zId] = newInput;
+          this._render();
+          try {
+            const unjoinInput = this._mediaStudioData?.unjoin_input || this._userRules?.media_unjoin_input || "None";
+            if (newInput.toLowerCase() !== unjoinInput.toLowerCase()) {
+              await this._hass.callService("media_player", "turn_on", { entity_id: zId });
+            }
+            await this._hass.callService("media_player", "select_source", {
+              entity_id: zId,
+              source: newInput,
+            });
+            this._showToast(`🔌 Routed "${newInput}" to ${this._hass.states?.[zId]?.attributes?.friendly_name || zId}`);
+          } catch (err) {
+            this._showToast(`Could not switch source: ${err.message || err}`, true);
+          } finally {
+            setTimeout(() => {
+              delete this._mediaOptimisticSources[zId];
+              this._fetchMediaStudioState();
+            }, 1500);
+          }
+        }
+      };
+    }
+
+    const btnSetDefaultZone = root.querySelector("#btn-media-set-default-zone");
+    if (btnSetDefaultZone) {
+      btnSetDefaultZone.onclick = async () => {
+        const zId = btnSetDefaultZone.getAttribute("data-zone-id");
+        if (!zId) return;
+        const res = await this._postMediaStudioAction({
+          action: "set_default_zone",
+          zone_entity_id: zId,
+        });
+        if (res && res.success) {
+          this._showToast("📌 Saved as your default speaker zone!");
+        }
+      };
+    }
+
+    const btnZonePower = root.querySelector("#btn-media-zone-power");
+    if (btnZonePower) {
+      btnZonePower.onclick = async () => {
+        const zId = btnZonePower.getAttribute("data-zone-id");
+        const isOn = btnZonePower.getAttribute("data-is-on") === "true";
+        if (!zId || !this._hass) return;
+        const unjoinInput = this._mediaStudioData?.unjoin_input || this._userRules?.media_unjoin_input || "None";
+        try {
+          if (isOn) {
+            this._mediaOptimisticSources[zId] = unjoinInput;
+            this._render();
+            try {
+              await this._hass.callService("media_player", "select_source", {
+                entity_id: zId,
+                source: unjoinInput,
+              });
+            } catch (_) {}
+            try {
+              await this._hass.callService("media_player", "turn_off", { entity_id: zId });
+            } catch (_) {}
+            this._showToast(`⏻ Turned off ${this._hass.states?.[zId]?.attributes?.friendly_name || zId}`);
+          } else {
+            const targetInp = this._selectedMediaInput || "Bridge";
+            this._mediaOptimisticSources[zId] = targetInp;
+            this._render();
+            await this._hass.callService("media_player", "turn_on", { entity_id: zId });
+            if (targetInp && targetInp.toLowerCase() !== unjoinInput.toLowerCase()) {
+              await this._hass.callService("media_player", "select_source", {
+                entity_id: zId,
+                source: targetInp,
+              });
+            }
+            this._showToast(`⏻ Turned on ${this._hass.states?.[zId]?.attributes?.friendly_name || zId}`);
+          }
+        } catch (err) {
+          this._showToast(`Zone power toggle failed: ${err.message || err}`, true);
+        } finally {
+          setTimeout(() => {
+            delete this._mediaOptimisticSources[zId];
+            this._fetchMediaStudioState();
+          }, 1500);
+        }
+      };
+    }
+
+    root.querySelectorAll(".btn-media-transport").forEach((btn) => {
+      btn.onclick = async () => {
+        const svc = btn.getAttribute("data-transport");
+        const playerId = btn.getAttribute("data-player-id");
+        if (!svc || !playerId || !this._hass) return;
+        try {
+          await this._hass.callService("media_player", svc, { entity_id: playerId });
+          setTimeout(() => this._fetchMediaStudioState(), 700);
+        } catch (err) {
+          this._showToast(`Transport command failed: ${err.message || err}`, true);
+        }
+      };
+    });
+
+    const btnBrowsePlayer = root.querySelector("#btn-media-browse-player");
+    if (btnBrowsePlayer) {
+      btnBrowsePlayer.onclick = () => {
+        const playerId = btnBrowsePlayer.getAttribute("data-player-id");
+        if (!playerId) return;
+        const ev = new CustomEvent("hass-more-info", {
+          detail: { entityId: playerId },
+          bubbles: true,
+          composed: true,
+        });
+        this.dispatchEvent(ev);
+        window.dispatchEvent(ev);
+      };
+    }
+
+    const btnSaveCurrentTrack = root.querySelector("#btn-media-save-current-track");
+    if (btnSaveCurrentTrack) {
+      btnSaveCurrentTrack.onclick = () => {
+        const title = btnSaveCurrentTrack.getAttribute("data-title") || "";
+        const artist = btnSaveCurrentTrack.getAttribute("data-artist") || "";
+        const inp = btnSaveCurrentTrack.getAttribute("data-input") || "";
+        const cleanTitle = title.replace(/^(?:Ready on|Streaming on)\s+/i, "").trim();
+        this._favFormName = cleanTitle && cleanTitle !== "Matrix" ? cleanTitle : "Favorite Station";
+        this._favFormInput = inp;
+        this._favFormCommand =
+          cleanTitle && !cleanTitle.startsWith("Input ")
+            ? `play ${cleanTitle}${artist && !artist.includes("(") && !artist.startsWith("Select ") ? ` by ${artist}` : ""}`
+            : "";
+        this._showAddFavoriteForm = true;
+        this._render();
+      };
+    }
+
+    root.querySelectorAll(".media-zone-vol-slider").forEach((slider) => {
+      slider.oninput = (e) => {
+        const zId = slider.getAttribute("data-zone-id");
+        const pct = parseInt(e.target.value, 10) || 0;
+        const lbl = root.querySelector(`.media-vol-label[data-zone-vol-label="${zId}"]`);
+        if (lbl) lbl.textContent = `${pct}%`;
+      };
+      slider.onchange = async (e) => {
+        const zId = slider.getAttribute("data-zone-id");
+        const pct = parseInt(e.target.value, 10) || 0;
+        if (!zId || !this._hass) return;
+        const volLevel = Math.max(0, Math.min(1, pct / 100));
+        this._mediaOptimisticVolumes[zId] = volLevel;
+        try {
+          await this._hass.callService("media_player", "volume_set", {
+            entity_id: zId,
+            volume_level: volLevel,
+          });
+        } catch (err) {
+          this._showToast(`Volume adjustment failed: ${err.message || err}`, true);
+        } finally {
+          setTimeout(() => {
+            delete this._mediaOptimisticVolumes[zId];
+          }, 1500);
+        }
+      };
+    });
+
+    root.querySelectorAll(".btn-media-mute-toggle").forEach((btn) => {
+      btn.onclick = async () => {
+        const zId = btn.getAttribute("data-zone-id");
+        const curMuted = btn.getAttribute("data-muted") === "true";
+        if (!zId || !this._hass) return;
+        const nextMuted = !curMuted;
+        this._mediaOptimisticMutes[zId] = nextMuted;
+        this._render();
+        try {
+          await this._hass.callService("media_player", "volume_mute", {
+            entity_id: zId,
+            is_volume_muted: nextMuted,
+          });
+        } catch (err) {
+          this._showToast(`Mute toggle failed: ${err.message || err}`, true);
+        } finally {
+          setTimeout(() => {
+            delete this._mediaOptimisticMutes[zId];
+          }, 1500);
+        }
+      };
+    });
+
+    root.querySelectorAll(".btn-media-link-zone").forEach((btn) => {
+      btn.onclick = async () => {
+        const zId = btn.getAttribute("data-zone-id");
+        const isLinked = btn.getAttribute("data-linked") === "true";
+        const targetInp = btn.getAttribute("data-input");
+        const unjoinInput = this._mediaStudioData?.unjoin_input || this._userRules?.media_unjoin_input || "None";
+        if (!zId || !this._hass) return;
+        try {
+          if (isLinked) {
+            this._mediaOptimisticSources[zId] = unjoinInput;
+            this._render();
+            try {
+              await this._hass.callService("media_player", "select_source", {
+                entity_id: zId,
+                source: unjoinInput,
+              });
+            } catch (_) {
+              await this._hass.callService("media_player", "turn_off", { entity_id: zId });
+            }
+            this._showToast(`Unlinked ${this._hass.states?.[zId]?.attributes?.friendly_name || zId}`);
+          } else if (targetInp) {
+            this._mediaOptimisticSources[zId] = targetInp;
+            this._render();
+            await this._hass.callService("media_player", "turn_on", { entity_id: zId });
+            await this._hass.callService("media_player", "select_source", {
+              entity_id: zId,
+              source: targetInp,
+            });
+            this._showToast(`🔗 Linked ${this._hass.states?.[zId]?.attributes?.friendly_name || zId} to "${targetInp}"`);
+          }
+        } catch (err) {
+          this._showToast(`Room link toggle failed: ${err.message || err}`, true);
+        } finally {
+          setTimeout(() => {
+            delete this._mediaOptimisticSources[zId];
+            this._fetchMediaStudioState();
+          }, 1500);
+        }
+      };
+    });
+
+    const btnLinkAll = root.querySelector("#btn-media-link-all");
+    if (btnLinkAll) {
+      btnLinkAll.onclick = async () => {
+        const targetInp = btnLinkAll.getAttribute("data-input");
+        const zones = this._mediaStudioData?.zones || this._capabilityMap?.media_topology?.matrix_zones || [];
+        if (!targetInp || !this._hass || zones.length === 0) return;
+        zones.forEach((z) => {
+          this._mediaOptimisticSources[z.entity_id] = targetInp;
+        });
+        this._render();
+        try {
+          const eids = zones.map((z) => z.entity_id);
+          await this._hass.callService("media_player", "turn_on", { entity_id: eids });
+          await this._hass.callService("media_player", "select_source", {
+            entity_id: eids,
+            source: targetInp,
+          });
+          this._showToast(`🔗 Linked all ${eids.length} rooms to "${targetInp}"`);
+        } catch (err) {
+          this._showToast(`Failed to link all rooms: ${err.message || err}`, true);
+        } finally {
+          setTimeout(() => {
+            this._mediaOptimisticSources = {};
+            this._fetchMediaStudioState();
+          }, 1800);
+        }
+      };
+    }
+
+    const btnUnlinkOthers = root.querySelector("#btn-media-unlink-others");
+    if (btnUnlinkOthers) {
+      btnUnlinkOthers.onclick = async () => {
+        const zones = this._mediaStudioData?.zones || this._capabilityMap?.media_topology?.matrix_zones || [];
+        const unjoinInput = this._mediaStudioData?.unjoin_input || this._userRules?.media_unjoin_input || "None";
+        const otherEids = zones
+          .map((z) => z.entity_id)
+          .filter((id) => id && id !== this._selectedMediaZoneId);
+        if (otherEids.length === 0 || !this._hass) return;
+        otherEids.forEach((id) => {
+          this._mediaOptimisticSources[id] = unjoinInput;
+        });
+        this._render();
+        try {
+          await this._hass.callService("media_player", "select_source", {
+            entity_id: otherEids,
+            source: unjoinInput,
+          });
+          this._showToast("Unlinked all other speaker rooms");
+        } catch (err) {
+          this._showToast(`Failed to unlink rooms: ${err.message || err}`, true);
+        } finally {
+          setTimeout(() => {
+            this._mediaOptimisticSources = {};
+            this._fetchMediaStudioState();
+          }, 1800);
+        }
+      };
+    }
+
+    const btnToggleAddFav = root.querySelector("#btn-media-toggle-add-fav");
+    if (btnToggleAddFav) {
+      btnToggleAddFav.onclick = () => {
+        this._showAddFavoriteForm = !this._showAddFavoriteForm;
+        this._render();
+      };
+    }
+
+    const btnCancelFav = root.querySelector("#btn-fav-form-cancel");
+    if (btnCancelFav) {
+      btnCancelFav.onclick = () => {
+        this._showAddFavoriteForm = false;
+        this._render();
+      };
+    }
+
+    const favNameInp = root.querySelector("#fav-form-name");
+    if (favNameInp) {
+      favNameInp.oninput = (e) => {
+        this._favFormName = e.target.value;
+      };
+    }
+    const favInputSel = root.querySelector("#fav-form-input");
+    if (favInputSel) {
+      favInputSel.onchange = (e) => {
+        this._favFormInput = e.target.value;
+      };
+    }
+    const favCmdInp = root.querySelector("#fav-form-command");
+    if (favCmdInp) {
+      favCmdInp.oninput = (e) => {
+        this._favFormCommand = e.target.value;
+      };
+    }
+    const favSharedChk = root.querySelector("#fav-form-shared");
+    if (favSharedChk) {
+      favSharedChk.onchange = (e) => {
+        this._favFormShared = e.target.checked;
+      };
+    }
+    const favTypeSel = root.querySelector("#fav-form-type");
+    if (favTypeSel) {
+      favTypeSel.onchange = (e) => {
+        this._favFormType = e.target.value;
+      };
+    }
+    const btnFavChooseLib = root.querySelector("#btn-fav-choose-library");
+    if (btnFavChooseLib) {
+      btnFavChooseLib.onclick = () => {
+        const selInp = root.querySelector("#fav-form-input")?.value || this._favFormInput || activeInput;
+        const pId = effectiveMappings[selInp] || btnFavChooseLib.getAttribute("data-player-id") || mappedPlayerId || "";
+        const bType = root.querySelector("#fav-form-type")?.value || this._favFormType || "playlist";
+        this._favFormName = root.querySelector("#fav-form-name")?.value || this._favFormName;
+        this._favFormCommand = root.querySelector("#fav-form-command")?.value || this._favFormCommand;
+        this._favFormShared = Boolean(root.querySelector("#fav-form-shared")?.checked ?? this._favFormShared);
+        this._favFormInput = selInp;
+        this._favFormType = bType;
+        this._fetchMediaLibrary(pId, bType);
+      };
+    }
+
+    root.querySelectorAll(".fav-picker-item").forEach((itemEl) => {
+      itemEl.onclick = () => {
+        const id = itemEl.getAttribute("data-id");
+        const name = itemEl.getAttribute("data-name");
+        const type = itemEl.getAttribute("data-type");
+        this._favFormName = name || this._favFormName;
+        this._favFormCommand = id || this._favFormCommand;
+        this._favFormType = type || this._favFormType;
+        this._mediaBrowseOpen = false;
+        this._render();
+        this._showToast(`Selected "${name}"`);
+      };
+    });
+
+    root.querySelectorAll(".btn-fav-picker-type").forEach((btn) => {
+      btn.onclick = () => {
+        const t = btn.getAttribute("data-type");
+        const selInp = root.querySelector("#fav-form-input")?.value || this._favFormInput || activeInput;
+        const pId = effectiveMappings[selInp] || mappedPlayerId || "";
+        this._favFormName = root.querySelector("#fav-form-name")?.value || this._favFormName;
+        this._favFormCommand = root.querySelector("#fav-form-command")?.value || this._favFormCommand;
+        this._favFormShared = Boolean(root.querySelector("#fav-form-shared")?.checked ?? this._favFormShared);
+        this._favFormInput = selInp;
+        this._favFormType = t;
+        this._fetchMediaLibrary(pId, t);
+      };
+    });
+
+    const btnFavPickerClose = root.querySelector("#btn-fav-picker-close");
+    if (btnFavPickerClose) {
+      btnFavPickerClose.onclick = () => {
+        this._mediaBrowseOpen = false;
+        this._render();
+      };
+    }
+
+    const btnSubmitFav = root.querySelector("#btn-fav-form-submit");
+    if (btnSubmitFav) {
+      btnSubmitFav.onclick = async () => {
+        const name = (root.querySelector("#fav-form-name")?.value || this._favFormName || "").trim();
+        const input = (root.querySelector("#fav-form-input")?.value || this._favFormInput || "").trim();
+        const command = (root.querySelector("#fav-form-command")?.value || this._favFormCommand || "").trim();
+        const media_content_type = (root.querySelector("#fav-form-type")?.value || this._favFormType || "custom").trim();
+        const shared = Boolean(root.querySelector("#fav-form-shared")?.checked ?? this._favFormShared);
+        if (!name) {
+          this._showToast("Please enter a label for your favorite", true);
+          return;
+        }
+        const res = await this._postMediaStudioAction({
+          action: "add_favorite",
+          name,
+          input,
+          command,
+          media_content_type,
+          shared,
+        });
+        if (res && res.success) {
+          this._showAddFavoriteForm = false;
+          this._favFormName = "";
+          this._favFormCommand = "";
+          this._favFormShared = false;
+          this._showToast(`⭐ Saved "${name}" to ${shared ? "household" : "your"} favorites!`);
+        }
+      };
+    }
+
+    const btnBrowseClose = root.querySelector("#btn-media-browse-close");
+    if (btnBrowseClose) {
+      btnBrowseClose.onclick = () => {
+        this._mediaBrowseOpen = false;
+        this._render();
+      };
+    }
+
+    root.querySelectorAll(".btn-browse-type").forEach((btn) => {
+      btn.onclick = () => {
+        const pId = btn.getAttribute("data-player-id") || mappedPlayerId;
+        const bType = btn.getAttribute("data-type") || "playlist";
+        this._fetchMediaLibrary(pId, bType);
+      };
+    });
+
+    root.querySelectorAll(".btn-browse-action").forEach((btn) => {
+      btn.onclick = () => {
+        const pId = btn.getAttribute("data-player-id") || mappedPlayerId;
+        const bType = btn.getAttribute("data-type") || "playlist";
+        this._fetchMediaLibrary(pId, bType);
+      };
+    });
+
+    root.querySelectorAll(".btn-play-library-item").forEach((btn) => {
+      btn.onclick = async () => {
+        const itemId = btn.getAttribute("data-id");
+        const itemName = btn.getAttribute("data-name");
+        const itemType = btn.getAttribute("data-type");
+        const pId = btn.getAttribute("data-player-id");
+        const zId = btn.getAttribute("data-zone-id") || this._selectedMediaZoneId;
+        const inp = btn.getAttribute("data-input");
+        this._showToast(`▶️ Routing & playing "${itemName}" in ${this._hass?.states?.[zId]?.attributes?.friendly_name || zId}...`);
+        const res = await this._postMediaStudioAction({
+          action: "play_media",
+          zone_entity_id: zId,
+          player_entity_id: pId,
+          media_content_id: itemId,
+          media_content_type: itemType,
+          input: inp,
+        });
+        if (res && res.success) {
+          if (res.routed_input) {
+            this._selectedMediaInput = res.routed_input;
+          }
+          this._showToast(`🎵 Now playing "${itemName}"!`);
+          setTimeout(() => this._fetchMediaStudioState(), 1200);
+        } else {
+          this._showToast(`Playback failed: ${res?.error || "Unknown error"}`, true);
+        }
+      };
+    });
+
+    root.querySelectorAll(".btn-fav-library-item").forEach((btn) => {
+      btn.onclick = () => {
+        const itemId = btn.getAttribute("data-id");
+        const itemName = btn.getAttribute("data-name");
+        const itemType = btn.getAttribute("data-type");
+        const inp = btn.getAttribute("data-input");
+        this._favFormName = itemName;
+        this._favFormInput = inp;
+        this._favFormCommand = itemId;
+        this._favFormType = itemType;
+        this._showAddFavoriteForm = true;
+        this._mediaBrowseOpen = false;
+        this._render();
+      };
+    });
+
+    root.querySelectorAll(".btn-media-play-fav").forEach((btn) => {
+      btn.onclick = async () => {
+        const favId = btn.getAttribute("data-fav-id");
+        const zId = btn.getAttribute("data-zone-id") || this._selectedMediaZoneId;
+        if (!favId) return;
+        this._showToast("▶️ Routing speaker zone & starting favorite...");
+        const res = await this._postMediaStudioAction({
+          action: "play_favorite",
+          favorite_id: favId,
+          zone_entity_id: zId,
+        });
+        if (res && res.success) {
+          if (res.routed_input) {
+            this._selectedMediaInput = res.routed_input;
+          }
+          this._showToast(
+            `🎵 Playing "${res.favorite?.name || "Favorite"}" on ${this._hass?.states?.[zId]?.attributes?.friendly_name || zId}!`
+          );
+          setTimeout(() => this._fetchMediaStudioState(), 1200);
+        }
+      };
+    });
+
+    root.querySelectorAll(".btn-media-delete-fav").forEach((btn) => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        const favId = btn.getAttribute("data-fav-id");
+        const scope = btn.getAttribute("data-fav-scope") || "user";
+        if (!favId) return;
+        const res = await this._postMediaStudioAction({
+          action: "remove_favorite",
+          favorite_id: favId,
+          shared: scope === "shared",
+        });
+        if (res && res.success) {
+          this._showToast("🗑️ Removed favorite");
+        }
+      };
+    });
 
     const refreshVisionBtn = root.querySelector("#btn-refresh-vision");
     if (refreshVisionBtn) {
@@ -10763,6 +13412,117 @@ class OtisCompanionCard extends HTMLElement {
       };
     });
 
+    // GitHub Bug Reporter & Issue Tracker
+    root.querySelectorAll(".btn-report-github").forEach((btn) => {
+      btn.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const sid = e.currentTarget.getAttribute("data-suggestion-id");
+        const s = (this._suggestions || []).find((item) => item.id === sid);
+        if (s && s.action_payload) {
+          const payload = s.action_payload;
+          this._githubModalData = {
+            repo: payload.target_repo || "OtisPresley/otis-ai-companion",
+            title: payload.suggested_title || `[Bug Report] ${payload.domain || 'integration'}: Unhandled Exception`,
+            body: payload.sanitized_body || "",
+            error_id: payload.error_id,
+            domain: payload.domain,
+          };
+          this._githubModalStep = "review";
+          this._githubErrorMsg = null;
+          this._githubModalOpen = true;
+          this._render();
+        }
+      };
+    });
+
+    root.querySelectorAll(".btn-dismiss-tracked-issue").forEach((btn) => {
+      btn.onclick = async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const trackId = e.currentTarget.getAttribute("data-track-id");
+        if (!trackId) return;
+        try {
+          const resp =
+            this._hass && typeof this._hass.fetchWithAuth === "function"
+              ? await this._hass.fetchWithAuth("/api/otis_ai/issue_reporter", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ action: "dismiss_issue", track_id: trackId }),
+                })
+              : await fetch("/api/otis_ai/issue_reporter", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ action: "dismiss_issue", track_id: trackId }),
+                });
+          this._showToast("Dismissed issue tracking from feed");
+          await this._fetchData();
+        } catch (_) {}
+      };
+    });
+
+    const closeGhModal = () => {
+      if (this._githubPollTimer) {
+        clearInterval(this._githubPollTimer);
+        this._githubPollTimer = null;
+      }
+      this._githubModalOpen = false;
+      this._githubErrorMsg = null;
+      this._render();
+    };
+
+    root.querySelectorAll("#btn-cancel-github-modal, #btn-close-gh-modal-header").forEach((btn) => {
+      btn.onclick = closeGhModal;
+    });
+
+    const ghBackdrop = root.querySelector("#github-modal-backdrop");
+    if (ghBackdrop) {
+      ghBackdrop.onclick = (e) => {
+        if (e.target === ghBackdrop) closeGhModal();
+      };
+    }
+
+    const btnProceedGhAuth = root.querySelector("#btn-proceed-github-auth");
+    if (btnProceedGhAuth) {
+      btnProceedGhAuth.onclick = () => {
+        const repoInp = root.querySelector("#gh-modal-repo");
+        const titleInp = root.querySelector("#gh-modal-title");
+        const bodyInp = root.querySelector("#gh-modal-body");
+        if (this._githubModalData) {
+          if (repoInp && repoInp.value) this._githubModalData.repo = repoInp.value.trim();
+          if (titleInp && titleInp.value) this._githubModalData.title = titleInp.value.trim();
+          if (bodyInp && bodyInp.value) this._githubModalData.body = bodyInp.value.trim();
+        }
+        this._startGitHubDeviceFlow();
+      };
+    }
+
+    const btnCopyGhCode = root.querySelector("#btn-copy-gh-code");
+    if (btnCopyGhCode) {
+      btnCopyGhCode.onclick = () => {
+        const code = this._githubDeviceCode?.user_code;
+        if (code && navigator.clipboard) {
+          navigator.clipboard.writeText(code).then(() => {
+            this._showToast(`📋 Code ${code} copied to clipboard!`);
+          });
+        }
+      };
+    }
+
+    const btnRetryGhFlow = root.querySelector("#btn-retry-github-flow");
+    if (btnRetryGhFlow) {
+      btnRetryGhFlow.onclick = () => this._startGitHubDeviceFlow();
+    }
+
+    const btnCloseGhSuccess = root.querySelector("#btn-close-github-success");
+    if (btnCloseGhSuccess) {
+      btnCloseGhSuccess.onclick = () => {
+        this._githubModalOpen = false;
+        this._render();
+        this._fetchData();
+      };
+    }
+
     // Multi-choice Room Entry Identity Verification buttons
     root.querySelectorAll(".btn-verify-room-candidate").forEach((btn) => {
       btn.onclick = async (e) => {
@@ -10807,8 +13567,8 @@ class OtisCompanionCard extends HTMLElement {
       };
     });
 
-    // Quick + Verify Sample buttons in People & Pets progress banner and modal
-    root.querySelectorAll(".btn-quick-verify-person").forEach((btn) => {
+    // Reset Training buttons in People & Pets progress banner and modal
+    root.querySelectorAll(".btn-reset-person-training").forEach((btn) => {
       btn.onclick = async (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -10819,12 +13579,13 @@ class OtisCompanionCard extends HTMLElement {
           await this._hass.callService("otis_ai", "confirm_person_identity", {
             person_id: pid,
             label,
-            confirmed: true,
+            confirmed: false,
+            visual_features: { reset: true },
           });
-          this._showToast(`✨ Recorded training sample for ${label}!`);
+          this._showToast(`↺ Reset recognition training for ${label}. Verify live camera snapshots in Proactive Feed to train.`);
           await this._fetchData();
         } catch (err) {
-          this._showToast(`Failed to record sample: ${err.message || err}`, true);
+          this._showToast(`Failed to reset training: ${err.message || err}`, true);
         }
       };
     });
@@ -10834,6 +13595,10 @@ class OtisCompanionCard extends HTMLElement {
       btnOpenPeopleRules.onclick = () => {
         this._rulesActiveTab = "people";
         this._rulesModalOpen = true;
+        OTIS_ACTIVE_RULES_STATE.isOpen = true;
+        OTIS_ACTIVE_RULES_STATE.activeTab = "people";
+        OTIS_ACTIVE_RULES_STATE.draft = this._rulesDraft;
+        OTIS_ACTIVE_RULES_STATE.wizardState = this._wizardState;
         this._render();
       };
     }
@@ -10957,7 +13722,7 @@ class OtisCompanionCard extends HTMLElement {
       };
     });
 
-    // Reasoning trace toggle buttons
+    // Reasoning trace toggle buttons (in-place DOM toggle without scroll jumps)
     root.querySelectorAll(".reasoning-trace-toggle").forEach((btn) => {
       btn.onclick = (e) => {
         if (e) {
@@ -10965,13 +13730,23 @@ class OtisCompanionCard extends HTMLElement {
           e.stopPropagation();
         }
         const traceId = btn.getAttribute("data-trace-id");
-        if (traceId) {
-          if (this._expandedReasoningIds.has(traceId)) {
-            this._expandedReasoningIds.delete(traceId);
-          } else {
-            this._expandedReasoningIds.add(traceId);
+        if (!traceId) return;
+
+        const willExpand = !this._expandedReasoningIds.has(traceId);
+        if (willExpand) {
+          this._expandedReasoningIds.add(traceId);
+          btn.classList.add("expanded");
+        } else {
+          this._expandedReasoningIds.delete(traceId);
+          btn.classList.remove("expanded");
+        }
+
+        const container = btn.closest(".reasoning-trace-container");
+        if (container) {
+          const stepsList = container.querySelector(".reasoning-steps-list");
+          if (stepsList) {
+            stepsList.style.display = willExpand ? "" : "none";
           }
-          this._render();
         }
       };
     });
@@ -11111,7 +13886,10 @@ class OtisCompanionCard extends HTMLElement {
           e.preventDefault();
           e.stopPropagation();
         }
-        if (this._isSendingChat) return;
+        if (this._isSendingChat) {
+          this._stopChatGeneration();
+          return;
+        }
         const text = chatInput.value;
         chatInput.value = "";
         this._draftChatText = "";
@@ -11119,6 +13897,23 @@ class OtisCompanionCard extends HTMLElement {
         chatInput.style.height = "auto";
         if (previewContainer) previewContainer.style.display = "none";
         this._sendChatMessage(text);
+      };
+    }
+
+    const btnStopBubble = root.querySelector("#btn-stop-thinking-bubble");
+    if (btnStopBubble) {
+      btnStopBubble.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this._stopChatGeneration();
+      };
+    }
+    const btnStopBanner = root.querySelector("#btn-stop-thinking-banner");
+    if (btnStopBanner) {
+      btnStopBanner.onclick = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this._stopChatGeneration();
       };
     }
 
@@ -11686,7 +14481,11 @@ class OtisCompanionCard extends HTMLElement {
     const btnBackDash = root.querySelector("#btn-back-dashboard");
     if (btnBackDash) {
       btnBackDash.onclick = () => {
-        const path = "/otis-ai";
+        const path =
+          window.location.pathname.startsWith("/command-center") ||
+          this._config.dashboard_url_path === "command-center"
+            ? "/command-center"
+            : "/otis-ai";
         const event = new CustomEvent("hass-navigate", {
           detail: { href: path },
           bubbles: true,
@@ -13234,44 +16033,14 @@ class OtisCompanionCardEditor extends HTMLElement {
     this._bindEvents();
   }
 
-  _loadActiveTab() {
-    try {
-      const saved = sessionStorage.getItem("otis_active_tab");
-      if (saved && ["suggestions", "chat", "capabilities", "floorplan", "vision"].includes(saved)) {
-        return saved;
-      }
-    } catch (_) {}
-    return "suggestions";
-  }
-
-  _saveActiveTab(tab) {
-    if (["suggestions", "chat", "capabilities", "floorplan", "vision"].includes(tab)) {
-      this._activeTab = tab;
-      try {
-        sessionStorage.setItem("otis_active_tab", tab);
-      } catch (_) {}
-    }
-  }
-
-  _loadChatMessages() {
-    try {
-      const saved = sessionStorage.getItem("otis_chat_messages");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
-      }
-    } catch (_) {}
-    return [];
-  }
-
-  _saveChatMessages() {
-    try {
-      sessionStorage.setItem("otis_chat_messages", JSON.stringify(this._chatMessages.slice(-50)));
-    } catch (_) {}
-  }
-
   _escapeHtml(str) {
-    return String(str).replace(/"/g, "&quot;");
+    if (!str) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
   }
 
   _bindEvents() {

@@ -1775,12 +1775,32 @@ arbitrate_satellite_audio:
       selector:
         text:
 
-
-
-
-
-
-
-
+manage_local_llm_addon:
+  name: Manage Otis Edge AI (Ollama) Add-on
+  description: Inspect hardware suitability, install, start, stop, restart, or manage models on the Otis Edge AI (Ollama) Supervisor Add-on.
+  fields:
+    action:
+      name: Action
+      description: Lifecycle or model action to perform on the Otis Edge AI (Ollama) add-on.
+      required: false
+      default: status
+      selector:
+        select:
+          options:
+            - status
+            - suitability
+            - install
+            - start
+            - stop
+            - restart
+            - pull_model
+            - set_model
+            - delete_model
+    model:
+      name: Model Tag
+      description: Optional Ollama model tag (e.g. qwen2.5:3b, qwen2.5:1.5b, llama3.2-vision:latest).
+      required: false
+      selector:
+        text:
 
 
