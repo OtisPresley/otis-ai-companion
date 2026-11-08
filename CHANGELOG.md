@@ -7,6 +7,13 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-11-08
+
+### Fixed & Hardened
+- **Local Edge Generation Token Ceiling**: Increased default `max_tokens` (Ollama `num_predict`) from `1024` to `2048` tokens and added `local_max_tokens` (`CONF_LOCAL_MAX_TOKENS`) to the options flow, preventing truncation during generation of complex scripts and automations.
+- **Auto-Close Truncated Code Blocks**: In `otis-companion-card.js`, added automatic unclosed code block detection and closure (`\n```\n`) in `_renderMarkdown(text)`. Prevents incomplete or truncated model output from failing markdown code block matching and falling through into broken unordered list bullet points (`•`).
+- **Prompt Anti-Duplication Directives**: Instructed local models to output exactly one unified configuration block per response, eliminating repetitive "Updated" and "Final" YAML regurgitation that exhausted generation token budgets.
+
 ## [0.3.0] - 2026-11-08
 
 ### Major Release & Cumulative Summary (Since v0.2.0)

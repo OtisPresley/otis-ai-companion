@@ -634,6 +634,36 @@ def test_ollama_status_caching():
     assert mgr.async_health_check.call_count == 2
 
 
+def test_local_llm_max_tokens_budgeting():
+    """Test that max_tokens defaults to 2048 and passes to Ollama payload."""
+    hass = MagicMock()
+    mgr = LocalLLMManager(hass, max_tokens=3072)
+    assert mgr.max_tokens == 3072
+
+    captured_payload = {}
+    mock_resp = AsyncMock()
+    mock_resp.status = 200
+    mock_resp.json = AsyncMock(return_value={"message": {"content": "ok"}})
+
+    mock_session = MagicMock()
+    class MockContextManager:
+        async def __aenter__(self):
+            return mock_resp
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    def mock_post(url, json=None, **kwargs):
+        captured_payload.update(json or {})
+        return MockContextManager()
+
+    mock_session.post = mock_post
+    with patch("custom_components.otis_ai.local_llm.async_get_clientsession", return_value=mock_session):
+        res = asyncio.run(mgr.async_generate(prompt="hello"))
+        assert res["success"] is True
+        assert captured_payload["options"]["num_predict"] == 3072
+
+
+
 
 
 

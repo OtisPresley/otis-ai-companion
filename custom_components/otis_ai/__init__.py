@@ -99,11 +99,13 @@ from .const import (
     CONF_LOCAL_LLM_ENABLED,
     CONF_LOCAL_LLM_URL,
     CONF_LOCAL_LLM_MODEL,
+    CONF_LOCAL_MAX_TOKENS,
     CONF_LOCAL_LLM_API_KEY,
     CONF_REASONING_TIMEOUT,
     DEFAULT_REASONING_TIMEOUT,
     DEFAULT_LOCAL_LLM_URL,
     DEFAULT_LOCAL_LLM_MODEL,
+    DEFAULT_LOCAL_MAX_TOKENS,
     SERVICE_TEST_LOCAL_LLM,
     SERVICE_BENCHMARK_LOCAL_LLM,
     SERVICE_PULL_LOCAL_LLM_MODEL,
@@ -776,12 +778,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         or entry.data.get(CONF_REASONING_TIMEOUT)
         or DEFAULT_REASONING_TIMEOUT
     )
+    local_max_tokens = int(
+        entry.options.get(CONF_LOCAL_MAX_TOKENS)
+        or entry.data.get(CONF_LOCAL_MAX_TOKENS)
+        or DEFAULT_LOCAL_MAX_TOKENS
+    )
     local_llm_manager = LocalLLMManager(
         hass,
         url=entry.options.get(CONF_LOCAL_LLM_URL) or entry.data.get(CONF_LOCAL_LLM_URL) or DEFAULT_LOCAL_LLM_URL,
         model=entry.options.get(CONF_LOCAL_LLM_MODEL) or entry.data.get(CONF_LOCAL_LLM_MODEL) or DEFAULT_LOCAL_LLM_MODEL,
         api_key=entry.options.get(CONF_LOCAL_LLM_API_KEY) or entry.data.get(CONF_LOCAL_LLM_API_KEY),
         timeout=reasoning_timeout,
+        max_tokens=local_max_tokens,
     )
     rag_manager = RAGKnowledgeManager(hass, local_llm_manager=local_llm_manager)
     local_llm_manager.rag_manager = rag_manager
@@ -6028,8 +6036,10 @@ System State:
                             "Home Assistant Grounding: Voice satellites connect via ESPHome or Wyoming Protocol under Settings → Voice Assistants (never an imaginary 'Assist Satellite' integration). "
                             "Never use trigger: time_pattern for polling quiet hours; use discrete time triggers. Never tell user to create README.md in /config. "
                             "Provide automations strictly in modern Home Assistant GUI YAML format (clean top-level dict starting with alias:, description:, triggers:, conditions:, actions:, mode: using trigger: and action: keys, without - id: or leading dashes). "
+                            "Provide exactly one clear, unified configuration block when suggesting automations or scripts; never repeat the configuration twice (do not provide both an 'updated' and 'final' copy of the same YAML). Be direct and concise. "
                             "Never tell the user to edit automations.yaml themselves; always offer to deploy and enable it for them."
                         ),
+                        max_tokens=self.local_llm_manager.max_tokens,
                         max_iterations=2,
                         timeout=max(reasoning_timeout, 60.0),
                     )

@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.3.0";
+const CARD_VERSION = "0.3.2";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -2003,6 +2003,12 @@ class OtisCompanionCard extends HTMLElement {
   _renderMarkdown(text) {
     if (text === undefined || text === null) return "";
     let src = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+
+    // Auto-close any unclosed code block (e.g. if truncated by token limit or streaming)
+    const tripleBackticks = src.match(/```/g);
+    if (tripleBackticks && tripleBackticks.length % 2 === 1) {
+      src += "\n```";
+    }
 
     // 1. Protect code blocks first
     const codeBlocks = [];

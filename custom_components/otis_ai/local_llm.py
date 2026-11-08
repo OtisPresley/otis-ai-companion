@@ -20,7 +20,7 @@ from aiohttp import ClientSession, ClientTimeout
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import DOMAIN
+from .const import DOMAIN, DEFAULT_LOCAL_MAX_TOKENS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -557,6 +557,7 @@ class LocalLLMManager:
         model: str = DEFAULT_LOCAL_LLM_MODEL,
         api_key: str | None = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        max_tokens: int = DEFAULT_LOCAL_MAX_TOKENS,
         embedding_model: str | None = None,
         rag_manager: Any | None = None,
     ) -> None:
@@ -566,6 +567,7 @@ class LocalLLMManager:
         self.model = model or DEFAULT_LOCAL_LLM_MODEL
         self.api_key = api_key
         self.timeout = timeout
+        self.max_tokens = max_tokens or DEFAULT_LOCAL_MAX_TOKENS
         self.embedding_model = embedding_model
         self.rag_manager = rag_manager
         self._last_health: dict[str, Any] = {"status": "unknown"}
@@ -1364,7 +1366,7 @@ class LocalLLMManager:
         messages: list[dict[str, Any]] | None = None,
         model: str | None = None,
         temperature: float = 0.3,
-        max_tokens: int = 1024,
+        max_tokens: int | None = None,
         timeout: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         images: list[str] | None = None,
@@ -1372,6 +1374,7 @@ class LocalLLMManager:
         """Send a prompt or message list to the local LLM and return structured output, tool calls, and metrics."""
         chosen_model = model or self.model
         req_timeout = timeout or self.timeout
+        effective_max_tokens = max_tokens if max_tokens is not None else getattr(self, "max_tokens", DEFAULT_LOCAL_MAX_TOKENS)
         session = self._get_session()
         headers = self._get_headers()
         t0 = time.perf_counter()
@@ -1406,7 +1409,7 @@ class LocalLLMManager:
             "keep_alive": "15m",
             "options": {
                 "temperature": temperature,
-                "num_predict": max_tokens,
+                "num_predict": effective_max_tokens,
                 "num_ctx": 4096,
                 "stop": ["<|im_end|>", "<|endoftext|>", "Observation:", "User:"],
             },
@@ -1496,7 +1499,7 @@ class LocalLLMManager:
                 "model": chosen_model,
                 "messages": openai_messages,
                 "temperature": temperature,
-                "max_tokens": max_tokens,
+                "max_tokens": effective_max_tokens,
                 "stream": False,
             }
             if tools:
@@ -1621,13 +1624,14 @@ class LocalLLMManager:
         tools: list[dict[str, Any]] | None = None,
         model: str | None = None,
         temperature: float = 0.2,
-        max_tokens: int = 1024,
+        max_tokens: int | None = None,
         max_iterations: int = 3,
         auto_execute: bool = True,
         timeout: float | None = None,
     ) -> dict[str, Any]:
         """Autonomous multi-turn tool-calling loop using local LLMs."""
         chosen_tools = tools if tools is not None else select_relevant_tools(prompt)
+        effective_max_tokens = max_tokens if max_tokens is not None else getattr(self, "max_tokens", DEFAULT_LOCAL_MAX_TOKENS)
         default_sys = (
             "You are Otis AI, the ultimate smart home butler and co-pilot. "
             "You have direct access to smart home tools to inspect cameras, heal network nodes, "
@@ -1651,7 +1655,7 @@ class LocalLLMManager:
                 messages=messages,
                 model=model,
                 temperature=temperature,
-                max_tokens=max_tokens,
+                max_tokens=effective_max_tokens,
                 timeout=timeout,
                 tools=chosen_tools,
             )

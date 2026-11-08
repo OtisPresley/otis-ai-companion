@@ -21,6 +21,7 @@ from .const import (
     CONF_LOCAL_LLM_ENABLED,
     CONF_LOCAL_LLM_URL,
     CONF_LOCAL_LLM_MODEL,
+    CONF_LOCAL_MAX_TOKENS,
     CONF_CAMERA_STREAM_STRATEGY,
     CONF_AUDIO_FOLLOW_ENABLED,
     CAMERA_STRATEGY_MANAGED_PROXY,
@@ -31,6 +32,7 @@ from .const import (
     DEFAULT_REASONING_TIMEOUT,
     DEFAULT_LOCAL_LLM_URL,
     DEFAULT_LOCAL_LLM_MODEL,
+    DEFAULT_LOCAL_MAX_TOKENS,
     DEFAULT_CAMERA_STREAM_STRATEGY,
 )
 
@@ -276,6 +278,18 @@ class OtisAIOptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_LOCAL_LLM_MODEL,
                 default=active_llm_model
             ): cv.string,
+            vol.Optional(
+                CONF_LOCAL_MAX_TOKENS,
+                default=options.get(CONF_LOCAL_MAX_TOKENS, data.get(CONF_LOCAL_MAX_TOKENS, DEFAULT_LOCAL_MAX_TOKENS)),
+            ): selector({
+                "number": {
+                    "min": 256,
+                    "max": 8192,
+                    "step": 256,
+                    "unit_of_measurement": "tokens",
+                    "mode": "box",
+                }
+            }),
             vol.Optional(
                 CONF_CAMERA_STREAM_STRATEGY,
                 default=options.get(CONF_CAMERA_STREAM_STRATEGY, data.get(CONF_CAMERA_STREAM_STRATEGY, DEFAULT_CAMERA_STREAM_STRATEGY))

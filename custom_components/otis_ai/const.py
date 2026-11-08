@@ -1,7 +1,7 @@
 """Constants for the Otis AI Companion integration."""
 
 DOMAIN = "otis_ai"
-INTEGRATION_VERSION = "0.3.0"
+INTEGRATION_VERSION = "0.3.2"
 
 # Configuration Keys
 CONF_CONVERSATION_AGENT = "conversation_agent"
@@ -11,6 +11,7 @@ CONF_REASONING_TIMEOUT = "reasoning_timeout"
 CONF_LOCAL_LLM_ENABLED = "local_llm_enabled"
 CONF_LOCAL_LLM_URL = "local_llm_url"
 CONF_LOCAL_LLM_MODEL = "local_llm_model"
+CONF_LOCAL_MAX_TOKENS = "local_max_tokens"
 CONF_LOCAL_VISION_MODEL = "local_vision_model"
 CONF_LOCAL_LLM_API_KEY = "local_llm_api_key"
 CONF_CAMERA_STREAM_STRATEGY = "camera_stream_strategy"
@@ -34,6 +35,7 @@ DEFAULT_SPATIAL_MAP_PATH = "otis_ai_spatial_map.json"
 DEFAULT_REASONING_TIMEOUT = 60
 DEFAULT_LOCAL_LLM_URL = "http://127.0.0.1:11434"
 DEFAULT_LOCAL_LLM_MODEL = "qwen2.5:3b"
+DEFAULT_LOCAL_MAX_TOKENS = 2048
 DEFAULT_LOCAL_VISION_MODEL = "llama3.2-vision:latest"
 DEFAULT_PERIMETER_ANOMALY_CONFIDENCE = 0.65
 DEFAULT_INTRUDER_TRACK_TIMEOUT = 180
