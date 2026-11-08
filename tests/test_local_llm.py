@@ -663,6 +663,35 @@ def test_local_llm_max_tokens_budgeting():
         assert captured_payload["options"]["num_predict"] == 3072
 
 
+def test_inspect_backup_configuration_tool():
+    """Test inspect_backup_configuration tool selection and execution."""
+    from custom_components.otis_ai.local_llm import select_relevant_tools, LocalLLMManager
+    from unittest.mock import AsyncMock, MagicMock
+
+    tools = select_relevant_tools("Notify Router was overwritten! Find the latest backup and restore it.")
+    assert any(t["function"]["name"] == "inspect_backup_configuration" for t in tools)
+
+    hass = MagicMock()
+    mgr = LocalLLMManager(hass)
+    mock_auto_mgr = MagicMock()
+    mock_auto_mgr.async_inspect_backups_for_item = AsyncMock(return_value={
+        "found": True,
+        "best_candidate": {"name": "Notify Router", "lines": 726},
+    })
+    mgr.automation_manager = mock_auto_mgr
+
+    plan = [{
+        "name": "inspect_backup_configuration",
+        "parameters": {"item_name": "notify_router", "item_type": "script"},
+    }]
+    results = asyncio.run(mgr.async_execute_tool_plan(plan))
+    assert len(results) == 1
+    assert results[0]["success"] is True
+    assert results[0]["result"]["found"] is True
+    assert results[0]["result"]["best_candidate"]["lines"] == 726
+
+
+
 
 
 

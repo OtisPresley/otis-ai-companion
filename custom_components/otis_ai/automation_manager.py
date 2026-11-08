@@ -1,9 +1,12 @@
 """Automation and script manager for Otis AI Companion."""
 from __future__ import annotations
 
+import glob
+import json
 import logging
 import os
 import re
+import tarfile
 import time
 from typing import Any
 
@@ -11,6 +14,11 @@ import yaml
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.util import yaml as yaml_util
+
+try:
+    from securetar import SecureTarFile
+except ImportError:
+    SecureTarFile = None
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,6 +66,214 @@ def clean_yaml_dict(obj: Any) -> Any:
     elif hasattr(obj, "__str__") and type(obj).__module__.startswith("annotatedyaml"):
         return str(obj)
     return obj
+
+
+def _inspect_local_snapshots_sync(
+    config_dir: str,
+    target_keys: set[str],
+    target_aliases: set[str],
+    item_type: str = "script",
+) -> list[dict[str, Any]]:
+    """Scan local snapshot and backup files in /config for matching automation/script configurations."""
+    candidates: list[dict[str, Any]] = []
+    patterns: list[str] = []
+    if item_type in ("script", "any"):
+        patterns.extend([
+            os.path.join(config_dir, "scripts.yaml.bak*"),
+            os.path.join(config_dir, "scripts.yaml_*"),
+            os.path.join(config_dir, "scripts_backup*.yaml"),
+            os.path.join(config_dir, ".storage", "marketplace_backups", "*script*"),
+        ])
+    if item_type in ("automation", "any"):
+        patterns.extend([
+            os.path.join(config_dir, "automations.yaml.bak*"),
+            os.path.join(config_dir, "automations.yaml_*"),
+            os.path.join(config_dir, "automations_backup*.yaml"),
+            os.path.join(config_dir, ".storage", "marketplace_backups", "*automation*"),
+        ])
+
+    seen_files: set[str] = set()
+    for pat in patterns:
+        for file_path in glob.glob(pat):
+            file_path = os.path.normpath(file_path)
+            if file_path in seen_files or not os.path.isfile(file_path):
+                continue
+            seen_files.add(file_path)
+            try:
+                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                    content = f.read()
+                content_lower = content.lower()
+                if not any(k in content_lower for k in target_keys) and not any(a in content_lower for a in target_aliases):
+                    continue
+
+                try:
+                    data = yaml.safe_load(content)
+                except Exception:
+                    continue
+
+                if item_type in ("script", "any") and isinstance(data, dict):
+                    for k, v in data.items():
+                        if not isinstance(v, dict):
+                            continue
+                        k_low = str(k).lower()
+                        alias_low = str(v.get("alias", "")).lower()
+                        if k_low in target_keys or alias_low in target_aliases or any(a in alias_low for a in target_aliases if len(a) > 5):
+                            clean_v = clean_yaml_dict(v)
+                            try:
+                                dumped = yaml.dump({str(k): clean_v}, Dumper=SafeNoAliasDumper, sort_keys=False, default_flow_style=False)
+                            except Exception:
+                                dumped = yaml.dump({str(k): clean_v}, sort_keys=False)
+                            mtime = os.path.getmtime(file_path)
+                            mtime_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime))
+                            lines = dumped.splitlines()
+                            candidates.append({
+                                "source": os.path.basename(file_path),
+                                "path": file_path,
+                                "type": "script",
+                                "key": str(k),
+                                "name": v.get("alias", str(k)),
+                                "mtime": mtime_str,
+                                "timestamp": mtime,
+                                "lines": len(lines),
+                                "bytes": len(dumped),
+                                "yaml": dumped,
+                                "raw_item": clean_v,
+                            })
+
+                if item_type in ("automation", "any"):
+                    auto_list = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
+                    for auto in auto_list:
+                        if not isinstance(auto, dict):
+                            continue
+                        auto_id = str(auto.get("id", "")).lower()
+                        alias_low = str(auto.get("alias", "")).lower()
+                        if auto_id in target_keys or alias_low in target_aliases or any(a in alias_low for a in target_aliases if len(a) > 5):
+                            clean_a = clean_yaml_dict(auto)
+                            try:
+                                dumped = yaml.dump(clean_a, Dumper=SafeNoAliasDumper, sort_keys=False, default_flow_style=False)
+                            except Exception:
+                                dumped = yaml.dump(clean_a, sort_keys=False)
+                            mtime = os.path.getmtime(file_path)
+                            mtime_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime))
+                            lines = dumped.splitlines()
+                            candidates.append({
+                                "source": os.path.basename(file_path),
+                                "path": file_path,
+                                "type": "automation",
+                                "key": str(auto.get("id", "")),
+                                "name": auto.get("alias", auto.get("id", "automation")),
+                                "mtime": mtime_str,
+                                "timestamp": mtime,
+                                "lines": len(lines),
+                                "bytes": len(dumped),
+                                "yaml": dumped,
+                                "raw_item": clean_a,
+                            })
+            except Exception as e:
+                _LOGGER.debug("Error inspecting snapshot %s: %s", file_path, e)
+    return candidates
+
+
+def _inspect_tar_backups_sync(
+    backup_dir: str,
+    password: str | None,
+    target_keys: set[str],
+    target_aliases: set[str],
+    item_type: str = "script",
+) -> list[dict[str, Any]]:
+    """Scan Home Assistant tar backups in /backup for target automation/script configurations."""
+    candidates: list[dict[str, Any]] = []
+    if not os.path.isdir(backup_dir):
+        return candidates
+
+    tar_files = sorted(
+        glob.glob(os.path.join(backup_dir, "*.tar")),
+        key=lambda p: os.path.getmtime(p),
+        reverse=True,
+    )
+
+    for tar_path in tar_files[:5]:
+        try:
+            with tarfile.open(tar_path, mode="r:*") as outer:
+                try:
+                    inner_f = outer.extractfile("homeassistant.tar.gz")
+                except KeyError:
+                    continue
+                if not inner_f:
+                    continue
+
+                inner_tar = None
+                try:
+                    if SecureTarFile and password:
+                        sec = SecureTarFile(fileobj=inner_f, password=password, gzip=True)
+                        inner_tar = sec.open()
+                    else:
+                        inner_tar = tarfile.open(fileobj=inner_f, mode="r:*")
+                except Exception:
+                    continue
+
+                if not inner_tar:
+                    continue
+
+                target_names = []
+                if item_type in ("script", "any"):
+                    target_names.extend(["data/scripts.yaml", "data/scripts.yaml.bak"])
+                if item_type in ("automation", "any"):
+                    target_names.extend(["data/automations.yaml", "data/automations.yaml.bak"])
+
+                count = 0
+                while count < 5000:
+                    try:
+                        m = inner_tar.next()
+                    except Exception:
+                        break
+                    if not m:
+                        break
+                    count += 1
+                    if m.name in target_names or any(m.name.endswith(tn) for tn in target_names):
+                        f = inner_tar.extractfile(m)
+                        if not f:
+                            continue
+                        content = f.read().decode("utf-8", errors="replace")
+                        content_lower = content.lower()
+                        if not any(k in content_lower for k in target_keys) and not any(a in content_lower for a in target_aliases):
+                            continue
+                        try:
+                            data = yaml.safe_load(content)
+                        except Exception:
+                            continue
+
+                        mtime = os.path.getmtime(tar_path)
+                        mtime_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime))
+                        tar_name = os.path.basename(tar_path)
+
+                        if item_type in ("script", "any") and isinstance(data, dict):
+                            for k, v in data.items():
+                                if not isinstance(v, dict):
+                                    continue
+                                k_low = str(k).lower()
+                                alias_low = str(v.get("alias", "")).lower()
+                                if k_low in target_keys or alias_low in target_aliases or any(a in alias_low for a in target_aliases if len(a) > 5):
+                                    clean_v = clean_yaml_dict(v)
+                                    dumped = yaml.dump({str(k): clean_v}, Dumper=SafeNoAliasDumper, sort_keys=False, default_flow_style=False)
+                                    lines = dumped.splitlines()
+                                    candidates.append({
+                                        "source": f"{tar_name} ({m.name})",
+                                        "path": tar_path,
+                                        "type": "script",
+                                        "key": str(k),
+                                        "name": v.get("alias", str(k)),
+                                        "mtime": mtime_str,
+                                        "timestamp": mtime,
+                                        "lines": len(lines),
+                                        "bytes": len(dumped),
+                                        "yaml": dumped,
+                                        "raw_item": clean_v,
+                                    })
+                        break
+        except Exception as err:
+            _LOGGER.debug("Error checking tar backup %s: %s", tar_path, err)
+    return candidates
 
 
 class AutomationManager:
@@ -242,6 +458,156 @@ class AutomationManager:
             _LOGGER.debug("Blueprint reload service call note: %s", err)
             return False
 
+    async def async_inspect_backups_for_item(
+        self,
+        item_name: str,
+        item_type: str = "script",
+    ) -> dict[str, Any]:
+        """Inspect historical backups and snapshots to find full or uncorrupted configurations."""
+        if not item_name:
+            return {"found": False, "error": "No item name specified"}
+
+        clean_name = item_name.strip()
+        if clean_name.startswith("script."):
+            clean_name = clean_name[7:]
+            item_type = "script"
+        elif clean_name.startswith("automation."):
+            clean_name = clean_name[11:]
+            item_type = "automation"
+
+        target_keys = {
+            clean_name.lower(),
+            clean_name.lower().replace(" ", "_"),
+            clean_name.lower().replace(":", "").replace(" ", "_"),
+            clean_name.lower().replace("-", "_"),
+        }
+        target_aliases = {
+            clean_name.lower(),
+            clean_name.lower().replace("_", " "),
+        }
+
+        # 1. Inspect current active version to establish baseline
+        active_lines = 0
+        active_bytes = 0
+        active_alias = clean_name
+        active_key = clean_name
+        active_item: dict[str, Any] | None = None
+        active_yaml = ""
+
+        if item_type in ("script", "any"):
+            scripts = await self.async_read_scripts()
+            for s_k, s_v in scripts.items():
+                if not isinstance(s_v, dict):
+                    continue
+                k_l = str(s_k).lower()
+                a_l = str(s_v.get("alias", "")).lower()
+                if k_l in target_keys or a_l in target_aliases or any(a in a_l for a in target_aliases if len(a) > 5):
+                    active_key = str(s_k)
+                    active_alias = str(s_v.get("alias", s_k))
+                    active_item = s_v
+                    try:
+                        active_yaml = yaml.dump({active_key: clean_yaml_dict(s_v)}, Dumper=SafeNoAliasDumper, sort_keys=False, default_flow_style=False)
+                    except Exception:
+                        active_yaml = yaml.dump({active_key: clean_yaml_dict(s_v)}, sort_keys=False)
+                    active_lines = len(active_yaml.splitlines())
+                    active_bytes = len(active_yaml)
+                    break
+
+        if not active_item and item_type in ("automation", "any"):
+            automations = await self.async_read_automations()
+            for auto in automations:
+                if not isinstance(auto, dict):
+                    continue
+                a_id = str(auto.get("id", "")).lower()
+                a_alias = str(auto.get("alias", "")).lower()
+                if a_id in target_keys or a_alias in target_aliases or any(a in a_alias for a in target_aliases if len(a) > 5):
+                    active_key = str(auto.get("id", ""))
+                    active_alias = str(auto.get("alias", active_key))
+                    active_item = auto
+                    try:
+                        active_yaml = yaml.dump(clean_yaml_dict(auto), Dumper=SafeNoAliasDumper, sort_keys=False, default_flow_style=False)
+                    except Exception:
+                        active_yaml = yaml.dump(clean_yaml_dict(auto), sort_keys=False)
+                    active_lines = len(active_yaml.splitlines())
+                    active_bytes = len(active_yaml)
+                    item_type = "automation"
+                    break
+
+        # 2. Scan local snapshots in /config
+        config_dir = self.hass.config.config_dir if hasattr(self.hass, "config") else "/config"
+        candidates = await self.hass.async_add_executor_job(
+            _inspect_local_snapshots_sync,
+            config_dir,
+            target_keys,
+            target_aliases,
+            item_type,
+        )
+
+        # 3. If no local candidates or more depth needed, check /backup
+        backup_dir = "/backup"
+        pwd = None
+        try:
+            backup_store_path = self.hass.config.path(".storage", "backup")
+            if await self.hass.async_add_executor_job(os.path.exists, backup_store_path):
+                with open(backup_store_path, "r", encoding="utf-8", errors="ignore") as bf:
+                    b_data = json.load(bf)
+                pwd = b_data.get("data", {}).get("config", {}).get("create_backup", {}).get("password")
+        except Exception as p_err:
+            _LOGGER.debug("Could not read backup store password: %s", p_err)
+
+        if not candidates and await self.hass.async_add_executor_job(os.path.isdir, backup_dir):
+            tar_candidates = await self.hass.async_add_executor_job(
+                _inspect_tar_backups_sync,
+                backup_dir,
+                pwd,
+                target_keys,
+                target_aliases,
+                item_type,
+            )
+            candidates.extend(tar_candidates)
+
+        # 4. Filter and score candidates
+        for c in candidates:
+            c["is_recovery_candidate"] = False
+            if active_lines > 0:
+                if c["lines"] >= active_lines * 1.5 or (active_lines <= 50 and c["lines"] > 100):
+                    c["is_recovery_candidate"] = True
+            elif c["lines"] > 30:
+                c["is_recovery_candidate"] = True
+
+        candidates.sort(
+            key=lambda c: (
+                1 if c["is_recovery_candidate"] else 0,
+                c["lines"],
+                c["timestamp"],
+            ),
+            reverse=True,
+        )
+
+        best_cand = candidates[0] if candidates else None
+        is_stub = False
+        status_label = "Active configuration"
+        if active_lines > 0 and best_cand and best_cand.get("is_recovery_candidate"):
+            is_stub = True
+            status_label = f"Truncated stub ({active_lines} lines vs {best_cand['lines']} in backup)"
+
+        return {
+            "found": bool(best_cand),
+            "item_name": clean_name,
+            "item_type": item_type,
+            "current_version": {
+                "key": active_key,
+                "name": active_alias,
+                "lines": active_lines,
+                "bytes": active_bytes,
+                "is_stub": is_stub,
+                "status_label": status_label,
+                "yaml": active_yaml,
+            },
+            "best_candidate": best_cand,
+            "all_candidates": candidates,
+        }
+
     async def async_cross_reference(
         self,
         text: str,
@@ -337,6 +703,18 @@ class AutomationManager:
             if score > 0:
                 lines = dumped.splitlines()
                 truncated = False
+                # If user indicates item is overwritten / missing / corrupt, inspect snapshots to avoid prompt poisoning
+                if any(k in text_lower for k in ("overwritten", "missing", "corrupt", "stub", "lost", "restore", "backup")) and len(lines) < 60:
+                    config_dir = self.hass.config.config_dir if hasattr(self.hass, "config") else "/config"
+                    snaps = _inspect_local_snapshots_sync(config_dir, {auto_id.lower()}, {alias_lower}, "automation")
+                    if snaps and snaps[0]["lines"] > len(lines) * 1.5:
+                        best_s = snaps[0]
+                        dumped = (
+                            f"# [OVERWRITTEN STUB WARNING: Active version only has {len(lines)} lines.]\n"
+                            f"# [RECOVERED COMPLETE CONFIGURATION FROM BACKUP ({best_s['source']} - {best_s['mtime']})]:\n"
+                            f"{best_s['yaml']}"
+                        )
+                        lines = dumped.splitlines()
                 # If explicitly named or high-relevance match, preserve up to 250 lines so full actions/conditions are visible
                 max_lines = 250 if (score >= 40.0 or (alias and alias.lower() in text_lower)) else 70
                 if len(lines) > max_lines:
@@ -414,6 +792,18 @@ class AutomationManager:
             if score > 0:
                 lines = dumped.splitlines()
                 truncated = False
+                # If user indicates item is overwritten / missing / corrupt, inspect snapshots to avoid prompt poisoning
+                if any(k in text_lower for k in ("overwritten", "missing", "corrupt", "stub", "lost", "restore", "backup")) and len(lines) < 60:
+                    config_dir = self.hass.config.config_dir if hasattr(self.hass, "config") else "/config"
+                    snaps = _inspect_local_snapshots_sync(config_dir, {s_key.lower()}, {alias_lower}, "script")
+                    if snaps and snaps[0]["lines"] > len(lines) * 1.5:
+                        best_s = snaps[0]
+                        dumped = (
+                            f"# [OVERWRITTEN STUB WARNING: Active version only has {len(lines)} lines.]\n"
+                            f"# [RECOVERED COMPLETE CONFIGURATION FROM BACKUP ({best_s['source']} - {best_s['mtime']})]:\n"
+                            f"{best_s['yaml']}"
+                        )
+                        lines = dumped.splitlines()
                 max_lines = 250 if (score >= 40.0 or (alias and alias.lower() in text_lower)) else 70
                 if len(lines) > max_lines:
                     dumped = "\n".join(lines[:max_lines]) + "\n  # ... [additional sequence steps truncated for brevity]"

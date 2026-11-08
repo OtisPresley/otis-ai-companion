@@ -5622,6 +5622,148 @@ action:
         self.assertNotIn("custom:control4-mediaplayer-card", card_types)
         self.assertIn("custom:otis-companion-card", card_types)
 
+    def test_automation_manager_inspect_backups_for_item(self):
+        """Test that AutomationManager discovers historical backups and compares stubs against full versions."""
+        import tempfile
+        import shutil
+        from custom_components.otis_ai.automation_manager import AutomationManager
+
+        tmpdir = tempfile.mkdtemp()
+        try:
+            # Active scripts.yaml with 2-line stub
+            scripts_path = os.path.join(tmpdir, "scripts.yaml")
+            with open(scripts_path, "w") as f:
+                f.write("notify_router:\n  alias: Notify Router\n  sequence:\n  - action: notify.notify\n")
+
+            # Historical backup snapshot with full 60-line script
+            bak_path = os.path.join(tmpdir, "scripts.yaml.bak")
+            full_lines = ["notify_router:\n  alias: Notify Router\n  description: Full notification router\n  sequence:\n"]
+            for i in range(50):
+                full_lines.append(f"  - action: notify.device_{i}\n    data:\n      message: test_{i}\n")
+            with open(bak_path, "w") as f:
+                f.writelines(full_lines)
+
+            hass = MagicMock()
+            hass.config.config_dir = tmpdir
+            hass.config.path = lambda *args: os.path.join(tmpdir, *args)
+            hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *args: fn(*args))
+
+            mgr = AutomationManager(hass)
+            mgr.scripts_path = scripts_path
+            mgr.automations_path = os.path.join(tmpdir, "automations.yaml")
+
+            res = asyncio.run(mgr.async_inspect_backups_for_item("notify_router", "script"))
+            self.assertTrue(res["found"])
+            self.assertEqual(res["item_name"], "notify_router")
+            self.assertTrue(res["current_version"]["is_stub"])
+            self.assertGreater(res["best_candidate"]["lines"], 50)
+            self.assertEqual(res["best_candidate"]["source"], "scripts.yaml.bak")
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_conversation_agent_backup_recovery_fast_path(self):
+        """Test conversational fast-path for backup recovery queries."""
+        from custom_components.otis_ai import OtisAIConversationAgent
+
+        entry = MagicMock()
+        entry.options = {}
+        entry.data = {}
+
+        engine = MagicMock()
+        engine.async_build_capability_map = AsyncMock(return_value={"integrations": [], "areas": {}, "entities": []})
+
+        manager = MagicMock()
+        manager.async_read_scripts = AsyncMock(return_value={
+            "notify_router": {"alias": "Notify Router", "sequence": []}
+        })
+        manager.async_inspect_backups_for_item = AsyncMock(return_value={
+            "found": True,
+            "item_name": "notify_router",
+            "item_type": "script",
+            "current_version": {
+                "key": "notify_router",
+                "name": "Notify Router",
+                "lines": 23,
+                "bytes": 664,
+                "is_stub": True,
+                "status_label": "Truncated stub (23 lines vs 726 in backup)",
+            },
+            "best_candidate": {
+                "source": "scripts.yaml.bak",
+                "mtime": "2026-10-28 13:48:04",
+                "lines": 726,
+                "bytes": 36185,
+                "name": "Notify Router",
+                "key": "notify_router",
+                "type": "script",
+                "yaml": "notify_router:\n  alias: Notify Router\n  sequence: ...",
+                "raw_item": {"alias": "Notify Router"},
+            },
+        })
+
+        agent = OtisAIConversationAgent(self.hass, entry, engine, manager)
+
+        user_input = MagicMock()
+        user_input.text = "I see the problem. Notify Router was overwritten! The majority of it is missing. Can you help me find the latest backup with the full script in it and restore just that one script?"
+        user_input.conversation_id = "recov_test"
+        user_input.create_response = MagicMock(side_effect=lambda speech, **kwargs: MagicMock(speech={"plain": {"speech": speech}}))
+
+        result = asyncio.run(agent.async_process(user_input))
+        speech = result.response.speech["plain"]["speech"]
+
+        self.assertIn("I located the complete, full version of **Notify Router**", speech)
+        self.assertIn("726 lines", speech)
+        self.assertIn("scripts.yaml.bak", speech)
+        self.assertIn("Would you like me to restore this script 'Notify Router'", speech)
+
+        # Verify staged into pending_items
+        sessions = self.hass.data[DOMAIN]["sessions"]
+        self.assertIn("recov_test", sessions)
+        self.assertIn("pending_items", sessions["recov_test"])
+        self.assertEqual(sessions["recov_test"]["pending_items"][0]["id"], "notify_router")
+
+    def test_async_cross_reference_prevents_prompt_poisoning(self):
+        """Test that cross-referencing does not poison prompts with stubs when user indicates corruption."""
+        import tempfile
+        import shutil
+        from custom_components.otis_ai.automation_manager import AutomationManager
+
+        tmpdir = tempfile.mkdtemp()
+        try:
+            scripts_path = os.path.join(tmpdir, "scripts.yaml")
+            with open(scripts_path, "w") as f:
+                f.write("notify_router:\n  alias: Notify Router\n  sequence:\n  - action: notify.notify\n")
+
+            bak_path = os.path.join(tmpdir, "scripts.yaml.bak")
+            full_lines = ["notify_router:\n  alias: Notify Router\n  sequence:\n"]
+            for i in range(40):
+                full_lines.append(f"  - action: notify.phone_{i}\n")
+            with open(bak_path, "w") as f:
+                f.writelines(full_lines)
+
+            hass = MagicMock()
+            hass.config.config_dir = tmpdir
+            hass.config.path = lambda *args: os.path.join(tmpdir, *args)
+            hass.async_add_executor_job = AsyncMock(side_effect=lambda fn, *args: fn(*args))
+
+            mgr = AutomationManager(hass)
+            mgr.scripts_path = scripts_path
+            mgr.automations_path = os.path.join(tmpdir, "automations.yaml")
+
+            # User mentions "Notify Router was overwritten! The majority is missing"
+            res = asyncio.run(mgr.async_cross_reference(
+                "I see the problem. Notify Router was overwritten! The majority of it is missing. Restore from backup."
+            ))
+            matches = res["matches"]
+            self.assertTrue(len(matches) > 0)
+            nr_match = next((m for m in matches if m["id"] == "notify_router"), None)
+            self.assertIsNotNone(nr_match)
+            # Verify YAML contains the warning and recovered configuration rather than only the stub
+            self.assertIn("OVERWRITTEN STUB WARNING", nr_match["yaml"])
+            self.assertIn("RECOVERED COMPLETE CONFIGURATION FROM BACKUP", nr_match["yaml"])
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

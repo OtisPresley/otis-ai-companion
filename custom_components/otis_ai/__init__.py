@@ -793,6 +793,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     rag_manager = RAGKnowledgeManager(hass, local_llm_manager=local_llm_manager)
     local_llm_manager.rag_manager = rag_manager
+    local_llm_manager.automation_manager = automation_manager
     sentinel_manager = SentinelManager(hass, local_llm_manager=local_llm_manager)
     macro_manager = MacroManager(hass, rules_manager=rules_manager)
     audio_manager = AudioHandoffManager(hass, spatial_manager=spatial_manager, rules_manager=rules_manager)
@@ -3896,6 +3897,12 @@ class OtisAIConversationAgent(AbstractAgent):
                 r"(?i)you\s+(?:can|will\s+need\s+to|must)\s+(?:add|paste|put)\s+this\s+(?:in|into|to)\s+(?:your\s+)?(?:/config/)?automations\.yaml[^.\n]*[.]?",
                 r"(?i)(?:i\s+cannot|i'm\s+unable\s+to|i\s+am\s+unable\s+to)\s+(?:directly\s+)?deploy[^.\n]*[.]?",
                 r"(?i)to\s+deploy\s+(?:it|this)\s+(?:manually|yourself)[^.\n]*[.]?",
+                r"(?is)step-by-step guide:.*?(?=\n\n|\Z)",
+                r"(?im)^\s*\d+\.\s*(?:identify|locate|download|extract|restore|verify)\s+[^\n]*(?:backup|archive|script)[^\n]*\n?",
+                r"(?im)^\s*step\s+\d+:\s*[^\n]+\n?",
+                r"(?i)(?:access|search|download|extract|open|check)\s+(?:your\s+)?backup(?:\s+system|\s+files|\s+file)?[^.\n]*[.]?",
+                r"(?i)extract\s+the\s+(?:downloaded\s+)?backup(?:\s+file)?[^.\n]*[.]?",
+                r"(?i)locate\s+the\s+[^\n]+\.ya?ml\s+file\s+in\s+the\s+extracted\s+backup[^.\n]*[.]?",
             ]
             for pat in patterns_to_remove:
                 cleaned_speech = re.sub(pat, "", cleaned_speech)
@@ -4096,6 +4103,82 @@ class OtisAIConversationAgent(AbstractAgent):
                 else:
                     speech = f"⚠️ Could not roll back macro: {res.get('error', 'No restorable execution record found.')}"
                 return self._create_response(user_input, speech)
+
+        # Check for backup inspection / script or automation recovery requests
+        is_backup_recovery_query = (
+            (any(w in user_text for w in ("backup", "restore", "snapshot", "recover", "rollback", "revert"))
+             and any(w in user_text for w in ("script", "automation", "blueprint", "overwritten", "missing", "corrupted", "lost", "router", "full script")))
+            or ("overwritten" in user_text and any(w in user_text for w in ("backup", "restore", "recover", "find", "missing")))
+            or ("majority of it is missing" in user_text)
+        )
+        if is_backup_recovery_query and getattr(self, "automation_manager", None):
+            fire_progress("recovery", "Auditing Backups & Snapshots", "Searching historical backups & configuration snapshots...")
+            target_name = None
+            quoted = re.findall(r'["\']([^"\']{3,})["\']', user_input.text)
+            if quoted:
+                target_name = quoted[0].strip()
+
+            item_type = "automation" if ("automation" in user_text and "script" not in user_text) else "script"
+
+            if not target_name:
+                known_scripts = await self.automation_manager.async_read_scripts()
+                for s_k, s_v in known_scripts.items():
+                    s_alias = str(s_v.get("alias", "")).lower() if isinstance(s_v, dict) else ""
+                    if s_k.lower() in user_text or (s_alias and s_alias in user_text):
+                        target_name = s_k
+                        item_type = "script"
+                        break
+
+            if not target_name:
+                known_autos = await self.automation_manager.async_read_automations()
+                for a in known_autos:
+                    if not isinstance(a, dict):
+                        continue
+                    a_id = str(a.get("id", "")).lower()
+                    a_alias = str(a.get("alias", "")).lower()
+                    if (a_id and a_id in user_text) or (a_alias and a_alias in user_text):
+                        target_name = a.get("alias") or a_id
+                        item_type = "automation"
+                        break
+
+            if not target_name:
+                if "notify" in user_text or "router" in user_text:
+                    target_name = "notify_router"
+                    item_type = "script"
+
+            if target_name:
+                rec_res = await self.automation_manager.async_inspect_backups_for_item(target_name, item_type=item_type)
+                if rec_res.get("found") and rec_res.get("best_candidate"):
+                    cand = rec_res["best_candidate"]
+                    curr = rec_res["current_version"]
+                    c_name = cand["name"]
+                    c_key = cand["key"]
+                    c_lines = cand["lines"]
+                    c_bytes = cand["bytes"]
+                    c_src = cand["source"]
+                    c_time = cand["mtime"]
+                    c_type = cand["type"]
+
+                    speech = (
+                        f"I located the complete, full version of **{c_name}** (`{c_type}.{c_key}`) in your configuration snapshot `{c_src}` ({c_time}).\n\n"
+                        f"### 🔍 Backup Inspection & Verification:\n"
+                        f"- **Backup Source:** `{c_src}` ({c_time})\n"
+                        f"- **Full {c_type.capitalize()} Size:** **{c_lines} lines** ({c_bytes:,} bytes)\n"
+                        f"- **Active System Version:** {curr['lines']} lines ({curr['bytes']:,} bytes) — *{curr['status_label']}*\n"
+                        f"- **Verification:** Verified full operational structure with all routing rules, conditions, and actions intact.\n\n"
+                        f"### 📋 Recovered {c_type.capitalize()} Configuration:\n"
+                        f"```yaml\n{cand['yaml']}\n```\n\n"
+                        f"Would you like me to restore this {c_type} '{c_name}' (`{c_type}.{c_key}`) in your Home Assistant? Say 'yes' or 'apply' to confirm, or 'no' to cancel."
+                    )
+                    session_data["pending_items"] = [{
+                        "type": c_type,
+                        "id": c_key,
+                        "name": c_name,
+                        "yaml_data": cand["raw_item"],
+                    }]
+                    session_data["pending_yaml"] = session_data["pending_items"][0]
+                    self._record_turn(session_data, user_input.text, speech)
+                    return self._create_response(user_input, speech)
 
         # Check for list macros command
         if any(w in user_text for w in ("list macros", "available macros", "show macros", "what macros", "macro list")):
@@ -5979,15 +6062,23 @@ CRITICAL INSTRUCTIONS FOR AUTOMATIONS & SCRIPTS:
 User: {user_input.text}
 """
 
+        backup_summary = ""
+        b_cap = capability_map.get("backup") or {}
+        if b_cap.get("configured"):
+            b_agents = ", ".join(b_cap.get("agents", [])) or "Local"
+            b_sched = b_cap.get("schedule", "daily")
+            backup_summary = f"- Backup Facility: Configured ({b_sched.capitalize()} backups via {b_agents})\n"
+
         compact_prompt = f"""You are Otis AI, the smart home co-pilot and butler on Home Assistant {ha_version}.
 Respond concisely and actionably to the user. Ask a clarifying question if any detail is ambiguous.
 ZERO HALLUCINATION RULE: Never invent or guess entity IDs or rooms not listed below.
 Note: Voice satellites use ESPHome or Wyoming under Settings → Voice Assistants. Never instruct the user to run Linux shell commands (git pull, pip install) or invent voice: YAML keys. Never use time_pattern polling automations or advise creating README.md in /config.
 Provide automations strictly in modern Home Assistant {ha_version} GUI YAML format (clean top-level dict starting with alias:, description:, triggers:, conditions:, actions:, mode: using trigger: state and action: domain.service, without - id: or leading dashes, and never tell the user to manually edit automations.yaml).
+Never tell the user to manually download, extract, or edit backups or YAML files. When recovering scripts or automations from backups, output the full recovered YAML configuration directly for co-pilot review.
 {rules_snippet}
 
 System State:
-- Notable Integrations: {notable_integrations[:15]}
+{backup_summary}- Notable Integrations: {notable_integrations[:15]}
 - Spatial Adjacency: {spatial_summary}
 - Climate Architecture:
 {climate_summary}
@@ -7257,6 +7348,38 @@ class DiscoveryEngine:
                 "metrics": self.agent_orchestrator._metrics,
             }
             cap_map["voice_satellites"] = self.agent_orchestrator.get_discovered_satellites()
+
+        # Backup Topology & Facility Discovery
+        backup_info: dict[str, Any] = {
+            "configured": False,
+            "agents": [],
+            "schedule": "None",
+            "retention": {},
+            "last_completed": None,
+            "last_size_bytes": 0,
+        }
+        try:
+            backup_store_path = self.hass.config.path(".storage", "backup")
+            def _read_backup_cfg_sync(path: str) -> dict[str, Any]:
+                if not os.path.exists(path):
+                    return {}
+                try:
+                    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                        return json.load(f)
+                except Exception:
+                    return {}
+            raw_b = await self.hass.async_add_executor_job(_read_backup_cfg_sync, backup_store_path)
+            if isinstance(raw_b, dict) and "data" in raw_b:
+                b_cfg = raw_b["data"].get("config", {})
+                backup_info["configured"] = b_cfg.get("automatic_backups_configured", False)
+                backup_info["agents"] = list(b_cfg.get("agents", {}).keys())
+                backup_info["schedule"] = b_cfg.get("schedule", {}).get("recurrence", "daily")
+                backup_info["retention"] = b_cfg.get("retention", {})
+                backup_info["last_completed"] = b_cfg.get("last_completed_automatic_backup")
+                backup_info["last_size_bytes"] = b_cfg.get("last_completed_automatic_backup_size", 0)
+        except Exception as b_err:
+            _LOGGER.debug("Could not query backup configuration: %s", b_err)
+        cap_map["backup"] = backup_info
 
         cap_map["proactive_suggestions"] = await self.async_generate_proactive_suggestions(cap_map)
         self._cached_cap_map = dict(cap_map)

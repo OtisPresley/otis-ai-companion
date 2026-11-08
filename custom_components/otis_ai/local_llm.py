@@ -305,6 +305,28 @@ DEFAULT_OTIS_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "inspect_backup_configuration",
+            "description": "Inspect Home Assistant backups, historical archives, and configuration snapshots to find complete or uncorrupted versions of an overwritten, missing, or broken automation, script, or blueprint.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "item_name": {
+                        "type": "string",
+                        "description": "Name, alias, or entity ID of the target automation or script (e.g. 'notify_router', 'Notify Router').",
+                    },
+                    "item_type": {
+                        "type": "string",
+                        "enum": ["script", "automation", "blueprint"],
+                        "description": "Configuration item type.",
+                    },
+                },
+                "required": ["item_name"],
+            },
+        },
+    },
 ]
 
 
@@ -337,7 +359,7 @@ def select_relevant_tools(user_text: str) -> list[dict[str, Any]]:
             "tell me ",
             "list ",
         )
-    ) and not any(k in text_low for k in ("manual", "handbook", "spec", "reset")):
+    ) and not any(k in text_low for k in ("manual", "handbook", "spec", "reset", "backup", "restore", "recover", "overwritten", "missing")):
         return []
 
     tool_by_name = {
@@ -346,6 +368,9 @@ def select_relevant_tools(user_text: str) -> list[dict[str, Any]]:
         if isinstance(t, dict) and isinstance(t.get("function"), dict) and t["function"].get("name")
     }
     selected: list[str] = []
+
+    if any(k in text_low for k in ("backup", "restore", "snapshot", "rollback", "recover", "overwritten", "missing")):
+        selected.append("inspect_backup_configuration")
 
     if any(k in text_low for k in ("unpin", "remove pin")):
         selected.append("unpin_floorplan_entity")
@@ -1582,6 +1607,16 @@ class LocalLLMManager:
                         limit=params.get("limit", 3),
                         category=params.get("category"),
                     )
+                elif name == "inspect_backup_configuration":
+                    item_name = params.get("item_name") or params.get("name", "")
+                    item_type = params.get("item_type") or "script"
+                    auto_mgr = getattr(self, "automation_manager", None)
+                    if not auto_mgr and hasattr(self.hass, "data") and "otis_ai" in self.hass.data:
+                        auto_mgr = getattr(self.hass.data["otis_ai"].get("coordinator"), "automation_manager", None)
+                    if auto_mgr and hasattr(auto_mgr, "async_inspect_backups_for_item"):
+                        res_data = await auto_mgr.async_inspect_backups_for_item(item_name, item_type)
+                    else:
+                        res_data = {"found": False, "error": "AutomationManager unavailable"}
                 elif name == "call_ha_service":
                     domain = params.pop("domain", "")
                     service = params.pop("service", "")
@@ -1635,7 +1670,10 @@ class LocalLLMManager:
         default_sys = (
             "You are Otis AI, the ultimate smart home butler and co-pilot. "
             "You have direct access to smart home tools to inspect cameras, heal network nodes, "
-            "pin or unpin devices on the floorplan, run sentinel audits, and control devices. "
+            "pin or unpin devices on the floorplan, run sentinel audits, inspect backups, and control devices. "
+            "When a user asks to find or restore an overwritten, missing, or broken automation or script from a backup, "
+            "NEVER tell the user to manually extract or edit files. Always use the inspect_backup_configuration tool "
+            "to retrieve the complete historical YAML and present it directly for co-pilot deployment. "
             "When a user request requires action, call the appropriate tool. "
             "When answering, be concise, direct, and actionable."
         )
