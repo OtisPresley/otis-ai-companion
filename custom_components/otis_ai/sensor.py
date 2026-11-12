@@ -152,7 +152,7 @@ async def async_setup_entry(
 class OtisSensorEntity(SensorEntity):
     """Platform-backed Otis AI sensor entity."""
 
-    _attr_has_entity_name = True
+    _attr_has_entity_name = False
     _attr_should_poll = False
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry, sensor_def: dict[str, Any]) -> None:

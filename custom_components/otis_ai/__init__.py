@@ -864,6 +864,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     floorplan_parser = FloorplanParser(hass)
     automation_manager = AutomationManager(hass)
     rules_manager = BehavioralRulesManager(hass)
+    entry_store = hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})
+    entry_store["rules_manager"] = rules_manager
+
+    # Forward platform setups before managers start publishing states
+    if hasattr(hass, "config_entries") and hasattr(hass.config_entries, "async_forward_entry_setups"):
+        try:
+            await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        except Exception as plat_err:
+            _LOGGER.debug("Could not forward platform setups: %s", plat_err)
+
     dashboard_manager = DashboardManager(hass, floorplan_parser=floorplan_parser, rules_manager=rules_manager)
     theme_manager = ThemeManager(hass)
     try:
@@ -1047,7 +1057,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     else:
         conversation.async_set_agent(hass, entry, agent)
 
-    hass.data[DOMAIN][entry.entry_id] = {
+    entry_store.update({
         "data": {**entry.data, **getattr(entry, "options", {})},
         "engine": engine,
         "agent": agent,
@@ -1071,17 +1081,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "mesh_manager": mesh_manager,
         "presence_fusion_manager": presence_fusion_manager,
         "agent_orchestrator": agent_orchestrator,
-    }
+    })
 
     async def _async_update_listener(hass_inst: HomeAssistant, updated_entry: ConfigEntry) -> None:
         """Handle options update without requiring restart."""
-        entry_store = hass_inst.data.get(DOMAIN, {}).get(updated_entry.entry_id)
-        if entry_store is not None:
-            entry_store["data"] = {**updated_entry.data, **getattr(updated_entry, "options", {})}
-            eng_inst = entry_store.get("engine")
+        store = hass_inst.data.get(DOMAIN, {}).get(updated_entry.entry_id)
+        if store is not None:
+            store["data"] = {**updated_entry.data, **getattr(updated_entry, "options", {})}
+            eng_inst = store.get("engine")
             if eng_inst and hasattr(eng_inst, "invalidate_cache"):
                 eng_inst.invalidate_cache()
-            llm_inst = entry_store.get("local_llm_manager")
+            llm_inst = store.get("local_llm_manager")
             if llm_inst:
                 new_url = updated_entry.options.get(CONF_LOCAL_LLM_URL) or updated_entry.data.get(CONF_LOCAL_LLM_URL) or DEFAULT_LOCAL_LLM_URL
                 new_model = updated_entry.options.get(CONF_LOCAL_LLM_MODEL) or updated_entry.data.get(CONF_LOCAL_LLM_MODEL) or DEFAULT_LOCAL_LLM_MODEL
@@ -1099,12 +1109,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry.async_on_unload(entry.add_update_listener(_async_update_listener))
         except Exception as err:
             _LOGGER.debug("Could not register entry update listener: %s", err)
-
-    if hasattr(hass, "config_entries") and hasattr(hass.config_entries, "async_forward_entry_setups"):
-        try:
-            await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-        except Exception as plat_err:
-            _LOGGER.debug("Could not forward platform setups: %s", plat_err)
 
     def _get_entry_data() -> dict:
         return hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
