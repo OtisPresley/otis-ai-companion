@@ -7,6 +7,20 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-11-12
+
+### Fixed
+- **Complete Elimination of Residual Hardcoded Entity IDs & Fallbacks (HACS Item 18)**:
+  - **Macro Manager**: Removed fallback target `input_boolean.theater_precool` in `macro_manager.py:679`; removed personal entity checks for `fan.master`, `switch.sound_machine`, and `media_player.master` in favor of semantic keyword queries (`white_noise`, `sound_machine`).
+  - **Dashboard Manager**: Replaced hardcoded `weather.home` fallback in `dashboard_manager.py:612-617` with dynamic resolution of active `weather` entities; replaced hardcoded `switch.amp_power` and `switch.processor_power` with semantic amplifier power tokens.
+  - **Vision Manager & Service Handlers**: Replaced static fallback `camera.perimeter` in `handle_announce_visual_alert` with dynamic resolution of registered camera entities; replaced static fallback `alarm_control_panel.home` in intrusion alerts with dynamic queries against active `alarm_control_panel` entities; replaced `camera.unknown` with dynamic camera metadata.
+  - **Conversation Agent & Automation Calibration**: Replaced static fallback entities `binary_sensor.room_occupancy`, `binary_sensor.adjacent_occupancy`, and `light.room_light` in `__init__.py:5492-5494` with dynamic queries across all registered occupancy and lighting entities.
+  - **Energy Manager**: Replaced hardcoded tariff sensors (`sensor.electricity_tariff`, `sensor.grid_rate_period`, `sensor.utility_meter_tariff`), spot price integrations (`sensor.nordpool`, `sensor.amber`, `sensor.tibber`), and solar forecast sensors with dynamic queries inspecting sensor device classes, attributes, and available telemetry; resolved solar elevation directly from `sun.sun` attributes.
+  - **Audio Manager**: Replaced specific check for `media_player.vlc_telnet` with dynamic matching across available streamers; dynamic party mode resolution.
+  - **Lovelace Frontend Card**: Replaced `weather.home` fallback in `otis-companion-card.js:6531` with first discovered weather entity; removed `(input_boolean.guest_mode)` labels; replaced personal resident names in onboarding wizard placeholders with generic examples (`Alice, Bob`).
+  - **Local LLM Tool Descriptions**: Replaced example entity IDs in LLM tool schemas with generic canonical IDs.
+  - **Version Bump**: Bumped integration and card versions to `0.3.3`.
+
 ## [0.3.2] - 2026-11-12
 
 ### Added

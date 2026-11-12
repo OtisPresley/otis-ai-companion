@@ -191,7 +191,7 @@ class AudioHandoffManager:
                 elif src_low in ("home assistant", "tts", "announcements"):
                     for st in avail_streamers:
                         eid = str(st.get("entity_id") or "")
-                        if eid.lower() == "media_player.vlc_telnet":
+                        if any(k in eid.lower() for k in ("vlc", "tts", "announcement", "streamer", "speaker")):
                             mappings[src_clean] = eid
                             break
 
@@ -1171,16 +1171,18 @@ class AudioHandoffManager:
 
         # Check user toggle entity and Party Mode entity if present
         if hasattr(self.hass, "states") and hasattr(self.hass.states, "get"):
-            for eid in ("input_boolean.otis_audio_follow", "switch.otis_audio_follow", "input_boolean.audio_follow"):
+            for eid in ("switch.otis_audio_follow", "input_boolean.otis_audio_follow"):
                 toggle_st = self.hass.states.get(eid)
                 if toggle_st and toggle_st.state in ("off", "false", "0"):
                     _LOGGER.debug("Audio follow-me disabled by entity toggle '%s'", eid)
                     return None
-            for p_eid in ("input_boolean.party_mode", "input_boolean.otis_party_mode", "switch.otis_party_mode"):
-                party_st = self.hass.states.get(p_eid)
-                if party_st and party_st.state in ("on", "true", "1"):
-                    _LOGGER.debug("Audio follow-me suppressed because Party Mode entity '%s' is active", p_eid)
-                    return None
+            party_entities = [
+                s.entity_id for s in self.hass.states.async_all()
+                if "party_mode" in s.entity_id and s.state in ("on", "true", "1")
+            ]
+            if party_entities:
+                _LOGGER.debug("Audio follow-me suppressed because Party Mode entity '%s' is active", party_entities[0])
+                return None
 
         # If an active follow migration already routed to this target_area and arrival is confirmed, finalize it
         if (

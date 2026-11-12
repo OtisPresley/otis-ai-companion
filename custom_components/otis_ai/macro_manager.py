@@ -665,22 +665,15 @@ class MacroManager:
             steps = []
             if target_clim:
                 steps.append({
-                    "name": f"Soft Pre-Cool Theater Room ({target_clim} to {new_temp}°F)",
+                    "name": f"Soft Pre-Cool Room ({target_clim} to {new_temp}°F)",
                     "domain": "climate",
                     "service": "set_temperature",
                     "target": {"entity_id": target_clim},
                     "data": {"temperature": new_temp},
                 })
-            else:
-                steps.append({
-                    "name": "Arm Theater Pre-Cooling Mode",
-                    "domain": "homeassistant",
-                    "service": "turn_on",
-                    "target": {"entity_id": "input_boolean.theater_precool"},
-                })
 
             macro_res = await self.async_execute_macro(
-                macro_name="Theater Pre-Cooling",
+                macro_name=f"{target_area.title()} Pre-Cooling",
                 steps=steps,
                 confirmed=True,
             )
@@ -708,7 +701,7 @@ class MacroManager:
             ]
             white_noise = [
                 s.entity_id for s in all_states
-                if s.state != "unavailable" and any(k in s.entity_id for k in ("white_noise", "sound_machine", "fan.master", "switch.sound_machine", "media_player.master"))
+                if s.state != "unavailable" and any(k in s.entity_id for k in ("white_noise", "sound_machine"))
             ]
 
             steps = []

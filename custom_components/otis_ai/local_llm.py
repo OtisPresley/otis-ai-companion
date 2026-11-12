@@ -40,7 +40,7 @@ DEFAULT_OTIS_TOOLS: list[dict[str, Any]] = [
                 "properties": {
                     "entity_id": {
                         "type": "string",
-                        "description": "Home Assistant entity ID to pin (e.g., 'light.living_room_ceiling').",
+                        "description": "Home Assistant entity ID to pin (e.g., 'light.ceiling').",
                     },
                     "room": {
                         "type": "string",
@@ -181,7 +181,7 @@ DEFAULT_OTIS_TOOLS: list[dict[str, Any]] = [
                 "properties": {
                     "camera_entity_id": {
                         "type": "string",
-                        "description": "Target camera entity ID (e.g. 'camera.front_doorbell').",
+                        "description": "Target camera entity ID (e.g. 'camera.porch').",
                     },
                     "prompt": {
                         "type": "string",
@@ -274,7 +274,7 @@ DEFAULT_OTIS_TOOLS: list[dict[str, Any]] = [
                     },
                     "battery_entity": {
                         "type": "string",
-                        "description": "Optional battery sensor entity ID (e.g. 'sensor.powerwall_battery').",
+                        "description": "Optional battery sensor entity ID (e.g. 'sensor.battery_level').",
                     },
                     "battery_capacity_kwh": {
                         "type": "number",

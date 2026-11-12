@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.3.2";
+const CARD_VERSION = "0.3.3";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -6528,7 +6528,7 @@ class OtisCompanionCard extends HTMLElement {
 
     // 1. Weather entity
     const weatherEntities = Object.keys(this._hass?.states || {}).filter((k) => k.startsWith("weather."));
-    const weatherEid = this._config.weather_entity || (weatherEntities.includes("weather.home") ? "weather.home" : weatherEntities[0]);
+    const weatherEid = this._config.weather_entity || weatherEntities[0];
     const weatherObj = weatherEid ? this._hass?.states?.[weatherEid] : null;
 
     // 2. Calendar entity
@@ -9399,7 +9399,7 @@ class OtisCompanionCard extends HTMLElement {
     if (w.workHours) lines.push(`- Work-from-Home Routine: ${w.workHours}.`);
     if (w.sleepHabits) lines.push(`- Sleep & Bed Navigation: ${w.sleepHabits}.`);
 
-    lines.push("\n### Guest Mode & Entertaining (input_boolean.guest_mode)");
+    lines.push("\n### Guest Mode & Entertaining");
     lines.push("- When Guest Mode is ON:");
     if (w.guestLockCode) lines.push(`  * Add temporary code '${w.guestLockCode}' to exterior deadbolts for guest access.`);
     if (w.guestDelayedOff) lines.push(`  * Delay automatic bedtime lighting turn-off until ${w.guestDelayedOff}.`);
@@ -9478,7 +9478,7 @@ class OtisCompanionCard extends HTMLElement {
                     .join("");
                 })()}
               </div>
-              <input type="text" id="wiz-residents" value="${this._escapeHtml(w.residents || "")}" placeholder="e.g. Jamie, Amy" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+              <input type="text" id="wiz-residents" value="${this._escapeHtml(w.residents || "")}" placeholder="e.g. Alice, Bob" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
             </div>
 
             <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
@@ -9500,7 +9500,7 @@ class OtisCompanionCard extends HTMLElement {
           step === 2
             ? `
           <div style="display: flex; flex-direction: column; gap: 12px;">
-            <div style="font-size: 0.88rem; font-weight: 700; color: var(--otis-primary);">Step 2: Guest Mode & Entertaining (input_boolean.guest_mode)</div>
+            <div style="font-size: 0.88rem; font-weight: 700; color: var(--otis-primary);">Step 2: Guest Mode & Entertaining</div>
             <div style="font-size: 0.75rem; color: var(--otis-text-muted);">Specify automated behaviors when guests or visitors are staying in the home.</div>
 
             <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">

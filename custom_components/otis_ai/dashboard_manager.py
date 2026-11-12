@@ -609,16 +609,13 @@ class DashboardManager:
 
         # Weather & Calendar Glance cards
         weather_eid = next(
-            (e["entity_id"] for e in entities_list if e.get("entity_id") == "weather.home"),
-            next((e["entity_id"] for e in entities_list if str(e.get("entity_id", "")).startswith("weather.")), None),
+            (e["entity_id"] for e in entities_list if str(e.get("entity_id", "")).startswith("weather.")),
+            None,
         )
         if not weather_eid and hasattr(self, "hass") and self.hass and hasattr(self.hass, "states"):
-            if self.hass.states.get("weather.home"):
-                weather_eid = "weather.home"
-            else:
-                weather_eid = next(
-                    (s.entity_id for s in self.hass.states.async_all("weather")), None
-                )
+            weather_eid = next(
+                (s.entity_id for s in self.hass.states.async_all("weather")), None
+            )
 
         calendar_eids = [
             e["entity_id"] for e in entities_list if str(e.get("entity_id", "")).startswith("calendar.")
@@ -3101,7 +3098,7 @@ class DashboardManager:
                 controllable_power_eids.append(eid)
             elif "ev_charger" in eid_lower or "car_charger" in eid_lower:
                 controllable_power_eids.append(eid)
-            elif eid_lower in ("switch.amp_power", "switch.processor_power"):
+            elif any(k in eid_lower for k in ("amp_power", "amplifier_power", "processor_power")):
                 controllable_power_eids.append(eid)
 
         has_solar = solar.get("has_solar_system", False) or solar.get("production_w", 0) > 0

@@ -1017,7 +1017,7 @@ class VisionPresenceManager:
             return {"dispatched": False, "reason": "audio_manager_unavailable"}
 
         now = time.time()
-        cam_id = audit_entry.get("camera", "camera.unknown")
+        cam_id = audit_entry.get("camera") or "unknown_camera"
         track_id = track.get("track_id") if track else audit_entry.get("track_id")
         dedup_key = track_id or cam_id
 
@@ -1658,6 +1658,15 @@ class VisionPresenceManager:
         if not household_present:
             for a_id, r_info in rooms.items():
                 if r_info["probability"] >= 0.70:
+                    panels = [s.entity_id for s in self.hass.states.async_all("alarm_control_panel")] if hasattr(self.hass, "states") else []
+                    panel_eid = panels[0] if panels else None
+                    action_payload: dict[str, Any] = {
+                        "service": "alarm_control_panel.alarm_arm_away" if panel_eid else "homeassistant.turn_on",
+                        "button_label": "Arm Security",
+                    }
+                    if panel_eid:
+                        action_payload["target"] = {"entity_id": panel_eid}
+
                     alerts.append({
                         "id": f"contextual_intruder_{a_id}",
                         "title": f"Intrusion Alert: Presence in {r_info['area_name']} While Away",
@@ -1666,11 +1675,7 @@ class VisionPresenceManager:
                         "icon": "mdi:shield-account",
                         "description": f"High confidence occupancy ({r_info['confidence_percent']}%) detected in {r_info['area_name']} while away.",
                         "action_type": "call_service",
-                        "action_payload": {
-                            "service": "homeassistant.turn_on",
-                            "target": {"entity_id": "alarm_control_panel.home"},
-                            "button_label": "Arm Security",
-                        },
+                        "action_payload": action_payload,
                     })
 
         return alerts

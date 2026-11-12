@@ -2492,7 +2492,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Handle service call to trigger proactive voice notification on visual alert."""
         _LOGGER.debug("Service 'announce_visual_alert' triggered with: %s", call.data)
         vm = _get_vision_manager()
-        camera_id = call.data.get("camera_entity_id") or "camera.perimeter"
+        cam_param = call.data.get("camera_entity_id")
+        if not cam_param and hasattr(hass, "states") and hasattr(hass.states, "async_all"):
+            cam_param = next((s.entity_id for s in hass.states.async_all("camera")), None)
+        camera_id = cam_param or "camera"
         summary_override = call.data.get("message")
         detected_objects = call.data.get("detected_objects") or ["person"]
         perimeter_zone = call.data.get("perimeter_zone") or "perimeter"
@@ -5489,9 +5492,11 @@ class OtisAIConversationAgent(AbstractAgent):
             room_occ = sorted([e for e in r_eids if e.startswith("binary_sensor.") and any(k in e.lower() for k in ("occupancy", "motion", "presence", "person"))])
             room_lights = sorted([e for e in r_eids if e.startswith("light.") and not any(k in e.lower() for k in ("_led", "_screen", "_indicator"))])
             
-            p_occ = room_occ[0] if room_occ else "binary_sensor.room_occupancy"
-            s_occ = room_occ[1] if len(room_occ) > 1 else (room_occ[0] if room_occ else "binary_sensor.adjacent_occupancy")
-            lt_targets = ", ".join(f"`{lt}`" for lt in room_lights[:3]) if room_lights else "`light.room_light`"
+            all_occ = [s.entity_id for s in self.hass.states.async_all("binary_sensor") if s.attributes.get("device_class") in ("occupancy", "motion", "presence")] if hasattr(self.hass, "states") else []
+            p_occ = room_occ[0] if room_occ else (all_occ[0] if all_occ else f"binary_sensor.{r_slug}_occupancy")
+            s_occ = room_occ[1] if len(room_occ) > 1 else (room_occ[0] if room_occ else (all_occ[1] if len(all_occ) > 1 else f"binary_sensor.{r_slug}_adjacent_occupancy"))
+            all_lts = [s.entity_id for s in self.hass.states.async_all("light")] if hasattr(self.hass, "states") else []
+            lt_targets = ", ".join(f"`{lt}`" for lt in room_lights[:3]) if room_lights else (f"`{all_lts[0]}`" if all_lts else f"`light.{r_slug}_light`")
 
             speech = (
                 f"Based on the existing automation and system configuration, here's the step-by-step guidance for the **Vision False-Positive Filter Calibrated ({r_name})** system:\n\n"
@@ -8535,8 +8540,8 @@ class DiscoveryEngine:
                         (eid for eid in active_entity_ids if eid.startswith("climate.") and any(k in eid for k in ("guest", "upstairs", "zone_2"))),
                         next((eid for eid in active_entity_ids if eid.startswith("climate.")), None),
                     )
-                    guest_eid = next((eid for eid in active_entity_ids if "guest_mode" in eid), "input_boolean.guest_mode")
-                    if not climate_mentions_guest and target_climate:
+                    guest_eid = next((eid for eid in active_entity_ids if "guest_mode" in eid or "guest" in eid), None)
+                    if not climate_mentions_guest and target_climate and guest_eid:
                         result["improvement_suggestions"].append({
                             "id": "link_guest_mode_climate_comfort",
                             "title": f"Coordinate {guest_eid} with {target_climate}",
@@ -8605,7 +8610,7 @@ class DiscoveryEngine:
                         if (
                             has_ev_or_storage
                             and not is_non_energy
-                            and any(k in auto_str for k in ("ev_charge", "ev_charging", "switch.charger", "switch.ev_", "tesla_charge", "charge_mode"))
+                            and any(k in auto_str for k in ("ev_charge", "ev_charging", "charger", "tesla_charge", "charge_mode"))
                             and any(k in auto_str for k in ("switch.turn_on", "time", "numeric_state"))
                         ):
                             sugg_id = f"migrate_energy_arbitrage_{aid}"

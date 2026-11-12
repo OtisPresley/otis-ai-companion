@@ -83,16 +83,16 @@ class EnergyManager:
         is_weekend = now.weekday() >= 5  # Saturday=5, Sunday=6
 
         # Check if an external grid tariff sensor exists
-        for tariff_entity in ("sensor.electricity_tariff", "sensor.grid_rate_period", "sensor.utility_meter_tariff"):
-            state = self.hass.states.get(tariff_entity)
-            if state and state.state not in ("unavailable", "unknown"):
-                val = state.state.lower()
-                return {
-                    "period": val,
-                    "is_peak": "peak" in val and "off" not in val,
-                    "source": tariff_entity,
-                    "peak_window_description": "Managed by external utility provider sensor",
-                }
+        if hasattr(self.hass, "states") and hasattr(self.hass.states, "async_all"):
+            for state in self.hass.states.async_all("sensor"):
+                if state.state not in ("unavailable", "unknown") and any(k in state.entity_id for k in ("tariff", "rate_period", "electricity_rate")):
+                    val = state.state.lower()
+                    return {
+                        "period": val,
+                        "is_peak": "peak" in val and "off" not in val,
+                        "source": state.entity_id,
+                        "peak_window_description": "Managed by external utility provider sensor",
+                    }
 
         # Standard default TOU (Time-Of-Use) Tariff Curve:
         # Weekdays: Peak (14:00 - 19:00 / 2pm-7pm), Shoulder (07:00 - 14:00 & 19:00 - 22:00), Off-Peak (22:00 - 07:00)
@@ -134,19 +134,13 @@ class EnergyManager:
         is_weekend = now.weekday() >= 5
         rates = dict(custom_rates or self._custom_tou_rates)
 
-        # 1. Attempt to discover dynamic spot price sensors (Nordpool, Amber, Tibber, etc.)
+        # 1. Attempt to discover dynamic spot price sensors
         dynamic_hourly_rates: dict[int, float] = {}
         found_dynamic = False
 
-        for spot_prefix in (
-            "sensor.nordpool",
-            "sensor.amber",
-            "sensor.tibber",
-            "sensor.electricity_price",
-            "sensor.grid_price",
-        ):
-            for st in self.hass.states.async_all():
-                if st.entity_id.startswith(spot_prefix) and st.state not in ("unavailable", "unknown"):
+        if hasattr(self.hass, "states") and hasattr(self.hass.states, "async_all"):
+            for st in self.hass.states.async_all("sensor"):
+                if st.state not in ("unavailable", "unknown") and any(k in st.entity_id for k in ("price", "spot", "tariff", "nordpool", "tibber", "amber", "electricity")):
                     attrs = st.attributes or {}
                     raw_prices = attrs.get("raw_today") or attrs.get("prices") or attrs.get("today")
                     if isinstance(raw_prices, list) and len(raw_prices) >= 24:
@@ -161,8 +155,6 @@ class EnergyManager:
                             break
                         except (ValueError, TypeError):
                             pass
-            if found_dynamic:
-                break
 
         avg_rate = (
             sum(dynamic_hourly_rates.values()) / len(dynamic_hourly_rates)
@@ -229,16 +221,27 @@ class EnergyManager:
         hourly_values: dict[int, float] = {}
         source = "astronomical_bell_curve"
 
-        for s_eid in (
-            "sensor.energy_production_today",
-            "sensor.solar_forecast_today",
-            "sensor.forecast_solar_energy_today",
-            "sensor.solcast_pv_forecast_today",
-            "sensor.energy_production_tomorrow",
-        ):
-            st = self.hass.states.get(s_eid)
-            if not st or st.state in ("unavailable", "unknown"):
-                continue
+        solar_candidates = []
+        if hasattr(self.hass, "states") and hasattr(self.hass.states, "async_all"):
+            try:
+                solar_candidates = [
+                    s for s in self.hass.states.async_all("sensor")
+                    if getattr(s, "state", None) not in ("unavailable", "unknown")
+                    and any(k in getattr(s, "entity_id", "") for k in ("solar", "pv", "production", "energy"))
+                ]
+            except Exception:
+                solar_candidates = []
+        if not solar_candidates and hasattr(self.hass, "states") and hasattr(self.hass.states, "get"):
+            for s_eid in (
+                "sensor.forecast_solar_energy_today",
+                "sensor.solar_forecast_today",
+                "sensor.energy_production_today",
+                "sensor.solcast_pv_forecast_today",
+            ):
+                st = self.hass.states.get(s_eid)
+                if st and getattr(st, "state", None) not in ("unavailable", "unknown"):
+                    solar_candidates.append(st)
+        for st in solar_candidates:
 
             attrs = st.attributes or {}
             detailed = attrs.get("detailed_forecast") or attrs.get("forecast") or attrs.get("detailedHourly")
@@ -259,7 +262,7 @@ class EnergyManager:
                                     val = val / 1000.0
                                 hourly_values[h] = round(val, 3)
                     if hourly_values:
-                        source = f"provider_telemetry_{s_eid}"
+                        source = f"provider_telemetry_{st.entity_id}"
                         break
                 except (ValueError, TypeError):
                     pass
@@ -494,17 +497,10 @@ class EnergyManager:
         # Check Solar Production & Elevation
         solar_elevation = None
         solar_azimuth = None
-        elevation_st = self.hass.states.get("sensor.sun_solar_elevation")
-        if elevation_st and elevation_st.state not in ("unavailable", "unknown"):
-            try:
-                solar_elevation = round(float(elevation_st.state), 1)
-            except (ValueError, TypeError):
-                pass
-
-        sun_st = self.hass.states.get("sun.sun")
-        if sun_st:
+        sun_st = self.hass.states.get("sun.sun") if hasattr(self.hass, "states") and hasattr(self.hass.states, "get") else None
+        if sun_st and getattr(sun_st, "attributes", None):
             attrs = sun_st.attributes or {}
-            if solar_elevation is None and "elevation" in attrs:
+            if "elevation" in attrs:
                 try:
                     solar_elevation = round(float(attrs["elevation"]), 1)
                 except (ValueError, TypeError):
@@ -514,6 +510,14 @@ class EnergyManager:
                     solar_azimuth = round(float(attrs["azimuth"]), 1)
                 except (ValueError, TypeError):
                     pass
+        if solar_elevation is None and hasattr(self.hass, "states") and hasattr(self.hass.states, "async_all"):
+            for s in self.hass.states.async_all("sensor"):
+                if "solar_elevation" in s.entity_id and s.state not in ("unavailable", "unknown"):
+                    try:
+                        solar_elevation = round(float(s.state), 1)
+                        break
+                    except (ValueError, TypeError):
+                        pass
 
         if solar_elevation is None:
             # Fallback approximation from time of day (peaks at ~60° around 13:00)
@@ -1239,19 +1243,34 @@ class EnergyManager:
 
         # 2. Resolve daily solar forecast & hourly forecast table
         solar_forecast_kwh = 24.0
-        for s_eid in (
-            "sensor.energy_production_today",
-            "sensor.solar_forecast_today",
-            "sensor.forecast_solar_energy_today",
-            "sensor.solcast_pv_forecast_today",
-        ):
-            st = self.hass.states.get(s_eid)
-            if st and st.state not in ("unavailable", "unknown"):
-                try:
-                    solar_forecast_kwh = float(st.state)
-                    break
-                except (ValueError, TypeError):
-                    pass
+        if hasattr(self.hass, "states") and hasattr(self.hass.states, "async_all"):
+            try:
+                for st in self.hass.states.async_all("sensor"):
+                    if (
+                        any(k in getattr(st, "entity_id", "") for k in ("solar_forecast", "energy_production", "forecast_solar"))
+                        and getattr(st, "state", None) not in ("unavailable", "unknown")
+                    ):
+                        try:
+                            solar_forecast_kwh = float(st.state)
+                            break
+                        except (ValueError, TypeError):
+                            pass
+            except Exception:
+                pass
+        if solar_forecast_kwh == 24.0 and hasattr(self.hass, "states") and hasattr(self.hass.states, "get"):
+            for s_eid in (
+                "sensor.energy_production_today",
+                "sensor.solar_forecast_today",
+                "sensor.forecast_solar_energy_today",
+                "sensor.solcast_pv_forecast_today",
+            ):
+                st = self.hass.states.get(s_eid)
+                if st and getattr(st, "state", None) not in ("unavailable", "unknown"):
+                    try:
+                        solar_forecast_kwh = float(st.state)
+                        break
+                    except (ValueError, TypeError):
+                        pass
 
         hourly_solar = self.get_hourly_solar_forecast(daily_forecast_kwh=solar_forecast_kwh)
         solar_table = [s["solar_kwh"] for s in hourly_solar]
