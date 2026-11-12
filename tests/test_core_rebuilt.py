@@ -738,6 +738,89 @@ class TestOtisAICore(unittest.TestCase):
         self.assertNotIn("pending_items", self.hass.data[DOMAIN]["sessions"]["test_conv_id"])
         self.assertIn("successfully created and enabled the automation 'Guest Mode PIN Alerts'", user_input.create_response.call_args[1]["speech"])
 
+    def test_conversation_agent_critique_does_not_auto_deploy(self):
+        """Critiques or questions mentioning 'deploy' must NOT falsely confirm & execute pending drafts."""
+        from custom_components.otis_ai import OtisAIConversationAgent
+
+        entry = MagicMock()
+        entry.options = {}
+        entry.data = {}
+        engine = MagicMock()
+        engine.async_build_capability_map = AsyncMock(return_value={
+            "areas": {"study": {"name": "Study", "entities": ["binary_sensor.study_temp_occupancy", "light.shelf_lamp"]}},
+            "entities": [
+                {"entity_id": "binary_sensor.study_temp_occupancy", "domain": "binary_sensor", "area_id": "study", "state": "off"},
+                {"entity_id": "light.shelf_lamp", "domain": "light", "area_id": "study", "state": "off"},
+            ],
+            "orphaned_entities": [],
+            "proactive_suggestions": [],
+            "integrations": [],
+            "system_maturity": {},
+        })
+        manager = MagicMock()
+        manager.async_write_automation = AsyncMock(return_value="12345")
+        manager.async_reload_automations = AsyncMock()
+
+        agent = OtisAIConversationAgent(self.hass, entry, engine, manager)
+        self.hass.data[DOMAIN] = {
+            "sessions": {
+                "test_conv_critique": {
+                    "pending_items": [{
+                        "type": "automation",
+                        "name": "Study: Motion & Occupancy Lighting",
+                        "yaml_data": {"alias": "Study: Motion & Occupancy Lighting", "triggers": [], "actions": []},
+                    }]
+                }
+            }
+        }
+
+        user_input = MagicMock()
+        user_input.text = "You are supposed to offer to deploy it for me like you did in the post in the attached screenshot."
+        user_input.conversation_id = "test_conv_critique"
+        user_input.create_response = MagicMock(return_value="critique_response")
+
+        import asyncio
+        asyncio.run(agent.async_process(user_input))
+        manager.async_write_automation.assert_not_called()
+
+    def test_conversation_agent_study_sun_elevation_automation(self):
+        """Room lighting automation must parse and include sun elevation conditions."""
+        from custom_components.otis_ai import OtisAIConversationAgent
+
+        entry = MagicMock()
+        entry.options = {}
+        entry.data = {}
+        engine = MagicMock()
+        engine.async_build_capability_map = AsyncMock(return_value={
+            "areas": {"study": {"name": "Study", "entities": ["binary_sensor.study_temp_occupancy", "light.shelf_lamp"]}},
+            "entities": [
+                {"entity_id": "binary_sensor.study_temp_occupancy", "domain": "binary_sensor", "area_id": "study", "state": "off"},
+                {"entity_id": "light.shelf_lamp", "domain": "light", "area_id": "study", "state": "off"},
+            ],
+            "orphaned_entities": [],
+            "proactive_suggestions": [],
+            "integrations": [],
+            "system_maturity": {},
+        })
+        manager = MagicMock()
+        agent = OtisAIConversationAgent(self.hass, entry, engine, manager)
+
+        user_input = MagicMock()
+        user_input.text = "Create an automation that turns on all the lights in the Study when presence is detected and the sun elevation is below 4"
+        user_input.conversation_id = "test_conv_sun_elev"
+        user_input.create_response = MagicMock(return_value="sun_elev_response")
+
+        import asyncio
+        asyncio.run(agent.async_process(user_input))
+
+        speech = user_input.create_response.call_args[1]["speech"]
+        self.assertIn("numeric_state", speech)
+        self.assertIn("below: 4", speech)
+        self.assertIn("Would you like me to create and enable this automation", speech)
+        pending = self.hass.data[DOMAIN]["sessions"]["test_conv_sun_elev"]["pending_items"]
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["yaml_data"]["conditions"][0]["below"], 4)
+
     def test_conversation_agent_prior_turn_recovery(self):
         """Test that if pending_items was missed, saying 'deploy this' recovers YAML from previous assistant turn."""
         from custom_components.otis_ai import OtisAIConversationAgent

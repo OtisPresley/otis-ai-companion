@@ -10,7 +10,7 @@ except ImportError:
         SWITCH = "switch"
 
 DOMAIN = "otis_ai"
-INTEGRATION_VERSION = "0.3.5"
+INTEGRATION_VERSION = "0.3.6"
 
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,

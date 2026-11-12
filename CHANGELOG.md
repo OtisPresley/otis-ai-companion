@@ -7,6 +7,13 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] - 2026-11-12
+
+### Assist Co-Pilot & Conversation Continuity Fixes
+- **Sun Elevation & Extra Condition Grounding**: Parsed `sun elevation` (`below`/`above`) conditions in room-lighting automation synthesis using `sensor.sun_solar_elevation` (if enabled) or `sun.sun` (`attribute: elevation`), added a guard so requests with unparsed constraints fall through to the full LLM pipeline instead of being dropped, and grounded all agents on HA's native `sun.sun` / `sensor.sun_solar_elevation` entities.
+- **Strict Confirmation Gate**: Prevented questions or critiques containing words like `"deploy"` (e.g. *"You are supposed to offer to deploy it for me..."*) from falsely auto-deploying stale drafts.
+- **Persistent Multi-Turn Conversation Context**: Persisted `this._conversationId` in `sessionStorage` until the user explicitly clicks **Clear**, preserving multi-prompt conversation history across tab switches and card re-renders.
+
 ## [0.3.5] - 2026-11-12
 
 ### Vision, Presence & Proactive Feed Enhancements

@@ -4199,20 +4199,41 @@ class OtisAIConversationAgent(AbstractAgent):
 
         fire_progress("intent", "Parsing Intent", "Analyzing natural language prompt & target domains")
         
-        confirmations = {"yes", "y", "apply", "confirm", "go ahead", "do it"}
+        confirmations = {"yes", "y", "apply", "confirm", "go ahead", "do it", "deploy", "deploy it", "apply it"}
         rejections = {"no", "n", "cancel", "don't", "stop", "reject"}
+        critique_or_question = (
+            "?" in user_text
+            or any(
+                w in user_text
+                for w in (
+                    "why", "supposed", "should", "how", "what", "instead", "change",
+                    "update", "modify", "missing", "ignored", "wrong", "incorrect",
+                    "didn't", "did not", "wasn't", "not considered",
+                )
+            )
+        )
 
         is_rejection = (
             user_text in rejections
             or any(k in user_text for k in ("cancel", "don't", "dont", "abort", "discard", "nevermind", "do not deploy", "don't deploy"))
         )
-        is_confirmation = not is_rejection and (
-            user_text in confirmations
-            or any(k in user_text for k in (
-                "deploy", "apply", "confirm", "go ahead", "do it", "yes", "install",
-                "create it", "set it up", "add it", "deploy it", "deploy this",
-                "deploy automation", "create this", "create automation"
-            ))
+        is_confirmation = (
+            not is_rejection
+            and not critique_or_question
+            and (
+                user_text in confirmations
+                or (
+                    len(user_text.split()) <= 12
+                    and any(
+                        k in user_text
+                        for k in (
+                            "deploy", "apply", "confirm", "go ahead", "do it", "yes",
+                            "create it", "set it up", "add it", "deploy it", "deploy this",
+                            "deploy automation", "create this", "create automation",
+                        )
+                    )
+                )
+            )
         )
 
         # If not already pending in session, check if user is asking to deploy a configuration from the immediate prior turn
@@ -5838,11 +5859,49 @@ class OtisAIConversationAgent(AbstractAgent):
                 if e.startswith("binary_sensor.")
                 and any(k in e.lower() for k in ("motion", "occupancy", "person", "presence", "pir", "mmwave"))
             ])
-            if room_lights and room_occ_sensors:
+            # Bail out of deterministic fast-path if user asks for extra conditions it cannot parse yet
+            has_unhandled_conditions = any(
+                k in user_lower
+                for k in (
+                    "lux", "illuminance", "brightness", "between ", "weekday", "weekend",
+                    "nobody home", "everyone away", "guest", "temperature", "humidity",
+                    "door ", "window ", "media_player", "tv ", "television",
+                )
+            )
+            elev_match = re.search(
+                r"(?:sun\s*elevation|solar\s*elevation|elevation)\s*(?:is\s*)?(below|under|less than|<|above|over|greater than|>)\s*(-?\d+(?:\.\d+)?)",
+                user_lower,
+            )
+            if room_lights and room_occ_sensors and not has_unhandled_conditions:
                 fire_progress("synthesizing", f"Synthesizing {r_name} Automation", f"Binding real {r_name} entities: {room_lights} & {room_occ_sensors}")
                 wants_after_sunset = any(k in user_lower for k in ("after sunset", "sunset", "night", "dark", "below_horizon"))
                 off_mins_match = re.search(r"(\d+)\s*(?:minute|minutes|min|mins)\b", user_lower)
                 off_minutes = int(off_mins_match.group(1)) if off_mins_match else None
+
+                # Resolve sun elevation condition using sensor.sun_solar_elevation (if enabled) or sun.sun attribute
+                sun_elev_cond: dict[str, Any] | None = None
+                if elev_match:
+                    op_str = elev_match.group(1)
+                    elev_val = float(elev_match.group(2))
+                    if elev_val.is_integer():
+                        elev_val_num: int | float = int(elev_val)
+                    else:
+                        elev_val_num = elev_val
+                    bound_key = "below" if op_str in ("below", "under", "less than", "<") else "above"
+                    solar_state = self.hass.states.get("sensor.sun_solar_elevation") if hasattr(self.hass, "states") else None
+                    if solar_state is not None and solar_state.state not in ("unavailable", "unknown"):
+                        sun_elev_cond = {
+                            "condition": "numeric_state",
+                            "entity_id": "sensor.sun_solar_elevation",
+                            bound_key: elev_val_num,
+                        }
+                    else:
+                        sun_elev_cond = {
+                            "condition": "numeric_state",
+                            "entity_id": "sun.sun",
+                            "attribute": "elevation",
+                            bound_key: elev_val_num,
+                        }
 
                 on_trigger: dict[str, Any] = {
                     "trigger": "state",
@@ -5861,7 +5920,9 @@ class OtisAIConversationAgent(AbstractAgent):
                     })
 
                 conditions_list: list[dict[str, Any]] = []
-                if wants_after_sunset and off_minutes is None:
+                if sun_elev_cond is not None and off_minutes is None:
+                    conditions_list.append(sun_elev_cond)
+                if wants_after_sunset and off_minutes is None and sun_elev_cond is None:
                     conditions_list.append({
                         "condition": "sun",
                         "after": "sunset",
@@ -5870,7 +5931,9 @@ class OtisAIConversationAgent(AbstractAgent):
                 target_lights_val = list(room_lights) if len(room_lights) > 1 else room_lights[0]
                 if off_minutes is not None:
                     on_conds: list[dict[str, Any]] = [{"condition": "trigger", "id": "motion_detected"}]
-                    if wants_after_sunset:
+                    if sun_elev_cond is not None:
+                        on_conds.append(sun_elev_cond)
+                    elif wants_after_sunset:
                         on_conds.append({"condition": "sun", "after": "sunset"})
                     actions_list: list[dict[str, Any]] = [
                         {
@@ -5904,9 +5967,20 @@ class OtisAIConversationAgent(AbstractAgent):
                         }
                     ]
 
-                alias_str = f"{r_name}: Motion & Occupancy Lighting" + (" After Sunset" if wants_after_sunset else "")
+                alias_suffix = ""
+                if sun_elev_cond is not None:
+                    b_lbl = "Below" if "below" in sun_elev_cond else "Above"
+                    b_num = sun_elev_cond.get("below", sun_elev_cond.get("above"))
+                    alias_suffix = f" (Sun Elevation {b_lbl} {b_num}°)"
+                elif wants_after_sunset:
+                    alias_suffix = " After Sunset"
+                alias_str = f"{r_name}: Motion & Occupancy Lighting{alias_suffix}"
                 desc_parts = [f"Turns on {r_name} light ({', '.join(room_lights)}) when motion or person occupancy ({', '.join(room_occ_sensors)}) is detected"]
-                if wants_after_sunset:
+                if sun_elev_cond is not None:
+                    b_lbl = "below" if "below" in sun_elev_cond else "above"
+                    b_num = sun_elev_cond.get("below", sun_elev_cond.get("above"))
+                    desc_parts.append(f"and sun elevation ({sun_elev_cond['entity_id']}) is {b_lbl} {b_num}°")
+                elif wants_after_sunset:
                     desc_parts.append("after sunset")
                 if off_minutes is not None:
                     desc_parts.append(f"and turns it off after {off_minutes} minutes of no motion")
@@ -6283,8 +6357,9 @@ HOME ASSISTANT ARCHITECTURAL GROUNDING:
 - Command-Line & Package Installation Prohibition: NEVER instruct the user to run Linux/shell terminal commands such as `cd /config`, `git pull`, `pip install`, `apt-get`, `sudo`, or `homeassistant --now-cli`. Modern Home Assistant runs in a managed OS or container environment.
 - No Nonexistent YAML Sections: NEVER invent fictional YAML keys such as `voice:`, `speech:`, or `satellite:` in `configuration.yaml`. Voice outputs use `tts.speak` services, and satellites are configured via ESPHome/Wyoming in the UI.
 - Polling Anti-Pattern Prohibition: NEVER create or recommend automations with trigger: time_pattern (e.g. minutes: "/5") to check volume or quiet hours! Always use discrete trigger: time triggers (e.g., at: "22:00:00" and at: "08:00:00") or entity state triggers to protect the Home Assistant asyncio event loop.
-- Clean System Configuration: NEVER tell the user to create README.md notes, markdown files, or arbitrary files in /config.
-- Automation Delivery: Supply clean, ready-to-paste Home Assistant YAML for the UI automation editor (Settings → Automations & Scenes → Create Automation → Edit in YAML).
+- Clean System Configuration: NEVER tell the user to create README.md notes, markdown files, or arbitrary files in /config or `/scripts/*.yaml`.
+- Sun & Solar Elevation Grounding: Home Assistant natively tracks sun position via `sun.sun` (with `attribute: elevation` and `azimuth`) and `sensor.sun_solar_elevation` (disabled by default in the Sun integration). Always use `condition: numeric_state` with `entity_id: sensor.sun_solar_elevation` (if enabled) or `entity_id: sun.sun` + `attribute: elevation` (e.g., `below: 4`). NEVER claim Home Assistant lacks sun elevation support.
+- Automation Delivery: Supply a single clean Home Assistant YAML block (`alias:`, `triggers:`, `conditions:`, `actions:`) so the UI can render the 1-click **Deploy & Enable Automation** button.
 
 {rules_snippet}
 

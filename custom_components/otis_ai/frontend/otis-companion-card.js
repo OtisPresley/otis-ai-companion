@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.3.5";
+const CARD_VERSION = "0.3.6";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -66,7 +66,11 @@ class OtisCompanionCard extends HTMLElement {
     this._recognition = null;
     this._activeTab = this._loadActiveTab(); // 'suggestions' | 'chat' | 'capabilities' | 'floorplan' | 'vision'
     this._selectedCategory = "all"; // 'all' | 'lighting' | 'media' | 'security' | 'cleanup' | 'system'
-    this._conversationId = null;
+    try {
+      this._conversationId = sessionStorage.getItem("otis_conversation_id") || null;
+    } catch (_) {
+      this._conversationId = null;
+    }
     this._conversationAgentId = null;
     this._cachedAgentId = null;
     this._draftChatText = "";
@@ -269,6 +273,11 @@ class OtisCompanionCard extends HTMLElement {
   _saveChatMessages() {
     try {
       sessionStorage.setItem("otis_chat_messages", JSON.stringify(this._chatMessages.slice(-50)));
+      if (this._conversationId) {
+        sessionStorage.setItem("otis_conversation_id", this._conversationId);
+      } else {
+        sessionStorage.removeItem("otis_conversation_id");
+      }
     } catch (_) {}
   }
 
@@ -13707,6 +13716,7 @@ class OtisCompanionCard extends HTMLElement {
         }
         this._chatMessages = [];
         this._conversationId = null;
+        OTIS_ACTIVE_CHAT.conversationId = null;
         this._saveChatMessages();
         this._render();
         this._showToast("Conversation history cleared.");
