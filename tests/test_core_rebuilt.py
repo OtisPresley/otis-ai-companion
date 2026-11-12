@@ -5520,15 +5520,44 @@ action:
                 "timestamp": time.time(),
                 "source": ["components/androidtv/__init__.py", 150],
             },
+            {
+                "name": "concurrent.futures",
+                "message": ["exception calling callback for <Future at 0x7fa2810 state=finished raised RuntimeError>"],
+                "level": "ERROR",
+                "exception": "RuntimeError: Task was cancelled",
+                "count": 1,
+                "timestamp": time.time(),
+                "source": ["concurrent/futures/_base.py", 391],
+            },
+            {
+                "name": "homeassistant.components.schlage",
+                "message": ["Timeout fetching schlage ([REDACTED_EMAIL]) data"],
+                "level": "ERROR",
+                "exception": "TimeoutError",
+                "count": 3,
+                "timestamp": time.time(),
+                "source": ["components/schlage/coordinator.py", 65],
+            },
+            {
+                "name": "homeassistant.components.ipp",
+                "message": ["Error fetching ipp data: Invalid response received from the printer"],
+                "level": "ERROR",
+                "exception": "ipp.exceptions.IPPError",
+                "count": 3,
+                "timestamp": time.time(),
+                "source": ["components/ipp/coordinator.py", 80],
+            },
         ])
 
         audit = asyncio.run(monitor.async_audit_logs())
-        # tplink and androidtv (transient ADB connection retry) are self-healing
-        self.assertEqual(len(audit["self_healing"]), 2)
+        # tplink, androidtv, schlage (timeout fetching), and ipp (printer) are self-healing
+        self.assertEqual(len(audit["self_healing"]), 4)
         domains_self_healing = [s["domain"] for s in audit["self_healing"]]
         self.assertIn("tplink", domains_self_healing)
         self.assertIn("androidtv", domains_self_healing)
-        # automation is in NON_INTEGRATION_DOMAINS and excluded; only otis_ai is a real bug
+        self.assertIn("schlage", domains_self_healing)
+        self.assertIn("ipp", domains_self_healing)
+        # automation is in NON_INTEGRATION_DOMAINS; concurrent.futures is standard library; only otis_ai is a real bug
         self.assertEqual(len(audit["integration_bugs"]), 1)
         self.assertEqual(audit["integration_bugs"][0]["domain"], "otis_ai")
         self.assertEqual(audit["integration_bugs"][0]["target_repo"], "OtisPresley/otis-ai-companion")

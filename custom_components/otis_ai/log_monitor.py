@@ -51,6 +51,20 @@ NON_INTEGRATION_DOMAINS = {
     "homeassistant",
     "system_log",
     "logger",
+    "concurrent",
+    "asyncio",
+    "threading",
+    "multiprocessing",
+    "urllib3",
+    "requests",
+    "aiohttp",
+    "httpx",
+    "httpcore",
+    "websockets",
+    "zeroconf",
+    "scapy",
+    "pip",
+    "root",
 }
 
 # Transient self-healing keywords (network drops, device sleep/offline, handshake retries)
@@ -91,6 +105,19 @@ SELF_HEALING_KEYWORDS = (
     "timeout while accessing",
     "unable to fetch data",
     "timeout while",
+    "timeout fetching",
+    "error fetching",
+    "invalid response received from",
+    "invalid response from",
+    "printer",
+    "updatefailed",
+    "update failed",
+    "communication error",
+    "client error",
+    "service unavailable",
+    "bad gateway",
+    "gateway time-out",
+    "gateway timeout",
     "failed to update media",
     "failed to load img",
 )
@@ -288,7 +315,10 @@ class LogMonitor:
             sig_text = f"{domain}:{msg_text[:120]}:{source}"
             error_id = hashlib.sha256(sig_text.encode("utf-8")).hexdigest()[:12]
 
-            # 1. Skip non-integration / user config domains (automation, script, template, client frontend cards, etc.)
+            # 1. Skip non-integration / user config domains & standard library loggers
+            if not (name.startswith("custom_components.") or name.startswith("homeassistant.components.")):
+                continue
+
             if (
                 domain in NON_INTEGRATION_DOMAINS
                 or name.startswith("frontend.")
@@ -297,8 +327,8 @@ class LogMonitor:
                 continue
 
             # 2. Classify self-healing / transient connectivity drops & device offline states
-            is_transient = any(k in combined_raw for k in SELF_HEALING_KEYWORDS)
-            has_code_bug_exc = any(err in exc for err in ("AttributeError", "TypeError", "KeyError", "IndexError", "ZeroDivisionError", "UnboundLocalError", "AssertionError", "NameError"))
+            is_transient = any(k in combined_raw for k in SELF_HEALING_KEYWORDS) or any(k in combined_raw for k in TRANSIENT_EXCEPTIONS)
+            has_code_bug_exc = any(err in exc for err in ("AttributeError", "TypeError", "KeyError", "IndexError", "ZeroDivisionError", "UnboundLocalError", "AssertionError", "NameError", "SyntaxError", "NotImplementedError"))
             if is_transient and not has_code_bug_exc:
                 self_healing.append({
                     "id": error_id,
@@ -312,45 +342,47 @@ class LogMonitor:
                 })
                 continue
 
-            # 3. Classify integration bug
-            is_bug = bool(exc) or any(k in combined_raw for k in INTEGRATION_BUG_KEYWORDS) or level in ("ERROR", "CRITICAL")
-            if is_bug:
-                sanitized_msg = sanitize_log_data(msg_text)
-                sanitized_exc = sanitize_log_data(exc)
-                short_err = sanitized_msg.splitlines()[0] if sanitized_msg else "Unhandled Exception"
-                if len(short_err) > 90:
-                    short_err = short_err[:87] + "..."
+            # 3. Classify integration bug: MUST have an actual code bug exception or setup failure
+            is_bug = has_code_bug_exc or any(k in combined_raw for k in ("setup failed for custom integration", "error setting up platform"))
+            if not is_bug:
+                continue
 
-                suggested_title = f"[Bug Report] {domain}: {short_err}"
-                sanitized_body = (
-                    f"### Issue Description\n"
-                    f"An unhandled error occurred in integration `{domain}` running on Home Assistant {ha_version}.\n\n"
-                    f"**Logger:** `{name}`\n"
-                    f"**Occurrences:** {count} times\n"
-                    f"**Source:** `{source}`\n\n"
-                    f"### Error Log / Stack Trace\n"
-                    f"```text\n{sanitized_msg}\n"
-                    f"{sanitized_exc}\n```\n\n"
-                    f"### Environment\n"
-                    f"- Home Assistant Version: {ha_version}\n"
-                    f"- Architecture: {self.hass.config.as_dict().get('architecture', 'Linux') if callable(getattr(self.hass.config, 'as_dict', None)) else 'Linux'}\n"
-                    f"- Reported via: Otis AI Companion Auto-Diagnostics\n"
-                )
+            sanitized_msg = sanitize_log_data(msg_text)
+            sanitized_exc = sanitize_log_data(exc)
+            short_err = sanitized_msg.splitlines()[0] if sanitized_msg else "Unhandled Exception"
+            if len(short_err) > 90:
+                short_err = short_err[:87] + "..."
 
-                integration_bugs.append({
-                    "id": error_id,
-                    "domain": domain,
-                    "integration_name": friendly_name,
-                    "logger": name,
-                    "level": level,
-                    "count": count,
-                    "timestamp": timestamp,
-                    "short_error": short_err,
-                    "suggested_title": suggested_title,
-                    "sanitized_body": sanitized_body,
-                    "target_repo": target_repo,
-                    "source": source,
-                })
+            suggested_title = f"[Bug Report] {domain}: {short_err}"
+            sanitized_body = (
+                f"### Issue Description\n"
+                f"An unhandled error occurred in integration `{domain}` running on Home Assistant {ha_version}.\n\n"
+                f"**Logger:** `{name}`\n"
+                f"**Occurrences:** {count} times\n"
+                f"**Source:** `{source}`\n\n"
+                f"### Error Log / Stack Trace\n"
+                f"```text\n{sanitized_msg}\n"
+                f"{sanitized_exc}\n```\n\n"
+                f"### Environment\n"
+                f"- Home Assistant Version: {ha_version}\n"
+                f"- Architecture: {self.hass.config.as_dict().get('architecture', 'Linux') if callable(getattr(self.hass.config, 'as_dict', None)) else 'Linux'}\n"
+                f"- Reported via: Otis AI Companion Auto-Diagnostics\n"
+            )
+
+            integration_bugs.append({
+                "id": error_id,
+                "domain": domain,
+                "integration_name": friendly_name,
+                "logger": name,
+                "level": level,
+                "count": count,
+                "timestamp": timestamp,
+                "short_error": short_err,
+                "suggested_title": suggested_title,
+                "sanitized_body": sanitized_body,
+                "target_repo": target_repo,
+                "source": source,
+            })
 
         return {
             "integration_bugs": integration_bugs,

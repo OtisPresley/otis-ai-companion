@@ -963,7 +963,7 @@ class OtisCompanionCard extends HTMLElement {
       listEl.innerHTML = this._discoveredWalkthroughAreas
         .map(
           (name) =>
-            `<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:999px;background:rgba(14,165,233,0.16);border:1px solid rgba(56,189,248,0.4);color:#e0f2fe;font-size:0.72rem;font-weight:600;">✓ Discovered ${name}</span>`
+            `<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:999px;background:rgba(14,165,233,0.16);border:1px solid rgba(56,189,248,0.4);color:#e0f2fe;font-size:0.72rem;font-weight:600;">✓ Discovered ${this._escapeHtml(name)}</span>`
         )
         .join("");
     }
@@ -2052,7 +2052,9 @@ class OtisCompanionCard extends HTMLElement {
     src = src
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
 
     // 4. Normalize standalone headings and dividers
     // Reconnect standalone ### followed by text on the next line (e.g., "###\n1. Heading" -> "### 1. Heading")
@@ -2135,7 +2137,7 @@ class OtisCompanionCard extends HTMLElement {
     src = src.replace(/~~([^~]+)~~/g, "<del>$1</del>");
 
     // 10. Links
-    src = src.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    src = src.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)"'<>]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
 
     // 11. Paragraphs & Line Breaks
     const paragraphs = src.split(/\n{2,}/);
@@ -6722,21 +6724,21 @@ class OtisCompanionCard extends HTMLElement {
                   const btnLabel = this._getActionLabel(s.action_type);
                   const isDismissed = this._dismissedIds.has(s.id);
                   return `
-                    <div class="suggestion-card ${isDismissed ? "is-ignored" : ""}" data-id="${s.id}">
+                    <div class="suggestion-card ${isDismissed ? "is-ignored" : ""}" data-id="${this._escapeHtml(s.id)}">
                       <div class="suggestion-top">
                         <div class="suggestion-badge-group">
-                          <span class="badge-category">${s.category || "automation"}</span>
-                          <span class="badge-priority ${s.priority || "medium"}">${s.priority || "medium"}</span>
+                          <span class="badge-category">${this._escapeHtml(s.category || "automation")}</span>
+                          <span class="badge-priority ${this._escapeHtml(s.priority || "medium")}">${this._escapeHtml(s.priority || "medium")}</span>
                           ${isDismissed ? `<span class="badge-priority ignored">Ignored</span>` : ""}
                         </div>
                         ${
                           isDismissed
-                            ? `<button type="button" class="dismiss-btn" data-restore="${s.id}" title="Restore recommendation">↺</button>`
-                            : `<button type="button" class="dismiss-btn" data-dismiss="${s.id}" title="Dismiss recommendation">✕</button>`
+                            ? `<button type="button" class="dismiss-btn" data-restore="${this._escapeHtml(s.id)}" title="Restore recommendation">↺</button>`
+                            : `<button type="button" class="dismiss-btn" data-dismiss="${this._escapeHtml(s.id)}" title="Dismiss recommendation">✕</button>`
                         }
                       </div>
-                      <div class="suggestion-title">${s.title}</div>
-                      <div class="suggestion-desc">${s.description}</div>
+                      <div class="suggestion-title">${this._escapeHtml(s.title || "")}</div>
+                      <div class="suggestion-desc">${this._escapeHtml(s.description || "").replace(/\n/g, "<br>")}</div>
                       ${s.action_type === "confirm_person_identity" ? this._renderTrainingVerificationMedia(s) : ""}
                       <div class="suggestion-actions">
                         ${
@@ -7778,7 +7780,7 @@ class OtisCompanionCard extends HTMLElement {
               <div class="room-info-card" style="padding: 12px 16px; border-radius: 12px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); margin-top: 12px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
                   <div>
-                    <div style="font-weight: 700; color: var(--otis-primary); font-size: 0.95rem;">📍 ${this._selectedRoomInfo.name}</div>
+                    <div style="font-weight: 700; color: var(--otis-primary); font-size: 0.95rem;">📍 ${this._escapeHtml(this._selectedRoomInfo.name)}</div>
                     <div style="font-size: 0.74rem; color: var(--otis-text-muted);">
                       ${(() => {
                         const presEid = `binary_sensor.otis_presence_${this._selectedRoomInfo.slug}`;
@@ -8298,16 +8300,16 @@ class OtisCompanionCard extends HTMLElement {
                 <div style="font-size: 0.78rem; font-weight: 700; color: var(--otis-primary); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
                   <div style="display: flex; align-items: center; gap: 6px;">
                     <span>${this._getRoomEmoji(r.name)}</span>
-                    <span>${r.name}</span>
+                    <span>${this._escapeHtml(r.name)}</span>
                   </div>
                   <span style="color: var(--otis-text-muted); font-size: 0.72rem; font-weight: 500;">${r.entities.length} devices</span>
                 </div>
                 <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                   ${r.entities.map(
                     (e) => `
-                    <button type="button" class="subview-chip btn-place-entity-pin" data-entity-id="${e.entity_id}" title="${e.entity_id}" style="font-size: 0.73rem; padding: 5px 9px; display: inline-flex; align-items: center; gap: 5px;">
+                    <button type="button" class="subview-chip btn-place-entity-pin" data-entity-id="${this._escapeHtml(e.entity_id)}" title="${this._escapeHtml(e.entity_id)}" style="font-size: 0.73rem; padding: 5px 9px; display: inline-flex; align-items: center; gap: 5px;">
                       <span>${getDomainIcon(e.domain)}</span>
-                      <span style="font-weight: 600;">${e.name !== e.entity_id ? e.name : e.entity_id}</span>
+                      <span style="font-weight: 600;">${this._escapeHtml(e.name !== e.entity_id ? e.name : e.entity_id)}</span>
                     </button>
                   `
                   ).join("")}
@@ -8331,9 +8333,9 @@ class OtisCompanionCard extends HTMLElement {
                 <div style="display: flex; flex-wrap: wrap; gap: 6px;">
                   ${unassignedEntities.slice(0, 100).map(
                     (e) => `
-                    <button type="button" class="subview-chip btn-place-entity-pin" data-entity-id="${e.entity_id}" title="${e.entity_id}" style="font-size: 0.73rem; padding: 5px 9px; display: inline-flex; align-items: center; gap: 5px;">
+                    <button type="button" class="subview-chip btn-place-entity-pin" data-entity-id="${this._escapeHtml(e.entity_id)}" title="${this._escapeHtml(e.entity_id)}" style="font-size: 0.73rem; padding: 5px 9px; display: inline-flex; align-items: center; gap: 5px;">
                       <span>${getDomainIcon(e.domain)}</span>
-                      <span style="font-weight: 600;">${e.name !== e.entity_id ? e.name : e.entity_id}</span>
+                      <span style="font-weight: 600;">${this._escapeHtml(e.name !== e.entity_id ? e.name : e.entity_id)}</span>
                     </button>
                   `
                   ).join("")}
@@ -8546,7 +8548,7 @@ class OtisCompanionCard extends HTMLElement {
                 ${(this._discoveredWalkthroughAreas || [])
                   .map(
                     (name) =>
-                      `<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:999px;background:rgba(14,165,233,0.16);border:1px solid rgba(56,189,248,0.4);color:#e0f2fe;font-size:0.72rem;font-weight:600;">✓ Discovered ${name}</span>`
+                      `<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:999px;background:rgba(14,165,233,0.16);border:1px solid rgba(56,189,248,0.4);color:#e0f2fe;font-size:0.72rem;font-weight:600;">✓ Discovered ${this._escapeHtml(name)}</span>`
                   )
                   .join("")}
               </div>
@@ -11376,7 +11378,7 @@ class OtisCompanionCard extends HTMLElement {
                     <div class="presence-card">
                       <div class="presence-card-head">
                         <span class="presence-room-name">
-                          ${r.area_name}
+                          ${this._escapeHtml(r.area_name)}
                           ${r.attributed_user ? `<span style="font-size: 0.72rem; color: #38bdf8; margin-left: 6px; font-weight: 600;">👤 ${this._escapeHtml(r.attributed_user)}</span>` : ""}
                         </span>
                         <span class="presence-badge ${statusClass}">
@@ -11442,12 +11444,12 @@ class OtisCompanionCard extends HTMLElement {
 
                     return `
                     <div class="camera-card">
-                      <div class="camera-preview-container" data-cam-id="${cam.entity_id}" title="Click to view live stream" style="cursor: pointer;">
+                      <div class="camera-preview-container" data-cam-id="${this._escapeHtml(cam.entity_id)}" title="Click to view live stream" style="cursor: pointer;">
                         ${
                           imgSrc
                             ? `<img class="camera-preview-img" 
                                    src="${imgSrc}" 
-                                   alt="${cam.name}" 
+                                   alt="${this._escapeHtml(cam.name)}" 
                                    loading="lazy" 
                                    onerror="this.style.display='none'; if (this.nextElementSibling) this.nextElementSibling.style.display='flex';" />`
                             : ""
@@ -11461,12 +11463,12 @@ class OtisCompanionCard extends HTMLElement {
                       </div>
                       <div class="camera-card-body">
                         <div class="camera-card-title">
-                          <span>${cam.name}</span>
-                          <span style="font-size: 0.72rem; color: var(--otis-text-muted);">${cam.area_name || ""}</span>
+                          <span>${this._escapeHtml(cam.name)}</span>
+                          <span style="font-size: 0.72rem; color: var(--otis-text-muted);">${this._escapeHtml(cam.area_name || "")}</span>
                         </div>
                         <button type="button" 
                                 class="btn-analyze-camera" 
-                                data-camera="${cam.entity_id}" 
+                                data-camera="${this._escapeHtml(cam.entity_id)}" 
                                 ${isAnalyzing ? "disabled" : ""}>
                           ${isAnalyzing ? "⏳ Analyzing Frame..." : "✨ Analyze with Gemini Vision"}
                         </button>
@@ -11476,13 +11478,13 @@ class OtisCompanionCard extends HTMLElement {
                             <div class="vision-audit-result">
                               <div style="display: flex; align-items: center; justify-content: space-between;">
                                 <strong style="color: ${audit.status === 'normal' ? '#34d399' : '#fbbf24'};">
-                                  ${audit.status?.toUpperCase() || 'AUDIT'}
+                                  ${this._escapeHtml(audit.status?.toUpperCase() || 'AUDIT')}
                                 </strong>
                                 <span style="font-size: 0.66rem; color: var(--otis-text-muted);">
                                   ${new Date(audit.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                 </span>
                               </div>
-                              <div>${audit.summary || audit.safety_assessment || ''}</div>
+                              <div>${this._escapeHtml(audit.summary || audit.safety_assessment || '')}</div>
                               ${
                                 tagList.length > 0
                                   ? `<div style="display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px;">
