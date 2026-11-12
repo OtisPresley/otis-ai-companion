@@ -25,6 +25,8 @@ from homeassistant.helpers import (
     entity_registry as er,
 )
 
+from .floorplan_parser import classify_area_zone
+
 _LOGGER = logging.getLogger(__name__)
 
 # Modality Fusion Confidence Weights (Default normalized weights)
@@ -304,6 +306,114 @@ def evaluate_acoustic_footprint(
     }
 
 
+def _normalize_media_token(value: str) -> str:
+    """Normalize a media source or entity name for cross-player matching."""
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def resolve_media_player_playback(
+    state: Any,
+    all_states: list[Any] | None = None,
+) -> dict[str, Any]:
+    """Determine whether a media_player is genuinely playing media.
+
+    Distinguishes always-on output zone players (e.g., multi-room amp / Control4
+    zones with ``source`` and ``source_list``) from upstream input source players.
+    When an output zone selects a source that maps to another ``media_player``
+    entity, playback is determined by the mapped input player's state rather than
+    the zone simply being ``on``.
+    """
+    attrs = getattr(state, "attributes", None) or {}
+    raw_state = str(getattr(state, "state", "") or "").lower()
+    source = attrs.get("source")
+    source_list = attrs.get("source_list")
+    is_output_zone = bool(isinstance(source_list, (list, tuple)) and len(source_list) > 0)
+
+    if raw_state in ("off", "standby", "idle", "paused", "unavailable", "unknown", ""):
+        return {
+            "playing": False,
+            "is_output_zone": is_output_zone,
+            "source": source,
+            "resolved_input": None,
+        }
+
+    # Try resolving the selected input source to an upstream media_player entity
+    resolved_input: Any = None
+    if source and all_states:
+        norm_source = _normalize_media_token(str(source))
+        if norm_source:
+            self_eid = getattr(state, "entity_id", "")
+            exact_matches: list[Any] = []
+            partial_matches: list[Any] = []
+            for cand in all_states:
+                cand_eid = getattr(cand, "entity_id", "")
+                if not cand_eid.startswith("media_player.") or cand_eid == self_eid:
+                    continue
+                cand_attrs = getattr(cand, "attributes", None) or {}
+                cand_obj = cand_eid.split(".", 1)[1]
+                cand_name = str(cand_attrs.get("friendly_name") or "")
+                norm_obj = _normalize_media_token(cand_obj)
+                norm_name = _normalize_media_token(cand_name)
+                if norm_source == norm_obj or (norm_name and norm_source == norm_name):
+                    exact_matches.append(cand)
+                elif norm_source in norm_obj or (norm_name and norm_source in norm_name) or (
+                    len(norm_obj) >= 4 and norm_obj in norm_source
+                ) or (len(norm_name) >= 4 and norm_name in norm_source):
+                    partial_matches.append(cand)
+
+            if exact_matches:
+                resolved_input = exact_matches[0]
+            elif len(partial_matches) == 1:
+                resolved_input = partial_matches[0]
+
+    if resolved_input is not None:
+        input_state = str(getattr(resolved_input, "state", "") or "").lower()
+        return {
+            "playing": input_state == "playing",
+            "is_output_zone": is_output_zone,
+            "source": source,
+            "resolved_input": getattr(resolved_input, "entity_id", None),
+        }
+
+    # No upstream HA media_player matched the selected source
+    has_direct_media_meta = any(
+        bool(attrs.get(k))
+        for k in ("media_title", "media_artist", "media_content_id", "app_name")
+    )
+    if raw_state == "playing":
+        if is_output_zone and str(source or "").strip().lower() in ("", "none", "off", "standby") and not has_direct_media_meta:
+            return {
+                "playing": False,
+                "is_output_zone": is_output_zone,
+                "source": source,
+                "resolved_input": None,
+            }
+        return {
+            "playing": True,
+            "is_output_zone": is_output_zone,
+            "source": source,
+            "resolved_input": None,
+        }
+
+    # raw_state == "on" without a playing upstream input player:
+    # Always-on output zones are NOT playing when merely "on".
+    if is_output_zone:
+        return {
+            "playing": False,
+            "is_output_zone": True,
+            "source": source,
+            "resolved_input": None,
+        }
+
+    # Standalone player in "on" state (e.g., TV with active app/title metadata)
+    return {
+        "playing": has_direct_media_meta,
+        "is_output_zone": False,
+        "source": source,
+        "resolved_input": None,
+    }
+
+
 class PresenceFusionManager:
     """Multimodal presence fusion engine coordinating BLE, mmWave, Thermal, and Acoustic sensors."""
 
@@ -523,11 +633,13 @@ class PresenceFusionManager:
         micro_presence_areas: list[str] = []
         likely_areas: list[str] = []
         vacant_areas: list[str] = []
+        outdoor_activity_areas: list[str] = []
 
         for area in areas:
             a_id = area.id
             a_name = area.name
             a_lower = a_name.lower()
+            is_outdoor = classify_area_zone(a_id, a_name) == "outdoor"
 
             area_states = [
                 s for s in all_states
@@ -607,37 +719,47 @@ class PresenceFusionManager:
                         pir_eval = {"active": True, "confidence": 0.75, "seconds_since_motion": 0}
                         break
 
-            # 5. Acoustic Footprinting
+            # 5. Acoustic Footprinting (suppressed for outdoor areas due to wind/traffic/animal noise)
             acoustic_eval: dict[str, Any] = {"detected": False, "confidence": 0.0, "event_type": "ambient"}
-            cur_db: float | None = None
-            floor_db: float | None = None
-            ac_event: str | None = None
-            for s in area_states:
-                eid_l = s.entity_id.lower()
-                if any(k in eid_l for k in ("sound_level", "noise", "decibel", "sound_pressure", "dba")):
-                    try:
-                        val = float(s.state)
-                        if "floor" in eid_l or "baseline" in eid_l:
-                            floor_db = val
-                        elif cur_db is None:
-                            cur_db = val
-                    except (ValueError, TypeError):
-                        pass
-                if any(k in eid_l for k in ("speech_detected", "voice_activity", "acoustic_event", "sound_type")):
-                    if s.state == "on" or s.state not in ("off", "idle", "unknown", "unavailable"):
-                        ac_event = s.state
+            if not is_outdoor:
+                cur_db: float | None = None
+                floor_db: float | None = None
+                ac_event: str | None = None
+                for s in area_states:
+                    eid_l = s.entity_id.lower()
+                    if any(k in eid_l for k in ("sound_level", "noise", "decibel", "sound_pressure", "dba")):
+                        try:
+                            val = float(s.state)
+                            if "floor" in eid_l or "baseline" in eid_l:
+                                floor_db = val
+                            elif cur_db is None:
+                                cur_db = val
+                        except (ValueError, TypeError):
+                            pass
+                    if any(k in eid_l for k in ("speech_detected", "voice_activity", "acoustic_event", "sound_type")):
+                        if s.state == "on" or s.state not in ("off", "idle", "unknown", "unavailable"):
+                            ac_event = s.state
 
-            if cur_db is not None and floor_db is None:
-                floor_db = 38.0  # Default nominal residential noise floor in dBA
-            if cur_db is not None or ac_event is not None:
-                acoustic_eval = evaluate_acoustic_footprint(cur_db, floor_db, ac_event)
+                if cur_db is not None and floor_db is None:
+                    floor_db = 38.0  # Default nominal residential noise floor in dBA
+                if cur_db is not None or ac_event is not None:
+                    acoustic_eval = evaluate_acoustic_footprint(cur_db, floor_db, ac_event)
+            else:
+                acoustic_eval["event_type"] = "outdoor_suppressed"
 
-            # 6. Media Playback
+            # 6. Media Playback (Output-zone aware: resolves selected input source player)
             media_eval: dict[str, Any] = {"active": False, "confidence": 0.0}
             for s in area_states:
-                if s.entity_id.startswith("media_player.") and s.state in ("playing", "on"):
-                    media_eval = {"active": True, "confidence": 0.45}
-                    break
+                if s.entity_id.startswith("media_player."):
+                    playback = resolve_media_player_playback(s, all_states)
+                    if playback["playing"]:
+                        media_eval = {
+                            "active": True,
+                            "confidence": 0.45,
+                            "source": playback.get("source"),
+                            "resolved_input": playback.get("resolved_input"),
+                        }
+                        break
 
             # Perform Room Fusion
             fused = self.fuse_room_modalities(
@@ -651,9 +773,16 @@ class PresenceFusionManager:
                 media_data=media_eval,
             )
 
+            fused["is_outdoor"] = is_outdoor
             room_results[a_id] = fused
             st = fused["status"]
-            if st == STATUS_OCCUPIED:
+            if is_outdoor:
+                # Outdoor zones are tracked as perimeter activity rather than indoor room occupancy
+                if st in (STATUS_OCCUPIED, STATUS_MICRO_PRESENCE, STATUS_LIKELY):
+                    outdoor_activity_areas.append(a_name)
+                else:
+                    vacant_areas.append(a_name)
+            elif st == STATUS_OCCUPIED:
                 occupied_areas.append(a_name)
             elif st == STATUS_MICRO_PRESENCE:
                 micro_presence_areas.append(a_name)
@@ -673,6 +802,7 @@ class PresenceFusionManager:
             "micro_presence_areas": micro_presence_areas,
             "likely_areas": likely_areas,
             "vacant_areas": vacant_areas,
+            "outdoor_activity_areas": outdoor_activity_areas,
             "rooms": room_results,
         }
 

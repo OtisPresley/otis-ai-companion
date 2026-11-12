@@ -28,6 +28,8 @@ from .const import (
     DEFAULT_CAMERA_STREAM_STRATEGY,
     CAMERA_STRATEGY_ALIASES,
 )
+from .floorplan_parser import classify_area_zone
+from .presence_manager import resolve_media_player_playback
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -205,6 +207,45 @@ class VisionPresenceManager:
         self._last_voice_announcements: dict[str, float] = {}
         self._last_voice_summary: str | None = None
         self._last_voice_summary_ts: float = 0.0
+        self._camera_sightlines: dict[str, list[str]] = {}
+        self._active_room_holds: dict[str, dict[str, Any]] = {}
+
+    def register_camera_sightline(self, source_area_or_cam: str, target_areas: list[str]) -> None:
+        """Register adjacent rooms visible from a camera's doorway/corridor sightline."""
+        key = str(source_area_or_cam or "").lower().replace(" ", "_")
+        if key:
+            self._camera_sightlines[key] = [
+                str(t).lower().replace(" ", "_") for t in target_areas if t
+            ]
+
+    def record_camera_sightline_event(
+        self,
+        from_area: str,
+        to_area: str,
+        event_type: str = "entry",
+        subject: str = "person",
+    ) -> None:
+        """Record a camera-observed doorway entry/exit into a connected room."""
+        from_k = str(from_area or "").lower().replace(" ", "_")
+        to_k = str(to_area or "").lower().replace(" ", "_")
+        now_ts = time.time()
+        if event_type == "exit":
+            self._active_room_holds.pop(from_k, None)
+            self._active_room_holds.pop(to_k, None)
+            return
+        if to_k:
+            self._active_room_holds[to_k] = {
+                "from_area": from_k,
+                "subject": subject,
+                "timestamp": now_ts,
+                "expires_at": now_ts + 2700.0,  # 45-minute hold until exit observed
+            }
+            self.record_area_transition(
+                from_area=from_k,
+                to_area=to_k,
+                confidence=0.80,
+                timestamp=now_ts,
+            )
 
     def get_camera_stream_strategy(self) -> str:
         """Retrieve configured camera stream strategy from config entry."""
@@ -289,11 +330,23 @@ class VisionPresenceManager:
         occupied_areas: list[str] = []
         likely_areas: list[str] = []
         vacant_areas: list[str] = []
+        outdoor_activity_areas: list[str] = []
+
+        def _extract_ts(dt_val: Any) -> float:
+            if not dt_val:
+                return 0.0
+            try:
+                if hasattr(dt_val, "timestamp"):
+                    return float(dt_val.timestamp())
+                return float(dt_val)
+            except (TypeError, ValueError):
+                return 0.0
 
         for area in areas:
             a_id = area.id
             a_name = area.name
             a_lower = a_name.lower()
+            is_outdoor = classify_area_zone(a_id, a_name) == "outdoor"
 
             # Discover sensors in this area
             mmwave_entities: list[str] = []
@@ -308,6 +361,8 @@ class VisionPresenceManager:
             ble_active = False
             lights_active = False
             most_recent_motion_ts: float = 0.0
+            most_recent_light_ts: float = 0.0
+            most_recent_media_ts: float = 0.0
 
             for s in all_states:
                 eid = s.entity_id
@@ -382,11 +437,14 @@ class VisionPresenceManager:
                             except Exception:
                                 pass
 
-                # 3. Media Player Playback
+                # 3. Media Player Playback (Output-zone aware: resolves selected input source player)
                 if eid.startswith("media_player."):
                     media_entities.append(eid)
-                    if s.state == "playing":
+                    if resolve_media_player_playback(s, all_states)["playing"]:
                         media_active = True
+                        m_ts = _extract_ts(getattr(s, "last_changed", None))
+                        if m_ts > most_recent_media_ts:
+                            most_recent_media_ts = m_ts
 
                 # 4. BLE Beacon / Room Tracker (Only true room-level micro-location, NOT generic zone "home")
                 is_room_tracker = (
@@ -403,10 +461,13 @@ class VisionPresenceManager:
                     if st_lower in (a_lower, a_id) or attr_room in (a_lower, a_id):
                         ble_active = True
 
-                # 5. Lights active
+                # 5. Lights active (track recency to distinguish fresh entry from forgotten lights)
                 if eid.startswith("light.") and s.state == "on":
                     light_entities.append(eid)
                     lights_active = True
+                    lt_ts = _extract_ts(getattr(s, "last_changed", None))
+                    if lt_ts > most_recent_light_ts:
+                        most_recent_light_ts = lt_ts
 
             # Also check if any Person entity is explicitly in this room (state matches room name, not generic "home")
             person_in_room = any(
@@ -439,9 +500,23 @@ class VisionPresenceManager:
             else:
                 p_pir = 0.0
 
+            light_changed_recently = lights_active and most_recent_light_ts > 0 and (now_ts - most_recent_light_ts) <= 120.0
+            media_changed_recently = media_active and most_recent_media_ts > 0 and (now_ts - most_recent_media_ts) <= 180.0
+
             p_media = 0.45 if media_active else 0.0
+            # Suppress abandoned media (TV/music left playing in an empty room with no bio/motion signal)
+            if media_active and not mmwave_active and not pir_active and not ble_active and p_pir == 0.0 and not media_changed_recently:
+                p_media *= 0.15
             p_ble = 0.65 if ble_active else 0.0
-            p_lights = 0.18 if lights_active else 0.0
+            # Freshly switched-on lights carry higher weight than lights left on indefinitely
+            p_lights = 0.25 if light_changed_recently else (0.08 if lights_active else 0.0)
+
+            if is_outdoor:
+                # Outdoor zones: suppress light/media signals and heavily discount raw motion noise
+                p_lights = 0.0
+                p_media = 0.0
+                if not mmwave_active and not ble_active:
+                    p_pir *= 0.25
 
             # Independent Bayesian combination: P = 1 - product(1 - p_i)
             combined_prob = 1.0 - (
@@ -456,20 +531,23 @@ class VisionPresenceManager:
             # Classify status
             if prob_rounded >= 0.65:
                 status = "occupied"
-                occupied_areas.append(a_name)
             elif prob_rounded >= 0.30:
                 status = "likely_occupied"
-                likely_areas.append(a_name)
             else:
                 status = "vacant"
-                vacant_areas.append(a_name)
+
+            is_sensorless = (len(mmwave_entities) == 0 and len(pir_entities) == 0 and len(ble_entities) == 0)
 
             room_results[a_id] = {
                 "area_id": a_id,
                 "area_name": a_name,
+                "is_outdoor": is_outdoor,
+                "is_sensorless": is_sensorless,
                 "probability": prob_rounded,
                 "status": status,
                 "confidence_percent": int(prob_rounded * 100),
+                "spatial_entry_inferred": False,
+                "inferred_from": None,
                 "sensors": {
                     "mmwave": {
                         "count": len(mmwave_entities),
@@ -485,6 +563,7 @@ class VisionPresenceManager:
                     "media": {
                         "count": len(media_entities),
                         "playing": media_active,
+                        "changed_recently": media_changed_recently,
                         "entities": media_entities,
                     },
                     "ble_beacon": {
@@ -493,8 +572,74 @@ class VisionPresenceManager:
                         "entities": ble_entities,
                     },
                     "lights_on": len(light_entities),
+                    "light_changed_recently": light_changed_recently,
                 },
             }
+
+        # Second pass: Spatial Connectivity & Hold-Until-Exit for indoor sensorless rooms
+        for a_id, r_info in room_results.items():
+            if r_info["is_outdoor"] or not r_info["is_sensorless"]:
+                continue
+
+            sensors_info = r_info["sensors"]
+            has_fresh_light = bool(sensors_info.get("light_changed_recently"))
+            has_fresh_media = bool(sensors_info["media"].get("changed_recently"))
+
+            # 1. Check active camera sightline hold (person/pet seen entering and not yet seen exiting)
+            hold = self._active_room_holds.get(a_id)
+            if hold and hold.get("expires_at", 0) > now_ts:
+                inferred_p = 0.55 if (has_fresh_light or has_fresh_media) else 0.48
+                if inferred_p > r_info["probability"]:
+                    r_info["probability"] = inferred_p
+                    r_info["confidence_percent"] = int(inferred_p * 100)
+                    r_info["status"] = "likely_occupied"
+                    r_info["spatial_entry_inferred"] = True
+                    r_info["inferred_from"] = hold.get("from_area")
+                    continue
+            elif hold and hold.get("expires_at", 0) <= now_ts:
+                self._active_room_holds.pop(a_id, None)
+
+            # 2. Check adjacent rooms from spatial_manager + camera sightlines
+            if has_fresh_light or has_fresh_media:
+                adj_ids: list[str] = []
+                if self.spatial_manager and hasattr(self.spatial_manager, "get_adjacent_areas"):
+                    try:
+                        adj_ids = list(self.spatial_manager.get_adjacent_areas(a_id) or [])
+                    except Exception:
+                        adj_ids = []
+                for src_k, targets in self._camera_sightlines.items():
+                    if a_id in targets and src_k not in adj_ids:
+                        adj_ids.append(src_k)
+
+                for adj_id in adj_ids:
+                    adj_room = room_results.get(adj_id)
+                    if adj_room and (
+                        adj_room["status"] in ("occupied", "likely_occupied")
+                        or (adj_room["sensors"]["pir"].get("seconds_since_motion") or 9999) < 180
+                    ):
+                        inferred_p = 0.70 if (has_fresh_light and has_fresh_media) else 0.52
+                        r_info["probability"] = max(r_info["probability"], inferred_p)
+                        r_info["confidence_percent"] = int(r_info["probability"] * 100)
+                        r_info["status"] = "occupied" if r_info["probability"] >= 0.65 else "likely_occupied"
+                        r_info["spatial_entry_inferred"] = True
+                        r_info["inferred_from"] = adj_id
+                        break
+
+        # Build summary lists (outdoor areas excluded from indoor room occupancy lists)
+        for a_id, r_info in room_results.items():
+            a_name = r_info["area_name"]
+            st = r_info["status"]
+            if r_info["is_outdoor"]:
+                if st in ("occupied", "likely_occupied"):
+                    outdoor_activity_areas.append(a_name)
+                else:
+                    vacant_areas.append(a_name)
+            elif st == "occupied":
+                occupied_areas.append(a_name)
+            elif st == "likely_occupied":
+                likely_areas.append(a_name)
+            else:
+                vacant_areas.append(a_name)
 
         total_household_home = any(p["is_home"] for p in persons_home) if persons_home else True
 
@@ -508,6 +653,7 @@ class VisionPresenceManager:
             "occupied_areas": occupied_areas,
             "likely_areas": likely_areas,
             "vacant_areas": vacant_areas,
+            "outdoor_activity_areas": outdoor_activity_areas,
             "rooms": room_results,
         }
         self._presence_cache = res

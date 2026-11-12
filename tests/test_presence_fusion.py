@@ -463,3 +463,78 @@ async def test_conversation_agent_fused_presence_query(mock_hass):
     assert "Elena" in speech
     assert "Micro-Presence" in speech
 
+
+def test_resolve_media_player_playback_output_zone_vs_input_source():
+    """Always-on output zone players must defer playback truth to their selected input source."""
+    from custom_components.otis_ai.presence_manager import resolve_media_player_playback
+
+    input_idle = MagicMock(
+        entity_id="media_player.sonos_port",
+        state="idle",
+        attributes={"friendly_name": "Sonos Port"},
+    )
+    input_playing = MagicMock(
+        entity_id="media_player.apple_tv",
+        state="playing",
+        attributes={"friendly_name": "Apple TV", "media_title": "Movie"},
+    )
+    zone_on_idle_src = MagicMock(
+        entity_id="media_player.kitchen_zone",
+        state="on",
+        attributes={
+            "friendly_name": "Kitchen Zone",
+            "source": "Sonos Port",
+            "source_list": ["Sonos Port", "Apple TV"],
+        },
+    )
+    zone_on_playing_src = MagicMock(
+        entity_id="media_player.dining_zone",
+        state="on",
+        attributes={
+            "friendly_name": "Dining Zone",
+            "source": "Apple TV",
+            "source_list": ["Sonos Port", "Apple TV"],
+        },
+    )
+    zone_playing_paused_src = MagicMock(
+        entity_id="media_player.study_zone",
+        state="playing",
+        attributes={
+            "friendly_name": "Study Zone",
+            "source": "Sonos Port",
+            "source_list": ["Sonos Port", "Apple TV"],
+        },
+    )
+    standalone_playing = MagicMock(
+        entity_id="media_player.office_speaker",
+        state="playing",
+        attributes={"friendly_name": "Office Speaker", "media_title": "Focus"},
+    )
+
+    all_states = [
+        input_idle,
+        input_playing,
+        zone_on_idle_src,
+        zone_on_playing_src,
+        zone_playing_paused_src,
+        standalone_playing,
+    ]
+
+    res_idle = resolve_media_player_playback(zone_on_idle_src, all_states)
+    assert res_idle["playing"] is False
+    assert res_idle["is_output_zone"] is True
+    assert res_idle["resolved_input"] == "media_player.sonos_port"
+
+    res_active = resolve_media_player_playback(zone_on_playing_src, all_states)
+    assert res_active["playing"] is True
+    assert res_active["resolved_input"] == "media_player.apple_tv"
+
+    res_override = resolve_media_player_playback(zone_playing_paused_src, all_states)
+    assert res_override["playing"] is False
+    assert res_override["resolved_input"] == "media_player.sonos_port"
+
+    res_standalone = resolve_media_player_playback(standalone_playing, all_states)
+    assert res_standalone["playing"] is True
+    assert res_standalone["is_output_zone"] is False
+
+

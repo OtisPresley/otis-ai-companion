@@ -389,6 +389,87 @@ class TestVisionPresenceManager(unittest.TestCase):
         mgr.async_start_presence_tracking()
         self.assertEqual(self.hass.bus.async_listen.call_count, 1)
 
+    @patch("custom_components.otis_ai.vision_manager.ar.async_get")
+    @patch("custom_components.otis_ai.vision_manager.er.async_get")
+    def test_outdoor_suppression_and_sensorless_spatial_inference(self, mock_er, mock_ar):
+        """Test outdoor false-positive suppression, sensorless room light/TV correlation, and sightline holds."""
+        import time as _time
+        from datetime import datetime, timezone
+
+        now_ts = _time.time()
+        recent_dt = datetime.fromtimestamp(now_ts - 30.0, tz=timezone.utc)
+        old_dt = datetime.fromtimestamp(now_ts - 14400.0, tz=timezone.utc)  # 4 hours ago
+
+        area_reg = MagicMock()
+        area_reg.async_list_areas.return_value = [
+            MockArea("hallway", "Hallway"),
+            MockArea("study", "Study"),
+            MockArea("dining_room", "Dining Room"),
+            MockArea("backyard", "Backyard"),
+        ]
+        mock_ar.return_value = area_reg
+
+        ent_reg = MagicMock()
+        ent_reg.entities = {
+            "binary_sensor.hallway_motion": MockEntityEntry("binary_sensor.hallway_motion", "hallway"),
+            "light.study_lamp": MockEntityEntry("light.study_lamp", "study"),
+            "light.dining_chandelier": MockEntityEntry("light.dining_chandelier", "dining_room"),
+            "light.backyard_flood": MockEntityEntry("light.backyard_flood", "backyard"),
+            "binary_sensor.backyard_motion": MockEntityEntry("binary_sensor.backyard_motion", "backyard"),
+        }
+        mock_er.return_value = ent_reg
+
+        s_hall_motion = MockEntityState("binary_sensor.hallway_motion", "on", {"device_class": "motion"})
+        s_study_light = MockEntityState("light.study_lamp", "on", {"friendly_name": "Study Lamp"})
+        s_study_light.last_changed = recent_dt
+        s_dining_light = MockEntityState("light.dining_chandelier", "on", {"friendly_name": "Dining Chandelier"})
+        s_dining_light.last_changed = old_dt  # Forgotten static light
+        s_backyard_light = MockEntityState("light.backyard_flood", "on", {"friendly_name": "Backyard Flood"})
+        s_backyard_light.last_changed = recent_dt
+        s_backyard_motion = MockEntityState("binary_sensor.backyard_motion", "on", {"device_class": "motion"})
+
+        self.hass.states.async_all.return_value = [
+            s_hall_motion,
+            s_study_light,
+            s_dining_light,
+            s_backyard_light,
+            s_backyard_motion,
+        ]
+
+        spatial_mock = MagicMock()
+        spatial_mock.get_adjacent_areas.side_effect = lambda aid: ["hallway"] if aid in ("study", "dining_room") else []
+
+        mgr = VisionPresenceManager(self.hass, spatial_manager=spatial_mock)
+        res = asyncio.run(mgr.async_get_presence_states())
+
+        # 1. Backyard is outdoor -> excluded from indoor occupied_areas / likely_areas
+        self.assertTrue(res["rooms"]["backyard"]["is_outdoor"])
+        self.assertNotIn("Backyard", res["occupied_areas"])
+        self.assertNotIn("Backyard", res["likely_areas"])
+
+        # 2. Study has no sensors, is adjacent to occupied Hallway, and light just turned on -> inferred likely_occupied
+        self.assertTrue(res["rooms"]["study"]["is_sensorless"])
+        self.assertTrue(res["rooms"]["study"]["spatial_entry_inferred"])
+        self.assertEqual(res["rooms"]["study"]["inferred_from"], "hallway")
+        self.assertEqual(res["rooms"]["study"]["status"], "likely_occupied")
+
+        # 3. Dining Room has only a forgotten static light (4h old) -> remains vacant
+        self.assertEqual(res["rooms"]["dining_room"]["status"], "vacant")
+        self.assertFalse(res["rooms"]["dining_room"]["spatial_entry_inferred"])
+
+        # 4. Camera sightline entry holds Dining Room even without fresh light, and exit clears it
+        s_dining_light.state = "off"
+        mgr._presence_cache_ts = 0.0
+        mgr.record_camera_sightline_event("hallway", "dining_room", event_type="entry", subject="person")
+        res_hold = asyncio.run(mgr.async_get_presence_states())
+        self.assertEqual(res_hold["rooms"]["dining_room"]["status"], "likely_occupied")
+        self.assertTrue(res_hold["rooms"]["dining_room"]["spatial_entry_inferred"])
+
+        mgr._presence_cache_ts = 0.0
+        mgr.record_camera_sightline_event("hallway", "dining_room", event_type="exit", subject="person")
+        res_exit = asyncio.run(mgr.async_get_presence_states())
+        self.assertEqual(res_exit["rooms"]["dining_room"]["status"], "vacant")
+
 
 if __name__ == "__main__":
     unittest.main()
