@@ -396,19 +396,10 @@ def resolve_media_player_playback(
         }
 
     # raw_state == "on" without a playing upstream input player:
-    # Always-on output zones are NOT playing when merely "on".
-    if is_output_zone:
-        return {
-            "playing": False,
-            "is_output_zone": True,
-            "source": source,
-            "resolved_input": None,
-        }
-
-    # Standalone player in "on" state (e.g., TV with active app/title metadata)
+    # Merely being "on" is not enough to infer media playback or room occupancy.
     return {
-        "playing": has_direct_media_meta,
-        "is_output_zone": False,
+        "playing": False,
+        "is_output_zone": is_output_zone,
         "source": source,
         "resolved_input": None,
     }

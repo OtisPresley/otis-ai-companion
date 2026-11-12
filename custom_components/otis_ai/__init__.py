@@ -265,6 +265,12 @@ def _register_admin_service(
                 kwargs["supports_response"] = supports_response
             if schema is not None:
                 kwargs["schema"] = schema
+            else:
+                try:
+                    import voluptuous as vol
+                    kwargs["schema"] = vol.Schema({}, extra=vol.ALLOW_EXTRA)
+                except ImportError:
+                    pass
             _ha_admin_srv(hass, domain, service, service_func, **kwargs)
             return
     except (ImportError, TypeError):
