@@ -292,8 +292,8 @@ class RAGKnowledgeManager:
             try:
                 from .sensor import async_update_entity_state
                 async_update_entity_state(self.hass, "sensor.otis_knowledge_rag", state_val, attrs)
-            except Exception:
-                self.hass.states.async_set("sensor.otis_knowledge_rag", state_val, attrs)
+            except Exception as err:
+                _LOGGER.debug("Entity state update notice: %s", err)
 
     async def _generate_embedding(self, text: str) -> list[float]:
         """Generate embedding using local LLM server with pure-python fallback."""

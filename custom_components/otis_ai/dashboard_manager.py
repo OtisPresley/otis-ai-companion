@@ -49,6 +49,7 @@ class DashboardManager:
         self.floorplan_parser = floorplan_parser
         self.rules_manager = rules_manager
         self._cached_installed_cards: set[str] = set()
+        self._managed_dashboards: dict[str, dict[str, Any]] = {}
 
     def get_camera_stream_strategy(self) -> str:
         """Retrieve configured camera stream strategy from config entry."""
@@ -1409,6 +1410,7 @@ class DashboardManager:
         """Persist dashboard metadata in lovelace_dashboards, write lovelace.<id>, and register live HA panel."""
         dash_id = item["id"]
         url_path = item["url_path"]
+        self._managed_dashboards[url_path] = dict(item)
 
         # Preserve user's card settings in view 0 before saving
         merged_dashboard_config = await self._async_merge_dashboard_config_preserving_user_views(
@@ -1454,22 +1456,6 @@ class DashboardManager:
                             storage_col._async_schedule_save()
             except Exception as col_err:
                 _LOGGER.debug("DashboardsCollection update handled: %s", col_err)
-        else:
-            # Fallback for mock/test environments without websocket DashboardsCollection: persist to lovelace_dashboards via Store
-            try:
-                dash_store = Store(self.hass, 1, "lovelace_dashboards")
-                d_data = await dash_store.async_load()
-                if not isinstance(d_data, dict):
-                    d_data = {"items": []}
-                items = d_data.setdefault("items", [])
-                ex_idx = next((i for i, d in enumerate(items) if d.get("id") == item["id"] or d.get("url_path") == item["url_path"]), None)
-                if ex_idx is not None:
-                    items[ex_idx] = {**items[ex_idx], **item}
-                else:
-                    items.append(dict(item))
-                await dash_store.async_save(d_data)
-            except Exception as store_err:
-                _LOGGER.debug("Fallback Store save for lovelace_dashboards handled: %s", store_err)
 
         # 2. Save dashboard configuration via LovelaceStorage or Store
         saved_via_lovelace = False
@@ -1566,16 +1552,9 @@ class DashboardManager:
                     if isinstance(cfg, dict) and cfg not in existing_dashboards:
                         existing_dashboards.append(cfg)
 
-        if not existing_dashboards:
-            try:
-                dash_store = Store(self.hass, 1, "lovelace_dashboards")
-                data = await dash_store.async_load()
-                if isinstance(data, dict):
-                    items = data.get("items") or data.get("data", {}).get("items", [])
-                    if isinstance(items, list):
-                        existing_dashboards = items
-            except Exception:
-                pass
+        for m_cfg in self._managed_dashboards.values():
+            if m_cfg not in existing_dashboards:
+                existing_dashboards.append(m_cfg)
 
         existing_url_paths = {d.get("url_path", "") for d in existing_dashboards}
         existing_ids = {d.get("id", "") for d in existing_dashboards}

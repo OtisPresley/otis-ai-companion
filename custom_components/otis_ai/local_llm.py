@@ -761,9 +761,9 @@ class LocalLLMManager:
         except Exception as err:
             _LOGGER.debug("OpenAI /v1/models check failed at %s: %s", base_url, err)
 
-        # 3. If default check failed on a legacy URL and running under HA Supervisor, auto-probe local add-on endpoints
-        if target_url is None and os.environ.get("SUPERVISOR_TOKEN"):
-            for cand_url in ("http://local-otis-ollama:11434", "http://127.0.0.1:11434", "http://172.30.32.1:11434"):
+        # 3. If default check failed on a legacy URL, auto-probe local add-on endpoints
+        if target_url is None:
+            for cand_url in ("http://local-otis-ollama:11434", "http://127.0.0.1:11434"):
                 if cand_url.rstrip("/") == base_url:
                     continue
                 cand_res = await self.async_health_check(target_url=cand_url)
@@ -956,42 +956,23 @@ class LocalLLMManager:
         else:
             hw = self._probe_host_hardware_sync()
 
-        sup_token = os.environ.get("SUPERVISOR_TOKEN")
-        supervisor_available = False
+        supervisor_available = bool(
+            hasattr(self.hass, "config")
+            and "hassio" in getattr(self.hass.config, "components", set())
+        )
         addon_installed = False
         addon_state = "not_installed"
         addon_slug = "local_otis_ollama"
         addon_version = None
 
-        if sup_token:
-            session = self._get_session()
-            sup_headers = {"Authorization": f"Bearer {sup_token}", "Content-Type": "application/json"}
-            try:
-                async with session.get(
-                    "http://supervisor/addons",
-                    headers=sup_headers,
-                    timeout=ClientTimeout(total=4.0),
-                ) as resp:
-                    if resp.status == 200:
-                        supervisor_available = True
-                        payload = await resp.json()
-                        addons_list = (payload.get("data") or {}).get("addons") or []
-                        for a in addons_list:
-                            if not isinstance(a, dict):
-                                continue
-                            slug = str(a.get("slug") or "")
-                            name = str(a.get("name") or "").lower()
-                            if slug in ("local_otis_ollama", "otis_ollama") or "ollama" in slug.lower() or "ollama" in name:
-                                addon_slug = slug
-                                addon_version = a.get("version")
-                                if "installed" in a:
-                                    addon_installed = bool(a.get("installed"))
-                                else:
-                                    addon_installed = bool(addon_version)
-                                addon_state = str(a.get("state") or ("installed" if addon_installed else "not_installed"))
-                                break
-            except Exception as err:
-                _LOGGER.debug("Supervisor add-ons check notice: %s", err)
+        # Detect local Ollama add-on via direct HTTP health probe (no Supervisor API calls)
+        try:
+            probe_health = await self.async_health_check(target_url="http://local-otis-ollama:11434")
+            if probe_health.get("status") == "online":
+                addon_installed = True
+                addon_state = "started"
+        except Exception:
+            pass
 
         cpu_cores = int(hw.get("cpu_cores", 1))
         ram_total = float(hw.get("ram_total_gb", 0.0))
@@ -1000,8 +981,7 @@ class LocalLLMManager:
         gpu_detected = bool(hw.get("gpu_detected", False))
 
         can_run = bool(
-            supervisor_available
-            and cpu_cores >= 4
+            cpu_cores >= 4
             and ram_total >= 6.0
             and disk_free >= 6.0
         )
@@ -1127,24 +1107,6 @@ class LocalLLMManager:
         is_online = health.get("status") == "online"
         running_models = await self.async_get_running_models() if is_online else []
         addon_stats: dict[str, Any] = {}
-        sup_token = os.environ.get("SUPERVISOR_TOKEN")
-        if sup_token and suitability.get("addon_installed") and suitability.get("addon_state") == "started":
-            slug = suitability.get("addon_slug", "local_otis_ollama")
-            try:
-                async with self._get_session().get(
-                    f"http://supervisor/addons/{slug}/stats",
-                    headers={"Authorization": f"Bearer {sup_token}"},
-                    timeout=ClientTimeout(total=3.0),
-                ) as resp:
-                    if resp.status == 200:
-                        st_data = (await resp.json()).get("data") or {}
-                        addon_stats = {
-                            "cpu_percent": round(float(st_data.get("cpu_percent") or 0.0), 1),
-                            "memory_mb": round(float(st_data.get("memory_usage") or 0) / (1024 * 1024), 1),
-                            "memory_percent": round(float(st_data.get("memory_percent") or 0.0), 1),
-                        }
-            except Exception:
-                pass
 
         res = {
             "online": is_online,

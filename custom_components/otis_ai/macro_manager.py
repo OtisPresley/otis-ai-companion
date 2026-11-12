@@ -530,8 +530,8 @@ class MacroManager:
             try:
                 from .sensor import async_update_entity_state
                 async_update_entity_state(self.hass, "sensor.otis_spatial_migration", state_val, attrs)
-            except Exception:
-                self.hass.states.async_set("sensor.otis_spatial_migration", state_val, attrs)
+            except Exception as err:
+                _LOGGER.debug("Entity state update notice: %s", err)
 
     def _start_watchdog(
         self, target_area: str, macro_id: str, timeout_seconds: float = 600.0

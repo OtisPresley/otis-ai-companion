@@ -535,31 +535,10 @@ def test_assess_host_ollama_suitability_recommended():
             "gpu_devices": ["card0", "renderD128"],
         }
     )
+    hass.config.components = {"hassio"}
     mgr = LocalLLMManager(hass, model="qwen2.5:3b")
 
-    mock_resp = AsyncMock()
-    mock_resp.status = 200
-    mock_resp.json = AsyncMock(
-        return_value={
-            "data": {
-                "addons": [
-                    {
-                        "slug": "local_otis_ollama",
-                        "name": "Otis Edge AI (Ollama)",
-                        "installed": False,
-                        "state": "unknown",
-                        "version": "1.0.0",
-                    }
-                ]
-            }
-        }
-    )
-    mock_session = MagicMock()
-    mock_session.get.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
-    mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
-
-    with patch.dict("os.environ", {"SUPERVISOR_TOKEN": "test_sup_token"}), \
-         patch("custom_components.otis_ai.local_llm.async_get_clientsession", return_value=mock_session):
+    with patch.object(mgr, "async_health_check", AsyncMock(return_value={"status": "offline"})):
         suit = asyncio.run(mgr.async_assess_host_ollama_suitability())
         assert suit["can_run"] is True
         assert suit["recommended"] is True

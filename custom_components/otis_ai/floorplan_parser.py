@@ -2929,4 +2929,7 @@ class FloorplanParser:
                     })
 
         import yaml
+        from .const import SafeNoAliasDumper
+        if SafeNoAliasDumper is not None:
+            return yaml.dump(card_def, Dumper=SafeNoAliasDumper, default_flow_style=False, sort_keys=False)
         return yaml.dump(card_def, default_flow_style=False, sort_keys=False)

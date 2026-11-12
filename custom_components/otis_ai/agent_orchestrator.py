@@ -677,8 +677,8 @@ class MultiAgentOrchestrator:
         try:
             from .sensor import async_update_entity_state
             async_update_entity_state(self.hass, "sensor.otis_multi_agent_orchestrator", orch_state, orch_attrs)
-        except Exception:
-            self.hass.states.async_set("sensor.otis_multi_agent_orchestrator", orch_state, orch_attrs)
+        except Exception as err:
+            _LOGGER.debug("Entity state update notice: %s", err)
 
         # 2. sensor.otis_voice_satellites
         sats = self.get_discovered_satellites()
@@ -696,8 +696,8 @@ class MultiAgentOrchestrator:
         try:
             from .sensor import async_update_entity_state
             async_update_entity_state(self.hass, "sensor.otis_voice_satellites", sat_state, sat_attrs)
-        except Exception:
-            self.hass.states.async_set("sensor.otis_voice_satellites", sat_state, sat_attrs)
+        except Exception as err:
+            _LOGGER.debug("Entity state update notice: %s", err)
 
     async def async_publish_telemetry(self) -> None:
         """Publish real-time telemetry (async interface)."""

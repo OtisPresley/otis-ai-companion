@@ -856,8 +856,8 @@ class VisionPresenceManager:
         try:
             from .sensor import async_update_entity_state
             async_update_entity_state(self.hass, "sensor.otis_perimeter_sentinel", "normal", attrs)
-        except Exception:
-            self.hass.states.async_set("sensor.otis_perimeter_sentinel", "normal", attrs)
+        except Exception as err:
+            _LOGGER.debug("Entity state update notice: %s", err)
 
     def _update_perimeter_sentinel_sensor(self, latest_audit: dict[str, Any]) -> None:
         """Publish or update sensor.otis_perimeter_sentinel state with security status."""
@@ -907,8 +907,8 @@ class VisionPresenceManager:
         try:
             from .sensor import async_update_entity_state
             async_update_entity_state(self.hass, "sensor.otis_perimeter_sentinel", state_val, attrs)
-        except Exception:
-            self.hass.states.async_set("sensor.otis_perimeter_sentinel", state_val, attrs)
+        except Exception as err:
+            _LOGGER.debug("Entity state update notice: %s", err)
 
     async def async_synthesize_visual_alert_summary(
         self,
@@ -1490,8 +1490,8 @@ class VisionPresenceManager:
         try:
             from .sensor import async_update_entity_state
             async_update_entity_state(self.hass, "sensor.otis_intruder_tracks", state_val, attrs)
-        except Exception:
-            self.hass.states.async_set("sensor.otis_intruder_tracks", state_val, attrs)
+        except Exception as err:
+            _LOGGER.debug("Entity state update notice: %s", err)
 
     def get_intruder_tracks(self) -> dict[str, Any]:
         """Return active and historical intruder spatial tracks."""
@@ -1713,8 +1713,8 @@ class VisionPresenceManager:
                 try:
                     from .sensor import async_update_entity_state
                     async_update_entity_state(self.hass, eid, state_val, attrs)
-                except Exception:
-                    self.hass.states.async_set(eid, state_val, attrs)
+                except Exception as err:
+                    _LOGGER.debug("Entity state update notice: %s", err)
 
         # Publish global active household occupancy sensor
         if hasattr(self.hass, "states") and hasattr(self.hass.states, "async_set"):
@@ -1730,8 +1730,8 @@ class VisionPresenceManager:
             try:
                 from .sensor import async_update_entity_state
                 async_update_entity_state(self.hass, "binary_sensor.otis_active_occupancy", occ_state, occ_attrs)
-            except Exception:
-                self.hass.states.async_set("binary_sensor.otis_active_occupancy", occ_state, occ_attrs)
+            except Exception as err:
+                _LOGGER.debug("Entity state update notice: %s", err)
 
         # Process spatial presence transitions and migration pre-conditioning
         try:
@@ -1981,8 +1981,8 @@ class VisionPresenceManager:
             try:
                 from .sensor import async_update_entity_state
                 async_update_entity_state(self.hass, "sensor.otis_spatial_migration", state_val, attrs)
-            except Exception:
-                self.hass.states.async_set("sensor.otis_spatial_migration", state_val, attrs)
+            except Exception as err:
+                _LOGGER.debug("Entity state update notice: %s", err)
 
         # Trigger soft pre-conditioning actions in macro_manager
         if getattr(self, "macro_manager", None):

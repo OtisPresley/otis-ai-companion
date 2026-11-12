@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.3.3";
+const CARD_VERSION = "0.3.4";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -6330,7 +6330,7 @@ class OtisCompanionCard extends HTMLElement {
                 </svg>
               </div>
               <div class="title-group">
-                <span class="main-title">${this._config.title || "Otis AI Companion"}</span>
+                <span class="main-title">${this._escapeHtml(this._config.title || "Otis AI Companion")}</span>
                 <span class="sub-title">
                   <span class="status-dot"></span>
                   Autonomous Co-Pilot Active
@@ -6427,7 +6427,7 @@ class OtisCompanionCard extends HTMLElement {
                 ${activeAreas
                   .map(
                     (room) => `
-                  <button type="button" class="subview-chip room-chip" data-subview="${room.path}">${this._getRoomEmoji(room.name)} ${this._escapeHtml(room.name)}</button>
+                  <button type="button" class="subview-chip room-chip" data-subview="${this._escapeHtml(room.path)}">${this._getRoomEmoji(room.name)} ${this._escapeHtml(room.name)}</button>
                 `
                   )
                   .join("")}
@@ -6568,11 +6568,11 @@ class OtisCompanionCard extends HTMLElement {
       const subtitle = hum != null ? `${hum}% Humidity` : (wind != null ? `${wind} mph Wind` : (weatherObj.attributes?.friendly_name || "Outdoor Weather"));
 
       weatherHtml = `
-        <div class="glance-chip weather-chip" id="glance-weather" data-entity-id="${weatherEid}" title="Weather: ${cleanCond} • Tap for detailed forecast">
+        <div class="glance-chip weather-chip" id="glance-weather" data-entity-id="${this._escapeHtml(weatherEid)}" title="Weather: ${this._escapeHtml(cleanCond)} • Tap for detailed forecast">
           <span class="glance-icon">${icon}</span>
           <div class="glance-text">
-            <span class="glance-primary">${temp}°${unit} • ${cleanCond}</span>
-            <span class="glance-secondary">${subtitle}</span>
+            <span class="glance-primary">${this._escapeHtml(temp)}°${this._escapeHtml(unit)} • ${this._escapeHtml(cleanCond)}</span>
+            <span class="glance-secondary">${this._escapeHtml(subtitle)}</span>
           </div>
         </div>
       `;
@@ -6600,7 +6600,7 @@ class OtisCompanionCard extends HTMLElement {
       }
 
       calendarHtml = `
-        <div class="glance-chip calendar-chip" id="glance-calendar" data-entity-id="${calendarEid}" title="Calendar: ${this._escapeHtml(msg)} • Tap for agenda view">
+        <div class="glance-chip calendar-chip" id="glance-calendar" data-entity-id="${this._escapeHtml(calendarEid)}" title="Calendar: ${this._escapeHtml(msg)} • Tap for agenda view">
           <span class="glance-icon">📅</span>
           <div class="glance-text">
             <span class="glance-primary">${this._escapeHtml(hasEvent ? msg : "Calendar Agenda")}</span>
@@ -6757,13 +6757,13 @@ class OtisCompanionCard extends HTMLElement {
                           <div style="display: flex; gap: 8px; flex-wrap: wrap; width: 100%;">
                             ${
                               isDismissed
-                                ? `<button type="button" class="btn-toolbar btn-restore" data-restore="${s.id}">↺ Restore Alert</button>`
+                                ? `<button type="button" class="btn-toolbar btn-restore" data-restore="${this._escapeHtml(s.id)}">↺ Restore Alert</button>`
                                 : `
-                                <button type="button" class="btn-toolbar btn-ignore-alert" data-ignore-id="${s.id}" style="padding: 6px 12px; font-size: 0.76rem;">
-                                  ${s.action_payload?.dismiss_single_label || "Ignore this alert"}
+                                <button type="button" class="btn-toolbar btn-ignore-alert" data-ignore-id="${this._escapeHtml(s.id)}" style="padding: 6px 12px; font-size: 0.76rem;">
+                                  ${this._escapeHtml(s.action_payload?.dismiss_single_label || "Ignore this alert")}
                                 </button>
-                                <button type="button" class="btn-toolbar btn-ignore-category" data-ignore-cat="${s.action_payload?.category || s.anomaly_type || 'battery'}" style="padding: 6px 12px; font-size: 0.76rem; color: var(--otis-primary); border-color: var(--otis-primary);">
-                                  ${s.action_payload?.dismiss_category_label || "Ignore all alerts in this category"}
+                                <button type="button" class="btn-toolbar btn-ignore-category" data-ignore-cat="${this._escapeHtml(s.action_payload?.category || s.anomaly_type || 'battery')}" style="padding: 6px 12px; font-size: 0.76rem; color: var(--otis-primary); border-color: var(--otis-primary);">
+                                  ${this._escapeHtml(s.action_payload?.dismiss_category_label || "Ignore all alerts in this category")}
                                 </button>
                               `
                             }
@@ -6830,13 +6830,13 @@ class OtisCompanionCard extends HTMLElement {
                           </div>
                         `
                             : `
-                          <button type="button" class="apply-btn" data-apply="${s.id}" ${isApplying ? "disabled" : ""}>
-                            ${isApplying ? `<div class="spinner"></div> Applying...` : btnLabel}
+                          <button type="button" class="apply-btn" data-apply="${this._escapeHtml(s.id)}" ${isApplying ? "disabled" : ""}>
+                            ${isApplying ? `<div class="spinner"></div> Applying...` : this._escapeHtml(btnLabel)}
                           </button>
                           ${
                             isDismissed
-                              ? `<button type="button" class="btn-restore" data-restore="${s.id}" title="Restore to active recommendations">↺ Restore</button>`
-                              : `<button type="button" class="btn-dismiss-card" data-dismiss="${s.id}" title="Ignore this recommendation">Ignore this</button>`
+                              ? `<button type="button" class="btn-restore" data-restore="${this._escapeHtml(s.id)}" title="Restore to active recommendations">↺ Restore</button>`
+                              : `<button type="button" class="btn-dismiss-card" data-dismiss="${this._escapeHtml(s.id)}" title="Ignore this recommendation">Ignore this</button>`
                           }
                         `
                         }
@@ -7426,12 +7426,12 @@ class OtisCompanionCard extends HTMLElement {
                         <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); padding: 4px 8px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center;">
                           <div>
                             <span style="color: ${n.status === "online" ? "#4ade80" : "#f87171"}; font-weight: bold; margin-right: 4px;">●</span>
-                            <strong>${n.name}</strong> <span style="font-size: 0.70rem; color: var(--otis-text-muted);">(${n.host}:${n.port})</span>
-                            <span class="topo-tag" style="font-size: 0.65rem; margin-left: 4px; background: rgba(56, 189, 248, 0.1); color: var(--otis-primary);">${(n.role || "satellite").toUpperCase()}</span>
+                            <strong>${this._escapeHtml(n.name)}</strong> <span style="font-size: 0.70rem; color: var(--otis-text-muted);">(${this._escapeHtml(n.host)}:${this._escapeHtml(n.port)})</span>
+                            <span class="topo-tag" style="font-size: 0.65rem; margin-left: 4px; background: rgba(56, 189, 248, 0.1); color: var(--otis-primary);">${this._escapeHtml((n.role || "satellite").toUpperCase())}</span>
                           </div>
                           <div style="display: flex; align-items: center; gap: 6px;">
-                            <span style="font-size: 0.70rem; color: var(--otis-text-muted);">${n.entities_count || 0} ents</span>
-                            <span style="font-size: 0.70rem; color: var(--otis-text-muted); font-weight: 600;">${n.latency_ms > 0 ? n.latency_ms + "ms" : n.status}</span>
+                            <span style="font-size: 0.70rem; color: var(--otis-text-muted);">${Number(n.entities_count) || 0} ents</span>
+                            <span style="font-size: 0.70rem; color: var(--otis-text-muted); font-weight: 600;">${n.latency_ms > 0 ? Number(n.latency_ms) + "ms" : this._escapeHtml(n.status)}</span>
                           </div>
                         </div>
                       `
@@ -7825,8 +7825,8 @@ class OtisCompanionCard extends HTMLElement {
                     const isOn = st.state === "on";
                     const icon = st.attributes?.icon || (eid.startsWith("light.") ? "💡" : eid.startsWith("switch.") ? "🔌" : eid.startsWith("climate.") ? "🌡️" : "⚡");
                     return `
-                      <button type="button" class="subview-chip btn-quick-toggle" data-entity-id="${eid}" style="${isOn ? 'background: var(--otis-primary); color: #fff; border-color: var(--otis-primary);' : ''}">
-                        ${icon} ${st.attributes?.friendly_name || eid.split(".")[1]} (${st.state})
+                      <button type="button" class="subview-chip btn-quick-toggle" data-entity-id="${this._escapeHtml(eid)}" style="${isOn ? 'background: var(--otis-primary); color: #fff; border-color: var(--otis-primary);' : ''}">
+                        ${this._escapeHtml(icon)} ${this._escapeHtml(st.attributes?.friendly_name || eid.split(".")[1])} (${this._escapeHtml(st.state)})
                       </button>
                     `;
                   }).join("")}
@@ -8012,8 +8012,8 @@ class OtisCompanionCard extends HTMLElement {
         return `
           <div
             class="floorplan-3d-room-shell ${isOccupied ? "is-occupied" : ""}"
-            data-room-id="${r.id}"
-            data-zone="${r.zone}"
+            data-room-id="${this._escapeHtml(r.id)}"
+            data-zone="${this._escapeHtml(r.zone)}"
             data-x="${r.x}"
             data-y="${r.y}"
             data-w="${r.width}"
@@ -8053,7 +8053,7 @@ class OtisCompanionCard extends HTMLElement {
         <div style="display: flex; flex-direction: column; gap: 4px;">
           <label style="font-size: 0.7rem; color: var(--otis-text-muted);">Bind to HA Area Registry:</label>
           <select id="editor-area-select" style="background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); border-radius: 6px; padding: 4px 6px; font-size: 0.76rem;">
-            ${allAreas.map(a => `<option value="${a.id}" ${a.id === rid ? "selected" : ""}>${this._escapeHtml(a.name)} (${a.id})</option>`).join("")}
+            ${allAreas.map(a => `<option value="${this._escapeHtml(a.id)}" ${a.id === rid ? "selected" : ""}>${this._escapeHtml(a.name)} (${this._escapeHtml(a.id)})</option>`).join("")}
           </select>
         </div>
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
@@ -8300,7 +8300,7 @@ class OtisCompanionCard extends HTMLElement {
           <div style="overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 12px; padding-right: 4px;">
             ${
               totalMatching === 0
-                ? `<div style="text-align: center; padding: 32px 0; color: var(--otis-text-muted); font-size: 0.82rem;">No devices matching "${query}".</div>`
+                ? `<div style="text-align: center; padding: 32px 0; color: var(--otis-text-muted); font-size: 0.82rem;">No devices matching "${this._escapeHtml(query)}".</div>`
                 : ""
             }
             ${activeRooms
@@ -8404,11 +8404,11 @@ class OtisCompanionCard extends HTMLElement {
             <!-- Entity Summary -->
             <div style="padding: 10px 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--otis-surface-border); border-radius: 8px;">
               <div style="font-weight: 700; font-size: 0.88rem; color: var(--otis-primary); display: flex; align-items: center; justify-content: space-between;">
-                <span>${friendlyName}</span>
-                <span style="font-size: 0.7rem; font-weight: 600; padding: 2px 8px; border-radius: 6px; background: rgba(56, 189, 248, 0.15); color: #38bdf8;">${stateVal}</span>
+                <span>${this._escapeHtml(friendlyName)}</span>
+                <span style="font-size: 0.7rem; font-weight: 600; padding: 2px 8px; border-radius: 6px; background: rgba(56, 189, 248, 0.15); color: #38bdf8;">${this._escapeHtml(stateVal)}</span>
               </div>
               <div style="font-size: 0.72rem; color: var(--otis-text-muted); font-family: monospace; margin-top: 4px;">
-                ${eid}
+                ${this._escapeHtml(eid)}
               </div>
             </div>
 
@@ -8458,7 +8458,7 @@ class OtisCompanionCard extends HTMLElement {
             <div>
               <div class="modal-title">
                 <span>📖</span>
-                <span>${g.title || "Smart Home Setup Guide"}</span>
+                <span>${this._escapeHtml(g.title || "Smart Home Setup Guide")}</span>
               </div>
               <div class="modal-subtitle">
                 Smart Home Maturity Guidance • Pathway to 20/20 Standard
@@ -8542,7 +8542,7 @@ class OtisCompanionCard extends HTMLElement {
               type="text"
               id="spoken-order-input"
               placeholder="e.g. Foyer, Great Room, Kitchen, Dining Room, Backyard, Pool"
-              value="${this._spokenOrderOverride || ""}"
+              value="${this._escapeHtml(this._spokenOrderOverride || "")}"
             />
           </div>
 

@@ -1319,7 +1319,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             auto_id = await mgr.async_write_automation(payload)
             if hasattr(mgr, "async_reload_automations"):
                 await mgr.async_reload_automations()
-            yaml_str = yaml.dump(clean_yaml_dict(payload), sort_keys=False, default_flow_style=False)
+            yaml_str = yaml.dump(clean_yaml_dict(payload), Dumper=_NoAliasSafeDumper, sort_keys=False, default_flow_style=False)
             _invalidate()
             return {
                 "success": True,
@@ -1332,7 +1332,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await mgr.async_write_script(script_key, payload)
             if hasattr(mgr, "async_reload_scripts"):
                 await mgr.async_reload_scripts()
-            yaml_str = yaml.dump(clean_yaml_dict(payload), sort_keys=False, default_flow_style=False)
+            yaml_str = yaml.dump(clean_yaml_dict(payload), Dumper=_NoAliasSafeDumper, sort_keys=False, default_flow_style=False)
             _invalidate()
             return {
                 "success": True,
@@ -4242,21 +4242,21 @@ class OtisAIConversationAgent(AbstractAgent):
                         self.engine.invalidate_cache()
 
                     if len(items) == 1 and created_autos:
-                        yaml_content = items[0].get("raw_yaml") or yaml.dump(clean_yaml_dict(items[0]["yaml_data"]), sort_keys=False, default_flow_style=False)
+                        yaml_content = items[0].get("raw_yaml") or yaml.dump(clean_yaml_dict(items[0]["yaml_data"]), Dumper=_NoAliasSafeDumper, sort_keys=False, default_flow_style=False)
                         speech = (
                             f"I have successfully created and enabled the automation '{created_autos[0]}'!\n\n"
                             f"📋 **Configuration YAML (Ready to Apply in Home Assistant):**\n"
                             f"```yaml\n{yaml_content}\n```"
                         )
                     elif len(items) == 1 and created_scripts:
-                        yaml_content = items[0].get("raw_yaml") or yaml.dump(clean_yaml_dict(items[0]["yaml_data"]), sort_keys=False, default_flow_style=False)
+                        yaml_content = items[0].get("raw_yaml") or yaml.dump(clean_yaml_dict(items[0]["yaml_data"]), Dumper=_NoAliasSafeDumper, sort_keys=False, default_flow_style=False)
                         speech = (
                             f"I have successfully created the script '{created_scripts[0]}'!\n\n"
                             f"📋 **Configuration YAML (Ready to Apply in Home Assistant):**\n"
                             f"```yaml\n{yaml_content}\n```"
                         )
                     elif len(items) == 1 and created_blueprints:
-                        yaml_content = items[0].get("raw_yaml") or (yaml.dump(clean_yaml_dict(items[0]["yaml_data"]), sort_keys=False, default_flow_style=False) if isinstance(items[0]["yaml_data"], dict) else str(items[0]["yaml_data"]))
+                        yaml_content = items[0].get("raw_yaml") or (yaml.dump(clean_yaml_dict(items[0]["yaml_data"]), Dumper=_NoAliasSafeDumper, sort_keys=False, default_flow_style=False) if isinstance(items[0]["yaml_data"], dict) else str(items[0]["yaml_data"]))
                         speech = (
                             f"I have successfully updated and deployed the blueprint '{created_blueprints[0]}'!\n\n"
                             f"📋 **Configuration YAML:**\n"
@@ -5220,7 +5220,7 @@ class OtisAIConversationAgent(AbstractAgent):
                         self.engine.invalidate_cache()
                     if getattr(self, "rules_manager", None):
                         await self.rules_manager.async_dismiss_recommendation(target_sugg["id"])
-                    yaml_str = yaml.dump(clean_yaml_dict(auto_payload), sort_keys=False, default_flow_style=False)
+                    yaml_str = yaml.dump(clean_yaml_dict(auto_payload), Dumper=_NoAliasSafeDumper, sort_keys=False, default_flow_style=False)
                     speech = (
                         f"🚀 **Automation Created and Enabled!**\n\n"
                         f"I have successfully created and enabled the automation '**{auto_payload.get('alias', auto_id)}**' in your Home Assistant.\n\n"

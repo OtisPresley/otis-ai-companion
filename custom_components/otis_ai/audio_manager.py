@@ -1408,8 +1408,8 @@ class AudioHandoffManager:
                 try:
                     from .sensor import async_update_entity_state
                     async_update_entity_state(self.hass, "sensor.otis_spatial_migration", st.state, attrs)
-                except Exception:
-                    self.hass.states.async_set("sensor.otis_spatial_migration", st.state, attrs)
+                except Exception as err:
+                    _LOGGER.debug("Entity state update notice: %s", err)
 
     def async_start_migration_listener(self) -> None:
         """Listen to state changes on sensor.otis_spatial_migration for autonomous audio migration."""

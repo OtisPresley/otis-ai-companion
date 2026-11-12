@@ -10,7 +10,7 @@ except ImportError:
         SWITCH = "switch"
 
 DOMAIN = "otis_ai"
-INTEGRATION_VERSION = "0.3.3"
+INTEGRATION_VERSION = "0.3.4"
 
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,
@@ -185,3 +185,15 @@ COMMAND_CENTER_DASHBOARD_ID = "command-center"
 COMMAND_CENTER_DASHBOARD_URL_PATH = "command-center"
 COMMAND_CENTER_DASHBOARD_TITLE = "Command Center"
 COMMAND_CENTER_DASHBOARD_ICON = "mdi:view-dashboard"
+
+try:
+    import yaml as _yaml
+
+    class SafeNoAliasDumper(_yaml.SafeDumper):
+        """YAML SafeDumper that suppresses &id001/*id001 aliases and anchors."""
+
+        def ignore_aliases(self, data: object) -> bool:
+            """Never emit YAML anchors or aliases."""
+            return True
+except ImportError:
+    SafeNoAliasDumper = None  # type: ignore[assignment,misc]

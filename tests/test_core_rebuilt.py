@@ -2302,7 +2302,8 @@ class TestFloorplanParser(unittest.TestCase):
         self.assertTrue(admin_dash["require_admin"])
 
         dashboards_json = self.hass.config.path(".storage/lovelace_dashboards")
-        self.assertTrue(os.path.exists(dashboards_json))
+        self.assertFalse(os.path.exists(dashboards_json))
+        self.assertIn("otis-ai", d_mgr._managed_dashboards)
         otis_dash_json = self.hass.config.path(".storage/lovelace.otis_ai")
         with open(otis_dash_json, "r", encoding="utf-8") as f:
             otis_dash_data = f.read()
@@ -5320,19 +5321,8 @@ action:
             "gpu_type": "Intel/DRM iGPU (/dev/dri/renderD128)",
         }
         with unittest.mock.patch.object(llm_mgr, "_probe_host_hardware_sync", return_value=fake_hw), \
-             unittest.mock.patch.dict("os.environ", {"SUPERVISOR_TOKEN": "test_token"}):
-            mock_resp = MagicMock()
-            mock_resp.status = 200
-            mock_resp.json = AsyncMock(return_value={
-                "data": {"addons": [{"slug": "local_otis_ollama", "name": "Otis Edge AI (Ollama)", "installed": True, "state": "started", "version": "1.0.0"}]}
-            })
-            mock_cm = MagicMock()
-            mock_cm.__aenter__ = AsyncMock(return_value=mock_resp)
-            mock_cm.__aexit__ = AsyncMock(return_value=None)
-            mock_session = MagicMock()
-            mock_session.get = MagicMock(return_value=mock_cm)
-            with unittest.mock.patch.object(llm_mgr, "_get_session", return_value=mock_session):
-                suit = asyncio.run(llm_mgr.async_assess_host_ollama_suitability())
+             unittest.mock.patch.object(llm_mgr, "async_health_check", AsyncMock(return_value={"status": "online"})):
+            suit = asyncio.run(llm_mgr.async_assess_host_ollama_suitability())
 
         self.assertTrue(suit["can_run"])
         self.assertEqual(suit["recommended_model"], "qwen2.5:1.5b")

@@ -636,13 +636,8 @@ class FederationManager:
                 f"{health['online_nodes']}/{health['total_nodes']} Online",
                 attrs,
             )
-        except Exception:
-            self.hass.states.async_set(SENSOR_FEDERATION_CLUSTER, cluster_status, attrs)
-            self.hass.states.async_set(
-                SENSOR_FEDERATED_NODES,
-                f"{health['online_nodes']}/{health['total_nodes']} Online",
-                attrs,
-            )
+        except Exception as err:
+            _LOGGER.debug("Entity state update notice: %s", err)
 
     async def async_publish_telemetry(self) -> None:
         """Publish real-time telemetry (async interface)."""

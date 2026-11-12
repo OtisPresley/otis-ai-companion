@@ -924,7 +924,7 @@ class AutomationManager:
                     final_auto["max"] = 10
 
         # Generate clean YAML formatted string for user review / GUI application
-        formatted_yaml = yaml.dump(final_auto, default_flow_style=False, sort_keys=False)
+        formatted_yaml = yaml.dump(final_auto, Dumper=SafeNoAliasDumper, default_flow_style=False, sort_keys=False)
 
         # Update integration store if this automation exists in otis_ai_automations
         try:

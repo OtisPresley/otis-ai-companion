@@ -1204,8 +1204,8 @@ class EnergyManager:
         try:
             from .sensor import async_update_entity_state
             async_update_entity_state(self.hass, "sensor.otis_energy_arbitrage", state, attrs)
-        except Exception:
-            self.hass.states.async_set("sensor.otis_energy_arbitrage", state, attrs)
+        except Exception as err:
+            _LOGGER.debug("Entity state update notice: %s", err)
 
     async def async_get_arbitrage_plan(
         self,

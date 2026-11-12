@@ -348,8 +348,8 @@ class BehavioralRulesManager:
             try:
                 from .sensor import async_update_entity_state
                 async_update_entity_state(self.hass, "switch.otis_audio_follow", state_val, attrs)
-            except Exception:
-                self.hass.states.async_set("switch.otis_audio_follow", state_val, attrs)
+            except Exception as err:
+                _LOGGER.debug("Entity state update notice: %s", err)
 
     def _sync_voice_announcements_switch(self) -> None:
         """Publish switch.otis_voice_announcements state in Home Assistant."""
@@ -365,8 +365,8 @@ class BehavioralRulesManager:
             try:
                 from .sensor import async_update_entity_state
                 async_update_entity_state(self.hass, "switch.otis_voice_announcements", state_val, attrs)
-            except Exception:
-                self.hass.states.async_set("switch.otis_voice_announcements", state_val, attrs)
+            except Exception as err:
+                _LOGGER.debug("Entity state update notice: %s", err)
 
     async def async_update_person_profile(
         self,

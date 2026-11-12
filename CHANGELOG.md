@@ -7,6 +7,17 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-11-12
+
+### Security & Compliance Audit
+- **Exhaustive HACS & Home Assistant Core Compliance Pass**:
+  - **Storage Isolation (`dashboard_manager.py`)**: Removed fallback reads/writes to `.storage/lovelace_dashboards` via `Store`; dashboard lifecycle relies exclusively on official `DashboardsCollection`, `LovelaceStorage`, and in-memory managed registry.
+  - **Supervisor Token Decoupling (`local_llm.py`)**: Removed all remaining `SUPERVISOR_TOKEN` environment checks, `http://supervisor/addons` queries, and hardcoded internal supervisor IPs (`172.30.32.1`). Uses `hass.config.components` and direct HTTP reachability probes (`http://local-otis-ollama:11434`).
+  - **Platform Entity Purity**: Removed all 17 direct `hass.states.async_set(...)` fallback branches across all 10 manager modules (`agent_orchestrator`, `audio_manager`, `energy_manager`, `federation_manager`, `macro_manager`, `mesh_manager`, `presence_manager`, `rag_manager`, `rules_manager`, `vision_manager`), routing 100% of entity state updates through backed platform entities.
+  - **Alias-Free YAML Serialization**: Standardized `SafeNoAliasDumper` across all `yaml.dump(...)` calls in `__init__.py`, `automation_manager.py`, `floorplan_parser.py`, and `theme_manager.py`.
+  - **Complete Frontend XSS Escaping (`otis-companion-card.js`)**: Escaped all remaining dynamic text and HTML attributes (`title`, `room.path`, `weatherEid`, `subtitle`, `calendarEid`, `s.id`, `dismiss_single_label`, `dismiss_category_label`, federated node `n.name`/`n.host`/`n.port`/`n.role`/`n.status`, `eid`, `r.id`, `r.zone`, `a.id`, `query`, `friendlyName`, `stateVal`, `g.title`, `_spokenOrderOverride`).
+  - **Version Bump**: Bumped integration and card versions to `0.3.4`.
+
 ## [0.3.3] - 2026-11-12
 
 ### Fixed
