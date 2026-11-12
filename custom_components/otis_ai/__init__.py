@@ -14,7 +14,21 @@ from typing import Any, Literal
 import yaml
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceResponse, SupportsResponse
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
+
+try:
+    from homeassistant.exceptions import Unauthorized
+except ImportError:
+    class Unauthorized(Exception):  # type: ignore[no-redef]
+        def __init__(self, context=None, permission=None, **kwargs):
+            super().__init__(f"Unauthorized: {permission}")
+            self.context = context
+            self.permission = permission
+
+try:
+    from homeassistant.helpers.service import async_register_admin_service
+except ImportError:
+    async_register_admin_service = None
 
 try:
     from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
@@ -161,7 +175,7 @@ from .spatial_manager import (
     is_motion_sensor as is_motion_sensor,
     resolve_area_identifier,
 )
-from .floorplan_parser import FloorplanParser
+from .floorplan_parser import DEFAULT_OUTPUT_SVG_PATH, FloorplanParser
 from .habit_manager import (
     BehavioralHabitManager,
     cluster_sequences_to_routines as cluster_sequences_to_routines,
@@ -234,8 +248,54 @@ class _NoAliasSafeDumper(yaml.SafeDumper):
         return True
 
 
+def _register_admin_service(
+    hass: HomeAssistant,
+    domain: str,
+    service: str,
+    service_func: Any,
+    schema: Any = None,
+    supports_response: Any = None,
+) -> None:
+    """Register an administrative service requiring admin privileges."""
+    try:
+        from homeassistant.helpers.service import async_register_admin_service as _ha_admin_srv
+        if _ha_admin_srv is not None:
+            kwargs: dict[str, Any] = {}
+            if supports_response is not None:
+                kwargs["supports_response"] = supports_response
+            if schema is not None:
+                kwargs["schema"] = schema
+            _ha_admin_srv(hass, domain, service, service_func, **kwargs)
+            return
+    except (ImportError, TypeError):
+        pass
 
-MAX_UPLOAD_SIZE_BYTES = 3 * 1024 * 1024 * 1024  # 3 GB upload limit (streamed to disk, never buffered in RAM)
+    async def admin_handler(call: ServiceCall) -> Any:
+        ctx = getattr(call, "context", None)
+        user_id = getattr(ctx, "user_id", None) if ctx else None
+        if user_id:
+            auth = getattr(hass, "auth", None)
+            if auth and hasattr(auth, "async_get_user"):
+                res = auth.async_get_user(user_id)
+                user = await res if asyncio.iscoroutine(res) or hasattr(res, "__await__") else res
+                if user is not None and getattr(user, "is_admin", False) is False:
+                    raise Unauthorized(
+                        context=call.context,
+                        permission="admin",
+                    )
+        return await service_func(call)
+
+    kwargs = {}
+    if supports_response is not None:
+        kwargs["supports_response"] = supports_response
+    if schema is not None:
+        kwargs["schema"] = schema
+    hass.services.async_register(domain, service, admin_handler, **kwargs)
+
+
+
+MAX_UPLOAD_SIZE_BYTES = 3 * 1024 * 1024 * 1024  # 3 GB aggregate upload limit (streamed to disk, never buffered in RAM)
+MAX_UPLOAD_CLIPS = 5  # Maximum clips allowed per walkthrough upload
 UPLOAD_STREAM_CHUNK_BYTES = 1024 * 1024  # 1 MB read chunk for raw-body uploads
 
 
@@ -244,6 +304,7 @@ class OtisWalkthroughUploadView(HomeAssistantView):
 
     url = "/api/otis_ai/upload_walkthrough"
     name = "api:otis_ai:upload_walkthrough"
+    requires_auth = True
 
     def __init__(
         self,
@@ -304,6 +365,7 @@ class OtisWalkthroughUploadView(HomeAssistantView):
 
             saved_videos: list[str] = []
             spoken_order: str | None = None
+            total_upload_bytes = 0
 
             def _append_chunk(path: str, data_bytes: bytes, mode: str = "ab") -> None:
                 with open(path, mode) as f:
@@ -318,6 +380,16 @@ class OtisWalkthroughUploadView(HomeAssistantView):
                         break
                     if field.name in ("file", "files"):
                         file_idx += 1
+                        if file_idx > MAX_UPLOAD_CLIPS:
+                            _LOGGER.warning(
+                                "Walkthrough upload rejected: clip count %d exceeds limit of %d",
+                                file_idx,
+                                MAX_UPLOAD_CLIPS,
+                            )
+                            return web.Response(
+                                status=413,
+                                text=f"Maximum allowed file count exceeded. At most {MAX_UPLOAD_CLIPS} clips per upload.",
+                            )
                         fname = (
                             "walkthrough_upload.mp4"
                             if file_idx == 1
@@ -331,14 +403,15 @@ class OtisWalkthroughUploadView(HomeAssistantView):
                             if not chunk:
                                 break
                             file_bytes += len(chunk)
-                            if file_bytes > MAX_UPLOAD_SIZE_BYTES:
+                            total_upload_bytes += len(chunk)
+                            if total_upload_bytes > MAX_UPLOAD_SIZE_BYTES:
                                 _LOGGER.warning(
-                                    "Walkthrough upload stream exceeded max size %d bytes",
+                                    "Walkthrough aggregate upload stream exceeded max size %d bytes",
                                     MAX_UPLOAD_SIZE_BYTES,
                                 )
                                 return web.Response(
                                     status=413,
-                                    text=f"Upload stream exceeded limit of {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)}MB.",
+                                    text=f"Aggregate upload stream exceeded limit of {MAX_UPLOAD_SIZE_BYTES // (1024 * 1024)}MB.",
                                 )
                             await self.hass.async_add_executor_job(_append_chunk, v_dest, chunk, "ab")
                         saved_videos.append(v_dest)
@@ -356,7 +429,8 @@ class OtisWalkthroughUploadView(HomeAssistantView):
                 body_bytes = 0
                 async for chunk in request.content.iter_chunked(UPLOAD_STREAM_CHUNK_BYTES):
                     body_bytes += len(chunk)
-                    if body_bytes > MAX_UPLOAD_SIZE_BYTES:
+                    total_upload_bytes += len(chunk)
+                    if total_upload_bytes > MAX_UPLOAD_SIZE_BYTES:
                         _LOGGER.warning(
                             "Walkthrough upload body exceeded max size %d bytes",
                             MAX_UPLOAD_SIZE_BYTES,
@@ -371,6 +445,13 @@ class OtisWalkthroughUploadView(HomeAssistantView):
                     "Walkthrough video saved to %s (%d bytes)",
                     v_dest,
                     body_bytes,
+                )
+
+            if not saved_videos:
+                _LOGGER.warning("Walkthrough upload rejected: no video files were provided.")
+                return web.Response(
+                    status=400,
+                    text="No video walkthrough files were provided in the upload request.",
                 )
 
             self._set_progress("Analyzing videos", [], active=True)
@@ -658,8 +739,14 @@ class OtisIssueReporterView(HomeAssistantView):
 
     async def get(self, request: web.Request) -> web.Response:
         """Handle issue reporter queries (diagnostics, device_code, poll_token, tracked_issues)."""
+        hass_user = request.get("hass_user")
         action = str(request.query.get("action") or "diagnostics").strip()
         if action == "diagnostics":
+            if not hass_user or not getattr(hass_user, "is_admin", False):
+                return web.json_response(
+                    {"success": False, "error": "Unauthorized: Admin privileges required to audit system logs."},
+                    status=403,
+                )
             if not self.log_monitor:
                 return web.json_response({"success": False, "error": "LogMonitor not initialized"}, status=503)
             audit = await self.log_monitor.async_audit_logs()
@@ -689,6 +776,12 @@ class OtisIssueReporterView(HomeAssistantView):
 
     async def post(self, request: web.Request) -> web.Response:
         """Handle issue actions: submit_issue and dismiss_issue."""
+        hass_user = request.get("hass_user")
+        if not hass_user or not getattr(hass_user, "is_admin", False):
+            return web.json_response(
+                {"success": False, "error": "Unauthorized: Admin privileges required to report or manage issues."},
+                status=403,
+            )
         if not self.log_monitor:
             return web.json_response({"success": False, "error": "LogMonitor not initialized"}, status=503)
         try:
@@ -1136,16 +1229,42 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if isinstance(cached, dict):
                 target = cached
 
-        if target is None and not (call.data.get("action_type") and call.data.get("action_payload")):
-            capability_map = await eng.async_build_capability_map()
-            suggestions = capability_map.get("proactive_suggestions", [])
-            target = next((s for s in suggestions if s["id"] == suggestion_id), None)
+        if target is None and hasattr(eng, "async_build_capability_map"):
+            res = eng.async_build_capability_map()
+            capability_map = await res if asyncio.iscoroutine(res) or hasattr(res, "__await__") else (res if isinstance(res, dict) else {})
+            suggestions = capability_map.get("proactive_suggestions", []) if isinstance(capability_map, dict) else []
+            target = next((s for s in suggestions if isinstance(s, dict) and s.get("id") == suggestion_id), None)
 
-        action_type = call.data.get("action_type") or (target.get("action_type") if target else None)
-        payload = call.data.get("action_payload") or (target.get("action_payload", {}) if target else {})
+        if target is None and sm and hasattr(sm, "get_active_anomalies"):
+            for anom in sm.get_active_anomalies() or []:
+                if anom.get("id") == suggestion_id:
+                    target = anom
+                    break
 
-        if not target and not action_type:
+        if target is None and suggestion_id.startswith("switch_local_llm_"):
+            req_payload = call.data.get("action_payload") if isinstance(call.data, dict) else {}
+            rec_model = (req_payload.get("model") if req_payload else None) or suggestion_id.replace("switch_local_llm_", "")
+            target = {
+                "id": suggestion_id,
+                "action_type": "switch_local_llm_model",
+                "action_payload": {"model": rec_model},
+            }
+        elif target is None and suggestion_id == "install_ollama":
+            target = {
+                "id": "install_ollama",
+                "action_type": "install_ollama_addon",
+                "action_payload": {},
+            }
+
+        if not target:
+            _LOGGER.warning("apply_suggestion rejected: Suggestion '%s' not tracked or not found.", suggestion_id)
             return {"success": False, "error": f"Suggestion '{suggestion_id}' not found or already resolved"}
+
+        action_type = target.get("action_type")
+        payload = target.get("action_payload") or {}
+
+        if not action_type:
+            return {"success": False, "error": f"Suggestion '{suggestion_id}' has no executable action"}
 
         def _invalidate():
             if hasattr(eng, "invalidate_cache") and callable(getattr(eng, "invalidate_cache", None)):
@@ -1551,16 +1670,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "result": res,
             }
         elif action_type == "install_ollama_addon":
-            llm_mgr = _get_local_llm_manager()
-            if not llm_mgr:
-                return {"success": False, "error": "LocalLLMManager is not available on this host"}
-            res = await llm_mgr.async_manage_ollama_addon(action="install")
-            _invalidate()
-            msg = res.get("message") or "Otis Edge AI Supervisor Add-on installation and startup initiated."
             return {
-                "success": res.get("success", True),
-                "message": msg,
-                "result": res,
+                "success": True,
+                "action": "open_url",
+                "url": "/hassio/addon/local_otis_ollama",
+                "message": "Please navigate to the Home Assistant Add-on Store to install Otis Edge AI (Ollama).",
             }
         elif action_type == "repair_blueprint_automation":
             res = await mgr.async_improve_automation(payload)
@@ -1741,10 +1855,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         video_path = call.data.get("video_path")
         spoken_order = call.data.get("spoken_order")
         theme = call.data.get("theme", "cyberpunk")
-        output_path = call.data.get("output_path", "www/otis_floorplan.svg")
         res = await fp.async_generate_svg_floorplan(
             capability_map,
-            output_relative_path=output_path,
+            output_relative_path=DEFAULT_OUTPUT_SVG_PATH,
             theme=theme,
             video_path=video_path,
             spoken_order=spoken_order,
@@ -1776,12 +1889,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         badges = call.data.get("badges")
         rooms = call.data.get("rooms")
         deleted_rooms = call.data.get("deleted_rooms")
-        svg_path = call.data.get("svg_path", "www/otis_floorplan.svg")
         res = await fp.async_update_floorplan_layout(
             badges=badges,
             rooms=rooms,
             deleted_rooms=deleted_rooms,
-            svg_relative_path=svg_path,
+            svg_relative_path=DEFAULT_OUTPUT_SVG_PATH,
         )
         if hasattr(eng, "invalidate_cache"):
             eng.invalidate_cache()
@@ -1811,7 +1923,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         area_id = call.data.get("area_id")
         x = call.data.get("x")
         y = call.data.get("y")
-        svg_path = call.data.get("svg_path", "www/otis_floorplan.svg")
 
         if not entity_id:
             return {"success": False, "error": "entity_id is required"}
@@ -1821,7 +1932,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             area_id=area_id,
             x=float(x) if x is not None else None,
             y=float(y) if y is not None else None,
-            svg_relative_path=svg_path,
+            svg_relative_path=DEFAULT_OUTPUT_SVG_PATH,
         )
         if hasattr(eng, "invalidate_cache"):
             eng.invalidate_cache()
@@ -1848,14 +1959,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         fp = _get_floorplan_parser()
         dm = _get_dashboard_manager()
         entity_id = call.data.get("entity_id")
-        svg_path = call.data.get("svg_path", "www/otis_floorplan.svg")
 
         if not entity_id:
             return {"success": False, "error": "entity_id is required"}
 
         res = await fp.async_unpin_entity(
             entity_id=entity_id,
-            svg_relative_path=svg_path,
+            svg_relative_path=DEFAULT_OUTPUT_SVG_PATH,
         )
         if hasattr(eng, "invalidate_cache"):
             eng.invalidate_cache()
@@ -2684,20 +2794,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry_store = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
         llm_mgr = entry_store.get("local_llm_manager", local_llm_manager)
         prompt = call.data.get("prompt")
-        plan = call.data.get("plan")
         auto_execute = call.data.get("auto_execute", True)
         model = call.data.get("model")
 
-        if plan and isinstance(plan, list):
-            results = await llm_mgr.async_execute_tool_plan(plan)
-            return {"success": True, "executed_tools": results, "mode": "direct_plan"}
-        elif prompt:
-            return await llm_mgr.async_chat_with_tools(
-                prompt=prompt,
-                model=model,
-                auto_execute=auto_execute,
-            )
-        return {"success": False, "error": "Neither 'plan' list nor 'prompt' string was provided."}
+        if not prompt or not isinstance(prompt, str) or not prompt.strip():
+            return {"success": False, "error": "Parameter 'prompt' is required for autonomous LLM reasoning and execution."}
+
+        return await llm_mgr.async_chat_with_tools(
+            prompt=prompt.strip(),
+            model=model,
+            auto_execute=auto_execute,
+            context=call.context,
+        )
 
     async def handle_index_document(call) -> ServiceResponse:
         """Handle service call to index a manual or document into knowledge store."""
@@ -2949,7 +3057,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_get_suggestions,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_APPLY_SUGGESTION,
         handle_apply_suggestion,
@@ -2973,37 +3082,43 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_update_spatial_map,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_GENERATE_FLOORPLAN,
         handle_generate_floorplan,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_UPDATE_FLOORPLAN_LAYOUT,
         handle_update_floorplan_layout,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_PIN_FLOORPLAN_ENTITY,
         handle_pin_floorplan_entity,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_UNPIN_FLOORPLAN_ENTITY,
         handle_unpin_floorplan_entity,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_GENERATE_THEME,
         handle_generate_theme,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_APPLY_THEME,
         handle_apply_theme,
@@ -3015,7 +3130,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_list_themes,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_DELETE_THEME,
         handle_delete_theme,
@@ -3225,19 +3341,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_audit_unassigned_entities,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_AUTO_COMMISSION_ENTITIES,
         handle_auto_commission_entities,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_REGISTER_FEDERATED_NODE,
         handle_register_federated_node,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_REMOVE_FEDERATED_NODE,
         handle_remove_federated_node,
@@ -3249,7 +3368,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_sync_federated_nodes,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_CALL_REMOTE_SERVICE,
         handle_call_remote_service,
@@ -3261,13 +3381,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_get_federation_status,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_BROADCAST_CLUSTER_MESSAGE,
         handle_broadcast_cluster_message,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_FORWARD_REMOTE_COMMAND,
         handle_forward_remote_command,
@@ -3279,7 +3401,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_get_user_rules,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_SET_USER_RULES,
         handle_set_user_rules,
@@ -3321,31 +3444,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         handle_get_voice_assist_status,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_TEST_LOCAL_LLM,
         handle_test_local_llm,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_BENCHMARK_LOCAL_LLM,
         handle_benchmark_local_llm,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_PULL_LOCAL_LLM_MODEL,
         handle_pull_local_llm,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_MANAGE_LOCAL_LLM_ADDON,
         handle_manage_local_llm_addon,
         supports_response=SupportsResponse.OPTIONAL,
     )
-    hass.services.async_register(
+    _register_admin_service(
+        hass,
         DOMAIN,
         SERVICE_EXECUTE_TOOL_PLAN,
         handle_execute_tool_plan,

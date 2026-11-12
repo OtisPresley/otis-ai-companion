@@ -330,6 +330,38 @@ DEFAULT_OTIS_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+ALLOWED_TOOL_NAMES = {
+    "pin_floorplan_entity",
+    "unpin_floorplan_entity",
+    "run_sentinel_watchdog",
+    "turn_off_stuck_actuator",
+    "restart_ble_proxy",
+    "heal_mesh_node",
+    "regenerate_dashboards",
+    "analyze_camera",
+    "execute_macro",
+    "call_ha_service",
+    "query_knowledge_base",
+    "optimize_battery_schedule",
+    "get_energy_arbitrage_plan",
+    "inspect_backup_configuration",
+}
+
+ALLOWED_SERVICE_DOMAINS = {
+    "light",
+    "switch",
+    "climate",
+    "cover",
+    "fan",
+    "media_player",
+    "scene",
+    "script",
+    "vacuum",
+    "lock",
+    "otis_ai",
+}
+
+
 def select_relevant_tools(user_text: str) -> list[dict[str, Any]]:
     """Select only the subset of DEFAULT_OTIS_TOOLS relevant to the user's message.
 
@@ -1201,103 +1233,20 @@ class LocalLLMManager:
                 **st,
             }
 
-        sup_token = os.environ.get("SUPERVISOR_TOKEN")
-        if not sup_token:
-            return {"success": False, "action": act, "error": "Home Assistant Supervisor API is not available on this host."}
+        if act in ("install", "start", "stop", "restart", "uninstall"):
+            addon_url = "/hassio/addon/local_otis_ollama"
+            st = await self.async_get_ollama_status(force_refresh=True)
+            return {
+                "success": True,
+                "action": act,
+                "addon_url": addon_url,
+                "deep_link": addon_url,
+                "status": st,
+                "message": f"Manage Otis Edge AI (Ollama) add-on directly in the Home Assistant Add-on Store: {addon_url}",
+                **st,
+            }
 
-        suitability = await self.async_assess_host_ollama_suitability()
-        slug = suitability.get("addon_slug") or "local_otis_ollama"
-        session = self._get_session()
-        sup_headers = {"Authorization": f"Bearer {sup_token}", "Content-Type": "application/json"}
-
-        try:
-            if act == "install":
-                if not suitability.get("can_run"):
-                    return {
-                        "success": False,
-                        "action": act,
-                        "error": f"Host hardware check failed: {suitability.get('summary')}",
-                    }
-                # 1. Reload Supervisor store so /addons/otis_ollama is discovered
-                async with session.post(
-                    "http://supervisor/store/reload",
-                    headers=sup_headers,
-                    timeout=ClientTimeout(total=30.0),
-                ) as _:
-                    pass
-
-                # 2. Install local_otis_ollama if not yet installed
-                if not suitability.get("addon_installed"):
-                    async with session.post(
-                        f"http://supervisor/addons/{slug}/install",
-                        headers=sup_headers,
-                        timeout=ClientTimeout(total=300.0),
-                    ) as resp:
-                        if resp.status != 200:
-                            err_txt = await resp.text()
-                            return {"success": False, "action": act, "error": f"Supervisor install HTTP {resp.status}: {err_txt[:200]}"}
-
-                # 3. Start the add-on
-                async with session.post(
-                    f"http://supervisor/addons/{slug}/start",
-                    headers=sup_headers,
-                    timeout=ClientTimeout(total=60.0),
-                ) as resp:
-                    if resp.status != 200:
-                        err_txt = await resp.text()
-                        return {"success": False, "action": act, "error": f"Supervisor start HTTP {resp.status}: {err_txt[:200]}"}
-
-                # 4. Wait briefly for Ollama REST API to come online and bind URL
-                for _ in range(10):
-                    await asyncio.sleep(1.5)
-                    for cand_url in ("http://local-otis-ollama:11434", "http://127.0.0.1:11434", "http://172.30.32.1:11434"):
-                        h = await self.async_health_check(target_url=cand_url)
-                        if h.get("status") == "online":
-                            self.url = cand_url
-                            self._persist_config_options()
-                            break
-                    if self._last_health.get("status") == "online" and self.url in ("http://local-otis-ollama:11434", "http://127.0.0.1:11434", "http://172.30.32.1:11434"):
-                        break
-
-                st = await self.async_get_ollama_status(force_refresh=True)
-                return {
-                    "success": True,
-                    "action": act,
-                    "status": st,
-                    "message": "Otis Edge AI (Ollama) Supervisor Add-on installed and started!",
-                    **st,
-                }
-
-            if act in ("start", "stop", "restart", "uninstall"):
-                async with session.post(
-                    f"http://supervisor/addons/{slug}/{act}",
-                    headers=sup_headers,
-                    timeout=ClientTimeout(total=60.0),
-                ) as resp:
-                    if resp.status != 200:
-                        err_txt = await resp.text()
-                        return {"success": False, "action": act, "error": f"Supervisor {act} HTTP {resp.status}: {err_txt[:200]}"}
-                if act in ("start", "restart"):
-                    await asyncio.sleep(2.0)
-                    for cand_url in ("http://local-otis-ollama:11434", "http://127.0.0.1:11434", "http://172.30.32.1:11434"):
-                        h = await self.async_health_check(target_url=cand_url)
-                        if h.get("status") == "online":
-                            self.url = cand_url
-                            self._persist_config_options()
-                            break
-                st = await self.async_get_ollama_status(force_refresh=True)
-                return {
-                    "success": True,
-                    "action": act,
-                    "status": st,
-                    "message": f"Otis Edge AI (Ollama) Add-on action '{act}' completed!",
-                    **st,
-                }
-
-            return {"success": False, "action": act, "error": f"Unsupported action: {act}"}
-        except Exception as err:
-            _LOGGER.error("Error managing Ollama add-on (%s): %s", act, err)
-            return {"success": False, "action": act, "error": str(err)}
+        return {"success": False, "action": act, "error": f"Unsupported action: {act}"}
 
     async def async_get_embedding(
         self,
@@ -1579,9 +1528,9 @@ class LocalLLMManager:
             }
 
     async def async_execute_tool_plan(
-        self, tool_calls: list[dict[str, Any]]
+        self, tool_calls: list[dict[str, Any]], context: Any = None
     ) -> list[dict[str, Any]]:
-        """Execute a structured autonomous tool plan against Home Assistant services."""
+        """Execute a structured autonomous tool plan against Home Assistant services with context propagation."""
         if not self.hass:
             return [{"success": False, "error": "Home Assistant instance not available"}]
 
@@ -1599,6 +1548,28 @@ class LocalLLMManager:
             name = str(call["name"]).strip()
             params = dict(call.get("parameters") or {})
             t_start = time.perf_counter()
+
+            if name not in ALLOWED_TOOL_NAMES:
+                if "." in name:
+                    d, _ = name.split(".", 1)
+                    if d not in ALLOWED_SERVICE_DOMAINS:
+                        execution_results.append({
+                            "tool": name,
+                            "parameters": params,
+                            "success": False,
+                            "error": f"Domain '{d}' is not in the authorized service domains allowlist",
+                            "duration_s": 0.0,
+                        })
+                        continue
+                else:
+                    execution_results.append({
+                        "tool": name,
+                        "parameters": params,
+                        "success": False,
+                        "error": f"Tool '{name}' is not in the authorized tool allowlist",
+                        "duration_s": 0.0,
+                    })
+                    continue
 
             try:
                 if name == "query_knowledge_base" and hasattr(self, "rag_manager") and self.rag_manager:
@@ -1621,14 +1592,29 @@ class LocalLLMManager:
                     domain = params.pop("domain", "")
                     service = params.pop("service", "")
                     sdata = params.pop("service_data", {}) or params
-                    await self.hass.services.async_call(domain, service, sdata, blocking=True)
+                    if domain not in ALLOWED_SERVICE_DOMAINS:
+                        execution_results.append({
+                            "tool": name,
+                            "parameters": sdata,
+                            "success": False,
+                            "error": f"Domain '{domain}' is not in the authorized service domains allowlist",
+                            "duration_s": 0.0,
+                        })
+                        continue
+                    await self.hass.services.async_call(
+                        domain, service, sdata, blocking=True, context=context
+                    )
                     res_data = {"service": f"{domain}.{service}", "data": sdata}
                 elif "." in name:
                     domain, service = name.split(".", 1)
-                    await self.hass.services.async_call(domain, service, params, blocking=True)
+                    await self.hass.services.async_call(
+                        domain, service, params, blocking=True, context=context
+                    )
                     res_data = {"service": name, "data": params}
                 else:
-                    await self.hass.services.async_call("otis_ai", name, params, blocking=True)
+                    await self.hass.services.async_call(
+                        "otis_ai", name, params, blocking=True, context=context
+                    )
                     res_data = {"service": f"otis_ai.{name}", "data": params}
 
                 elapsed = round(time.perf_counter() - t_start, 3)
@@ -1663,6 +1649,7 @@ class LocalLLMManager:
         max_iterations: int = 3,
         auto_execute: bool = True,
         timeout: float | None = None,
+        context: Any = None,
     ) -> dict[str, Any]:
         """Autonomous multi-turn tool-calling loop using local LLMs."""
         chosen_tools = tools if tools is not None else select_relevant_tools(prompt)
@@ -1736,7 +1723,7 @@ class LocalLLMManager:
                 }
 
             # Execute tool plan
-            exec_results = await self.async_execute_tool_plan(tool_calls)
+            exec_results = await self.async_execute_tool_plan(tool_calls, context=context)
             all_executed_tools.extend(exec_results)
 
             # Append assistant turn and tool execution result to message history for subsequent reasoning

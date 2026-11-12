@@ -565,8 +565,23 @@ class FloorplanParser:
             _LOGGER.debug("Error parsing SVG room bounds: %s", err)
         return bounds
 
+    def _sanitize_svg_path(self, svg_relative_path: str | None) -> str:
+        """Sanitize and confine SVG output path strictly to managed media storage."""
+        if not svg_relative_path:
+            return DEFAULT_OUTPUT_SVG_PATH
+        cleaned = os.path.normpath(str(svg_relative_path))
+        # Prevent directory traversal and prevent writing to www
+        if ".." in cleaned or "www" in cleaned.split(os.sep):
+            _LOGGER.warning(
+                "Disallowed floor plan path '%s'; confining to managed storage",
+                svg_relative_path,
+            )
+            return DEFAULT_OUTPUT_SVG_PATH
+        return cleaned
+
     async def async_refresh_svg_cache(self, svg_relative_path: str = DEFAULT_OUTPUT_SVG_PATH) -> None:
         """Asynchronously refresh cached SVG room bounds in executor to avoid blocking event loop."""
+        svg_relative_path = self._sanitize_svg_path(svg_relative_path)
         if hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
             full_path = self.hass.config.path(svg_relative_path)
         else:
@@ -1318,6 +1333,7 @@ class FloorplanParser:
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Synthesize interactive vector SVG floor plan with multi-floor zones and active entities."""
+        output_relative_path = self._sanitize_svg_path(output_relative_path)
         areas_map = capability_map.get("areas", {})
         entities = capability_map.get("entities", [])
         spatial_graph = capability_map.get("spatial_graph", {})
@@ -1474,6 +1490,7 @@ class FloorplanParser:
         svg_relative_path: str = DEFAULT_OUTPUT_SVG_PATH,
     ) -> dict[str, Any]:
         """Update SVG floorplan device marker coordinates and area boundary geometry, or delete rooms."""
+        svg_relative_path = self._sanitize_svg_path(svg_relative_path)
         if os.path.isabs(svg_relative_path):
             output_full_path = svg_relative_path
         elif hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
@@ -1761,6 +1778,7 @@ class FloorplanParser:
     ) -> dict[str, Any]:
         """Pin or reposition an entity badge on the floorplan (by room area or explicit coordinates)."""
         await self.async_load()
+        svg_relative_path = self._sanitize_svg_path(svg_relative_path)
         if os.path.isabs(svg_relative_path):
             svg_full_path = svg_relative_path
         elif hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
@@ -1834,6 +1852,7 @@ class FloorplanParser:
         svg_relative_path: str = DEFAULT_OUTPUT_SVG_PATH,
     ) -> dict[str, Any]:
         """Remove a pinned entity badge from the floorplan."""
+        svg_relative_path = self._sanitize_svg_path(svg_relative_path)
         res = await self.async_update_floorplan_layout(
             badges=[{"entity_id": entity_id, "delete": True}],
             svg_relative_path=svg_relative_path,

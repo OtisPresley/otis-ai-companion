@@ -1197,7 +1197,8 @@ class TestOtisAICore(unittest.TestCase):
         }
         res_install = asyncio.run(apply_handler(call_install))
         self.assertTrue(res_install["success"])
-        llm_mgr.async_manage_ollama_addon.assert_called_with(action="install")
+        self.assertEqual(res_install["action"], "open_url")
+        self.assertEqual(res_install["url"], "/hassio/addon/local_otis_ollama")
 
     def test_async_setup_frontend_path(self):
         """Test async_setup registers the frontend static path for the Lovelace card."""

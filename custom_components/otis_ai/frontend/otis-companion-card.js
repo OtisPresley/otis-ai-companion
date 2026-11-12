@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.3.0";
+const CARD_VERSION = "0.3.1";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -1128,10 +1128,15 @@ class OtisCompanionCard extends HTMLElement {
       return;
     }
 
-    this._applyingIds.add(sId);
     if (suggestion.action_type === "install_ollama_addon") {
-      this._showToast("🧠 Installing & starting Otis Edge AI (Ollama) Supervisor Add-on... This may take up to a minute.");
-    } else if (suggestion.action_type === "switch_local_llm_model") {
+      const url = suggestion.action_payload?.url || "/hassio/addon/local_otis_ollama";
+      window.open(url, "_blank", "noopener,noreferrer");
+      this._showToast("Opening Local Otis Ollama in Home Assistant Add-on Store...");
+      return;
+    }
+
+    this._applyingIds.add(sId);
+    if (suggestion.action_type === "switch_local_llm_model") {
       const targetModel = suggestion.action_payload?.model || "recommended model";
       this._showToast(`⚡ Pulling & activating Local Edge AI model (${targetModel})... This may take up to a minute if downloading.`);
     }
@@ -1149,6 +1154,11 @@ class OtisCompanionCard extends HTMLElement {
       if (data.action === "open_walkthrough_modal") {
         this._activeTab = "floorplan";
         this._floorplanModalOpen = true;
+      } else if (data.action === "open_url" && data.url) {
+        window.open(data.url, "_blank", "noopener,noreferrer");
+        this._showToast(data.message || `Opening ${data.url}...`);
+        this._dismissedIds.add(sId);
+        await this._fetchData();
       } else if (data.action === "open_failover_modal") {
         this._failoverModalOpen = true;
       } else if (data.action === "open_chat_prompt") {
@@ -2473,7 +2483,7 @@ class OtisCompanionCard extends HTMLElement {
       case "configure_agent":
         return "⚙️ Configure AI Failover";
       case "install_ollama_addon":
-        return "🧠 Install & Start Ollama Add-on";
+        return "🧠 Open in Add-on Store";
       case "switch_local_llm_model":
         return "⚡ Pull & Activate Model";
       default:
@@ -11622,14 +11632,15 @@ class OtisCompanionCard extends HTMLElement {
       btn.onclick = async (e) => {
         e.stopPropagation();
         const act = btn.getAttribute("data-ollama-action") || "status";
+        if (act === "install" || act === "start" || act === "stop" || act === "restart" || act === "uninstall") {
+          window.open("/hassio/addon/local_otis_ollama", "_blank", "noopener,noreferrer");
+          this._showToast("Opening Local Otis Ollama in Home Assistant Add-on Store...");
+          return;
+        }
         const modelSel = root.querySelector("#ollama-model-select");
         const modelVal = modelSel ? modelSel.value : undefined;
         try {
           const actionLabels = {
-            install: "📦 Installing & starting Otis Edge AI (Ollama) Supervisor Add-on...",
-            start: "▶️ Starting Otis Edge AI (Ollama) Add-on...",
-            stop: "⏹️ Stopping Otis Edge AI (Ollama) Add-on...",
-            restart: "🔄 Restarting Otis Edge AI (Ollama) Add-on...",
             status: "🩺 Refreshing Local Edge AI status & hardware telemetry...",
           };
           this._showToast(actionLabels[act] || `Executing ${act} on Local Edge AI...`);

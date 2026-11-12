@@ -7,6 +7,19 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-11-12
+
+### Changed
+- **HACS Default Catalog PR 13059 Compliance (Phase 2 & Phase 3)**:
+  - **Upload Size & Clip Count Caps**: Enforced an aggregate 3GB request size ceiling and a 5-clip limit in `OtisWalkthroughUploadView` across multipart streams to prevent unbounded uploads while supporting 4K walkthrough videos. Empty uploads return HTTP 400.
+  - **Floor Plan File Path Containment**: Confined all vector SVGs and generated layouts strictly to `/config/.storage/otis_ai/media/otis_floorplan.svg`. Removed user-supplied path parameters (`output_path`, `svg_path`) from floor plan services in `__init__.py`, `floorplan_parser.py`, and `services.yaml`.
+  - **Administrative Service Protection**: Registered administrative services using `async_register_admin_service` (with admin `call.context.user_id` verification fallback) for `apply_suggestion`, `register_federated_node`, `remove_federated_node`, `call_remote_service`, `broadcast_cluster_message`, `forward_remote_command`, `test_local_llm`, `benchmark_local_llm`, `pull_local_llm_model`, `manage_local_llm_addon`, `execute_tool_plan`, `set_user_rules`, `auto_commission_entities`, `generate_theme`, `apply_theme`, `delete_theme`, and all floor plan manipulation services.
+  - **Suggestion Execution Integrity**: Restricted `apply_suggestion` to only execute suggestion IDs generated and tracked by Otis, strictly deriving `action_type` and `action_payload` from tracked targets and rejecting arbitrary caller-supplied actions.
+  - **Local LLM Tool Plan Allowlist & Context Propagation**: Passed caller's `Context` through `async_chat_with_tools` and `async_execute_tool_plan` to `hass.services.async_call`. Enforced an explicit tool allowlist (`ALLOWED_TOOL_NAMES`) and domain allowlist (`ALLOWED_SERVICE_DOMAINS`), and removed the free-form `plan` service input parameter from `execute_tool_plan`.
+  - **Supervisor Token Add-on Decoupling**: Removed background `SUPERVISOR_TOKEN` API calls that installed, started, stopped, or uninstalled add-on containers. Replaced background add-on installation with a 1-click deep link to the Home Assistant Add-on Store (`/hassio/addon/local_otis_ollama`), while preserving local HTTP REST inference at `http://local-otis-ollama:11434`.
+  - **Admin Checks on Log Audits & Issue Reporting**: Enforced `request["hass_user"].is_admin` in `OtisIssueReporterView` for log diagnostics (`audit`) and issue reporting (`submit_issue` and `dismiss_issue`), returning HTTP 403 for non-admin callers.
+  - **Card Version Bump**: Synchronized Lovelace card version to `0.3.1` across manifest, card console log, and integration.
+
 ## [0.3.0] - 2026-11-08
 
 ### Major Release & Cumulative Summary (Since v0.2.0)

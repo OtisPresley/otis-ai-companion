@@ -80,7 +80,7 @@ update_spatial_map:
 
 generate_floorplan:
   name: Generate Floor Plan SVG
-  description: Synthesize an interactive vector SVG floor plan with multi-floor and outdoor views based on spatial adjacency and walkthrough inputs.
+  description: Synthesize an interactive vector SVG floor plan with multi-floor and outdoor views based on spatial adjacency and walkthrough inputs. Generated vector files are stored strictly in .storage/otis_ai/media/otis_floorplan.svg.
   fields:
     theme:
       name: Theme
@@ -92,12 +92,6 @@ generate_floorplan:
             - cyberpunk
             - blueprint
             - emerald
-    output_path:
-      name: Output File Path
-      description: Destination path relative to Home Assistant config (defaults to 'www/otis_floorplan.svg').
-      default: www/otis_floorplan.svg
-      selector:
-        text:
     video_path:
       name: Walkthrough Video Path
       description: Optional path to an uploaded walkthrough video file to parse room callouts.
@@ -107,7 +101,7 @@ generate_floorplan:
 
 update_floorplan_layout:
   name: Update Floor Plan Layout
-  description: Reposition device marker badges and adjust room boundary polygon coordinates directly on the vector SVG floor plan.
+  description: Reposition device marker badges and adjust room boundary polygon coordinates directly on the vector SVG floor plan in managed storage.
   fields:
     badges:
       name: Device Marker Badges
@@ -124,16 +118,10 @@ update_floorplan_layout:
       description: List of area/room IDs to delete and remove from the vector floor plan.
       selector:
         object:
-    svg_path:
-      name: Floor Plan SVG Path
-      description: Destination SVG path relative to Home Assistant config.
-      default: www/otis_floorplan.svg
-      selector:
-        text:
 
 pin_floorplan_entity:
   name: Pin Floor Plan Entity
-  description: Pin or reposition an entity badge on the 2D floorplan by room area or explicit coordinates.
+  description: Pin or reposition an entity badge on the 2D floorplan by room area or explicit coordinates in managed storage.
   fields:
     entity_id:
       name: Entity ID
@@ -160,16 +148,10 @@ pin_floorplan_entity:
         number:
           min: 0
           max: 2000
-    svg_path:
-      name: Floor Plan SVG Path
-      description: Destination SVG path relative to Home Assistant config.
-      default: www/otis_floorplan.svg
-      selector:
-        text:
 
 unpin_floorplan_entity:
   name: Unpin Floor Plan Entity
-  description: Remove an entity badge pin from the interactive floor plan.
+  description: Remove an entity badge pin from the interactive floor plan in managed storage.
   fields:
     entity_id:
       name: Entity ID
@@ -177,12 +159,6 @@ unpin_floorplan_entity:
       required: true
       selector:
         entity:
-    svg_path:
-      name: Floor Plan SVG Path
-      description: Destination SVG path relative to Home Assistant config.
-      default: www/otis_floorplan.svg
-      selector:
-        text:
 
 generate_theme:
   name: Generate Custom Theme
@@ -1124,21 +1100,15 @@ pull_local_llm_model:
 
 execute_tool_plan:
   name: Execute Local LLM Structured Tool Plan
-  description: Autonomous multi-step function calling execution using local Ollama or vLLM models with tool schema validation and fallback parsing.
+  description: Autonomous multi-step function calling execution using local Ollama or vLLM models with tool schema validation and authorized tool allowlist enforcement.
   fields:
     prompt:
       name: Prompt
       description: Natural language prompt or request for the local LLM to reason and execute actions autonomously.
-      required: false
+      required: true
       example: "Audit the house with sentinel and pin any unpinned living room lights to the floorplan."
       selector:
         text:
-    plan:
-      name: Tool Plan
-      description: Optional explicit list of tool call objects to execute against Home Assistant.
-      required: false
-      selector:
-        object:
     auto_execute:
       name: Auto Execute
       description: Automatically execute discovered or planned tool calls against Home Assistant services.
