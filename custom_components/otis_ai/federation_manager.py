@@ -627,12 +627,22 @@ class FederationManager:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        self.hass.states.async_set(SENSOR_FEDERATION_CLUSTER, cluster_status, attrs)
-        self.hass.states.async_set(
-            SENSOR_FEDERATED_NODES,
-            f"{health['online_nodes']}/{health['total_nodes']} Online",
-            attrs,
-        )
+        try:
+            from .sensor import async_update_entity_state
+            async_update_entity_state(self.hass, SENSOR_FEDERATION_CLUSTER, cluster_status, attrs)
+            async_update_entity_state(
+                self.hass,
+                SENSOR_FEDERATED_NODES,
+                f"{health['online_nodes']}/{health['total_nodes']} Online",
+                attrs,
+            )
+        except Exception:
+            self.hass.states.async_set(SENSOR_FEDERATION_CLUSTER, cluster_status, attrs)
+            self.hass.states.async_set(
+                SENSOR_FEDERATED_NODES,
+                f"{health['online_nodes']}/{health['total_nodes']} Online",
+                attrs,
+            )
 
     async def async_publish_telemetry(self) -> None:
         """Publish real-time telemetry (async interface)."""

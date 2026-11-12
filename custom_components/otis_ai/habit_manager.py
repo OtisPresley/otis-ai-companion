@@ -259,8 +259,8 @@ class BehavioralHabitManager:
         self._mined_habits_ts: float = 0.0
         self._cache_ttl = 900.0  # 15 minutes TTL
 
-    def _get_db_path(self) -> str | None:
-        """Resolve Home Assistant SQLite recorder database path."""
+    def _get_db_path_sync(self) -> str | None:
+        """Resolve Home Assistant SQLite recorder database path synchronously."""
         if hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
             try:
                 db_path = self.hass.config.path("home-assistant_v2.db")
@@ -269,6 +269,19 @@ class BehavioralHabitManager:
             except Exception as err:
                 _LOGGER.debug("Could not resolve recorder db path: %s", err)
         return None
+
+    def _get_db_path(self) -> str | None:
+        """Resolve Home Assistant SQLite recorder database path."""
+        return self._get_db_path_sync()
+
+    async def _async_get_db_path(self) -> str | None:
+        """Resolve Home Assistant SQLite recorder database path non-blockingly."""
+        if hasattr(self.hass, "async_add_executor_job"):
+            try:
+                return await self.hass.async_add_executor_job(self._get_db_path_sync)
+            except Exception:
+                return None
+        return self._get_db_path_sync()
 
     async def async_mine_habits(self, days: int = 14, min_occurrences: int = 3) -> list[dict[str, Any]]:
         """Asynchronously mine SQLite recorder trends for habit routines."""
@@ -279,7 +292,7 @@ class BehavioralHabitManager:
         ):
             return list(self._mined_habits_cache)
 
-        db_path = self._get_db_path()
+        db_path = await self._async_get_db_path()
         if not db_path:
             return []
 

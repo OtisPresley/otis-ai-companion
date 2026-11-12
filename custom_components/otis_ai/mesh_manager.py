@@ -494,7 +494,11 @@ class MeshManager:
                 "last_audit_ts": self._last_audit_ts,
                 "recent_healings": self._healing_history[:5],
             }
-            self.hass.states.async_set("sensor.otis_mesh_health", mesh_state, attrs)
+            try:
+                from .sensor import async_update_entity_state
+                async_update_entity_state(self.hass, "sensor.otis_mesh_health", mesh_state, attrs)
+            except Exception:
+                self.hass.states.async_set("sensor.otis_mesh_health", mesh_state, attrs)
 
     def get_healing_history(self, limit: int = 10) -> list[dict[str, Any]]:
         """Return recent mesh healing events."""

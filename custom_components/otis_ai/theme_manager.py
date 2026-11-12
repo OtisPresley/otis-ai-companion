@@ -9,6 +9,7 @@ from typing import Any
 import yaml
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -473,6 +474,31 @@ class ThemeManager:
     def __init__(self, hass: HomeAssistant) -> None:
         """Initialize the theme manager."""
         self.hass = hass
+        self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        self._themes_cache: dict[str, Any] | None = None
+
+    async def async_load_and_register_themes(self) -> dict[str, Any]:
+        """Load stored themes from .storage/otis_ai_themes and register them in Home Assistant frontend themes at runtime."""
+        stored = await self._store.async_load()
+        if not isinstance(stored, dict):
+            stored = {}
+        self._themes_cache = stored
+
+        frontend_themes = self.hass.data.setdefault("frontend_themes", {})
+        if isinstance(frontend_themes, dict):
+            for t_key, t_entry in stored.items():
+                if isinstance(t_entry, dict) and "ha_theme_dict" in t_entry:
+                    frontend_themes[t_key] = t_entry["ha_theme_dict"].get(t_key, t_entry["ha_theme_dict"])
+                elif isinstance(t_entry, dict) and "vars" in t_entry:
+                    mode_key = "dark" if t_entry.get("dark_mode", True) else "light"
+                    frontend_themes[t_key] = {
+                        **t_entry["vars"],
+                        "modes": {
+                            mode_key: t_entry["vars"],
+                        },
+                    }
+
+        return stored
 
     def _get_themes_directory(self) -> str:
         """Return the absolute path to /config/themes/."""
@@ -637,7 +663,7 @@ class ThemeManager:
         custom_vars: dict[str, Any] | None = None,
         apply_immediately: bool = False,
     ) -> dict[str, Any]:
-        """Synthesize theme definition, persist to /config/themes/otis_<slug>.yaml, and reload themes."""
+        """Synthesize theme definition, persist to .storage/otis_ai_themes, and register in frontend at runtime."""
         theme_data = self.synthesize_theme_from_prompt(
             prompt=prompt,
             name=name,
@@ -650,13 +676,7 @@ class ThemeManager:
 
         theme_key = theme_data["theme_key"]
         slug = theme_data["slug"]
-        themes_dir = self._get_themes_directory()
 
-        file_name = f"otis_{slug}.yaml"
-        full_path = os.path.join(themes_dir, file_name)
-
-        # Structure theme file content for Home Assistant include_dir_merge_named
-        # Top-level key is the theme identifier (e.g., otis_cyberpunk)
         mode_key = "dark" if theme_data.get("dark_mode", True) else "light"
         ha_theme_dict = {
             theme_key: {
@@ -675,27 +695,48 @@ class ThemeManager:
             + yaml.dump(ha_theme_dict, sort_keys=False, default_flow_style=False)
         )
 
-        def write_sync() -> None:
-            os.makedirs(themes_dir, exist_ok=True)
-            with open(full_path, "w", encoding="utf-8") as f:
-                f.write(yaml_content)
+        # Store in .storage/otis_ai_themes via Store
+        stored = await self._store.async_load()
+        if not isinstance(stored, dict):
+            stored = {}
+        stored[theme_key] = {
+            **theme_data,
+            "ha_theme_dict": ha_theme_dict,
+            "yaml": yaml_content,
+        }
+        await self._store.async_save(stored)
+        self._themes_cache = stored
+        _LOGGER.info("Persisted custom Otis theme %s to .storage/%s", theme_key, STORAGE_KEY)
 
-        await self._run_executor(write_sync)
-        _LOGGER.info("Saved custom Otis theme to %s", full_path)
+        # Register live in Home Assistant frontend themes
+        frontend_themes = self.hass.data.setdefault("frontend_themes", {})
+        if isinstance(frontend_themes, dict):
+            frontend_themes[theme_key] = ha_theme_dict[theme_key]
 
-        # Automatically call frontend.reload_themes service to load the new theme live
-        await self.async_reload_themes()
+        # Trigger frontend theme update event
+        try:
+            from homeassistant.components.frontend.helpers import async_update_theme_and_fire_event
+            async_update_theme_and_fire_event(self.hass)
+        except Exception:
+            self.hass.bus.async_fire("themes_updated")
 
         applied = False
         if apply_immediately:
             applied = await self.async_apply_theme(theme_key)
+
+        storage_path = (
+            self.hass.config.path(".storage", STORAGE_KEY)
+            if hasattr(self.hass, "config") and hasattr(self.hass.config, "path")
+            else f".storage/{STORAGE_KEY}"
+        )
 
         return {
             "success": True,
             "theme_key": theme_key,
             "title": theme_data["title"],
             "slug": slug,
-            "file_path": full_path,
+            "file_path": storage_path,
+            "storage_key": STORAGE_KEY,
             "preview": theme_data["preview"],
             "dark_mode": theme_data["dark_mode"],
             "applied": applied,
@@ -703,13 +744,15 @@ class ThemeManager:
         }
 
     async def async_reload_themes(self) -> bool:
-        """Call frontend.reload_themes service to update HA live theme registry."""
+        """Update live frontend theme registry with all saved Otis themes."""
         try:
-            if self.hass.services.has_service("frontend", "reload_themes"):
-                await self.hass.services.async_call("frontend", "reload_themes", blocking=True)
-                _LOGGER.info("Successfully called frontend.reload_themes")
-                return True
-            _LOGGER.debug("frontend.reload_themes service not found")
+            await self.async_load_and_register_themes()
+            try:
+                from homeassistant.components.frontend.helpers import async_update_theme_and_fire_event
+                async_update_theme_and_fire_event(self.hass)
+            except Exception:
+                self.hass.bus.async_fire("themes_updated")
+            return True
         except Exception as err:
             _LOGGER.warning("Could not reload frontend themes: %s", err)
         return False
@@ -721,7 +764,7 @@ class ThemeManager:
         user_id: str | None = None,
         all_users: bool = False,
     ) -> bool:
-        """Call frontend.set_theme service to apply theme immediately and update user profiles if requested."""
+        """Call frontend.set_theme service to apply theme immediately."""
         try:
             service_data: dict[str, Any] = {"name": theme_key}
             if mode:
@@ -729,97 +772,49 @@ class ThemeManager:
             if self.hass.services.has_service("frontend", "set_theme"):
                 await self.hass.services.async_call("frontend", "set_theme", service_data, blocking=True)
                 _LOGGER.info("Applied backend theme %s (mode=%s)", theme_key, mode)
-
-            # Persist theme to Home Assistant per-user profile storage
-            if user_id or all_users:
-                target_users = []
-                if all_users and hasattr(self.hass, "auth") and hasattr(self.hass.auth, "async_get_users"):
-                    users = await self.hass.auth.async_get_users()
-                    target_users = [u.id for u in users if getattr(u, "id", None)]
-                elif user_id:
-                    target_users = [user_id]
-
-                for uid in target_users:
-                    try:
-                        from homeassistant.helpers.storage import Store
-                        u_store = Store(self.hass, 1, f"frontend.user_data_{uid}")
-                        u_data = await u_store.async_load() or {}
-                        if not isinstance(u_data, dict):
-                            u_data = {}
-                        if "theme" not in u_data or not isinstance(u_data["theme"], dict):
-                            u_data["theme"] = {}
-                        u_data["theme"]["theme"] = theme_key
-                        await u_store.async_save(u_data)
-                        _LOGGER.debug("Updated user profile theme for user %s to %s", uid, theme_key)
-                    except Exception as err:
-                        _LOGGER.debug("Could not update profile theme for user %s: %s", uid, err)
-
             return True
         except Exception as err:
             _LOGGER.warning("Could not apply theme %s: %s", theme_key, err)
         return False
 
     async def async_list_otis_themes(self) -> list[dict[str, Any]]:
-        """Scan /config/themes/ for otis_*.yaml files and return discovered themes with color previews."""
-        themes_dir = self._get_themes_directory()
+        """List Otis themes from .storage/otis_ai_themes with color previews."""
+        stored = await self._store.async_load()
+        if not isinstance(stored, dict):
+            stored = {}
+        self._themes_cache = stored
 
-        def scan_sync() -> list[dict[str, Any]]:
-            if not os.path.exists(themes_dir):
-                return []
-            results = []
-            try:
-                for entry in sorted(os.listdir(themes_dir)):
-                    if entry.startswith("otis_") and entry.endswith((".yaml", ".yml")):
-                        fpath = os.path.join(themes_dir, entry)
-                        try:
-                            with open(fpath, "r", encoding="utf-8") as f:
-                                data = yaml.safe_load(f)
-                            if isinstance(data, dict):
-                                for key, vals in data.items():
-                                    if isinstance(vals, dict):
-                                        primary = vals.get("primary-color", "#38bdf8")
-                                        accent = vals.get("accent-color", "#818cf8")
-                                        bg = vals.get("primary-background-color", "#0b1120")
-                                        card_bg = vals.get("ha-card-background", "#1e293b")
-                                        text = vals.get("primary-text-color", "#ffffff")
-                                        slug = key[5:] if key.startswith("otis_") else key
-                                        title = " ".join([w.capitalize() for w in slug.split("_")])
-                                        results.append({
-                                            "theme_key": key,
-                                            "title": f"Otis {title}",
-                                            "slug": slug,
-                                            "file_name": entry,
-                                            "preview": {
-                                                "primary": primary,
-                                                "accent": accent,
-                                                "background": bg,
-                                                "card_bg": card_bg,
-                                                "text": text,
-                                            },
-                                            "border_radius": vals.get("ha-card-border-radius", "12px"),
-                                        })
-                        except Exception as e:
-                            _LOGGER.debug("Could not parse theme file %s: %s", entry, e)
-            except Exception as ex:
-                _LOGGER.debug("Could not list themes directory: %s", ex)
-            return results
-
-        return await self._run_executor(scan_sync)
+        results: list[dict[str, Any]] = []
+        for key, vals in stored.items():
+            if isinstance(vals, dict):
+                preview = vals.get("preview", {})
+                slug = vals.get("slug") or (key[5:] if key.startswith("otis_") else key)
+                title = vals.get("title") or f"Otis {' '.join([w.capitalize() for w in slug.split('_')])}"
+                results.append({
+                    "theme_key": key,
+                    "title": title,
+                    "slug": slug,
+                    "storage_key": STORAGE_KEY,
+                    "preview": preview,
+                    "border_radius": vals.get("vars", {}).get("ha-card-border-radius", "12px"),
+                })
+        return results
 
     async def async_delete_theme(self, theme_key: str) -> bool:
-        """Delete an otis theme YAML file and reload themes."""
-        slug = theme_key[5:] if theme_key.startswith("otis_") else theme_key
-        themes_dir = self._get_themes_directory()
-        file_name = f"otis_{slug}.yaml"
-        fpath = os.path.join(themes_dir, file_name)
-
-        def delete_sync() -> bool:
-            if os.path.exists(fpath):
-                os.remove(fpath)
-                return True
-            return False
-
-        deleted = await self._run_executor(delete_sync)
-        if deleted:
-            await self.async_reload_themes()
-        return deleted
+        """Delete an Otis theme from .storage/otis_ai_themes and deregister from frontend."""
+        stored = await self._store.async_load()
+        if not isinstance(stored, dict):
+            stored = {}
+        if theme_key in stored:
+            del stored[theme_key]
+            await self._store.async_save(stored)
+            self._themes_cache = stored
+            if "frontend_themes" in self.hass.data and isinstance(self.hass.data["frontend_themes"], dict):
+                self.hass.data["frontend_themes"].pop(theme_key, None)
+            try:
+                from homeassistant.components.frontend.helpers import async_update_theme_and_fire_event
+                async_update_theme_and_fire_event(self.hass)
+            except Exception:
+                self.hass.bus.async_fire("themes_updated")
+            return True
+        return False

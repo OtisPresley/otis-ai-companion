@@ -1,7 +1,22 @@
 """Constants for the Otis AI Companion integration."""
+try:
+    from homeassistant.const import Platform
+except ImportError:
+    from enum import StrEnum
+
+    class Platform(StrEnum):  # type: ignore[no-redef]
+        SENSOR = "sensor"
+        BINARY_SENSOR = "binary_sensor"
+        SWITCH = "switch"
 
 DOMAIN = "otis_ai"
-INTEGRATION_VERSION = "0.3.0"
+INTEGRATION_VERSION = "0.3.2"
+
+PLATFORMS: list[Platform] = [
+    Platform.SENSOR,
+    Platform.BINARY_SENSOR,
+    Platform.SWITCH,
+]
 
 # Configuration Keys
 CONF_CONVERSATION_AGENT = "conversation_agent"
@@ -14,6 +29,7 @@ CONF_LOCAL_LLM_MODEL = "local_llm_model"
 CONF_LOCAL_MAX_TOKENS = "local_max_tokens"
 CONF_LOCAL_VISION_MODEL = "local_vision_model"
 CONF_LOCAL_LLM_API_KEY = "local_llm_api_key"
+CONF_GEMINI_API_KEY = "gemini_api_key"
 CONF_CAMERA_STREAM_STRATEGY = "camera_stream_strategy"
 
 # Camera Stream Strategy Options (Agnostic stream classification)

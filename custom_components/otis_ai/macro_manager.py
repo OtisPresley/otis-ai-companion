@@ -527,7 +527,11 @@ class MacroManager:
                 attrs["preconditioning_macro_id"] = self._active_preconditioning.get("macro_id")
                 attrs["preconditioning_expires_at"] = self._active_preconditioning.get("expires_at")
                 attrs["action_summary"] = self._active_preconditioning.get("action_summary")
-            self.hass.states.async_set("sensor.otis_spatial_migration", state_val, attrs)
+            try:
+                from .sensor import async_update_entity_state
+                async_update_entity_state(self.hass, "sensor.otis_spatial_migration", state_val, attrs)
+            except Exception:
+                self.hass.states.async_set("sensor.otis_spatial_migration", state_val, attrs)
 
     def _start_watchdog(
         self, target_area: str, macro_id: str, timeout_seconds: float = 600.0
@@ -726,12 +730,7 @@ class MacroManager:
                     "target": {"entity_id": wn_eid},
                 })
             if not steps:
-                steps.append({
-                    "name": "Arm Master Bedroom Nighttime Mode",
-                    "domain": "homeassistant",
-                    "service": "turn_on",
-                    "target": {"entity_id": "input_boolean.master_night_prearm"},
-                })
+                return None
 
             macro_res = await self.async_execute_macro(
                 macro_name="Master Bedroom Pre-Arming",

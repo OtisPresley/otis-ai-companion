@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import glob
-import json
 import logging
 import os
 import re
@@ -546,14 +545,6 @@ class AutomationManager:
         # 3. If no local candidates or more depth needed, check /backup
         backup_dir = "/backup"
         pwd = None
-        try:
-            backup_store_path = self.hass.config.path(".storage", "backup")
-            if await self.hass.async_add_executor_job(os.path.exists, backup_store_path):
-                with open(backup_store_path, "r", encoding="utf-8", errors="ignore") as bf:
-                    b_data = json.load(bf)
-                pwd = b_data.get("data", {}).get("config", {}).get("create_backup", {}).get("password")
-        except Exception as p_err:
-            _LOGGER.debug("Could not read backup store password: %s", p_err)
 
         if not candidates and await self.hass.async_add_executor_job(os.path.isdir, backup_dir):
             tar_candidates = await self.hass.async_add_executor_job(

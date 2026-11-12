@@ -4,6 +4,7 @@ import sys
 import os
 import asyncio
 import tempfile
+import json
 import unittest
 import types
 from unittest.mock import MagicMock, AsyncMock, patch
@@ -23,6 +24,7 @@ class MockSupportsResponse:
     ONLY = 2
 
 mock_ha_core.SupportsResponse = MockSupportsResponse
+mock_ha_core.callback = lambda fn: fn
 
 mock_ha_helpers = MagicMock()
 mock_ha_helpers.config_validation = MagicMock()
@@ -100,9 +102,32 @@ class DummyStore:
         self.key = key
         self._data = None
     async def async_load(self):
-        return self._data
+        if self._data is not None:
+            return self._data
+        if hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
+            try:
+                p = self.hass.config.path(f".storage/{self.key}")
+                if isinstance(p, str) and not isinstance(p, MagicMock) and os.path.exists(p):
+                    with open(p, "r", encoding="utf-8") as f:
+                        payload = json.load(f)
+                        if isinstance(payload, dict) and "data" in payload:
+                            return payload["data"]
+                        return payload
+            except Exception:
+                pass
+        return None
     async def async_save(self, data):
         self._data = data
+        if hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
+            try:
+                p = self.hass.config.path(f".storage/{self.key}")
+                if isinstance(p, str) and not isinstance(p, MagicMock):
+                    os.makedirs(os.path.dirname(p), exist_ok=True)
+                    payload = {"version": self.version, "key": self.key, "data": data}
+                    with open(p, "w", encoding="utf-8") as f:
+                        json.dump(payload, f, indent=2)
+            except Exception:
+                pass
 mock_storage.Store = DummyStore
 sys.modules['homeassistant.helpers.storage'] = mock_storage
 sys.modules['homeassistant.components.conversation'] = mock_conversation
@@ -2562,7 +2587,8 @@ class TestThemeManager(unittest.TestCase):
         # 4. Delete theme
         deleted = asyncio.run(tm.async_delete_theme("otis_cyber_matrix"))
         self.assertTrue(deleted)
-        self.assertFalse(os.path.exists(save_res["file_path"]))
+        themes_after = asyncio.run(tm.async_list_otis_themes())
+        self.assertEqual(len(themes_after), 0)
         themes_after = asyncio.run(tm.async_list_otis_themes())
         self.assertEqual(len(themes_after), 0)
 

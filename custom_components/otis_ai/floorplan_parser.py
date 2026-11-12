@@ -17,6 +17,7 @@ import urllib.request
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
+from .const import CONF_GEMINI_API_KEY, DOMAIN
 from .spatial_manager import (
     build_area_lookup_map,
     classify_area_entities,
@@ -852,33 +853,31 @@ class FloorplanParser:
             await self._async_run_in_executor(_cleanup_manifest)
 
     def _get_gemini_credentials(self) -> tuple[str | None, str]:
-        """Retrieve Google Generative AI API key and model from Home Assistant config entries."""
-        model = "models/gemini-3.5-flash"
-        if not hasattr(self.hass, "config_entries"):
-            return None, model
-        try:
-            entries = self.hass.config_entries.async_entries("google_generative_ai_conversation")
-            for entry in entries:
-                api_key = entry.data.get("api_key")
-                if api_key:
-                    subentries = getattr(entry, "subentries", None)
-                    if hasattr(subentries, "values"):
-                        sub_iter = list(subentries.values())
-                    elif isinstance(subentries, (list, tuple)):
-                        sub_iter = list(subentries)
-                    else:
-                        sub_iter = []
-                    for sub in sub_iter:
-                        sub_data = getattr(sub, "data", None) or (sub.get("data") if isinstance(sub, dict) else {}) or {}
-                        sub_type = getattr(sub, "subentry_type", None) or (sub.get("subentry_type") if isinstance(sub, dict) else None)
-                        chat_model = sub_data.get("chat_model")
-                        if chat_model and sub_type in ("conversation", "stt", "ai_task_data", None):
-                            model = chat_model if str(chat_model).startswith("models/") else f"models/{chat_model}"
-                            break
-                    return str(api_key), model
-        except Exception as err:
-            _LOGGER.debug("Could not inspect google_generative_ai_conversation entry: %s", err)
-        return None, model
+        """Retrieve Gemini API key from Otis AI's own config entry or options."""
+        model = "models/gemini-2.5-flash"
+        api_key = None
+        if hasattr(self.hass, "data") and isinstance(self.hass.data, dict):
+            otis_data = self.hass.data.get(DOMAIN, {})
+            if isinstance(otis_data, dict):
+                for k, v in otis_data.items():
+                    if isinstance(v, dict) and "data" in v:
+                        entry_cfg = v.get("data", {})
+                        if isinstance(entry_cfg, dict):
+                            key = entry_cfg.get(CONF_GEMINI_API_KEY)
+                            if key:
+                                api_key = str(key)
+                                break
+        if not api_key and hasattr(self.hass, "config_entries") and hasattr(self.hass.config_entries, "async_entries"):
+            try:
+                otis_entries = self.hass.config_entries.async_entries(DOMAIN)
+                for entry in otis_entries:
+                    key = entry.options.get(CONF_GEMINI_API_KEY) or entry.data.get(CONF_GEMINI_API_KEY)
+                    if key:
+                        api_key = str(key)
+                        break
+            except Exception as err:
+                _LOGGER.debug("Could not inspect Otis config entries: %s", err)
+        return api_key, model
 
     async def async_extract_keyframes_from_video(
         self, video_path: str, output_dir: str, prefix: str = "frame", max_frames: int = 8
@@ -1584,8 +1583,9 @@ class FloorplanParser:
                         # Insert as new badge before closing of plan-ground or </svg>
                         domain = eid.split(".")[0] if "." in eid else "unknown"
                         icon_char = "💡" if domain == "light" else "🚶" if domain == "binary_sensor" else "🌡️" if domain == "climate" else "📺" if domain == "media_player" else "📹" if domain == "camera" else "⚡"
+                        eid_esc = html.escape(str(eid), quote=True)
                         badge_markup = (
-                            f'    <g class="entity-badge" data-entity-id="{eid}" transform="translate({bx}, {by})">\n'
+                            f'    <g class="entity-badge" data-entity-id="{eid_esc}" transform="translate({bx}, {by})">\n'
                             f'      <circle cx="0" cy="0" r="9" class="badge-circle" />\n'
                             f'      <text class="badge-icon">{icon_char}</text>\n'
                             f'    </g>\n'
@@ -1615,10 +1615,11 @@ class FloorplanParser:
                 if span:
                     s_idx, e_idx, header, inner = span
                     if points:
+                        points_esc = html.escape(str(points), quote=True)
                         if '<polygon' in inner:
-                            inner = re.sub(r'<polygon[^>]*class="room-polygon"[^>]*/>', f'<polygon points="{points}" class="room-polygon" />', inner)
+                            inner = re.sub(r'<polygon[^>]*class="room-polygon"[^>]*/>', f'<polygon points="{points_esc}" class="room-polygon" />', inner)
                         else:
-                            inner = re.sub(r'<rect[^>]*class="room-rect"[^>]*/>', f'<polygon points="{points}" class="room-polygon" />', inner)
+                            inner = re.sub(r'<rect[^>]*class="room-rect"[^>]*/>', f'<polygon points="{points_esc}" class="room-polygon" />', inner)
                     else:
                         def _rect_sub(rmatch: re.Match) -> str:
                             tag = rmatch.group(0)
@@ -1638,7 +1639,7 @@ class FloorplanParser:
                         display_name = rname.strip() if (rname and str(rname).strip()) else cleaned_txt
                         if not display_name:
                             display_name = rid.replace('_', ' ').title()
-                        return f'<text x="{round(rx + 14, 1)}" y="{round(ry + 22, 1)}" class="room-header">{display_name}</text>'
+                        return f'<text x="{round(rx + 14, 1)}" y="{round(ry + 22, 1)}" class="room-header">{html.escape(html.unescape(display_name))}</text>'
 
                     inner = re.sub(
                         r'<text\b[^>]*class="[^"]*(?:room-header|room-label)[^"]*"[^>]*>(.*?)</text>',
@@ -1655,7 +1656,7 @@ class FloorplanParser:
                         clean_pill = re.sub(r'^(?:\s*(?:x|y)="[^"]*"[>\s]*)+', '', orig_txt).strip()
                         py = round(ry + 22 + 18 + pill_idx * 16, 1)
                         pill_idx += 1
-                        return f'<text x="{round(rx + 16, 1)}" y="{py}" class="subzone-pill">{clean_pill}</text>'
+                        return f'<text x="{round(rx + 16, 1)}" y="{py}" class="subzone-pill">{html.escape(html.unescape(clean_pill))}</text>'
 
                     inner = re.sub(
                         r'<text\b[^>]*class="[^"]*subzone-pill[^"]*"[^>]*>(.*?)</text>',
@@ -2234,25 +2235,25 @@ class FloorplanParser:
         outdoor_accent: str,
     ) -> str:
         """Render a single 3D isometric room slab with facets, headers, and device badges."""
-        rid = room.get("id", "room")
-        rname = room.get("name", rid)
-        rzone = room.get("zone", "main")
-        pts_str = room.get("iso_points_str", "")
-        south_facet = room.get("iso_south_facet", "")
-        east_facet = room.get("iso_east_facet", "")
+        rid = html.escape(str(room.get("id", "room")), quote=True)
+        rname = html.escape(str(room.get("name", room.get("id", "room"))))
+        rzone = html.escape(str(room.get("zone", "main")), quote=True)
+        pts_str = html.escape(str(room.get("iso_points_str", "")), quote=True)
+        south_facet = html.escape(str(room.get("iso_south_facet", "")), quote=True)
+        east_facet = html.escape(str(room.get("iso_east_facet", "")), quote=True)
         center = room.get("iso_center", (650.0, 500.0))
         entities = room.get("entities", [])
         buckets = classify_area_entities(entities)
 
         box_classes = ["iso-floor-slab"]
-        if rzone == "outdoor":
+        if room.get("zone") == "outdoor":
             if room.get("is_water"):
                 box_classes.append("water-box")
             else:
                 box_classes.append("outdoor-box")
 
         sub_zones = room.get("sub_zones", [])
-        subzone_preview = sub_zones[0] if sub_zones else ""
+        subzone_preview = html.escape(str(sub_zones[0])) if sub_zones else ""
 
         room_parts = [
             f'      <g class="room-group iso-room-group" data-area-id="{rid}" data-zone="{rzone}" data-iso-cx="{center[0]}" data-iso-cy="{center[1]}">\n',
@@ -2290,7 +2291,8 @@ class FloorplanParser:
                 active_badges.append((domain_entities[0], icon_char))
 
         total_b = len(active_badges)
-        for idx, (eid, icon_char) in enumerate(active_badges[:4]):
+        for idx, (raw_eid, icon_char) in enumerate(active_badges[:4]):
+            eid = html.escape(str(raw_eid), quote=True)
             offset_x = (idx - (min(total_b, 4) - 1) / 2.0) * badge_spacing
             bx = round(center[0] + offset_x, 1)
             by = round(center[1] + 25.0, 1)
@@ -2683,8 +2685,10 @@ class FloorplanParser:
         elif room.get("parent_container") or room.get("open_right") or room.get("open_left"):
             box_classes.append("open-sub-box")
 
+        rid_esc = html.escape(str(rid), quote=True)
+        rzone_esc = html.escape(str(rzone), quote=True)
         parts = [
-            f'  <g class="room room-group" id="area-{rid}" data-area-id="{rid}" data-zone="{rzone}">\n',
+            f'  <g class="room room-group" id="area-{rid_esc}" data-area-id="{rid_esc}" data-zone="{rzone_esc}">\n',
             f'    <rect x="{x}" y="{y}" width="{w}" height="{h}" class="{" ".join(box_classes)}" />\n',
         ]
 
@@ -2882,8 +2886,9 @@ class FloorplanParser:
         ):
             domain_entities = buckets.get(domain_key, [])
             if domain_entities:
+                eid_esc = html.escape(str(domain_entities[0]), quote=True)
                 parts.append(
-                    f'    <g class="entity-badge" data-entity-id="{domain_entities[0]}" transform="translate({badge_start_x + badge_idx * badge_spacing}, {badge_y})">'
+                    f'    <g class="entity-badge" data-entity-id="{eid_esc}" transform="translate({badge_start_x + badge_idx * badge_spacing}, {badge_y})">'
                     f'<circle cx="0" cy="0" r="10" class="badge-circle" />'
                     f'<text class="badge-icon">{icon_char}</text></g>\n'
                 )

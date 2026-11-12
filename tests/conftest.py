@@ -22,6 +22,7 @@ class MockSupportsResponse:
 
 
 mock_ha_core.SupportsResponse = MockSupportsResponse
+mock_ha_core.callback = lambda fn: fn
 
 mock_ha_helpers = MagicMock()
 mock_ha_helpers.config_validation = MagicMock()
@@ -137,6 +138,50 @@ mock_aiohttp.ClientSession = MagicMock
 mock_aiohttp.ClientTimeout = MagicMock
 sys.modules.setdefault("aiohttp", mock_aiohttp)
 sys.modules.setdefault("aiohttp.web", mock_aiohttp.web)
+
+from enum import StrEnum
+
+class Platform(StrEnum):
+    SENSOR = "sensor"
+    BINARY_SENSOR = "binary_sensor"
+    SWITCH = "switch"
+
+mock_ha_const = MagicMock()
+mock_ha_const.Platform = Platform
+mock_ha_const.EVENT_HOMEASSISTANT_STARTED = "homeassistant_started"
+sys.modules.setdefault("homeassistant.const", mock_ha_const)
+
+class DummyEntity:
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    entity_id = ""
+    hass = None
+    def async_write_ha_state(self):
+        if self.hass and hasattr(self.hass, "states"):
+            val = getattr(self, "native_value", getattr(self, "is_on", "unknown"))
+            attrs = getattr(self, "extra_state_attributes", {})
+            self.hass.states.async_set(self.entity_id, val, attrs)
+    async def async_added_to_hass(self):
+        pass
+    async def async_will_remove_from_hass(self):
+        pass
+
+mock_sensor_comp = MagicMock()
+mock_sensor_comp.SensorEntity = DummyEntity
+sys.modules.setdefault("homeassistant.components.sensor", mock_sensor_comp)
+
+mock_binary_sensor_comp = MagicMock()
+mock_binary_sensor_comp.BinarySensorEntity = DummyEntity
+mock_binary_sensor_comp.BinarySensorDeviceClass = MagicMock()
+mock_binary_sensor_comp.BinarySensorDeviceClass.OCCUPANCY = "occupancy"
+sys.modules.setdefault("homeassistant.components.binary_sensor", mock_binary_sensor_comp)
+
+mock_switch_comp = MagicMock()
+mock_switch_comp.SwitchEntity = DummyEntity
+sys.modules.setdefault("homeassistant.components.switch", mock_switch_comp)
+
+mock_entity_platform = MagicMock()
+sys.modules.setdefault("homeassistant.helpers.entity_platform", mock_entity_platform)
 
 sys.modules.setdefault("homeassistant.util", MagicMock())
 sys.modules.setdefault("homeassistant.util.yaml", MagicMock())

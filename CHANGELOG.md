@@ -7,6 +7,23 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-11-12
+
+### Added
+- **HACS Default Catalog PR 13059 Full Compliance (Phases 4, 5, 6)**:
+  - **Lovelace Dashboards API Architecture (Item 7)**: Replaced raw file mutations of `.storage/lovelace_dashboards` and `.storage/lovelace.<id>` with Home Assistant's canonical `DashboardsCollection` (`async_create_item`, `async_update_item`) and `LovelaceStorage.async_save`, isolating modifications exclusively to Otis AI companion dashboards.
+  - **Theme Storage & Runtime Registration (Items 8 & 11)**: Eliminated disk writes into `/config/themes/otis_*.yaml`. Custom themes are persisted in `.storage/otis_ai_themes` via Home Assistant's `Store` API and registered directly into `hass.data["frontend_themes"]` on boot. Frontend card updates active user profile via official WebSocket `frontend/set_user_data` and system default via `frontend.set_theme`.
+  - **Data Isolation & Integration Boundaries (Item 9)**: Removed raw disk reads of `.storage/backup` and `.storage/core.config_entries`. Grounded backup telemetry directly in `hass.config_entries` and core backup manager. Removed borrowing Google Generative AI API keys from `google_generative_ai_conversation`; added dedicated `CONF_GEMINI_API_KEY` to Otis AI options flow and entry storage.
+  - **User-Triggered Area Commissioning (Item 10)**: Removed automated startup entity area remediations from `__init__.py`. Commissioning is strictly user-triggered with interactive card preview.
+  - **SVG XSS Sanitization & Prevention (Item 14)**: Added quote and HTML attribute sanitization with `html.escape(..., quote=True)` and double-unescaping guards (`html.escape(html.unescape(...))`) across all vector floor plan renderers in `floorplan_parser.py` (`_render_iso_room`, `_render_room_svg`, `update_floorplan_layout`), neutralizing XSS breakout attempts.
+  - **Entity Platform Architecture (Item 15)**: Added official platform modules `sensor.py`, `binary_sensor.py`, and `switch.py` backed by `Platform.SENSOR`, `Platform.BINARY_SENSOR`, and `Platform.SWITCH`, tied to the config entry with canonical `DeviceInfo`. Eliminated unbacked phantom states across `macro_manager`, `presence_manager`, `agent_orchestrator`, `mesh_manager`, `rules_manager`, `vision_manager`, `rag_manager`, `audio_manager`, `energy_manager`, and `federation_manager` via `async_update_entity_state`.
+  - **Automation & Script Presentation (Item 16)**: Formatted automation, script, and blueprint code blocks with copy-to-clipboard instructions for standard Home Assistant GUI YAML editor import, while retaining managed draft versions in `.storage/otis_ai_automations`.
+  - **Live Security Telemetry Checks (Item 17)**: Replaced canned disarmed text with real dynamic entity queries against active `alarm_control_panel` and `lock` platform states.
+  - **Zero Hardcoded Personal Entities (Item 18)**: Stripped hardcoded environment-specific entities (`climate.downstairs`, `climate.upstairs`, `lock.front_door`, `input_boolean.guest_mode`, specific room or brand names) from shipped prompts and fallback code, resolving entities dynamically from the Home Assistant registry.
+  - **Non-Blocking Async I/O (Item 19)**: Offloaded all remaining filesystem stat calls in `habit_manager.py` (recorder SQLite path check) and `dashboard_manager.py` (floor plan SVG mtime/existence) to executor jobs via `hass.async_add_executor_job`.
+  - **Event Bus Secret Scrubbing (Item 20)**: Implemented recursive `scrub_sensitive_rules` to scrub lock codes, guest PINs, credentials, and access tokens before firing `otis_ai_rules_updated` on the event bus, preventing sensitive secrets from entering recorder database logs.
+  - **Frontend Card Version Sync**: Updated `otis-companion-card.js` version to `0.3.2`.
+
 ## [0.3.1] - 2026-11-12
 
 ### Changed

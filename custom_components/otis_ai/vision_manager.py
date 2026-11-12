@@ -853,7 +853,11 @@ class VisionPresenceManager:
             "total_audits": len(self._camera_audit_history),
             "active_intruder_tracks_count": 0,
         }
-        self.hass.states.async_set("sensor.otis_perimeter_sentinel", "normal", attrs)
+        try:
+            from .sensor import async_update_entity_state
+            async_update_entity_state(self.hass, "sensor.otis_perimeter_sentinel", "normal", attrs)
+        except Exception:
+            self.hass.states.async_set("sensor.otis_perimeter_sentinel", "normal", attrs)
 
     def _update_perimeter_sentinel_sensor(self, latest_audit: dict[str, Any]) -> None:
         """Publish or update sensor.otis_perimeter_sentinel state with security status."""
@@ -900,7 +904,11 @@ class VisionPresenceManager:
         if self._last_voice_summary:
             attrs["last_voice_announcement"] = self._last_voice_summary
             attrs["last_voice_announcement_ts"] = self._last_voice_summary_ts
-        self.hass.states.async_set("sensor.otis_perimeter_sentinel", state_val, attrs)
+        try:
+            from .sensor import async_update_entity_state
+            async_update_entity_state(self.hass, "sensor.otis_perimeter_sentinel", state_val, attrs)
+        except Exception:
+            self.hass.states.async_set("sensor.otis_perimeter_sentinel", state_val, attrs)
 
     async def async_synthesize_visual_alert_summary(
         self,
@@ -1479,7 +1487,11 @@ class VisionPresenceManager:
             attrs["latest_trajectory"] = latest.get("trajectory", [])
             attrs["latest_summary"] = latest.get("summary")
 
-        self.hass.states.async_set("sensor.otis_intruder_tracks", state_val, attrs)
+        try:
+            from .sensor import async_update_entity_state
+            async_update_entity_state(self.hass, "sensor.otis_intruder_tracks", state_val, attrs)
+        except Exception:
+            self.hass.states.async_set("sensor.otis_intruder_tracks", state_val, attrs)
 
     def get_intruder_tracks(self) -> dict[str, Any]:
         """Return active and historical intruder spatial tracks."""
@@ -1693,22 +1705,28 @@ class VisionPresenceManager:
                 "sensors": r_info.get("sensors", {}),
             }
             if hasattr(self.hass, "states") and hasattr(self.hass.states, "async_set"):
-                self.hass.states.async_set(eid, state_val, attrs)
+                try:
+                    from .sensor import async_update_entity_state
+                    async_update_entity_state(self.hass, eid, state_val, attrs)
+                except Exception:
+                    self.hass.states.async_set(eid, state_val, attrs)
 
         # Publish global active household occupancy sensor
         if hasattr(self.hass, "states") and hasattr(self.hass.states, "async_set"):
-            self.hass.states.async_set(
-                "binary_sensor.otis_active_occupancy",
-                "on" if any_occupied else "off",
-                {
-                    "friendly_name": "Active Household Occupancy",
-                    "device_class": "occupancy",
-                    "occupied_count": res.get("occupied_count", 0),
-                    "likely_count": res.get("likely_count", 0),
-                    "occupied_areas": res.get("occupied_areas", []),
-                    "likely_areas": res.get("likely_areas", []),
-                },
-            )
+            occ_state = "on" if any_occupied else "off"
+            occ_attrs = {
+                "friendly_name": "Active Household Occupancy",
+                "device_class": "occupancy",
+                "occupied_count": res.get("occupied_count", 0),
+                "likely_count": res.get("likely_count", 0),
+                "occupied_areas": res.get("occupied_areas", []),
+                "likely_areas": res.get("likely_areas", []),
+            }
+            try:
+                from .sensor import async_update_entity_state
+                async_update_entity_state(self.hass, "binary_sensor.otis_active_occupancy", occ_state, occ_attrs)
+            except Exception:
+                self.hass.states.async_set("binary_sensor.otis_active_occupancy", occ_state, occ_attrs)
 
         # Process spatial presence transitions and migration pre-conditioning
         try:
@@ -1955,7 +1973,11 @@ class VisionPresenceManager:
                 "suggested_action": intent.get("suggested_action") if intent else "Monitoring room-to-room migration flows",
                 "recent_transitions": self.get_transition_history(5),
             }
-            self.hass.states.async_set("sensor.otis_spatial_migration", state_val, attrs)
+            try:
+                from .sensor import async_update_entity_state
+                async_update_entity_state(self.hass, "sensor.otis_spatial_migration", state_val, attrs)
+            except Exception:
+                self.hass.states.async_set("sensor.otis_spatial_migration", state_val, attrs)
 
         # Trigger soft pre-conditioning actions in macro_manager
         if getattr(self, "macro_manager", None):

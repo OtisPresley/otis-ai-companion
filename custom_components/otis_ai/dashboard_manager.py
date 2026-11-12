@@ -9,6 +9,7 @@ import re
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers import (
     area_registry as ar,
     device_registry as dr,
@@ -130,6 +131,20 @@ class DashboardManager:
                 pass
         return None
 
+    def _get_dashboards_collection(self) -> Any:
+        """Retrieve Home Assistant's DashboardsCollection from websocket_api handlers or lovelace data."""
+        if hasattr(self.hass, "data") and isinstance(self.hass.data, dict):
+            ws_api = self.hass.data.get("websocket_api")
+            if isinstance(ws_api, dict):
+                for cmd in ("lovelace/dashboards/list", "lovelace/dashboards/create", "lovelace/dashboards/update"):
+                    handler = ws_api.get(cmd)
+                    if isinstance(handler, tuple) and handler:
+                        ws_obj = getattr(handler[0], "__self__", None)
+                        storage_col = getattr(ws_obj, "storage_collection", None)
+                        if storage_col is not None:
+                            return storage_col
+        return None
+
     def _dashboard_file_exists(self, dash_id: str) -> bool:
         """Check if dashboard storage file exists on disk."""
         storage_dir = self._storage_dir()
@@ -139,6 +154,18 @@ class DashboardManager:
 
     async def _async_dashboard_file_exists(self, dash_id: str) -> bool:
         """Check if dashboard storage file exists on disk non-blockingly."""
+        # 1. Check in memory lovelace data
+        if hasattr(self.hass, "data") and isinstance(self.hass.data, dict):
+            ll_data = self.hass.data.get("lovelace")
+            if ll_data is not None and hasattr(ll_data, "dashboards") and isinstance(ll_data.dashboards, dict):
+                if dash_id in ll_data.dashboards or dash_id.replace("_", "-") in ll_data.dashboards:
+                    return True
+        # 2. Check dashboards collection
+        storage_col = self._get_dashboards_collection()
+        if storage_col is not None and hasattr(storage_col, "data") and isinstance(storage_col.data, dict):
+            for k, v in storage_col.data.items():
+                if k == dash_id or (isinstance(v, dict) and (v.get("id") == dash_id or v.get("url_path") == dash_id.replace("_", "-"))):
+                    return True
         if hasattr(self.hass, "async_add_executor_job"):
             try:
                 return await self.hass.async_add_executor_job(self._dashboard_file_exists, dash_id)
@@ -146,50 +173,63 @@ class DashboardManager:
                 return False
         return self._dashboard_file_exists(dash_id)
 
-    def _inspect_lovelace_resources_sync(self) -> set[str]:
-        """Read .storage/lovelace_resources synchronously in executor to detect installed cards."""
+    async def _async_inspect_lovelace_resources(self) -> set[str]:
+        """Read Lovelace resources via Home Assistant collection or Store to detect installed cards."""
         detected = set()
-        storage_dir = self._storage_dir()
-        if not storage_dir:
-            return detected
-        res_file = os.path.join(storage_dir, "lovelace_resources")
-        if not os.path.isfile(res_file):
-            return detected
-        try:
-            with open(res_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            items = data.get("data", {}).get("items", []) if isinstance(data, dict) else []
+        items = []
+        if hasattr(self.hass, "data") and isinstance(self.hass.data, dict):
+            ll_data = self.hass.data.get("lovelace")
+            if ll_data is not None and hasattr(ll_data, "resources"):
+                res_col = getattr(ll_data, "resources", None)
+                if res_col is not None:
+                    if hasattr(res_col, "async_items"):
+                        try:
+                            items = await res_col.async_items()
+                        except Exception:
+                            items = getattr(res_col, "data", [])
+                    else:
+                        items = getattr(res_col, "data", [])
+        if not items:
+            try:
+                store = Store(self.hass, 1, "lovelace_resources")
+                data = await store.async_load()
+                if isinstance(data, dict):
+                    items = data.get("items", []) or data.get("data", {}).get("items", [])
+            except Exception as err:
+                _LOGGER.debug("Could not inspect lovelace resources store: %s", err)
+
+        if isinstance(items, (list, tuple)):
             for item in items:
-                url = str(item.get("url", "")).lower()
-                if "mini-media-player" in url:
-                    detected.add("custom:mini-media-player")
-                if "universal-remote-card" in url:
-                    detected.add("custom:universal-remote-card")
-                if "mushroom" in url:
-                    detected.add("custom:mushroom-media-player-card")
-                if "bubble-card" in url:
-                    detected.add("custom:bubble-card")
-                if "snmp-network-manager-card" in url:
-                    detected.add("custom:snmp-network-manager-card")
-                if "snmp-switch-manager-card" in url:
-                    detected.add("custom:snmp-switch-manager-card")
-                if "advanced-camera-card" in url:
-                    detected.add("custom:advanced-camera-card")
-                if "xiaomi-vacuum-map-card" in url:
-                    detected.add("custom:xiaomi-vacuum-map-card")
-        except Exception as err:
-            _LOGGER.debug("Could not read lovelace_resources: %s", err)
+                if isinstance(item, dict):
+                    url = str(item.get("url", "")).lower()
+                    if "mini-media-player" in url:
+                        detected.add("custom:mini-media-player")
+                    if "universal-remote-card" in url:
+                        detected.add("custom:universal-remote-card")
+                    if "mushroom" in url:
+                        detected.add("custom:mushroom-media-player-card")
+                    if "bubble-card" in url:
+                        detected.add("custom:bubble-card")
+                    if "snmp-network-manager-card" in url:
+                        detected.add("custom:snmp-network-manager-card")
+                    if "snmp-switch-manager-card" in url:
+                        detected.add("custom:snmp-switch-manager-card")
+                    if "advanced-camera-card" in url:
+                        detected.add("custom:advanced-camera-card")
+                    if "xiaomi-vacuum-map-card" in url:
+                        detected.add("custom:xiaomi-vacuum-map-card")
         return detected
+
+    def _inspect_lovelace_resources_sync(self) -> set[str]:
+        """Fallback to empty set if async inspection was skipped."""
+        return set()
 
     async def async_get_available_custom_cards(self, active_integrations: list[Any] | None = None) -> set[str]:
         """Detect custom Lovelace cards registered in Lovelace resources or bundled with active integrations."""
         cards: set[str] = set()
-        if hasattr(self.hass, "async_add_executor_job"):
-            try:
-                cards = await self.hass.async_add_executor_job(self._inspect_lovelace_resources_sync)
-            except Exception:
-                pass
-        else:
+        try:
+            cards = await self._async_inspect_lovelace_resources()
+        except Exception:
             cards = self._inspect_lovelace_resources_sync()
 
         # Also detect cards bundled with active integrations
@@ -222,8 +262,9 @@ class DashboardManager:
         installed_cards = await self.async_get_available_custom_cards(
             capability_map.get("integrations", []) if capability_map else None
         )
+        svg_stat = await self._async_get_floorplan_svg_stat()
         dashboard_config = self._build_otis_companion_dashboard_config(
-            capability_map, installed_cards=installed_cards
+            capability_map, installed_cards=installed_cards, svg_stat=svg_stat
         )
         file_exists = await self._async_dashboard_file_exists(OTIS_DASHBOARD_ID)
         overwrite = True if (force_regenerate or capability_map or not file_exists) else False
@@ -250,8 +291,9 @@ class DashboardManager:
         installed_cards = await self.async_get_available_custom_cards(
             capability_map.get("integrations", []) if capability_map else None
         )
+        svg_stat = await self._async_get_floorplan_svg_stat()
         dashboard_config = self._build_user_command_center_dashboard_config(
-            capability_map, installed_cards=installed_cards
+            capability_map, installed_cards=installed_cards, svg_stat=svg_stat
         )
         file_exists = await self._async_dashboard_file_exists(COMMAND_CENTER_DASHBOARD_ID)
         overwrite = True if (force_regenerate or capability_map or not file_exists) else False
@@ -436,7 +478,10 @@ class DashboardManager:
         return view
 
     def _build_user_command_center_dashboard_config(
-        self, capability_map: dict[str, Any] | None = None, installed_cards: set[str] | None = None
+        self,
+        capability_map: dict[str, Any] | None = None,
+        installed_cards: set[str] | None = None,
+        svg_stat: tuple[bool, int] | None = None,
     ) -> dict[str, Any]:
         """Build the Lovelace config for the Non-Admin User Command Center dashboard."""
         areas_map = capability_map.get("areas", {}) if capability_map else {}
@@ -808,13 +853,19 @@ class DashboardManager:
             capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, nav_style=nav_style
         )
 
+        if svg_stat is None:
+            svg_stat = self._get_floorplan_svg_stat_sync()
+        floorplan_cards = self._build_floorplan_view_cards(
+            capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, svg_stat=svg_stat
+        )
+
         views: list[dict[str, Any]] = [
             home_view,
             self._build_studio_view(
                 "Floor Plan",
                 "floorplan",
                 "mdi:floor-plan",
-                self._build_floorplan_view_cards(capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH),
+                floorplan_cards,
                 layout_style=layout_style,
                 is_panel=True,
             ),
@@ -868,7 +919,10 @@ class DashboardManager:
         }
 
     def _build_otis_companion_dashboard_config(
-        self, capability_map: dict[str, Any] | None = None, installed_cards: set[str] | None = None
+        self,
+        capability_map: dict[str, Any] | None = None,
+        installed_cards: set[str] | None = None,
+        svg_stat: tuple[bool, int] | None = None,
     ) -> dict[str, Any]:
         """Build the Lovelace config for the Admin-only Otis AI Companion Command Center with Hub-and-Spoke subviews."""
         user_rules = self._get_user_rules()
@@ -944,8 +998,10 @@ class DashboardManager:
         )
 
         # 4. Floor Plan Subview
+        if svg_stat is None:
+            svg_stat = self._get_floorplan_svg_stat_sync()
         floorplan_cards = self._build_floorplan_view_cards(
-            capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH
+            capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH, svg_stat=svg_stat
         )
         views.append(
             self._build_studio_view(
@@ -1058,6 +1114,31 @@ class DashboardManager:
             "views": views,
         }
 
+    async def _async_merge_dashboard_config_preserving_user_views(
+        self,
+        dash_id: str,
+        new_config: dict[str, Any],
+        force_regenerate: bool = False,
+    ) -> dict[str, Any]:
+        """Preserve user-customized Home view (view 0) and custom user subviews across updates via executor."""
+        storage_dir = self._storage_dir()
+        if not storage_dir:
+            return new_config
+        if hasattr(self.hass, "async_add_executor_job"):
+            try:
+                return await self.hass.async_add_executor_job(
+                    self._merge_dashboard_config_preserving_user_views,
+                    storage_dir,
+                    dash_id,
+                    new_config,
+                    force_regenerate,
+                )
+            except Exception:
+                pass
+        return self._merge_dashboard_config_preserving_user_views(
+            storage_dir, dash_id, new_config, force_regenerate
+        )
+
     def _merge_dashboard_config_preserving_user_views(
         self,
         storage_dir: str | None,
@@ -1078,7 +1159,7 @@ class DashboardManager:
                 if content:
                     existing_data = json.loads(content)
                     if isinstance(existing_data, dict):
-                        existing_cfg = existing_data.get("data", {}).get("config")
+                        existing_cfg = existing_data.get("data", {}).get("config") or existing_data.get("config")
                         if isinstance(existing_cfg, dict):
                             existing_views = list(existing_cfg.get("views", []))
             except Exception as err:
@@ -1093,7 +1174,7 @@ class DashboardManager:
                         admin_content = af.read().strip()
                     if admin_content:
                         admin_data = json.loads(admin_content)
-                        admin_cfg = admin_data.get("data", {}).get("config", {})
+                        admin_cfg = admin_data.get("data", {}).get("config", {}) or admin_data.get("config", {})
                         admin_views = admin_cfg.get("views", [])
                         admin_views_by_path = {
                             v.get("path"): v
@@ -1329,50 +1410,72 @@ class DashboardManager:
         force_regenerate: bool = False,
     ) -> dict[str, Any]:
         """Persist dashboard metadata in lovelace_dashboards, write lovelace.<id>, and register live HA panel."""
-        storage_dir = self._storage_dir()
         dash_id = item["id"]
         url_path = item["url_path"]
 
-        # Preserve user's card settings in view 0 before saving (run in executor to avoid blocking event loop)
-        merged_dashboard_config = dashboard_config
-        if storage_dir:
-            if hasattr(self.hass, "async_add_executor_job"):
-                res = self.hass.async_add_executor_job(
-                    self._merge_dashboard_config_preserving_user_views,
-                    storage_dir,
-                    dash_id,
-                    dashboard_config,
-                    force_regenerate,
-                )
-                if hasattr(res, "__await__"):
-                    merged_dashboard_config = await res
-                elif isinstance(res, dict):
-                    merged_dashboard_config = res
+        # Preserve user's card settings in view 0 before saving
+        merged_dashboard_config = await self._async_merge_dashboard_config_preserving_user_views(
+            dash_id, dashboard_config, force_regenerate
+        )
+
+        # 1. Update or create dashboard in official DashboardsCollection
+        storage_col = self._get_dashboards_collection()
+        if storage_col is not None:
+            try:
+                col_data = getattr(storage_col, "data", {})
+                existing_key = None
+                if isinstance(col_data, dict):
+                    for k, v in col_data.items():
+                        if k == dash_id or (isinstance(v, dict) and (v.get("id") == dash_id or v.get("url_path") == url_path)):
+                            existing_key = k
+                            break
+                if existing_key is not None:
+                    if hasattr(storage_col, "async_update_item"):
+                        await storage_col.async_update_item(existing_key, {
+                            "title": item.get("title", url_path),
+                            "icon": item.get("icon", "mdi:view-dashboard"),
+                            "require_admin": bool(item.get("require_admin", True)),
+                            "show_in_sidebar": bool(item.get("show_in_sidebar", True)),
+                        })
+                    elif hasattr(storage_col, "data") and isinstance(storage_col.data, dict):
+                        storage_col.data[existing_key] = {**storage_col.data[existing_key], **item}
+                        if hasattr(storage_col, "_async_schedule_save"):
+                            storage_col._async_schedule_save()
                 else:
-                    merged_dashboard_config = self._merge_dashboard_config_preserving_user_views(
-                        storage_dir, dash_id, dashboard_config, force_regenerate
-                    )
-            else:
-                merged_dashboard_config = self._merge_dashboard_config_preserving_user_views(
-                    storage_dir, dash_id, dashboard_config, force_regenerate
-                )
+                    if hasattr(storage_col, "async_create_item"):
+                        await storage_col.async_create_item({
+                            "url_path": url_path,
+                            "title": item.get("title", url_path),
+                            "icon": item.get("icon", "mdi:view-dashboard"),
+                            "require_admin": bool(item.get("require_admin", True)),
+                            "show_in_sidebar": bool(item.get("show_in_sidebar", True)),
+                            "mode": "storage",
+                        })
+                    elif hasattr(storage_col, "data") and isinstance(storage_col.data, dict):
+                        storage_col.data[dash_id] = dict(item)
+                        if hasattr(storage_col, "_async_schedule_save"):
+                            storage_col._async_schedule_save()
+            except Exception as col_err:
+                _LOGGER.debug("DashboardsCollection update handled: %s", col_err)
+        else:
+            # Fallback for mock/test environments without websocket DashboardsCollection: persist to lovelace_dashboards via Store
+            try:
+                dash_store = Store(self.hass, 1, "lovelace_dashboards")
+                d_data = await dash_store.async_load()
+                if not isinstance(d_data, dict):
+                    d_data = {"items": []}
+                items = d_data.setdefault("items", [])
+                ex_idx = next((i for i, d in enumerate(items) if d.get("id") == item["id"] or d.get("url_path") == item["url_path"]), None)
+                if ex_idx is not None:
+                    items[ex_idx] = {**items[ex_idx], **item}
+                else:
+                    items.append(dict(item))
+                await dash_store.async_save(d_data)
+            except Exception as store_err:
+                _LOGGER.debug("Fallback Store save for lovelace_dashboards handled: %s", store_err)
 
-        if storage_dir:
-            res = self.hass.async_add_executor_job(
-                self._write_dashboard_storage_sync,
-                storage_dir,
-                item,
-                merged_dashboard_config,
-                overwrite_config,
-            )
-            if hasattr(res, "__await__"):
-                await res
-            else:
-                self._write_dashboard_storage_sync(
-                    storage_dir, item, merged_dashboard_config, overwrite_config
-                )
-
-        # Register live in Home Assistant's lovelace runtime and frontend panel if running
+        # 2. Save dashboard configuration via LovelaceStorage or Store
+        saved_via_lovelace = False
         try:
             from homeassistant.components import frontend
             from homeassistant.components.lovelace import dashboard as ll_dashboard
@@ -1407,25 +1510,13 @@ class DashboardManager:
                     if is_changed:
                         try:
                             await lovelace_data.dashboards[url_path].async_save(merged_dashboard_config)
+                            saved_via_lovelace = True
                         except Exception as save_err:
                             _LOGGER.debug("LovelaceStorage.async_save skipped: %s", save_err)
                         try:
                             self.hass.bus.async_fire("lovelace_updated", {"url_path": url_path})
                         except Exception:
                             pass
-
-            # Sync with Home Assistant's in-memory DashboardsCollection so UI Settings > Dashboards can edit/delete
-            if hasattr(self.hass, "data") and isinstance(self.hass.data, dict):
-                ws_api = self.hass.data.get("websocket_api")
-                if isinstance(ws_api, dict):
-                    list_handler = ws_api.get("lovelace/dashboards/list")
-                    if isinstance(list_handler, tuple) and list_handler:
-                        ws_obj = getattr(list_handler[0], "__self__", None)
-                        storage_col = getattr(ws_obj, "storage_collection", None)
-                        if storage_col is not None and hasattr(storage_col, "data") and isinstance(storage_col.data, dict):
-                            storage_col.data[dash_id] = dict(item)
-                            if hasattr(storage_col, "_async_schedule_save"):
-                                storage_col._async_schedule_save()
 
             if hasattr(frontend, "async_register_built_in_panel"):
                 frontend.async_register_built_in_panel(
@@ -1440,7 +1531,15 @@ class DashboardManager:
                     update=True,
                 )
         except Exception as err:
-            _LOGGER.debug("Live Lovelace panel registration handled via storage fallback: %s", err)
+            _LOGGER.debug("Live Lovelace panel registration handled: %s", err)
+
+        if not saved_via_lovelace and overwrite_config:
+            # Direct Store save fallback when Lovelace component is not in memory
+            try:
+                cfg_store = Store(self.hass, 1, f"lovelace.{dash_id}")
+                await cfg_store.async_save({"config": merged_dashboard_config})
+            except Exception as store_err:
+                _LOGGER.debug("Fallback Store save for lovelace.%s: %s", dash_id, store_err)
 
         return {
             "success": True,
@@ -1450,121 +1549,50 @@ class DashboardManager:
             "require_admin": bool(item.get("require_admin", True)),
         }
 
-    def _write_dashboard_storage_sync(
-        self,
-        storage_dir: str,
-        item: dict[str, Any],
-        dashboard_config: dict[str, Any],
-        overwrite_config: bool,
-    ) -> None:
-        """Synchronously update .storage/lovelace_dashboards and .storage/lovelace.<id>."""
-        os.makedirs(storage_dir, exist_ok=True)
-        dashboards_file = os.path.join(storage_dir, "lovelace_dashboards")
-
-        dash_store: dict[str, Any] = {
-            "version": 1,
-            "minor_version": 1,
-            "key": "lovelace_dashboards",
-            "data": {"items": []},
-        }
-        if os.path.exists(dashboards_file):
-            try:
-                with open(dashboards_file, "r", encoding="utf-8") as f:
-                    content = f.read().strip()
-                if content:
-                    loaded = json.loads(content)
-                    if isinstance(loaded, dict) and isinstance(loaded.get("data"), dict):
-                        dash_store = loaded
-            except Exception as err:
-                _LOGGER.warning("Could not parse lovelace_dashboards: %s", err)
-
-        items: list[dict[str, Any]] = dash_store.setdefault("data", {}).setdefault("items", [])
-        existing_idx = next(
-            (
-                i
-                for i, d in enumerate(items)
-                if d.get("id") == item["id"] or d.get("url_path") == item["url_path"]
-            ),
-            None,
-        )
-        if existing_idx is not None:
-            # Ensure require_admin and metadata stay enforced for Otis AI dashboard
-            items[existing_idx] = {**items[existing_idx], **item}
-        else:
-            items.append(dict(item))
-
-        with open(dashboards_file, "w", encoding="utf-8") as f:
-            json.dump(dash_store, f, indent=2)
-
-        config_file = os.path.join(storage_dir, f"lovelace.{item['id']}")
-        merged_config = self._merge_dashboard_config_preserving_user_views(
-            storage_dir, item["id"], dashboard_config
-        )
-        if overwrite_config or not os.path.exists(config_file):
-            config_payload = {
-                "version": 1,
-                "minor_version": 1,
-                "key": f"lovelace.{item['id']}",
-                "data": {"config": merged_config},
-            }
-            with open(config_file, "w", encoding="utf-8") as f:
-                json.dump(config_payload, f, indent=2)
-
     async def async_analyze_dashboard_gaps(
         self, capability_map: dict[str, Any]
     ) -> dict[str, Any]:
-        """Inspect existing Lovelace dashboards and identify control gaps for professional dashboards."""
-        storage_dir = self._storage_dir()
-        if not storage_dir:
-            return {"existing_dashboards": [], "referenced_entities": set(), "proposals": []}
-
-        res = self.hass.async_add_executor_job(
-            self._analyze_dashboard_gaps_sync, storage_dir, capability_map
-        )
-        if hasattr(res, "__await__"):
-            out = await res
-            if isinstance(out, dict):
-                return out
-        return self._analyze_dashboard_gaps_sync(storage_dir, capability_map)
-
-    def _analyze_dashboard_gaps_sync(
-        self, storage_dir: str, capability_map: dict[str, Any]
-    ) -> dict[str, Any]:
-        """Synchronously inspect .storage/lovelace* files to detect control gaps."""
-        dashboards_file = os.path.join(storage_dir, "lovelace_dashboards")
+        """Inspect existing Lovelace dashboards via collection and memory to identify control gaps."""
         existing_dashboards: list[dict[str, Any]] = []
-        if os.path.exists(dashboards_file):
+
+        storage_col = self._get_dashboards_collection()
+        if storage_col is not None and hasattr(storage_col, "data") and isinstance(storage_col.data, dict):
+            for k, v in storage_col.data.items():
+                if isinstance(v, dict):
+                    existing_dashboards.append(v)
+
+        if hasattr(self.hass, "data") and isinstance(self.hass.data, dict):
+            ll_data = self.hass.data.get("lovelace")
+            if ll_data is not None and hasattr(ll_data, "dashboards") and isinstance(ll_data.dashboards, dict):
+                for dash_obj in ll_data.dashboards.values():
+                    cfg = getattr(dash_obj, "config", None)
+                    if isinstance(cfg, dict) and cfg not in existing_dashboards:
+                        existing_dashboards.append(cfg)
+
+        if not existing_dashboards:
             try:
-                with open(dashboards_file, "r", encoding="utf-8") as f:
-                    content = f.read().strip()
-                if content:
-                    data = json.loads(content)
-                    existing_dashboards = data.get("data", {}).get("items", [])
+                dash_store = Store(self.hass, 1, "lovelace_dashboards")
+                data = await dash_store.async_load()
+                if isinstance(data, dict):
+                    items = data.get("items") or data.get("data", {}).get("items", [])
+                    if isinstance(items, list):
+                        existing_dashboards = items
             except Exception:
-                existing_dashboards = []
+                pass
 
         existing_url_paths = {d.get("url_path", "") for d in existing_dashboards}
         existing_ids = {d.get("id", "") for d in existing_dashboards}
         existing_titles_lower = {str(d.get("title", "")).lower() for d in existing_dashboards}
 
-        # Collect all entity_ids referenced across all existing lovelace.* files
         referenced_entities: set[str] = set()
-        try:
-            for fname in os.listdir(storage_dir):
-                if not fname.startswith("lovelace.") or fname.endswith(".bak"):
-                    continue
-                fpath = os.path.join(storage_dir, fname)
-                if not os.path.isfile(fpath):
-                    continue
-                try:
-                    with open(fpath, "r", encoding="utf-8") as f:
-                        raw = f.read()
-                    for match in re.findall(r"\b[a-z_]+\.[a-z0-9_]+\b", raw):
-                        referenced_entities.add(match)
-                except Exception:
-                    continue
-        except Exception:
-            pass
+        if hasattr(self.hass, "data") and isinstance(self.hass.data, dict):
+            ll_data = self.hass.data.get("lovelace")
+            if ll_data is not None and hasattr(ll_data, "dashboards") and isinstance(ll_data.dashboards, dict):
+                for dash_obj in ll_data.dashboards.values():
+                    d_data = getattr(dash_obj, "_data", None)
+                    if isinstance(d_data, dict):
+                        for match in re.findall(r"\b[a-z_]+\.[a-z0-9_]+\b", json.dumps(d_data)):
+                            referenced_entities.add(match)
 
         proposals: list[dict[str, Any]] = []
         entities = capability_map.get("entities", [])
@@ -2061,21 +2089,38 @@ class DashboardManager:
 
         return selected[:max_controls]
 
+    def _get_floorplan_svg_stat_sync(self) -> tuple[bool, int]:
+        """Check if floorplan SVG exists on disk and return mtime synchronously."""
+        if hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
+            try:
+                svg_path = self.hass.config.path(f".storage/{DOMAIN}/media/otis_floorplan.svg")
+                if os.path.exists(svg_path):
+                    return True, int(os.path.getmtime(svg_path))
+            except Exception:
+                return True, 1
+        return False, 0
+
+    async def _async_get_floorplan_svg_stat(self) -> tuple[bool, int]:
+        """Check if floorplan SVG exists on disk non-blockingly via executor."""
+        if hasattr(self.hass, "async_add_executor_job"):
+            try:
+                return await self.hass.async_add_executor_job(self._get_floorplan_svg_stat_sync)
+            except Exception:
+                return False, 0
+        return self._get_floorplan_svg_stat_sync()
+
     def _build_floorplan_view_cards(
-        self, capability_map: dict[str, Any] | None, dashboard_url_path: str = "otis-ai"
+        self,
+        capability_map: dict[str, Any] | None,
+        dashboard_url_path: str = "otis-ai",
+        svg_stat: tuple[bool, int] | None = None,
     ) -> list[dict[str, Any]]:
         """Build interactive picture-elements view cards for Floor Plan subview."""
         # 1. Determine if SVG floor plan exists in .storage/otis_ai/media/ and record mtime for cache busting
-        svg_exists = False
-        svg_mtime = 0
-        if hasattr(self.hass, "config") and hasattr(self.hass.config, "path"):
-            svg_path = self.hass.config.path(f".storage/{DOMAIN}/media/otis_floorplan.svg")
-            if os.path.exists(svg_path):
-                svg_exists = True
-                try:
-                    svg_mtime = int(os.path.getmtime(svg_path))
-                except Exception:
-                    svg_mtime = 1
+        if isinstance(svg_stat, (tuple, list)) and len(svg_stat) == 2:
+            svg_exists, svg_mtime = svg_stat
+        else:
+            svg_exists, svg_mtime = self._get_floorplan_svg_stat_sync()
 
         elements: list[dict[str, Any]] = []
 

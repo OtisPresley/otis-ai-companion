@@ -1197,7 +1197,11 @@ class EnergyManager:
             "schedule_summary": plan.get("schedule", [])[:6],
             "last_updated": plan.get("timestamp", datetime.now().isoformat()),
         }
-        self.hass.states.async_set("sensor.otis_energy_arbitrage", state, attrs)
+        try:
+            from .sensor import async_update_entity_state
+            async_update_entity_state(self.hass, "sensor.otis_energy_arbitrage", state, attrs)
+        except Exception:
+            self.hass.states.async_set("sensor.otis_energy_arbitrage", state, attrs)
 
     async def async_get_arbitrage_plan(
         self,

@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta
 from functools import partial
-import json
 import logging
 import os
 import re
@@ -48,6 +47,7 @@ from homeassistant.components.http import HomeAssistantView
 
 from .const import (
     DOMAIN,
+    PLATFORMS,
     DEFAULT_CAMERA_STREAM_STRATEGY,
     CONF_CONVERSATION_AGENT,
     SERVICE_GET_CAPABILITY_MAP,
@@ -153,7 +153,7 @@ from .agent_orchestrator import (
 from .local_llm import LocalLLMManager
 from .rag_manager import RAGKnowledgeManager
 from .audio_manager import AudioHandoffManager
-from .automation_manager import AutomationManager
+from .automation_manager import AutomationManager, clean_yaml_dict
 from .dashboard_manager import DashboardManager
 from .energy_manager import EnergyManager
 from .macro_manager import MacroManager
@@ -165,7 +165,7 @@ from .matrix_presets import (
     is_matrix_entity,
     is_tv_cinema_player,
 )
-from .rules_manager import BehavioralRulesManager
+from .rules_manager import BehavioralRulesManager, scrub_sensitive_rules
 from .sentinel_manager import SentinelManager
 from .spatial_manager import (
     SpatialGraphManager,
@@ -866,6 +866,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     rules_manager = BehavioralRulesManager(hass)
     dashboard_manager = DashboardManager(hass, floorplan_parser=floorplan_parser, rules_manager=rules_manager)
     theme_manager = ThemeManager(hass)
+    try:
+        await theme_manager.async_load_and_register_themes()
+    except Exception as tm_err:
+        _LOGGER.debug("Could not register stored themes on boot: %s", tm_err)
     reasoning_timeout = float(
         entry.options.get(CONF_REASONING_TIMEOUT)
         or entry.data.get(CONF_REASONING_TIMEOUT)
@@ -1043,15 +1047,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     else:
         conversation.async_set_agent(hass, entry, agent)
 
-    # Remediate any entity area assignments that trigger HA core repairs
-    try:
-        from .commissioning_manager import async_remediate_entity_area_repairs
-        remediated_count = await async_remediate_entity_area_repairs(hass)
-        if remediated_count > 0:
-            _LOGGER.info("Otis AI self-healed %d entity area assignments to clear HA core repairs", remediated_count)
-    except Exception as err:
-        _LOGGER.debug("Could not run entity area remediation: %s", err)
-    
     hass.data[DOMAIN][entry.entry_id] = {
         "data": {**entry.data, **getattr(entry, "options", {})},
         "engine": engine,
@@ -1104,6 +1099,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry.async_on_unload(entry.add_update_listener(_async_update_listener))
         except Exception as err:
             _LOGGER.debug("Could not register entry update listener: %s", err)
+
+    if hasattr(hass, "config_entries") and hasattr(hass.config_entries, "async_forward_entry_setups"):
+        try:
+            await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        except Exception as plat_err:
+            _LOGGER.debug("Could not forward platform setups: %s", plat_err)
 
     def _get_entry_data() -> dict:
         return hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
@@ -1312,22 +1313,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         if action_type == "create_automation":
             auto_id = await mgr.async_write_automation(payload)
-            await mgr.async_reload_automations()
+            if hasattr(mgr, "async_reload_automations"):
+                await mgr.async_reload_automations()
+            yaml_str = yaml.dump(clean_yaml_dict(payload), sort_keys=False, default_flow_style=False)
             _invalidate()
             return {
                 "success": True,
                 "message": f"Successfully created automation '{payload.get('alias', auto_id)}'",
                 "id": auto_id,
+                "yaml": yaml_str,
             }
         elif action_type == "create_script":
             script_key = (target.get("id") if target else suggestion_id) or "custom_script"
             await mgr.async_write_script(script_key, payload)
-            await mgr.async_reload_scripts()
+            if hasattr(mgr, "async_reload_scripts"):
+                await mgr.async_reload_scripts()
+            yaml_str = yaml.dump(clean_yaml_dict(payload), sort_keys=False, default_flow_style=False)
             _invalidate()
             return {
                 "success": True,
                 "message": f"Successfully created script '{payload.get('alias', script_key)}'",
                 "id": script_key,
+                "yaml": yaml_str,
             }
         elif action_type == "cleanup_orphans":
             entity_reg = er.async_get(hass)
@@ -2670,7 +2677,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.debug("Could not update config entry reasoning_timeout: %s", opt_err)
         if hasattr(hass, "bus") and hasattr(hass.bus, "async_fire"):
             try:
-                hass.bus.async_fire("otis_ai_rules_updated", {"rules": updated})
+                hass.bus.async_fire("otis_ai_rules_updated", {"rules": scrub_sensitive_rules(updated)})
             except Exception:
                 pass
         if dm and hasattr(dm, "async_ensure_user_command_center_dashboard"):
@@ -3619,6 +3626,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 conversation.async_unset_agent(hass, entry)
 
+    if hasattr(hass, "config_entries") and hasattr(hass.config_entries, "async_unload_platforms"):
+        try:
+            await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+        except Exception as plat_err:
+            _LOGGER.debug("Could not unload platforms: %s", plat_err)
+
     # Remove services if no other entries exist
     if not hass.data[DOMAIN]:
         for srv in (
@@ -4222,11 +4235,26 @@ class OtisAIConversationAgent(AbstractAgent):
                         self.engine.invalidate_cache()
 
                     if len(items) == 1 and created_autos:
-                        speech = f"I have successfully created and enabled the automation '{created_autos[0]}'!"
+                        yaml_content = items[0].get("raw_yaml") or yaml.dump(clean_yaml_dict(items[0]["yaml_data"]), sort_keys=False, default_flow_style=False)
+                        speech = (
+                            f"I have successfully created and enabled the automation '{created_autos[0]}'!\n\n"
+                            f"📋 **Configuration YAML (Ready to Apply in Home Assistant):**\n"
+                            f"```yaml\n{yaml_content}\n```"
+                        )
                     elif len(items) == 1 and created_scripts:
-                        speech = f"I have successfully created the script '{created_scripts[0]}'!"
+                        yaml_content = items[0].get("raw_yaml") or yaml.dump(clean_yaml_dict(items[0]["yaml_data"]), sort_keys=False, default_flow_style=False)
+                        speech = (
+                            f"I have successfully created the script '{created_scripts[0]}'!\n\n"
+                            f"📋 **Configuration YAML (Ready to Apply in Home Assistant):**\n"
+                            f"```yaml\n{yaml_content}\n```"
+                        )
                     elif len(items) == 1 and created_blueprints:
-                        speech = f"I have successfully updated and deployed the blueprint '{created_blueprints[0]}'!"
+                        yaml_content = items[0].get("raw_yaml") or (yaml.dump(clean_yaml_dict(items[0]["yaml_data"]), sort_keys=False, default_flow_style=False) if isinstance(items[0]["yaml_data"], dict) else str(items[0]["yaml_data"]))
+                        speech = (
+                            f"I have successfully updated and deployed the blueprint '{created_blueprints[0]}'!\n\n"
+                            f"📋 **Configuration YAML:**\n"
+                            f"```yaml\n{yaml_content}\n```"
+                        )
                     else:
                         parts = []
                         if created_blueprints:
@@ -4235,7 +4263,11 @@ class OtisAIConversationAgent(AbstractAgent):
                             parts.append(f"Script(s): {', '.join(created_scripts)}")
                         if created_autos:
                             parts.append(f"Automation(s): {', '.join(created_autos)}")
-                        speech = "I have successfully created and enabled the configuration! Applied successfully!\n• " + "\n• ".join(parts)
+                        speech = (
+                            "I have successfully created and enabled the configuration! Applied successfully!\n• "
+                            + "\n• ".join(parts)
+                            + "\n\n📋 **Ready-to-Apply YAML configuration generated.**"
+                        )
 
                     self._record_turn(session_data, user_input.text, speech)
                     return self._create_response(user_input, speech)
@@ -5181,12 +5213,15 @@ class OtisAIConversationAgent(AbstractAgent):
                         self.engine.invalidate_cache()
                     if getattr(self, "rules_manager", None):
                         await self.rules_manager.async_dismiss_recommendation(target_sugg["id"])
+                    yaml_str = yaml.dump(clean_yaml_dict(auto_payload), sort_keys=False, default_flow_style=False)
                     speech = (
                         f"🚀 **Automation Created and Enabled!**\n\n"
                         f"I have successfully created and enabled the automation '**{auto_payload.get('alias', auto_id)}**' in your Home Assistant.\n\n"
                         f"• **Trigger:** {len(auto_payload.get('trigger', []))} condition/state trigger(s)\n"
                         f"• **Actions:** {len(auto_payload.get('action', []))} action step(s)\n"
                         f"• **Mode:** `{auto_payload.get('mode', 'single')}`\n\n"
+                        f"📋 **Ready-to-Apply YAML Block:**\n"
+                        f"```yaml\n{yaml_str}\n```\n\n"
                         f"*(This matches the proactive recommendation in your Command Center card)*"
                     )
                     self._record_turn(session_data, user_input.text, speech)
@@ -5388,6 +5423,22 @@ class OtisAIConversationAgent(AbstractAgent):
 
             qh_active, max_vol, _ = self.audio_manager.is_quiet_hours_active() if getattr(self, "audio_manager", None) else (False, 100, "")
 
+            alarm_panels = [e for e in capability_map.get("entities", []) if e.get("domain") == "alarm_control_panel"]
+            if not alarm_panels and hasattr(self.hass, "states"):
+                alarm_panels = [{"entity_id": s.entity_id, "state": s.state, "name": s.name} for s in self.hass.states.async_all("alarm_control_panel")]
+
+            all_locks = [e for e in capability_map.get("entities", []) if e.get("domain") == "lock"]
+            if not all_locks and hasattr(self.hass, "states"):
+                all_locks = [{"entity_id": s.entity_id, "state": s.state, "name": s.name} for s in self.hass.states.async_all("lock")]
+
+            sec_parts = []
+            if alarm_panels:
+                sec_parts.append(f"Alarm panel is {alarm_panels[0].get('state', 'unknown')}")
+            if all_locks:
+                locked_count = sum(1 for lk in all_locks if lk.get("state") == "locked")
+                sec_parts.append(f"Smart locks ({locked_count}/{len(all_locks)} secured)")
+            sec_summary = ", ".join(sec_parts) if sec_parts else "Perimeter sensors monitored normally"
+
             speech = (
                 "Based on the live system context, here is the current status of HA Core:\n\n"
                 "**HA Core Status: Operational**\n\n"
@@ -5398,7 +5449,7 @@ class OtisAIConversationAgent(AbstractAgent):
                 "• **Network:** All core sensors (CPU, memory, WAN, SNMP) are online and stable\n"
                 f"• **Media Players:** {media_summary}\n"
                 f"• **Lighting:** {lights_summary}\n"
-                "• **Security:** Alarm control panel is disarmed, exterior deadbolts are locked (no guest access)\n\n"
+                f"• **Security:** {sec_summary}\n\n"
                 "The system is fully operational with no critical issues."
                 + (f" All primary residents have their schedules accounted for, and quiet hours are in effect with volume capped at {max_vol}%." if qh_active else "")
                 + "\n\nIs there a specific aspect of HA Core you'd like me to check further?"
@@ -5932,12 +5983,17 @@ class OtisAIConversationAgent(AbstractAgent):
                 climate_lines.append(
                     f"  • {t['entity_id']} ('{t['name']}'){scope_str} in {t['area_name']} | state: {t['state']}{target_str} (current {cur_t})"
                 )
-            climate_lines.append(
-                "  • IMPORTANT HVAC RULE: Climate is controlled by whole-home dual zone thermostats "
-                "('climate.downstairs' for Ground Floor areas, 'climate.upstairs' for Upper Floor areas: Guest Room, Master, Gym, Study, Theater). "
-                "There are NO individual room thermostats (do NOT invent or reference 'climate.guest_room'). "
-                "Automations 'Climate: Thermostat Downstairs' and 'Climate: Thermostat Upstairs' drive the setpoints centrally using occupancy and sleep sensors."
-            )
+            if len(thermostats) > 1:
+                t_names = ", ".join(f"'{t['entity_id']}' ({t['name']})" for t in thermostats[:4])
+                climate_lines.append(
+                    f"  • HVAC RULE: Climate is managed centrally across {len(thermostats)} zoned thermostat(s): {t_names}. "
+                    "Do not hallucinate or invent non-existent room-specific thermostats outside this discovered list."
+                )
+            else:
+                climate_lines.append(
+                    "  • HVAC RULE: Climate is controlled by the registered thermostat entity listed above. "
+                    "Do not invent non-existent room thermostats."
+                )
             climate_summary = "\n".join(climate_lines)
         else:
             climate_summary = "  • No dedicated climate/thermostat entities detected."
@@ -6234,25 +6290,25 @@ CRITICAL INSTRUCTIONS FOR AUTOMATIONS & SCRIPTS:
    - If an automation needs to call the script, provide both the script block AND the calling automation block in separate clean ```yaml blocks so Otis can deploy both together.
 
 4. Reason deeply over the home's hardware topology:
-   - When a Multi-Zone Matrix Amplifier (such as Control4) is present, audio is played on an upstream input streamer (`media_player.bridge`, Music Assistant) AND routed to output room zones via `media_player.select_source` + `media_player.volume_set`.
-   - When designing security automations, coordinate `alarm_control_panel`, `lock.*`, `cover.*` garage doors, `siren.*`, and presence/occupancy sensors.
-   - Note that perimeter locks (`lock.front_door`, `lock.back_door`, `lock.garage_door`) are WiFi Schlage Encode deadbolts running on the native `schlage` integration (services `schlage.add_code` / `schlage.delete_code`). They are NOT Z-Wave. NEVER generate `zwave_js_notification` triggers for perimeter locks.
+   - When a Multi-Zone Matrix Amplifier is present, audio is played on an upstream input streamer and routed to output room zones via `media_player.select_source` + `media_player.volume_set`.
+   - When designing security automations, coordinate discovered `alarm_control_panel`, `lock.*`, `cover.*` garage doors, `siren.*`, and presence/occupancy sensors.
+   - Query smart lock integrations and available lock code services dynamically based on discovered device capabilities.
 
 5. Complete Spatial, Floor Level & Climate Grounding:
    - Check "Complete Area & Room Breakdown", "Discovered Climate & HVAC Architecture", and "Spatial Adjacency".
-   - Always accurately identify room locations, floor levels (Upper Floor vs Ground Floor), adjacent rooms (and door vs open connections), and corresponding zone thermostats without hallucination!
-   - NEVER recommend creating or referencing non-existent room thermostats (such as `climate.guest_room`). The home operates on central dual-zone HVAC: Guest Room is upstairs and conditioned by `climate.upstairs`.
-   - When analyzing whole-home modes (like `input_boolean.guest_mode`), inspect the real cross-referenced automations: lock codes ('Security: Manage Guest Lock Code'), bedtime lighting ('Lighting: Lights Off at Bed' using scheduled 22:00 trigger for guests who do not have SleepNumber bed occupancy sensors), and how climate handles absence of primary residents.
+   - Always accurately identify room locations, floor levels, adjacent rooms, and corresponding zone thermostats strictly from discovered entities without hallucination.
+   - NEVER recommend creating or referencing non-existent room thermostats; strictly adhere to discovered thermostat entity IDs.
+   - When analyzing guest or whole-home occupancy modes, cross-reference discovered security lock codes, bedtime schedules, and climate setpoint automations.
 
 6. Blueprint Automation Architecture & Direct Editing Rules:
    - When an automation uses blueprints (`use_blueprint:` with a blueprint path):
      * The automation's logic (triggers, conditions, sequences) lives in the blueprint file (`/config/blueprints/automation/<path>`), NOT in `automations.yaml`!
      * In `automations.yaml`, ONLY the blueprint input parameters (`input:`) can be configured.
      * NEVER inject top-level `triggers:`, `conditions:`, or `actions:` directly into a blueprint automation entry in `automations.yaml`—Home Assistant will reject it and fail setup.
-     * You have FULL ACCESS and authority to inspect and edit blueprint files directly (`/config/blueprints/automation/<path>`). When the user asks to analyze, fix, or update a blueprint, output the corrected blueprint YAML (starting with `blueprint:`) and specify the blueprint subpath! Otis will autonomously offer 1-click deployment to update the blueprint file directly in Home Assistant. Never claim you cannot edit blueprints, and never force unlinking into standalone automations unless the user explicitly requests to unlink it!
+     * When analyzing, fixing, or updating a blueprint, output the corrected blueprint YAML (starting with `blueprint:`) and specify the blueprint subpath for the user to apply! Never claim you cannot edit blueprints, and never force unlinking into standalone automations unless the user explicitly requests to unlink it!
 
 7. Concise, Actionable Responses:
-   - Keep conversational commentary brief. If any detail is uncertain, ask the user first; otherwise present the GUI-ready YAML block cleanly and proactively conclude by offering to deploy and enable it for the user.
+   - Keep conversational commentary brief. If any detail is uncertain, ask the user first; otherwise present the GUI-ready YAML block cleanly for the user to copy and apply in Home Assistant.
 
 User: {user_input.text}
 """
@@ -7554,25 +7610,22 @@ class DiscoveryEngine:
             "last_size_bytes": 0,
         }
         try:
-            backup_store_path = self.hass.config.path(".storage", "backup")
-            def _read_backup_cfg_sync(path: str) -> dict[str, Any]:
-                if not os.path.exists(path):
-                    return {}
-                try:
-                    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                        return json.load(f)
-                except Exception:
-                    return {}
-            raw_b = await self.hass.async_add_executor_job(_read_backup_cfg_sync, backup_store_path)
-            if isinstance(raw_b, dict) and "data" in raw_b:
-                b_cfg = raw_b["data"].get("config", {})
-                backup_info["configured"] = b_cfg.get("automatic_backups_configured", False)
-                backup_info["agents"] = list(b_cfg.get("agents", {}).keys())
-                backup_info["schedule"] = b_cfg.get("schedule", {}).get("recurrence", "daily")
-                backup_info["retention"] = b_cfg.get("retention", {})
-                backup_info["last_completed"] = b_cfg.get("last_completed_automatic_backup")
-                backup_info["last_size_bytes"] = b_cfg.get("last_completed_automatic_backup_size", 0)
+            if hasattr(self.hass, "config_entries") and hasattr(self.hass.config_entries, "async_entries"):
+                for entry in self.hass.config_entries.async_entries():
+                    edom = str(getattr(entry, "domain", "")).lower()
+                    if "backup" in edom:
+                        backup_info["configured"] = True
+                        backup_info["agents"].append(edom)
+            backup_mgr = self.hass.data.get("backup_manager") or self.hass.data.get("backup")
+            if backup_mgr is not None:
+                b_cfg = getattr(backup_mgr, "config", None)
+                if b_cfg:
+                    backup_info["configured"] = getattr(b_cfg, "automatic_backups_configured", True)
+                    agents = getattr(b_cfg, "agents", {})
+                    if isinstance(agents, dict):
+                        backup_info["agents"] = list(agents.keys())
         except Exception as b_err:
+            _LOGGER.debug("Could not inspect backup manager: %s", b_err)
             _LOGGER.debug("Could not query backup configuration: %s", b_err)
         cap_map["backup"] = backup_info
 
@@ -8474,23 +8527,27 @@ class DiscoveryEngine:
                         if "climate" in adump and ("guest_mode" in adump or "guest mode" in adump):
                             climate_mentions_guest = True
                             break
-                    if not climate_mentions_guest:
+                    target_climate = next(
+                        (eid for eid in active_entity_ids if eid.startswith("climate.") and any(k in eid for k in ("guest", "upstairs", "zone_2"))),
+                        next((eid for eid in active_entity_ids if eid.startswith("climate.")), None),
+                    )
+                    guest_eid = next((eid for eid in active_entity_ids if "guest_mode" in eid), "input_boolean.guest_mode")
+                    if not climate_mentions_guest and target_climate:
                         result["improvement_suggestions"].append({
                             "id": "link_guest_mode_climate_comfort",
-                            "title": "Coordinate Guest Mode with Upstairs Climate & Guest Room",
+                            "title": f"Coordinate {guest_eid} with {target_climate}",
                             "category": "automation",
                             "priority": "high",
                             "icon": "mdi:account-group-outline",
                             "description": (
-                                "Guest Mode is configured for door lock PINs and bedtime lighting, but your central upstairs "
-                                "thermostat (which conditions the Guest Room) does not adjust for guests. Coordinate "
-                                "input_boolean.guest_mode with climate.upstairs to maintain guest comfort setbacks (70°F-72°F) "
-                                "instead of unoccupied economy setbacks during visits."
+                                f"Guest mode '{guest_eid}' is active, but thermostat '{target_climate}' "
+                                "does not currently adjust for guest visits. Coordinate them to maintain comfort "
+                                "setpoints during visits."
                             ),
                             "action_type": "improve_automation",
                             "action_payload": {
                                 "topic": "guest_mode_climate",
-                                "target_entity": "climate.upstairs",
+                                "target_entity": target_climate,
                             },
                         })
 
@@ -8613,26 +8670,21 @@ class DiscoveryEngine:
             except Exception as err:
                 _LOGGER.debug("Could not inspect configuration.yaml: %s", err)
 
-        # 4. Inspect .storage/backup and .storage/core.config_entries for automatic backup configurations (e.g. pCloud Backup, HA Automatic Backups)
+        # 4. Inspect config entries and backup manager for automatic backup configurations (e.g. pCloud Backup, HA Automatic Backups)
         try:
-            backup_storage_path = self.hass.config.path(".storage/backup")
-            if isinstance(backup_storage_path, str) and os.path.isfile(backup_storage_path):
-                with open(backup_storage_path, "r", encoding="utf-8") as bf:
-                    bdata = json.load(bf).get("data", {})
-                bcfg = bdata.get("config", {})
-                if bcfg.get("automatic_backups_configured") or bcfg.get("agents"):
-                    result["automatic_backups_configured"] = True
-            ce_path = self.hass.config.path(".storage/core.config_entries")
-            if isinstance(ce_path, str) and os.path.isfile(ce_path):
-                with open(ce_path, "r", encoding="utf-8") as cf:
-                    cedata = json.load(cf).get("data", {})
-                for entry in cedata.get("entries", []):
-                    edom = str(entry.get("domain", "")).lower()
-                    if "backup" in edom and edom != "backup":
+            if hasattr(self.hass, "config_entries") and hasattr(self.hass.config_entries, "async_entries"):
+                for entry in self.hass.config_entries.async_entries():
+                    edom = str(getattr(entry, "domain", "")).lower()
+                    if ("backup" in edom and edom != "backup") or edom in ("pcloud_backup", "google_drive_backup", "samba_backup", "onedrive"):
                         result["automatic_backups_configured"] = True
                         break
+            backup_mgr = self.hass.data.get("backup_manager") or self.hass.data.get("backup")
+            if backup_mgr is not None:
+                b_cfg = getattr(backup_mgr, "config", None)
+                if b_cfg and getattr(b_cfg, "automatic_backups_configured", False):
+                    result["automatic_backups_configured"] = True
         except Exception as err:
-            _LOGGER.debug("Could not inspect backup storage: %s", err)
+            _LOGGER.debug("Could not inspect backup configuration: %s", err)
 
         return result
 

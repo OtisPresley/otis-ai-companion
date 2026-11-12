@@ -674,7 +674,11 @@ class MultiAgentOrchestrator:
             "last_routing": self._last_routing,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
-        self.hass.states.async_set("sensor.otis_multi_agent_orchestrator", orch_state, orch_attrs)
+        try:
+            from .sensor import async_update_entity_state
+            async_update_entity_state(self.hass, "sensor.otis_multi_agent_orchestrator", orch_state, orch_attrs)
+        except Exception:
+            self.hass.states.async_set("sensor.otis_multi_agent_orchestrator", orch_state, orch_attrs)
 
         # 2. sensor.otis_voice_satellites
         sats = self.get_discovered_satellites()
@@ -689,7 +693,11 @@ class MultiAgentOrchestrator:
             "last_arbitration": self._last_arbitration,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
-        self.hass.states.async_set("sensor.otis_voice_satellites", sat_state, sat_attrs)
+        try:
+            from .sensor import async_update_entity_state
+            async_update_entity_state(self.hass, "sensor.otis_voice_satellites", sat_state, sat_attrs)
+        except Exception:
+            self.hass.states.async_set("sensor.otis_voice_satellites", sat_state, sat_attrs)
 
     async def async_publish_telemetry(self) -> None:
         """Publish real-time telemetry (async interface)."""

@@ -66,6 +66,39 @@ DEFAULT_RULES: dict[str, Any] = {
 }
 
 
+SENSITIVE_RULE_PATTERNS = (
+    "lock_code",
+    "guest_code",
+    "pin",
+    "password",
+    "secret",
+    "token",
+    "credential",
+    "api_key",
+    "auth_token",
+)
+
+
+def scrub_sensitive_rules(data: Any) -> Any:
+    """Recursively scrub lock codes, PINs, passwords, and tokens before event bus publication."""
+    if isinstance(data, dict):
+        scrubbed = {}
+        for k, v in data.items():
+            k_lower = str(k).lower()
+            if any(p in k_lower for p in SENSITIVE_RULE_PATTERNS):
+                scrubbed[k] = "[REDACTED]"
+            elif isinstance(v, (dict, list)):
+                scrubbed[k] = scrub_sensitive_rules(v)
+            elif isinstance(v, str) and any(p in k_lower for p in ("code", "pin")):
+                scrubbed[k] = "[REDACTED]"
+            else:
+                scrubbed[k] = v
+        return scrubbed
+    elif isinstance(data, list):
+        return [scrub_sensitive_rules(item) for item in data]
+    return data
+
+
 class BehavioralRulesManager:
     """Manages persistent user behavioral rules, persona customization, and prompt injection."""
 
@@ -305,31 +338,35 @@ class BehavioralRulesManager:
         """Publish switch.otis_audio_follow state in Home Assistant."""
         if hasattr(self.hass, "states") and hasattr(self.hass.states, "async_set"):
             enabled = bool(self._rules.get("audio_follow_enabled", True))
-            self.hass.states.async_set(
-                "switch.otis_audio_follow",
-                "on" if enabled else "off",
-                {
-                    "friendly_name": "Otis Audio Follow-Me",
-                    "icon": "mdi:cast-connected",
-                    "assumed_state": False,
-                    "description": "Enables or disables autonomous room-to-room audio migration.",
-                },
-            )
+            state_val = "on" if enabled else "off"
+            attrs = {
+                "friendly_name": "Otis Audio Follow-Me",
+                "icon": "mdi:cast-connected",
+                "assumed_state": False,
+                "description": "Enables or disables autonomous room-to-room audio migration.",
+            }
+            try:
+                from .sensor import async_update_entity_state
+                async_update_entity_state(self.hass, "switch.otis_audio_follow", state_val, attrs)
+            except Exception:
+                self.hass.states.async_set("switch.otis_audio_follow", state_val, attrs)
 
     def _sync_voice_announcements_switch(self) -> None:
         """Publish switch.otis_voice_announcements state in Home Assistant."""
         if hasattr(self.hass, "states") and hasattr(self.hass.states, "async_set"):
             enabled = bool(self._rules.get("voice_announcements_enabled", True))
-            self.hass.states.async_set(
-                "switch.otis_voice_announcements",
-                "on" if enabled else "off",
-                {
-                    "friendly_name": "Otis Proactive Voice Announcements",
-                    "icon": "mdi:volume-high" if enabled else "mdi:volume-off",
-                    "assumed_state": False,
-                    "description": "Enables or disables proactive spoken voice announcements for security and camera events.",
-                },
-            )
+            state_val = "on" if enabled else "off"
+            attrs = {
+                "friendly_name": "Otis Proactive Voice Announcements",
+                "icon": "mdi:volume-high" if enabled else "mdi:volume-off",
+                "assumed_state": False,
+                "description": "Enables or disables proactive spoken voice announcements for security and camera events.",
+            }
+            try:
+                from .sensor import async_update_entity_state
+                async_update_entity_state(self.hass, "switch.otis_voice_announcements", state_val, attrs)
+            except Exception:
+                self.hass.states.async_set("switch.otis_voice_announcements", state_val, attrs)
 
     async def async_update_person_profile(
         self,
@@ -429,7 +466,7 @@ class BehavioralRulesManager:
             await self._store.async_save(self._rules)
             if hasattr(self.hass, "bus") and hasattr(self.hass.bus, "async_fire"):
                 try:
-                    self.hass.bus.async_fire("otis_ai_rules_updated", {"rules": dict(self._rules)})
+                    self.hass.bus.async_fire("otis_ai_rules_updated", {"rules": scrub_sensitive_rules(dict(self._rules))})
                 except Exception:
                     pass
             _LOGGER.info(
@@ -494,7 +531,7 @@ class BehavioralRulesManager:
         await self._store.async_save(self._rules)
         if hasattr(self.hass, "bus") and hasattr(self.hass.bus, "async_fire"):
             try:
-                self.hass.bus.async_fire("otis_ai_rules_updated", {"rules": dict(self._rules)})
+                self.hass.bus.async_fire("otis_ai_rules_updated", {"rules": scrub_sensitive_rules(dict(self._rules))})
             except Exception:
                 pass
         _LOGGER.info(

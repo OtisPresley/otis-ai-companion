@@ -280,18 +280,20 @@ class RAGKnowledgeManager:
         """Publish sensor.otis_knowledge_rag with RAG index statistics."""
         if hasattr(self.hass, "states") and hasattr(self.hass.states, "async_set"):
             stats = self.get_knowledge_stats()
-            self.hass.states.async_set(
-                "sensor.otis_knowledge_rag",
-                str(stats["total_chunks"]),
-                {
-                    "total_chunks": stats["total_chunks"],
-                    "total_documents": stats["total_documents"],
-                    "categories": stats["categories"],
-                    "friendly_name": "Otis Knowledge & RAG Vector Store",
-                    "icon": "mdi:brain",
-                    "last_updated": time.time(),
-                },
-            )
+            state_val = str(stats["total_chunks"])
+            attrs = {
+                "total_chunks": stats["total_chunks"],
+                "total_documents": stats["total_documents"],
+                "categories": stats["categories"],
+                "friendly_name": "Otis Knowledge & RAG Vector Store",
+                "icon": "mdi:brain",
+                "last_updated": time.time(),
+            }
+            try:
+                from .sensor import async_update_entity_state
+                async_update_entity_state(self.hass, "sensor.otis_knowledge_rag", state_val, attrs)
+            except Exception:
+                self.hass.states.async_set("sensor.otis_knowledge_rag", state_val, attrs)
 
     async def _generate_embedding(self, text: str) -> list[float]:
         """Generate embedding using local LLM server with pure-python fallback."""

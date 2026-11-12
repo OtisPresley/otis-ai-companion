@@ -1403,7 +1403,11 @@ class AudioHandoffManager:
                     attrs[ATTR_AUDIO_FOLLOW_SOURCE] = self._active_audio_migration.get("source_area")
                     attrs[ATTR_AUDIO_FOLLOW_TARGET] = self._active_audio_migration.get("target_area")
                     attrs[ATTR_AUDIO_FOLLOW_PLAYER] = self._active_audio_migration.get("target_player")
-                self.hass.states.async_set("sensor.otis_spatial_migration", st.state, attrs)
+                try:
+                    from .sensor import async_update_entity_state
+                    async_update_entity_state(self.hass, "sensor.otis_spatial_migration", st.state, attrs)
+                except Exception:
+                    self.hass.states.async_set("sensor.otis_spatial_migration", st.state, attrs)
 
     def async_start_migration_listener(self) -> None:
         """Listen to state changes on sensor.otis_spatial_migration for autonomous audio migration."""
