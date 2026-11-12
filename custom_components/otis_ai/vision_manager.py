@@ -211,6 +211,7 @@ class VisionPresenceManager:
         self._auto_sightlines: dict[str, list[str]] = {}
         self._sightlines_synced_ts: float = 0.0
         self._active_room_holds: dict[str, dict[str, Any]] = {}
+        self._ambiguous_room_transitions: dict[str, dict[str, Any]] = {}
 
     def register_camera_sightline(self, source_area_or_cam: str, target_areas: list[str]) -> None:
         """Register adjacent rooms visible from a camera's doorway/corridor sightline."""
@@ -289,6 +290,63 @@ class VisionPresenceManager:
                 confidence=0.80,
                 timestamp=now_ts,
             )
+
+    def record_ambiguous_room_transition(
+        self,
+        from_area: str,
+        from_area_name: str,
+        candidate_areas: list[dict[str, str]],
+        subject: str = "person",
+        summary: str = "",
+    ) -> None:
+        """Record an ambiguous camera-observed transition where the destination room is uncertain."""
+        from_k = str(from_area or "").lower().replace(" ", "_")
+        if not from_k or len(candidate_areas) < 2:
+            return
+        now_ts = time.time()
+        self._ambiguous_room_transitions[from_k] = {
+            "from_area": from_k,
+            "from_area_name": from_area_name or from_k.replace("_", " ").title(),
+            "candidate_areas": list(candidate_areas),
+            "subject": subject or "person",
+            "summary": summary,
+            "timestamp": now_ts,
+            "expires_at": now_ts + 600.0,
+        }
+
+    def get_ambiguous_room_transitions(self) -> list[dict[str, Any]]:
+        """Return active, non-expired ambiguous room transitions awaiting user review."""
+        now_ts = time.time()
+        active: list[dict[str, Any]] = []
+        expired: list[str] = []
+        for k, item in self._ambiguous_room_transitions.items():
+            if item.get("expires_at", 0) > now_ts:
+                active.append(dict(item))
+            else:
+                expired.append(k)
+        for k in expired:
+            self._ambiguous_room_transitions.pop(k, None)
+        return active
+
+    def resolve_ambiguous_room_transition(
+        self,
+        from_area: str,
+        selected_to_area: str,
+        subject: str = "person",
+    ) -> dict[str, Any]:
+        """Resolve an ambiguous room transition using the user's selected destination room."""
+        from_k = str(from_area or "").lower().replace(" ", "_")
+        to_k = str(selected_to_area or "").lower().replace(" ", "_")
+        self._ambiguous_room_transitions.pop(from_k, None)
+        if to_k:
+            self.record_camera_sightline_event(from_k, to_k, event_type="entry", subject=subject)
+        self._presence_cache_ts = 0.0
+        return {
+            "success": bool(to_k),
+            "from_area": from_k,
+            "selected_to_area": to_k,
+            "subject": subject,
+        }
 
     def get_camera_stream_strategy(self) -> str:
         """Retrieve configured camera stream strategy from config entry."""
@@ -691,6 +749,38 @@ class VisionPresenceManager:
                             self.record_camera_sightline_event(adj_id, a_id, event_type="entry", subject="person")
                         break
 
+        # Flag ambiguous camera sightline transitions when >= 2 connected rooms exist with no clear winner
+        for cam_area, targets in combined_sightlines.items():
+            if len(targets) < 2:
+                continue
+            cam_room = room_results.get(cam_area)
+            if not cam_room or cam_room.get("is_outdoor"):
+                continue
+            cam_recent = (
+                cam_room["sensors"]["pir"].get("active")
+                or (cam_room["sensors"]["pir"].get("seconds_since_motion") or 9999) <= 60
+            )
+            if not cam_recent:
+                continue
+            unresolved_targets = [
+                {
+                    "area_id": t_id,
+                    "area_name": room_results[t_id]["area_name"],
+                }
+                for t_id in targets
+                if t_id in room_results
+                and not room_results[t_id].get("is_outdoor")
+                and room_results[t_id].get("status") == "vacant"
+                and t_id not in self._active_room_holds
+            ]
+            if len(unresolved_targets) >= 2:
+                self.record_ambiguous_room_transition(
+                    from_area=cam_area,
+                    from_area_name=cam_room["area_name"],
+                    candidate_areas=unresolved_targets,
+                    subject="person",
+                )
+
         # Build summary lists (outdoor areas excluded from indoor room occupancy lists)
         for a_id, r_info in room_results.items():
             a_name = r_info["area_name"]
@@ -1035,12 +1125,27 @@ class VisionPresenceManager:
         if subject_match and cam_zone and self.spatial_manager and hasattr(self.spatial_manager, "get_adjacent_areas"):
             summary_l = str(audit_entry.get("summary") or "").lower()
             try:
-                for adj_id in (self.spatial_manager.get_adjacent_areas(cam_zone) or []):
+                adj_list = list(self.spatial_manager.get_adjacent_areas(cam_zone) or [])
+                matched_adj = False
+                for adj_id in adj_list:
                     adj_label = adj_id.replace("_", " ")
                     if adj_label in summary_l or adj_id in summary_l:
                         self.record_camera_sightline_event(
                             cam_zone, adj_id, event_type="entry", subject=subject_match
                         )
+                        matched_adj = True
+                if not matched_adj and len(adj_list) >= 2 and classify_area_zone(cam_zone, cam_zone) != "outdoor":
+                    self.record_ambiguous_room_transition(
+                        from_area=cam_zone,
+                        from_area_name=cam_zone.replace("_", " ").title(),
+                        candidate_areas=[
+                            {"area_id": a, "area_name": a.replace("_", " ").title()}
+                            for a in adj_list
+                            if classify_area_zone(a, a) != "outdoor"
+                        ],
+                        subject=subject_match,
+                        summary=str(audit_entry.get("summary") or ""),
+                    )
             except Exception:
                 pass
 

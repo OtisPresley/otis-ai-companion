@@ -1597,6 +1597,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "message": f"Successfully verified identity for {payload.get('label') or payload.get('person_id')}",
                 "result": res,
             }
+        elif action_type == "confirm_room_transition":
+            vm = _get_vision_manager()
+            from_area = str(payload.get("from_area") or "")
+            selected_to_area = str(
+                call.data.get("selected_to_area") or payload.get("selected_to_area") or ""
+            ).strip().lower()
+            valid_targets = {
+                str(c.get("area_id") or "").strip().lower()
+                for c in (payload.get("candidate_rooms") or [])
+                if isinstance(c, dict) and c.get("area_id")
+            }
+            if not selected_to_area or (valid_targets and selected_to_area not in valid_targets):
+                return {
+                    "success": False,
+                    "error": f"Invalid destination room selection '{selected_to_area}' for transition from '{from_area}'.",
+                }
+            res = vm.resolve_ambiguous_room_transition(
+                from_area=from_area,
+                selected_to_area=selected_to_area,
+                subject=str(payload.get("subject") or "person"),
+            )
+            _invalidate()
+            return {
+                "success": bool(res.get("success")),
+                "message": f"Confirmed transition from {from_area} into {selected_to_area}.",
+                "result": res,
+            }
         elif action_type == "heal_mesh_node":
             mm = _get_mesh_manager()
             res = await mm.async_heal_mesh_node(
@@ -10485,13 +10512,54 @@ class DiscoveryEngine:
                                         "confidence": cp["confidence"],
                                         "samples": cp["samples"],
                                     }
-                                    for cp in untrained_profiles[:6]
+                                    for cp in sorted(
+                                        active_training_profiles,
+                                        key=lambda p: (
+                                            0 if (p["samples"] < 5 or p["confidence"] < 0.85) else 1,
+                                            -p["confidence"],
+                                        ),
+                                    )[:12]
                                 ],
                                 "area": r_slug,
                                 "area_name": r_name,
                                 **media_info,
                             },
                         })
+
+                    # Ambiguous Room Transition Review Cards (with camera snapshot + room selector)
+                    if hasattr(self.vision_manager, "get_ambiguous_room_transitions"):
+                        for amb in self.vision_manager.get_ambiguous_room_transitions():
+                            from_area = amb["from_area"]
+                            from_name = amb["from_area_name"]
+                            cand_rooms = amb.get("candidate_areas") or []
+                            if len(cand_rooms) < 2:
+                                continue
+                            amb_media = self._resolve_room_training_media(
+                                from_area, from_name, cams, all_states, entity_to_area
+                            )
+                            subj = amb.get("subject", "person")
+                            cand_names = ", ".join(c["area_name"] for c in cand_rooms)
+                            suggestions.append({
+                                "id": f"confirm_room_transition_{from_area}",
+                                "title": f"🚪 Which room did the {subj} enter from {from_name}?",
+                                "category": "presence",
+                                "priority": "high",
+                                "icon": "mdi:door-open",
+                                "description": (
+                                    f"Activity in {from_name} suggests a {subj} moved into an adjacent connected room, "
+                                    f"with multiple possibilities ({cand_names}). Review the snapshot below and select which room they entered."
+                                ),
+                                "action_type": "confirm_room_transition",
+                                "action_payload": {
+                                    "from_area": from_area,
+                                    "from_area_name": from_name,
+                                    "subject": subj,
+                                    "candidate_rooms": cand_rooms,
+                                    "area": from_area,
+                                    "area_name": from_name,
+                                    **amb_media,
+                                },
+                            })
 
                 # Multi-Domain Quality Recommendations Powered by People, Pet & Guest Identity Data
                 pet_profiles = [p for p in active_training_profiles if p.get("entity_type") == "pet"]

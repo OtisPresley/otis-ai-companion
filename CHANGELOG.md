@@ -7,6 +7,15 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-11-12
+
+### Vision, Presence & Proactive Feed Enhancements
+- **Output-Zone vs. Input-Source Media Player Discovery**: Added `resolve_media_player_playback()` so always-on multi-room amp/Control4 output zones defer playback truth to their selected upstream input `media_player` instead of falsely marking rooms occupied when merely `on`.
+- **Outdoor False-Positive & Acoustic Suppression**: Excluded `outdoor` zones from indoor room occupancy lists and suppressed outdoor acoustic dBA and uncorroborated motion/light noise.
+- **Sensorless Room Inference & Auto-Derived Camera Sightlines**: Automatically derives indoor camera sightlines from `spatial_manager` adjacency, correlates fresh light/TV transitions (`last_changed`) in sensorless rooms, and engages hold-until-exit tracking.
+- **Ambiguous Room Transition Review Card**: Emits `confirm_room_transition` cards with live camera snapshot previews and room-selector buttons when a person or pet leaves a camera zone with multiple candidate connected rooms.
+- **100%-Confidence Profile Selection Fix**: Included all active person and pet profiles (including 100%-confidence / fully trained profiles) in `confirm_person_identity` candidate lists so users can always select the correct person or pet.
+
 ## [0.3.4] - 2026-11-12
 
 ### Security & Compliance Audit

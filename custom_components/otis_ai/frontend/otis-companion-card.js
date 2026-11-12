@@ -13,7 +13,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.3.4";
+const CARD_VERSION = "0.3.5";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -6749,7 +6749,7 @@ class OtisCompanionCard extends HTMLElement {
                       </div>
                       <div class="suggestion-title">${this._escapeHtml(s.title || "")}</div>
                       <div class="suggestion-desc">${this._escapeHtml(s.description || "").replace(/\n/g, "<br>")}</div>
-                      ${s.action_type === "confirm_person_identity" ? this._renderTrainingVerificationMedia(s) : ""}
+                      ${s.action_type === "confirm_person_identity" || s.action_type === "confirm_room_transition" ? this._renderTrainingVerificationMedia(s) : ""}
                       <div class="suggestion-actions">
                         ${
                           s.action_type === "sentinel_alert_actions"
@@ -6795,6 +6795,24 @@ class OtisCompanionCard extends HTMLElement {
                                 isDismissed
                                   ? `<button type="button" class="btn-restore" data-restore="${this._escapeHtml(s.id)}">↺ Restore</button>`
                                   : `<button type="button" class="btn-dismiss-card" data-dismiss="${this._escapeHtml(s.id)}" title="Dismiss this room prompt">Ignore</button>`
+                              }
+                            </div>
+                          </div>
+                        `
+                            : s.action_type === "confirm_room_transition" && Array.isArray(s.action_payload?.candidate_rooms) && s.action_payload.candidate_rooms.length > 0
+                            ? `
+                          <div style="display: flex; flex-direction: column; gap: 8px; width: 100%;">
+                            <div style="font-size: 0.73rem; font-weight: 600; color: var(--otis-primary);">Select which room the ${this._escapeHtml(s.action_payload.subject || "person")} entered from ${this._escapeHtml(s.action_payload.from_area_name || s.action_payload.from_area || "this area")}:</div>
+                            <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
+                              ${s.action_payload.candidate_rooms.map((rm) => `
+                                <button type="button" class="apply-btn btn-confirm-room-transition" data-suggestion-id="${this._escapeHtml(s.id)}" data-to-area="${this._escapeHtml(rm.area_id)}" data-to-area-name="${this._escapeHtml(rm.area_name || rm.area_id)}" style="padding: 5px 11px; font-size: 0.75rem;">
+                                  🚪 ${this._escapeHtml(rm.area_name || rm.area_id)}
+                                </button>
+                              `).join("")}
+                              ${
+                                isDismissed
+                                  ? `<button type="button" class="btn-restore" data-restore="${this._escapeHtml(s.id)}">↺ Restore</button>`
+                                  : `<button type="button" class="btn-dismiss-card" data-dismiss="${this._escapeHtml(s.id)}" title="Dismiss this room transition prompt">Ignore</button>`
                               }
                             </div>
                           </div>
@@ -13614,6 +13632,31 @@ class OtisCompanionCard extends HTMLElement {
           await this._fetchData();
         } catch (err) {
           this._showToast(`Failed to verify identity: ${err.message || err}`, true);
+        }
+      };
+    });
+
+    // Ambiguous Room Transition Selection buttons
+    root.querySelectorAll(".btn-confirm-room-transition").forEach((btn) => {
+      btn.onclick = async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const sid = e.currentTarget.getAttribute("data-suggestion-id");
+        const toArea = e.currentTarget.getAttribute("data-to-area");
+        const toAreaName = e.currentTarget.getAttribute("data-to-area-name") || toArea;
+        if (!sid || !toArea || !this._hass) return;
+        try {
+          this._showToast(`🚪 Confirming entry into ${toAreaName}...`);
+          await this._hass.callService("otis_ai", "apply_suggestion", {
+            suggestion_id: sid,
+            selected_to_area: toArea,
+          });
+          this._dismissedIds.add(sid);
+          this._saveDismissedIds();
+          this._showToast(`✅ Confirmed room transition into ${toAreaName}.`);
+          await this._fetchData();
+        } catch (err) {
+          this._showToast(`Failed to confirm room transition: ${err.message || err}`, true);
         }
       };
     });

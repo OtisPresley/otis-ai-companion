@@ -495,6 +495,21 @@ class TestVisionPresenceManager(unittest.TestCase):
         # Because Study entered via Hallway camera sightline + fresh light, hold is auto-engaged
         self.assertIn("study", mgr._active_room_holds)
 
+        # 6. Ambiguous transition flagged when >= 2 vacant connected rooms exist, and resolved by user selection
+        s_study_light.state = "off"
+        mgr._active_room_holds.clear()
+        mgr._presence_cache_ts = 0.0
+        asyncio.run(mgr.async_get_presence_states())
+        amb = mgr.get_ambiguous_room_transitions()
+        self.assertEqual(len(amb), 1)
+        self.assertEqual(amb[0]["from_area"], "hallway")
+        self.assertGreaterEqual(len(amb[0]["candidate_areas"]), 2)
+
+        res_amb = mgr.resolve_ambiguous_room_transition("hallway", "dining_room", subject="person")
+        self.assertTrue(res_amb["success"])
+        self.assertEqual(mgr.get_ambiguous_room_transitions(), [])
+        self.assertIn("dining_room", mgr._active_room_holds)
+
 
 if __name__ == "__main__":
     unittest.main()
