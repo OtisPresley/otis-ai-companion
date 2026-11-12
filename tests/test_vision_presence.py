@@ -470,6 +470,31 @@ class TestVisionPresenceManager(unittest.TestCase):
         res_exit = asyncio.run(mgr.async_get_presence_states())
         self.assertEqual(res_exit["rooms"]["dining_room"]["status"], "vacant")
 
+        # 5. Auto-derivation of indoor camera sightlines from floor plan / spatial graph
+        s_hall_cam = MockEntityState("camera.hallway_cam", "idle", {"friendly_name": "Hallway Camera"})
+        ent_reg.entities["camera.hallway_cam"] = MockEntityEntry("camera.hallway_cam", "hallway")
+        self.hass.states.async_all.return_value = [
+            s_hall_cam,
+            s_hall_motion,
+            s_study_light,
+            s_dining_light,
+            s_backyard_light,
+            s_backyard_motion,
+        ]
+        spatial_mock.get_adjacent_areas.side_effect = (
+            lambda aid: ["study", "dining_room", "backyard"] if aid == "hallway" else ["hallway"]
+        )
+        mgr._sightlines_synced_ts = 0.0
+        mgr._presence_cache_ts = 0.0
+        asyncio.run(mgr.async_get_presence_states())
+        self.assertIn("hallway", mgr._auto_sightlines)
+        self.assertIn("study", mgr._auto_sightlines["hallway"])
+        self.assertIn("dining_room", mgr._auto_sightlines["hallway"])
+        # Outdoor areas must be excluded from indoor camera sightlines
+        self.assertNotIn("backyard", mgr._auto_sightlines["hallway"])
+        # Because Study entered via Hallway camera sightline + fresh light, hold is auto-engaged
+        self.assertIn("study", mgr._active_room_holds)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -208,6 +208,8 @@ class VisionPresenceManager:
         self._last_voice_summary: str | None = None
         self._last_voice_summary_ts: float = 0.0
         self._camera_sightlines: dict[str, list[str]] = {}
+        self._auto_sightlines: dict[str, list[str]] = {}
+        self._sightlines_synced_ts: float = 0.0
         self._active_room_holds: dict[str, dict[str, Any]] = {}
 
     def register_camera_sightline(self, source_area_or_cam: str, target_areas: list[str]) -> None:
@@ -217,6 +219,47 @@ class VisionPresenceManager:
             self._camera_sightlines[key] = [
                 str(t).lower().replace(" ", "_") for t in target_areas if t
             ]
+
+    def _sync_camera_sightlines_from_spatial(
+        self,
+        entity_to_area: dict[str, str],
+        areas_by_id: dict[str, str],
+    ) -> dict[str, list[str]]:
+        """Automatically derive indoor camera sightlines from floor plan / spatial adjacency."""
+        if not self.spatial_manager or not hasattr(self.spatial_manager, "get_adjacent_areas"):
+            return self._auto_sightlines
+
+        auto_map: dict[str, list[str]] = {}
+        all_states = self.hass.states.async_all() if hasattr(self.hass, "states") else []
+        for s in all_states:
+            if not s.entity_id.startswith("camera."):
+                continue
+            cam_area = entity_to_area.get(s.entity_id)
+            if not cam_area:
+                fname = str(s.attributes.get("friendly_name") or s.entity_id).lower()
+                for aid, aname in areas_by_id.items():
+                    if re.search(rf"\b{re.escape(aname.lower())}\b", fname) or re.search(rf"\b{re.escape(aid)}\b", s.entity_id.lower()):
+                        cam_area = aid
+                        break
+            if not cam_area:
+                continue
+            cam_aname = areas_by_id.get(cam_area, cam_area)
+            if classify_area_zone(cam_area, cam_aname) == "outdoor":
+                continue
+            try:
+                adj = list(self.spatial_manager.get_adjacent_areas(cam_area) or [])
+            except Exception:
+                adj = []
+            indoor_adj = [
+                a for a in adj
+                if classify_area_zone(a, areas_by_id.get(a, a)) != "outdoor"
+            ]
+            if indoor_adj:
+                auto_map[cam_area] = indoor_adj
+
+        self._auto_sightlines = auto_map
+        self._sightlines_synced_ts = time.time()
+        return self._auto_sightlines
 
     def record_camera_sightline_event(
         self,
@@ -576,6 +619,15 @@ class VisionPresenceManager:
                 },
             }
 
+        # Auto-derive indoor camera sightlines from spatial graph every 5 minutes
+        if now_ts - self._sightlines_synced_ts > 300.0:
+            areas_by_id = {a.id: a.name for a in areas}
+            self._sync_camera_sightlines_from_spatial(entity_to_area, areas_by_id)
+
+        combined_sightlines: dict[str, list[str]] = dict(self._auto_sightlines)
+        for src_k, targets in self._camera_sightlines.items():
+            combined_sightlines[src_k] = targets
+
         # Second pass: Spatial Connectivity & Hold-Until-Exit for indoor sensorless rooms
         for a_id, r_info in room_results.items():
             if r_info["is_outdoor"] or not r_info["is_sensorless"]:
@@ -584,22 +636,33 @@ class VisionPresenceManager:
             sensors_info = r_info["sensors"]
             has_fresh_light = bool(sensors_info.get("light_changed_recently"))
             has_fresh_media = bool(sensors_info["media"].get("changed_recently"))
+            lights_or_media_on = sensors_info.get("lights_on", 0) > 0 or sensors_info["media"].get("playing", False)
 
             # 1. Check active camera sightline hold (person/pet seen entering and not yet seen exiting)
             hold = self._active_room_holds.get(a_id)
             if hold and hold.get("expires_at", 0) > now_ts:
-                inferred_p = 0.55 if (has_fresh_light or has_fresh_media) else 0.48
-                if inferred_p > r_info["probability"]:
-                    r_info["probability"] = inferred_p
-                    r_info["confidence_percent"] = int(inferred_p * 100)
-                    r_info["status"] = "likely_occupied"
-                    r_info["spatial_entry_inferred"] = True
-                    r_info["inferred_from"] = hold.get("from_area")
-                    continue
+                from_k = hold.get("from_area")
+                from_room = room_results.get(from_k) if from_k else None
+                from_recent_motion = (
+                    from_room is not None
+                    and (from_room["sensors"]["pir"].get("seconds_since_motion") or 9999) <= 15
+                )
+                # Auto-clear hold if >60s old, room's lights/TV are off, and adjacent corridor camera/sensor sees fresh exit motion
+                if (now_ts - hold.get("timestamp", now_ts)) > 60.0 and not lights_or_media_on and from_recent_motion:
+                    self.record_camera_sightline_event(from_k or "", a_id, event_type="exit")
+                else:
+                    inferred_p = 0.55 if (has_fresh_light or has_fresh_media) else 0.48
+                    if inferred_p > r_info["probability"]:
+                        r_info["probability"] = inferred_p
+                        r_info["confidence_percent"] = int(inferred_p * 100)
+                        r_info["status"] = "likely_occupied"
+                        r_info["spatial_entry_inferred"] = True
+                        r_info["inferred_from"] = from_k
+                        continue
             elif hold and hold.get("expires_at", 0) <= now_ts:
                 self._active_room_holds.pop(a_id, None)
 
-            # 2. Check adjacent rooms from spatial_manager + camera sightlines
+            # 2. Check adjacent rooms from spatial_manager + auto/manual camera sightlines
             if has_fresh_light or has_fresh_media:
                 adj_ids: list[str] = []
                 if self.spatial_manager and hasattr(self.spatial_manager, "get_adjacent_areas"):
@@ -607,7 +670,7 @@ class VisionPresenceManager:
                         adj_ids = list(self.spatial_manager.get_adjacent_areas(a_id) or [])
                     except Exception:
                         adj_ids = []
-                for src_k, targets in self._camera_sightlines.items():
+                for src_k, targets in combined_sightlines.items():
                     if a_id in targets and src_k not in adj_ids:
                         adj_ids.append(src_k)
 
@@ -623,6 +686,9 @@ class VisionPresenceManager:
                         r_info["status"] = "occupied" if r_info["probability"] >= 0.65 else "likely_occupied"
                         r_info["spatial_entry_inferred"] = True
                         r_info["inferred_from"] = adj_id
+                        # If the adjacent room has an indoor camera sightline to this room, start a hold
+                        if adj_id in combined_sightlines and a_id in combined_sightlines[adj_id]:
+                            self.record_camera_sightline_event(adj_id, a_id, event_type="entry", subject="person")
                         break
 
         # Build summary lists (outdoor areas excluded from indoor room occupancy lists)
@@ -961,6 +1027,22 @@ class VisionPresenceManager:
 
         # Update sensor.otis_perimeter_sentinel
         self._update_perimeter_sentinel_sensor(audit_entry)
+
+        # Auto-trigger camera sightline entry if indoor audit describes a person/pet entering an adjacent room
+        cam_zone = str(audit_entry.get("perimeter_zone") or "").lower().replace(" ", "_")
+        objs_lower = [str(o).lower() for o in (detected_objects or [])]
+        subject_match = next((o for o in objs_lower if o in ("person", "pet", "dog", "cat", "animal")), None)
+        if subject_match and cam_zone and self.spatial_manager and hasattr(self.spatial_manager, "get_adjacent_areas"):
+            summary_l = str(audit_entry.get("summary") or "").lower()
+            try:
+                for adj_id in (self.spatial_manager.get_adjacent_areas(cam_zone) or []):
+                    adj_label = adj_id.replace("_", " ")
+                    if adj_label in summary_l or adj_id in summary_l:
+                        self.record_camera_sightline_event(
+                            cam_zone, adj_id, event_type="entry", subject=subject_match
+                        )
+            except Exception:
+                pass
 
         # Fire perimeter anomaly event if anomaly detected
         if (anomaly_detected or severity in ("medium", "high", "critical")) and hasattr(self.hass, "bus") and hasattr(self.hass.bus, "async_fire"):
@@ -2182,6 +2264,7 @@ class VisionPresenceManager:
                 or eid.startswith("media_player.")
                 or eid.startswith("person.")
                 or eid.startswith("device_tracker.")
+                or eid.startswith("light.")
             ):
                 if eid.startswith("binary_sensor.otis_"):
                     return
