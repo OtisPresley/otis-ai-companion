@@ -460,7 +460,7 @@ export const modalsMixin = {
   },
 
   _renderThemeModal() {
-    const isSubview = this._isSubviewMode();
+    const isSubview = this._isSubviewMode() || !this._hass?.user?.is_admin;
     const presets = this._capabilityMap?.theme_presets || [
       { key: "cyberpunk", name: "Cyberpunk Neon", preview: { primary: "#00f0ff", accent: "#f43f5e", background: "#070b14", card_bg: "#0f172a" } },
       { key: "midnight_slate", name: "Midnight Slate", preview: { primary: "#38bdf8", accent: "#818cf8", background: "#0b1120", card_bg: "#1e293b" } },

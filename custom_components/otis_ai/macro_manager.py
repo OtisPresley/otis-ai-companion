@@ -810,11 +810,23 @@ class MacroManager:
 
         if any(w in template_slug for w in ("movie", "cinema", "theater")):
             display_name = "Movie Night Mode"
-            ent_area_tokens = ("theater", "cinema", "media", "living", "great_room", "family_room")
+            dedicated_tokens = ("theater", "cinema", "media_room")
+            fallback_tokens = ("living", "great_room", "family_room")
+            cap_entities = (capability_map or {}).get("entities", []) or []
+            cap_areas = (capability_map or {}).get("areas", {}) or {}
+
             if area_name:
                 ent_area_tokens = (area_name.lower().replace(" ", "_"),)
+            else:
+                has_dedicated = any(
+                    any(t in str(aid).lower() or t in str(ainfo.get("name", "")).lower() for t in dedicated_tokens)
+                    for aid, ainfo in cap_areas.items()
+                ) or any(
+                    any(t in str(s.entity_id).lower() for t in dedicated_tokens)
+                    for s in all_states
+                )
+                ent_area_tokens = dedicated_tokens if has_dedicated else fallback_tokens
 
-            cap_entities = (capability_map or {}).get("entities", []) or []
             ent_area_eids = {
                 e["entity_id"]
                 for e in cap_entities
