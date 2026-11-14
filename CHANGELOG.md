@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Frontend ES Module Architecture & Options Wiring**:
   - Split the 17,190-line `otis-companion-card.js` into modular ES modules (`card-styles.js`, `floorplan-3d.js`, `card-modals.js`, `card-tabs.js`, and `otis-companion-card.js`) with versioned `?v=0.4.0` imports and QuickJS syntax validation across all modules.
   - Wired `CONF_AUDIO_FOLLOW_ENABLED` and `CONF_LOCAL_MAX_TOKENS` into `_async_update_listener` for live options reload without restart.
+  - Added full `strings.json` parity and 10-language UI translations (`en`, `de`, `es`, `fr`, `it`, `nl`, `pl`, `zh`, `zh-Hans`, `zh-Hant`).
 - **Co-Pilot Engine, Presence Fusion & Command Center Studios**:
   - Extracted `copilot_engine.py` with room-scoped entity grounding, sun-elevation/condition parsing, strict confirmation gates, learned-fact capture, and a `👁️ Review` modal for proactive suggestions.
   - Added 90s PIR/camera recency holds, outdoor false-positive suppression, sensorless spatial room inference, ambiguous transition review cards, dynamic `Climate & Pool` water-chemistry grouping, `Media Studio` output-zone vs. input-source discovery with default return routing, and separate `hidden_recommendation_ids` vs. `Ignored` persistence.

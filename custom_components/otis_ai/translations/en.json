@@ -37,8 +37,10 @@
           "local_llm_enabled": "Enable Local Edge LLM (Offline Failover)",
           "local_llm_url": "Local LLM Server URL (Ollama / OpenAI-compatible)",
           "local_llm_model": "Local LLM Model",
+          "local_max_tokens": "Local LLM Max Response Tokens",
           "camera_stream_strategy": "Camera Stream Strategy",
-          "audio_follow_enabled": "Enable Automatic Audio Follow-Me"
+          "audio_follow_enabled": "Enable Automatic Audio Follow-Me",
+          "gemini_api_key": "Gemini API Key (Optional)"
         }
       }
     }

@@ -1,0 +1,48 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Otis AI Companion-instellingen",
+        "description": "Configureer de slimme co-piloot Otis AI Companion.",
+        "data": {
+          "conversation_agent": "AI-gespreksagent",
+          "spatial_map_path": "Bestandsnaam ruimtelijke kaart (JSON)",
+          "theme_name": "Dynamische themanaam",
+          "reasoning_timeout": "Time-out voor Assist Co-Pilot-redenering (seconden)",
+          "local_llm_enabled": "Lokale Edge LLM inschakelen (offline failover)",
+          "local_llm_url": "Lokale LLM-server-URL (Ollama / OpenAI-compatibel)",
+          "local_llm_model": "Lokaal LLM-model",
+          "camera_stream_strategy": "Camerastreamstrategie"
+        }
+      },
+      "onboarding": {
+        "title": "Otis AI Companion-introductie",
+        "description": "Er zijn geen actieve AI-gespreksagenten (zoals Gemini, OpenAI, Ollama) gevonden in uw Home Assistant-configuratie.\n\nOtis AI Companion vereist een AI-provider voor spraak-/tekstinteractie, ruimtelijke kaarten en automatiseringssuggesties. We raden aan om eerst de integratie **Google Generative AI** of **OpenAI** te configureren.\n\nWilt u doorgaan met beperkte lokale functies?",
+        "data": {
+          "understand_limitations": "Ik begrijp het en wil doorgaan met beperkte functies"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Er is slechts één configuratie van Otis AI Companion toegestaan."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Otis AI Companion-opties",
+        "description": "Werk runtime-opties voor Otis AI Companion bij. Cloud-AI-gespreksagenten worden automatisch ontdekt, ontdubbeld en gerangschikt.",
+        "data": {
+          "reasoning_timeout": "Time-out voor Assist Co-Pilot-redenering (seconden)",
+          "local_llm_enabled": "Lokale Edge LLM inschakelen (offline failover)",
+          "local_llm_url": "Lokale LLM-server-URL (Ollama / OpenAI-compatibel)",
+          "local_llm_model": "Lokaal LLM-model",
+          "local_max_tokens": "Max. antwoordtokens voor lokale LLM",
+          "camera_stream_strategy": "Camerastreamstrategie",
+          "audio_follow_enabled": "Automatische Audio Follow-Me inschakelen",
+          "gemini_api_key": "Gemini API-sleutel (optioneel)"
+        }
+      }
+    }
+  }
+}

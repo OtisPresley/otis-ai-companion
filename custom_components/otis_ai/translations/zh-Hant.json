@@ -1,0 +1,48 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Otis AI Companion 設定",
+        "description": "設定智慧副駕駛 Otis AI Companion。",
+        "data": {
+          "conversation_agent": "AI 對話代理",
+          "spatial_map_path": "空間地圖 JSON 檔案名稱",
+          "theme_name": "動態主題名稱",
+          "reasoning_timeout": "Assist Co-Pilot 推理逾時（秒）",
+          "local_llm_enabled": "啟用本地邊緣 LLM（離線容錯移轉）",
+          "local_llm_url": "本地 LLM 伺服器 URL（Ollama / 相容 OpenAI）",
+          "local_llm_model": "本地 LLM 模型",
+          "camera_stream_strategy": "攝影機串流策略"
+        }
+      },
+      "onboarding": {
+        "title": "Otis AI Companion 導引設定",
+        "description": "在您的 Home Assistant 設定中找不到使用中的 AI 對話代理（例如 Gemini、OpenAI、Ollama）。\n\nOtis AI Companion 需要 AI 供應商來進行語音/文字互動、空間測繪和自動化建議。我們建議先設定 **Google Generative AI** 或 **OpenAI** 整合。\n\n您確定要僅以有限的本地功能繼續嗎？",
+        "data": {
+          "understand_limitations": "我瞭解並希望以有限功能繼續"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "僅允許設定一個 Otis AI Companion 執行個體。"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Otis AI Companion 選項",
+        "description": "更新 Otis AI Companion 的執行階段選項。雲端 AI 對話代理會自動探索、去重並排序。",
+        "data": {
+          "reasoning_timeout": "Assist Co-Pilot 推理逾時（秒）",
+          "local_llm_enabled": "啟用本地邊緣 LLM（離線容錯移轉）",
+          "local_llm_url": "本地 LLM 伺服器 URL（Ollama / 相容 OpenAI）",
+          "local_llm_model": "本地 LLM 模型",
+          "local_max_tokens": "本地 LLM 最大回應 Token 數",
+          "camera_stream_strategy": "攝影機串流策略",
+          "audio_follow_enabled": "啟用自動音訊隨行（Follow-Me）",
+          "gemini_api_key": "Gemini API 金鑰（選填）"
+        }
+      }
+    }
+  }
+}

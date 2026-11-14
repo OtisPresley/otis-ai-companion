@@ -1,0 +1,48 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Paramètres d'Otis AI Companion",
+        "description": "Configurez le copilote intelligent Otis AI Companion.",
+        "data": {
+          "conversation_agent": "Agent de conversation IA",
+          "spatial_map_path": "Nom du fichier de carte spatiale (JSON)",
+          "theme_name": "Nom du thème dynamique",
+          "reasoning_timeout": "Délai d'attente du raisonnement Assist Co-Pilot (secondes)",
+          "local_llm_enabled": "Activer le LLM local (basculement hors ligne)",
+          "local_llm_url": "URL du serveur LLM local (Ollama / compatible OpenAI)",
+          "local_llm_model": "Modèle LLM local",
+          "camera_stream_strategy": "Stratégie de flux caméra"
+        }
+      },
+      "onboarding": {
+        "title": "Prise en main d'Otis AI Companion",
+        "description": "Aucun agent de conversation IA actif (ex. Gemini, OpenAI, Ollama) n'a été trouvé dans votre configuration Home Assistant.\n\nOtis AI Companion nécessite un fournisseur d'IA pour l'interaction vocale/textuelle, la cartographie spatiale et les suggestions d'automatisation. Nous vous recommandons de configurer d'abord l'intégration **Google Generative AI** ou **OpenAI**.\n\nSouhaitez-vous continuer avec des fonctionnalités locales limitées ?",
+        "data": {
+          "understand_limitations": "Je comprends et je souhaite continuer avec des fonctionnalités limitées"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Une seule configuration d'Otis AI Companion est autorisée."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options d'Otis AI Companion",
+        "description": "Mettez à jour les options d'exécution pour Otis AI Companion. Les agents de conversation IA dans le cloud sont automatiquement découverts, dédupliqués et classés.",
+        "data": {
+          "reasoning_timeout": "Délai d'attente du raisonnement Assist Co-Pilot (secondes)",
+          "local_llm_enabled": "Activer le LLM local (basculement hors ligne)",
+          "local_llm_url": "URL du serveur LLM local (Ollama / compatible OpenAI)",
+          "local_llm_model": "Modèle LLM local",
+          "local_max_tokens": "Nombre maximal de jetons de réponse du LLM local",
+          "camera_stream_strategy": "Stratégie de flux caméra",
+          "audio_follow_enabled": "Activer le suivi audio automatique (Follow-Me)",
+          "gemini_api_key": "Clé API Gemini (facultative)"
+        }
+      }
+    }
+  }
+}
