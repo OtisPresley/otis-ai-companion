@@ -19,6 +19,11 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er
 
+try:
+    from homeassistant.helpers.storage import Store
+except ImportError:
+    Store = None
+
 from .const import (
     DOMAIN,
     CONF_GEMINI_API_KEY,
@@ -204,6 +209,11 @@ class VisionPresenceManager:
         self._presence_cache: dict[str, Any] = {}
         self._presence_cache_ts: float = 0.0
         self._transition_history: list[dict[str, Any]] = []
+        self._transition_store = (
+            Store(hass, 1, f"{DOMAIN}_vision_transitions")
+            if Store is not None and hass is not None and hasattr(hass, "data")
+            else None
+        )
         self._active_migration: dict[str, Any] | None = None
         self._last_active_area: str | None = None
         self._last_active_area_ts: float = 0.0
@@ -2349,9 +2359,27 @@ class VisionPresenceManager:
         self._transition_history.append(record)
         if len(self._transition_history) > 100:
             self._transition_history = self._transition_history[-100:]
+        if self._transition_store is not None and hasattr(self._transition_store, "async_delay_save"):
+            self._transition_store.async_delay_save(
+                lambda: {"transitions": list(self._transition_history)},
+                5.0,
+            )
         self._last_active_area = to_area
         self._last_active_area_ts = ts
         return record
+
+    async def async_load(self) -> None:
+        """Load persisted area transition history from storage."""
+        if self._transition_store is None or not hasattr(self._transition_store, "async_load"):
+            return
+        try:
+            data = await self._transition_store.async_load()
+            if isinstance(data, dict) and isinstance(data.get("transitions"), list):
+                self._transition_history = [
+                    t for t in data["transitions"][-100:] if isinstance(t, dict)
+                ]
+        except Exception as err:
+            _LOGGER.debug("Could not load vision transition history: %s", err)
 
     def get_transition_history(self, limit: int = 20) -> list[dict[str, Any]]:
         """Return the recent area transition history."""
@@ -2573,8 +2601,12 @@ class VisionPresenceManager:
             except Exception as err:
                 _LOGGER.debug("Entity state update notice: %s", err)
 
-        # Trigger soft pre-conditioning actions in macro_manager
-        if getattr(self, "macro_manager", None):
+        # Trigger soft pre-conditioning actions in macro_manager only if explicitly enabled in Rules
+        rules_mgr = getattr(self, "rules_manager", None) or (
+            getattr(self.audio_manager, "rules_manager", None) if getattr(self, "audio_manager", None) else None
+        )
+        precond_enabled = bool(rules_mgr.get_rules().get("predictive_preconditioning_enabled", False)) if rules_mgr else False
+        if precond_enabled and getattr(self, "macro_manager", None):
             try:
                 await self.macro_manager.async_process_spatial_migration(
                     intent, occupied_areas=presence_data.get("occupied_areas")

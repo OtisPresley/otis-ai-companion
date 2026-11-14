@@ -99,16 +99,39 @@ export const CARD_STYLES = `
           gap: 8px;
         }
 
-        ha-card.card-container.nav-compact_pills .subview-chip {
+        ha-card.card-container.nav-sleek_buttons .launchpad-row .subview-chip {
+          border-radius: 10px;
+          padding: 7px 14px;
+          font-size: 0.76rem;
+          font-weight: 500;
+        }
+
+        ha-card.card-container.nav-compact_pills .launchpad-row .subview-chip {
           border-radius: 999px;
           padding: 3px 10px;
-          font-size: 0.71rem;
+          font-size: 0.70rem;
+          gap: 4px;
+        }
+
+        ha-card.card-container.nav-standard_grid .launchpad-row {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(145px, 1fr));
+          gap: 8px;
+          align-items: stretch;
+        }
+
+        ha-card.card-container.nav-standard_grid .launchpad-row .subviews-label {
+          grid-column: 1 / -1;
         }
 
         ha-card.card-container.nav-standard_grid .launchpad-row .subview-chip {
           border-radius: 10px;
-          padding: 6px 12px;
+          padding: 10px 12px;
           font-weight: 600;
+          justify-content: center;
+          text-align: center;
+          min-height: 40px;
+          margin-left: 0 !important;
         }
 
         /* Curated Theme Presets */
@@ -3665,5 +3688,74 @@ export const CARD_STYLES = `
           background: rgba(255, 255, 255, 0.08);
           border: 1px solid rgba(255, 255, 255, 0.15);
           color: var(--otis-text);
+        }
+
+        /* Compact Embedded Media Studio (Tablet / Kitchen) */
+        .mode-compact.mode-media-studio {
+          padding: 10px 12px !important;
+        }
+        .mode-compact.mode-media-studio .studio-header {
+          padding: 0 0 8px 0 !important;
+          margin-bottom: 8px !important;
+          min-height: 0 !important;
+        }
+        .mode-compact.mode-media-studio .studio-header .main-title {
+          font-size: 0.95rem !important;
+        }
+        .mode-compact.mode-media-studio .media-studio-wrapper {
+          gap: 10px !important;
+        }
+        .mode-compact.mode-media-studio .media-studio-wrapper > div {
+          padding: 10px !important;
+          border-radius: 12px !important;
+        }
+        .mode-compact.mode-media-studio .btn-media-transport {
+          padding: 4px 10px !important;
+          font-size: 0.8rem !important;
+        }
+        .mode-compact.mode-media-studio .media-fav-card {
+          padding: 6px 8px !important;
+        }
+        .mode-compact.mode-media-studio .subview-chip {
+          padding: 3px 8px !important;
+          font-size: 0.7rem !important;
+        }
+        .compact-media-tabs {
+          display: grid;
+          grid-template-columns: repeat(3, 1fr);
+          gap: 4px;
+          padding: 4px;
+          border-radius: 10px;
+          background: rgba(0, 0, 0, 0.28);
+          border: 1px solid var(--otis-surface-border);
+        }
+        .compact-media-tab {
+          background: transparent;
+          border: 1px solid transparent;
+          color: var(--otis-text-muted);
+          border-radius: 7px;
+          padding: 6px 4px;
+          font-size: 0.72rem;
+          font-weight: 600;
+          cursor: pointer;
+          text-align: center;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          transition: all 0.15s ease;
+        }
+        .compact-media-tab.active {
+          background: rgba(56, 189, 248, 0.18);
+          border-color: rgba(56, 189, 248, 0.45);
+          color: var(--otis-primary);
+          font-weight: 700;
+        }
+        .compact-media-tab-panel {
+          max-height: 365px;
+          overflow-y: auto;
+        }
+        select option {
+          background: var(--otis-card-bg, #0f172a);
+          color: var(--otis-text, #f1f5f9);
         }
 `;

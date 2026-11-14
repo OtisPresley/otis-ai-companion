@@ -687,6 +687,7 @@ class BehavioralHabitManager:
                 "confidence": round(freq_score, 2),
                 "icon": icon,
                 "suggested_action": "Automate Spatial Pre-Conditioning",
+                "action_type": "create_automation",
                 "occurrences": len(timestamps),
                 "from_area": from_area,
                 "to_area": to_area,

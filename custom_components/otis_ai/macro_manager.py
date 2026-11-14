@@ -651,7 +651,7 @@ class MacroManager:
                 s.entity_id for s in all_states
                 if s.entity_id.startswith("climate.") and s.state != "unavailable"
             ]
-            target_clim = next((c for c in climates if "theater" in c or "cinema" in c), None) or (climates[0] if climates else None)
+            target_clim = next((c for c in climates if "theater" in c or "cinema" in c), None)
 
             current_temp = 70.0
             if target_clim:

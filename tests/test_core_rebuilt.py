@@ -3952,23 +3952,26 @@ class TestMacroManager(unittest.TestCase):
 
         self.hass.states.async_all = MagicMock(side_effect=mock_states_all)
 
-        mock_store = AsyncMock()
-        mock_store.async_load.return_value = {
-            "items": [
-                {
-                    "id": "pipe_1",
-                    "name": "Otis Local Pipeline",
-                    "conversation_engine": "conversation.otis_ai",
-                    "stt_engine": "stt.whisper",
-                    "tts_engine": "tts.piper",
-                    "prefer_local_intents": True,
-                }
-            ],
-            "preferred_item": "pipe_1",
-        }
-
+        import sys
+        from types import ModuleType, SimpleNamespace
         from unittest.mock import patch
-        with patch("homeassistant.helpers.storage.Store", return_value=mock_store):
+        mock_pipeline = SimpleNamespace(
+            id="pipe_1",
+            name="Otis Local Pipeline",
+            conversation_engine="conversation.otis_ai",
+            stt_engine="stt.whisper",
+            tts_engine="tts.piper",
+            prefer_local_intents=True,
+        )
+        mock_ap_mod = ModuleType("homeassistant.components.assist_pipeline")
+        mock_ap_mod.async_get_pipelines = lambda hass: [mock_pipeline]
+        mock_ap_data = SimpleNamespace(
+            pipeline_store=SimpleNamespace(async_get_preferred_item=lambda: "pipe_1")
+        )
+        self.hass.data["assist_pipeline"] = mock_ap_data
+        import homeassistant.components as ha_components
+        with patch.dict(sys.modules, {"homeassistant.components.assist_pipeline": mock_ap_mod}), \
+             patch.object(ha_components, "assist_pipeline", mock_ap_mod, create=True):
             mgr = AudioHandoffManager(self.hass)
             st = asyncio.run(mgr.async_get_assist_pipeline_status())
             self.assertTrue(st["success"])

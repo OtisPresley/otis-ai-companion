@@ -7,6 +7,28 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-11-14
+
+### Added
+- **Assist Co-Pilot Live HA System Log Audit (`log_monitor.py`, `__init__.py`)**: Added `LogMonitor.async_summarize_logs_for_copilot()` and an admin-gated fast-path in `OtisAIConversationAgent.async_process` so queries asking to inspect, analyze, or review Home Assistant logs return a live, sanitized breakdown of integration bugs, errors/warnings, and transient self-healing notices instead of claiming lack of log access.
+- **Compact & Embeddable Media Studio Card Options (`card-tabs.js`, `card-styles.js`, `otis-companion-card.js`)**: Added `compact: true` (with a 3-tab segmented switcher for `★ Favorites`, `🎚️ Volumes`, and `🔗 Link & Route` below the pinned Now Playing bar), `show_header: false`, and opt-in `show_back: true` support for `media_studio` mode, plus a per-user `🎨` Themes trigger on compact headers.
+- **Opt-In Predictive Climate Pre-Conditioning (`rules_manager.py`, `vision_manager.py`, `macro_manager.py`, `card-modals.js`)**: Added `predictive_preconditioning_enabled` (default `False`) in **Rules → Etiquette & Proactive** and removed the `climates[0]` fallback so unrelated thermostats are never modified automatically.
+
+### Improved
+- **HACS & Access Control Hardening (`__init__.py`, `audio_manager.py`, `log_monitor.py`)**:
+  - Removed the `Store(self.hass, 1, "assist_pipeline.pipelines")` fallback in `AudioHandoffManager.async_get_assist_pipeline_status` so pipeline discovery uses only the public `assist_pipeline` API, and replaced hardcoded player substrings (`vlc_telnet_2`, `study_group`) with generic media platform tokens.
+  - Consolidated service registration into a single `service_specs` table in `__init__.py` and enforced `_register_admin_service` on all state-, registry-, dashboard-, knowledge-, person-profile-, energy-shed-, recommendation-, and satellite-config-mutating services.
+  - Extracted shared helpers `LogMonitor._parse_log_record` and `_finalize_fast_path` in `OtisAIConversationAgent.async_process` to eliminate duplicated parsing and response-finalization logic.
+- **Naming-Agnostic Pool & SleepNumber Discovery (`dashboard_manager.py`)**: Replaced entity-name substring guessing with integration `platform` and `device_id` grouping (`pool_platforms`, `sleep_platforms`) plus `dict.fromkeys` deduplication, separating controllable entities from read-only telemetry.
+- **Distinct Navigation Button Styles (`card-styles.js`, `dashboard_manager.py`)**: Differentiated `sleek_buttons` (2-col `34px` icons), `standard_grid` (`.launchpad-row` and `column_span: 2` 3-col square grids with `44px` icons), and `compact_pills` (pill chips and `column_span: 2` 4-col compact buttons with `18px` icons).
+
+### Fixed
+- **Startup Deadlock & Non-Blocking Background Tasks (`__init__.py`)**: Replaced `hass.async_create_task` with `hass.async_create_background_task` (`_schedule_background_task`) and moved `_async_sync_dashboards_on_startup()` to an `EVENT_HOMEASSISTANT_STARTED` listener, eliminating the 120-second Home Assistant bootstrap wait.
+- **Per-User Theme Isolation & Restart Persistence (`theme_manager.py`, `card-modals.js`, `otis-companion-card.js`, `__init__.py`)**: Persisted **Specific User** theme assignments in `.storage/otis_ai_user_themes` without mutating the admin's active browser theme, re-registered stored themes on `EVENT_HOMEASSISTANT_STARTED` with `themes_updated` so Companion Apps see them immediately on restart, fixed `select option` dark contrast, and included ignored users in Theme Studio's user list.
+- **Non-Admin & Standalone Media Studio Isolation (`otis-companion-card.js`)**: Guarded `subscribeEvents` for `otis_ai_rules_updated` and `otis_ai_reasoning_step` behind `this._hass?.user?.is_admin`, and skipped chat state tracking in `mode: media_studio`.
+- **Dashboard Merge & Subview Layout Fixes (`dashboard_manager.py`, `card-tabs.js`)**: Keyed `custom:otis-companion-card` by `(mode, area_id)` in `_merge_view_preserving_cards` to prevent duplicate studio cards, preserved navigation `grid` cards with `grid_options: {"columns": 12}` separated from tall Studio markdown summaries, and fixed an orphaned `</div>` in `card-tabs.js` `routingHtml` so Media Studio 2-column grids align properly.
+- **Spatial Migration Habit 1-Click Apply (`habit_manager.py`, `vision_manager.py`, `otis-companion-card.js`)**: Added `"action_type": "create_automation"` to `async_mine_spatial_habits()`, persisted `VisionPresenceManager._transition_history` via `Store`, and refreshed the Proactive Feed when `apply_suggestion` returns an error.
+
 ## [0.4.0] - 2026-11-13
 
 ### Major Release & Cumulative Summary (Since v0.3.0)

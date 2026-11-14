@@ -357,3 +357,47 @@ def test_issue_reporter_view_enforces_admin():
 
     resp_admin_get = asyncio.run(view.get(req_admin_get))
     assert resp_admin_get.status == 200
+
+
+def test_log_monitor_copilot_summary():
+    """Verify LogMonitor.async_summarize_logs_for_copilot formats bugs, warnings, and clean state."""
+    from custom_components.otis_ai.log_monitor import LogMonitor
+
+    hass = MagicMock()
+    hass.config.version = "2026.11"
+    hass.config.as_dict = MagicMock(return_value={"architecture": "x86_64"})
+    lm = LogMonitor(hass)
+    lm.async_load = AsyncMock()
+    lm.async_resolve_target_repo = AsyncMock(return_value="OtisPresley/otis-ai-companion")
+
+    # 1. Clean log buffer
+    lm.get_system_log_records = MagicMock(return_value=[])
+    clean_summary = asyncio.run(lm.async_summarize_logs_for_copilot())
+    assert "no active integration bugs, errors, or warnings" in clean_summary.lower()
+
+    # 2. Bug + warning records
+    lm.get_system_log_records = MagicMock(return_value=[
+        {
+            "name": "custom_components.my_sensor.sensor",
+            "level": "ERROR",
+            "message": ["Failed updating sensor"],
+            "exception": "KeyError: 'temp'",
+            "count": 3,
+            "timestamp": 1700000000.0,
+            "source": ["custom_components/my_sensor/sensor.py", 42],
+        },
+        {
+            "name": "homeassistant.components.automation",
+            "level": "WARNING",
+            "message": ["Template rendered invalid value"],
+            "exception": "",
+            "count": 2,
+            "timestamp": 1700000001.0,
+            "source": [],
+        },
+    ])
+    summary = asyncio.run(lm.async_summarize_logs_for_copilot())
+    assert "my_sensor" in summary
+    assert "KeyError" in summary or "Failed updating sensor" in summary
+    assert "homeassistant.components.automation" in summary
+    assert "Template rendered invalid value" in summary

@@ -33,6 +33,7 @@ DEFAULT_RULES: dict[str, Any] = {
     "quiet_hours_end": "07:00",
     "quiet_hours_volume": 25,
     "audio_follow_enabled": True,
+    "predictive_preconditioning_enabled": False,
     "preferred_speaker": "",
     "custom_instructions": "",
     "dashboard_layout": "modern_sections",
@@ -193,6 +194,8 @@ class BehavioralRulesManager:
         # Ensure valid types
         if "audio_follow_enabled" in merged:
             merged["audio_follow_enabled"] = bool(merged["audio_follow_enabled"])
+        if "predictive_preconditioning_enabled" in merged:
+            merged["predictive_preconditioning_enabled"] = bool(merged["predictive_preconditioning_enabled"])
         if "voice_announcements_enabled" in merged:
             merged["voice_announcements_enabled"] = bool(merged["voice_announcements_enabled"])
         if "voice_filter_passersby" in merged:

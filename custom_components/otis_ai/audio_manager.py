@@ -183,9 +183,9 @@ class AudioHandoffManager:
                     mappings[src_clean] = eid
                     break
             else:
-                # Secondary heuristic: e.g. "Server" -> music_assistant / vlc_telnet_2
+                # Secondary heuristic: e.g. "Server" -> music_assistant / vlc_telnet / mopidy
                 if src_low in ("server", "media server", "music assistant", "stream 1"):
-                    for target_sub in ("vlc_telnet_2", "music_assistant", "study_group"):
+                    for target_sub in ("music_assistant", "vlc_telnet", "mopidy"):
                         matched_eid = next(
                             (
                                 str(st.get("entity_id") or "")
@@ -1925,31 +1925,6 @@ class AudioHandoffManager:
                 })
         except Exception as ap_err:
             _LOGGER.debug("Could not inspect assist_pipeline components directly: %s", ap_err)
-
-        # Fallback to storage load if empty
-        if not pipelines_list:
-            try:
-                from homeassistant.helpers.storage import Store
-
-                ap_store = Store(self.hass, 1, "assist_pipeline.pipelines")
-                data = await ap_store.async_load()
-                if data and isinstance(data, dict):
-                    preferred_id = data.get("preferred_item")
-                    for item in data.get("items", []):
-                        item_id = item.get("id")
-                        pipelines_list.append({
-                            "id": item_id,
-                            "name": item.get("name", "Assist Pipeline"),
-                            "is_preferred": (item_id == preferred_id),
-                            "conversation_engine": item.get("conversation_engine"),
-                            "stt_engine": item.get("stt_engine"),
-                            "tts_engine": item.get("tts_engine"),
-                            "wake_word_entity": item.get("wake_word_entity"),
-                            "wake_word_id": item.get("wake_word_id"),
-                            "prefer_local_intents": item.get("prefer_local_intents", False),
-                        })
-            except Exception as st_err:
-                _LOGGER.debug("Could not inspect assist_pipeline from storage: %s", st_err)
 
         # 2. Discover assist satellites
         satellites: list[dict[str, Any]] = []

@@ -1,7 +1,7 @@
-import { CARD_STYLES } from "./card-styles.js?v=0.4.0";
-import { floorplanMixin } from "./floorplan-3d.js?v=0.4.0";
-import { modalsMixin } from "./card-modals.js?v=0.4.0";
-import { tabsMixin } from "./card-tabs.js?v=0.4.0";
+import { CARD_STYLES } from "./card-styles.js?v=0.4.1";
+import { floorplanMixin } from "./floorplan-3d.js?v=0.4.1";
+import { modalsMixin } from "./card-modals.js?v=0.4.1";
+import { tabsMixin } from "./card-tabs.js?v=0.4.1";
 
 /**
  * Otis AI Companion - Lovelace Dashboard Card
@@ -18,7 +18,7 @@ import { tabsMixin } from "./card-tabs.js?v=0.4.0";
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.4.0";
+const CARD_VERSION = "0.4.1";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -80,6 +80,7 @@ class OtisCompanionCard extends HTMLElement {
     this._isListening = false;
     this._recognition = null;
     this._activeTab = this._loadActiveTab(); // 'suggestions' | 'chat' | 'capabilities' | 'floorplan' | 'vision'
+    this._compactMediaTab = "favorites"; // 'favorites' | 'volumes' | 'routing'
     this._selectedCategory = "all"; // 'all' | 'lighting' | 'media' | 'security' | 'cleanup' | 'system'
     try {
       this._conversationId = sessionStorage.getItem("otis_conversation_id") || null;
@@ -343,11 +344,13 @@ class OtisCompanionCard extends HTMLElement {
 
     // Load initial capability map and suggestions if not loaded
     if (!oldHass && hass) {
-      OTIS_ACTIVE_CHAT.instances.add(this);
-      this._syncActiveChatState();
       this._fetchData();
-      this._subscribeReasoningEvents();
-      this._subscribeRuleEvents();
+      if (this._config?.mode !== "media_studio") {
+        OTIS_ACTIVE_CHAT.instances.add(this);
+        this._syncActiveChatState();
+        this._subscribeReasoningEvents();
+        this._subscribeRuleEvents();
+      }
     } else if (hass && this.shadowRoot) {
       if (this._rulesModalOpen || OTIS_ACTIVE_RULES_STATE.isOpen) {
         // Skip background re-renders while the user is actively working in the Rules dialog
@@ -387,12 +390,14 @@ class OtisCompanionCard extends HTMLElement {
   }
 
   connectedCallback() {
-    OTIS_ACTIVE_CHAT.instances.add(this);
-    this._chatMessages = this._loadChatMessages();
-    this._syncActiveChatState();
-    if (this._hass) {
-      this._subscribeReasoningEvents();
-      this._subscribeRuleEvents();
+    if (this._config?.mode !== "media_studio") {
+      OTIS_ACTIVE_CHAT.instances.add(this);
+      this._chatMessages = this._loadChatMessages();
+      this._syncActiveChatState();
+      if (this._hass) {
+        this._subscribeReasoningEvents();
+        this._subscribeRuleEvents();
+      }
     }
     this._render();
     if (this._activeTab === "floorplan") {
@@ -551,6 +556,7 @@ class OtisCompanionCard extends HTMLElement {
 
   async _subscribeRuleEvents() {
     if (this._unsubRuleEvents) return;
+    if (!this._hass?.user?.is_admin) return;
     try {
       if (this._hass && this._hass.connection && typeof this._hass.connection.subscribeEvents === "function") {
         this._unsubRuleEvents = await this._hass.connection.subscribeEvents((ev) => {
@@ -568,6 +574,7 @@ class OtisCompanionCard extends HTMLElement {
 
   async _subscribeReasoningEvents() {
     if (this._unsubReasoningEvents) return;
+    if (!this._hass?.user?.is_admin) return;
     try {
       if (this._hass && this._hass.connection && typeof this._hass.connection.subscribeEvents === "function") {
         this._unsubReasoningEvents = await this._hass.connection.subscribeEvents((ev) => {
@@ -812,6 +819,26 @@ class OtisCompanionCard extends HTMLElement {
     };
     if (capMap.conversation_agent_id) {
       this._conversationAgentId = capMap.conversation_agent_id;
+    }
+    if (capMap.user_themes && this._hass?.user?.id) {
+      const uid = this._hass.user.id;
+      let assignedTheme = capMap.user_themes[uid];
+      if (!assignedTheme && this._hass?.states) {
+        for (const [eid, st] of Object.entries(this._hass.states)) {
+          if (eid.startsWith("person.") && st?.attributes?.user_id === uid && capMap.user_themes[eid]) {
+            assignedTheme = capMap.user_themes[eid];
+            break;
+          }
+        }
+      }
+      if (
+        assignedTheme &&
+        assignedTheme !== this._lastAppliedAssignedTheme &&
+        this._hass?.themes?.theme !== assignedTheme
+      ) {
+        this._lastAppliedAssignedTheme = assignedTheme;
+        this._applyThemeDirect(assignedTheme, uid, false);
+      }
     }
     this._userRules = capMap.user_rules || {};
     if (this._userRules.wizard_state && typeof this._userRules.wizard_state === "object") {
@@ -1494,6 +1521,7 @@ class OtisCompanionCard extends HTMLElement {
         await this._fetchData();
       } else {
         this._showToast(data.error || "Failed to apply suggestion", true);
+        await this._fetchData();
       }
     } catch (err) {
       console.error("Error applying suggestion:", err);
@@ -2949,29 +2977,33 @@ class OtisCompanionCard extends HTMLElement {
       ${CARD_STYLES}
       </style>
 
-      <ha-card class="card-container ${themeClass} layout-${this._escapeHtml(layoutClass)} nav-${this._escapeHtml(navClass)} ${isStudioMode ? "mode-floorplan-studio" : ""} ${isMediaStudioMode ? "mode-media-studio" : ""}">
+      <ha-card class="card-container ${themeClass} layout-${this._escapeHtml(layoutClass)} nav-${this._escapeHtml(navClass)} ${isStudioMode ? "mode-floorplan-studio" : ""} ${isMediaStudioMode ? "mode-media-studio" : ""} ${this._config?.compact ? "mode-compact" : ""}">
         ${isMediaStudioMode
         ? `
-          <!-- Media Studio Header -->
+          ${this._config?.show_header === false
+            ? ""
+            : `<!-- Media Studio Header -->
           <div class="studio-header">
             <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
-              <button type="button" class="btn-toolbar" id="btn-back-dashboard" title="Return to Dashboard">
-                ← Back
-              </button>
+              ${this._config?.show_back === true
+                ? `<button type="button" class="btn-toolbar" id="btn-back-dashboard" title="Return to Dashboard">← Back</button>`
+                : ""}
               <div class="title-group">
                 <span class="main-title">${this._escapeHtml(this._config.title || "🎵 Media Studio & Source-to-Zone Router")}</span>
-                <span class="sub-title">
-                  <span class="status-dot"></span>
-                  Multi-Room Matrix Routing • Input-to-Player Mapping • Per-User Favorites
-                </span>
+                ${this._config?.compact
+                  ? ""
+                  : `<span class="sub-title">
+                      <span class="status-dot"></span>
+                      Multi-Room Matrix Routing • Input-to-Player Mapping • Per-User Favorites
+                    </span>`}
               </div>
             </div>
             <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-              <button type="button" class="icon-btn" id="btn-open-themes" title="Dynamic AI Theme Studio">
+              <button type="button" class="icon-btn" id="btn-open-themes" title="Personalize Theme">
                 🎨 Themes
               </button>
             </div>
-          </div>
+          </div>`}
           ${this._renderMediaStudioTab()}
         `
         : isStudioHeaderMode
@@ -3911,6 +3943,7 @@ class OtisCompanionCard extends HTMLElement {
         const speakerInput = root.querySelector("#rules-input-speaker");
         const showIgnoredCheck = root.querySelector("#rules-input-show-ignored");
         const audioFollowToggle = root.querySelector("#rules-input-audio-follow-enabled");
+        const preconditioningToggle = root.querySelector("#rules-input-preconditioning-enabled");
         const voiceAnnouncementsToggle = root.querySelector("#rules-input-voice-announcements-enabled");
         const voiceFilterToggle = root.querySelector("#rules-input-voice-filter-passersby");
         const presenceCardsToggle = root.querySelector("#rules-input-presence-room-cards");
@@ -3927,6 +3960,7 @@ class OtisCompanionCard extends HTMLElement {
         if (quietVol) draft.quiet_hours_volume = parseInt(quietVol.value, 10);
         if (speakerInput) draft.preferred_speaker = speakerInput.value.trim();
         if (audioFollowToggle) draft.audio_follow_enabled = audioFollowToggle.checked;
+        if (preconditioningToggle) draft.predictive_preconditioning_enabled = preconditioningToggle.checked;
         if (voiceAnnouncementsToggle) draft.voice_announcements_enabled = voiceAnnouncementsToggle.checked;
         if (voiceFilterToggle) draft.voice_filter_passersby = voiceFilterToggle.checked;
         if (presenceCardsToggle) draft.presence_room_cards = presenceCardsToggle.checked;
@@ -4192,6 +4226,14 @@ class OtisCompanionCard extends HTMLElement {
       if (audioFollowToggle) {
         audioFollowToggle.onchange = () => {
           this._rulesDraft = { ...(this._rulesDraft || {}), audio_follow_enabled: audioFollowToggle.checked };
+        };
+      }
+
+      // Predictive Pre-Conditioning Toggle
+      const preconditioningToggle = root.querySelector("#rules-input-preconditioning-enabled");
+      if (preconditioningToggle) {
+        preconditioningToggle.onchange = () => {
+          this._rulesDraft = { ...(this._rulesDraft || {}), predictive_preconditioning_enabled: preconditioningToggle.checked };
         };
       }
 
@@ -4574,7 +4616,7 @@ class OtisCompanionCard extends HTMLElement {
       radio.onchange = () => {
         this._themeApplyScope = radio.value;
         if (this._themeApplyScope === "specific" && !this._selectedThemeUserId) {
-          const avail = this._getAvailableUsers();
+          const avail = this._getAvailableUsers(true);
           const otherUser = avail.find((u) => u.id !== this._hass?.user?.id) || avail[0];
           if (otherUser) this._selectedThemeUserId = otherUser.id;
         }
@@ -4814,6 +4856,16 @@ class OtisCompanionCard extends HTMLElement {
         }
       };
     }
+
+    root.querySelectorAll(".btn-compact-media-tab").forEach((btn) => {
+      btn.onclick = () => {
+        const t = btn.getAttribute("data-compact-tab");
+        if (t && this._compactMediaTab !== t) {
+          this._compactMediaTab = t;
+          this._render();
+        }
+      };
+    });
 
     root.querySelectorAll(".btn-media-transport").forEach((btn) => {
       btn.onclick = async () => {

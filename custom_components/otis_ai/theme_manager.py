@@ -475,6 +475,7 @@ class ThemeManager:
         """Initialize the theme manager."""
         self.hass = hass
         self._store: Store[dict[str, Any]] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        self._user_themes_store: Store[dict[str, str]] = Store(hass, STORAGE_VERSION, "otis_ai_user_themes")
         self._themes_cache: dict[str, Any] | None = None
 
     async def async_load_and_register_themes(self) -> dict[str, Any]:
@@ -497,6 +498,8 @@ class ThemeManager:
                             mode_key: t_entry["vars"],
                         },
                     }
+            if stored and hasattr(self.hass, "bus") and hasattr(self.hass.bus, "async_fire"):
+                self.hass.bus.async_fire("themes_updated")
 
         return stored
 
@@ -762,6 +765,11 @@ class ThemeManager:
             _LOGGER.warning("Could not reload frontend themes: %s", err)
         return False
 
+    async def async_get_user_themes(self) -> dict[str, str]:
+        """Return per-user theme assignments stored in .storage/otis_ai_user_themes."""
+        stored = await self._user_themes_store.async_load()
+        return dict(stored) if isinstance(stored, dict) else {}
+
     async def async_apply_theme(
         self,
         theme_key: str,
@@ -769,8 +777,22 @@ class ThemeManager:
         user_id: str | None = None,
         all_users: bool = False,
     ) -> bool:
-        """Call frontend.set_theme service to apply theme immediately."""
+        """Apply a theme globally or store a per-user theme assignment."""
         try:
+            # Per-user assignment: store in Otis's own Store without mutating global frontend theme
+            if user_id and user_id != "all" and not all_users:
+                user_themes = await self.async_get_user_themes()
+                user_themes[str(user_id)] = theme_key
+                # If target is a person.* entity, also map its linked HA auth user_id if present
+                if str(user_id).startswith("person."):
+                    state = self.hass.states.get(str(user_id))
+                    auth_uid = state.attributes.get("user_id") if state else None
+                    if auth_uid:
+                        user_themes[str(auth_uid)] = theme_key
+                await self._user_themes_store.async_save(user_themes)
+                _LOGGER.info("Saved per-user theme %s for %s", theme_key, user_id)
+                return True
+
             service_data: dict[str, Any] = {"name": theme_key}
             if mode:
                 service_data["mode"] = mode

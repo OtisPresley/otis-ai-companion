@@ -523,6 +523,28 @@ class DashboardManager:
             "temperature_range",
             "last_known_fault",
         )
+        pool_platforms = {
+            "screenlogic",
+            "pentair",
+            "hayward",
+            "omnilogic",
+            "jandy",
+            "iaqualink",
+            "aqualink",
+            "waterguru",
+            "iopool",
+            "sutro",
+            "mydolphin_plus",
+            "spaclient",
+            "balboa",
+            "gecko",
+            "intex_spa",
+        }
+        pool_device_ids = {
+            e.get("device_id")
+            for e in entities
+            if e.get("device_id") and str(e.get("platform", "")).lower() in pool_platforms
+        }
         pool_equip_keywords = (
             "pentair",
             "hayward",
@@ -539,8 +561,11 @@ class DashboardManager:
                 continue
             eid_low = eid.lower()
             name_low = str(e.get("name") or e.get("friendly_name") or "").lower()
+            plat_low = str(e.get("platform") or "").lower()
+            dev_id = e.get("device_id")
+            is_pool_platform = plat_low in pool_platforms or (bool(dev_id) and dev_id in pool_device_ids)
             combined = f"{eid_low} {name_low}"
-            if any(bad in combined for bad in ignore_substrings):
+            if not is_pool_platform and any(bad in combined for bad in ignore_substrings):
                 continue
 
             attrs = e.get("attributes") or {}
@@ -572,7 +597,7 @@ class DashboardManager:
                     grouped["chemistry_alerts"].append(eid)
                 else:
                     grouped["chemistry"].append(eid)
-            elif any(k in combined for k in pool_equip_keywords):
+            elif is_pool_platform or any(k in combined for k in pool_equip_keywords):
                 if domain == "climate":
                     grouped["pool_climates"].append(eid)
                 else:
@@ -625,12 +650,13 @@ class DashboardManager:
         grouped["pool_equipment"] = _sort_by_rank(
             grouped["pool_equipment"],
             (
-                ("pool_pump", "pool_low_speed", "pool_high_speed"),
-                ("watts", "gpm", "rpm"),
-                ("light", "color"),
+                ("_pool", "high_speed", "low_speed", "pool_pump", "pool_low_speed", "pool_high_speed"),
+                ("bubbler", "fountain", "waterfall", "feature", "blower"),
+                ("light", "color", "led_mode", "led_intensity"),
                 ("vacuum", "poolio"),
+                ("watts", "gpm", "rpm"),
                 ("air_temperature",),
-                ("chemistry_alarm", "freeze_mode", "delay"),
+                ("chemistry_alarm", "freeze_mode", "delay", "active_alert"),
             ),
         )
         grouped["spa_controls"] = _sort_by_rank(
@@ -736,10 +762,10 @@ class DashboardManager:
         """Return (columns, square, icon_height) for a given navigation_style."""
         style = str(nav_style or "sleek_buttons").lower()
         if style == "standard_grid":
-            return 3, True, None
+            return 3, True, "44px"
         if style == "compact_pills":
             return 4, False, "20px"
-        return 2, False, None
+        return 2, False, "34px"
 
     def _apply_view_layout(
         self,
@@ -805,8 +831,8 @@ class DashboardManager:
             c_type = card.get("type", "")
             title = card.get("title")
 
-            # Check if this is a navigation card immediately followed by a descriptive markdown card
-            if i == 0 and c_type == "grid" and any(k in (title or "").lower() for k in ("nav", "studio", "navigation")):
+            # Keep navigation grids intact so their columns, square, and icon_height settings are honored in sections views
+            if c_type == "grid" and any(k in (title or "").lower() for k in ("nav", "studio", "navigation")):
                 sec_cards: list[dict[str, Any]] = []
                 if title:
                     sec_cards.append({
@@ -814,14 +840,17 @@ class DashboardManager:
                         "heading": title,
                         "heading_style": "title",
                     })
-                sec_cards.extend(card.get("cards", []))
-                if i + 1 < n and isinstance(cards[i + 1], dict) and cards[i + 1].get("type") == "markdown":
-                    sec_cards.append(cards[i + 1])
-                    i += 1
-                sections.append({
+                nav_grid = dict(card)
+                nav_grid.pop("title", None)
+                nav_grid["grid_options"] = {"columns": 12}
+                sec_cards.append(nav_grid)
+                sec_obj: dict[str, Any] = {
                     "type": "grid",
                     "cards": sec_cards,
-                })
+                }
+                if int(card.get("columns", 2) or 2) >= 3:
+                    sec_obj["column_span"] = 2
+                sections.append(sec_obj)
                 i += 1
                 continue
 
@@ -871,6 +900,8 @@ class DashboardManager:
                     "cards": [card],
                 }
                 if c_type == "custom:otis-companion-card" and card.get("mode") in ("media_studio", "floorplan_studio", "floorplan_control"):
+                    sec_obj["column_span"] = 2
+                elif c_type == "grid" and card.get("title") in ("Studio Navigation", "Room Navigation") and int(card.get("columns", 2) or 2) >= 3:
                     sec_obj["column_span"] = 2
                 sections.append(sec_obj)
             i += 1
@@ -1054,8 +1085,9 @@ class DashboardManager:
         ]
 
         # Individual Sections
-        studios_sec = {
+        studios_sec: dict[str, Any] = {
             "type": "grid",
+            **({"column_span": 2} if button_cols >= 3 else {}),
             "cards": [
                 {
                     "type": "heading",
@@ -1085,8 +1117,9 @@ class DashboardManager:
             ],
         }
 
-        rooms_sec = {
+        rooms_sec: dict[str, Any] = {
             "type": "grid",
+            **({"column_span": 2} if button_cols >= 3 else {}),
             "cards": [
                 {
                     "type": "heading",
@@ -1614,6 +1647,8 @@ class DashboardManager:
                 def _c_key(c: Any) -> str:
                     if not isinstance(c, dict):
                         return str(c)
+                    if c.get("type") == "custom:otis-companion-card":
+                        return f"custom:otis-companion-card::{c.get('mode') or ''}::{c.get('area_id') or ''}"
                     return f"{c.get('type')}::{c.get('title') or c.get('name') or ''}::{c.get('entity', '')}"
 
                 if force_regenerate:
@@ -1689,7 +1724,17 @@ class DashboardManager:
                         return False
                     return c.get("type") == "markdown" and "Room controls and live telemetry" in str(c.get("content", ""))
 
-                ex_cards = [c for c in ex_v.get("cards", []) if not _is_obsolete(c)]
+                ex_cards: list[Any] = []
+                seen_otis_cards: set[str] = set()
+                for c in ex_v.get("cards", []):
+                    if _is_obsolete(c):
+                        continue
+                    if isinstance(c, dict) and c.get("type") == "custom:otis-companion-card":
+                        ok = _c_key(c)
+                        if ok in seen_otis_cards:
+                            continue
+                        seen_otis_cards.add(ok)
+                    ex_cards.append(c)
                 fresh_cards = [c for c in fresh_v.get("cards", []) if not _is_obsolete(c)]
                 if not ex_cards:
                     merged_v["cards"] = fresh_cards
@@ -3592,12 +3637,24 @@ class DashboardManager:
         fans = _filter_valid([e["entity_id"] for e in entities if e.get("domain") == "fan"])
         valid_pool_eids = set(_filter_valid([e["entity_id"] for e in entities if e.get("entity_id")]))
         pool_grouped = self._classify_pool_and_spa_entities(entities, valid_pool_eids)
-        sleep_ents = _filter_valid([
+        sleep_platforms = {"sleepiq", "eight_sleep"}
+        sleep_device_ids = {
+            e.get("device_id")
+            for e in entities
+            if e.get("device_id") and str(e.get("platform", "")).lower() in sleep_platforms
+        }
+        sleep_controls = list(dict.fromkeys(_filter_valid([
             e["entity_id"]
             for e in entities
-            if e.get("domain") in ("select", "number", "sensor", "binary_sensor")
-            and "sleepnumber" in e.get("entity_id", "").lower()
-        ])
+            if (
+                str(e.get("platform", "")).lower() in sleep_platforms
+                or (e.get("device_id") and e.get("device_id") in sleep_device_ids)
+                or (not e.get("platform") and "sleepnumber" in e.get("entity_id", "").lower())
+            )
+            and e.get("domain") in ("select", "number", "switch", "light", "button")
+            and str(e.get("entity_category") or "").lower() != "diagnostic"
+        ])))
+        sleep_ents = sleep_controls
 
         has_pool = any(pool_grouped.values())
         has_sleep = bool(sleep_ents)
@@ -3731,12 +3788,29 @@ class DashboardManager:
             })
 
         if pool_grouped["pool_equipment"]:
-            cards.append({
-                "type": "entities",
-                "title": "Pool Pump, Lights & Cleaner",
-                "state_color": True,
-                "entities": pool_grouped["pool_equipment"][:12],
-            })
+            controllable_domains = ("switch", "light", "select", "vacuum", "button")
+            pool_controls = list(dict.fromkeys(
+                eid for eid in pool_grouped["pool_equipment"]
+                if eid.split(".", 1)[0] in controllable_domains
+            ))
+            pool_telemetry = list(dict.fromkeys(
+                eid for eid in pool_grouped["pool_equipment"]
+                if eid.split(".", 1)[0] not in controllable_domains
+            ))
+            if pool_controls:
+                cards.append({
+                    "type": "entities",
+                    "title": "Pool Pump, Lights & Features",
+                    "state_color": True,
+                    "entities": pool_controls,
+                })
+            if pool_telemetry:
+                cards.append({
+                    "type": "entities",
+                    "title": "Pool Pump & Cleaner Telemetry",
+                    "state_color": True,
+                    "entities": pool_telemetry[:14],
+                })
 
         if spa_climates or pool_grouped["spa_controls"]:
             if spa_climates:
@@ -3765,12 +3839,12 @@ class DashboardManager:
                     "entities": pool_grouped["spa_controls"][:16],
                 })
 
-        if sleep_ents:
+        if sleep_controls:
             cards.append({
                 "type": "entities",
-                "title": "SleepNumber Bed Climate, Firmness & Occupancy",
+                "title": "SleepNumber Bed Controls",
                 "state_color": True,
-                "entities": sleep_ents[:10],
+                "entities": sleep_controls,
             })
 
         if not climates and not fans and not has_pool and not sleep_ents:
@@ -4436,12 +4510,24 @@ class DashboardManager:
             and any(k in e.get("entity_id", "").lower() for k in ("pentair", "pool", "waterguru", "spa"))
             and "pre_release" not in e.get("entity_id", "").lower()
         ])
-        sleep_ents = _filter_valid([
+        sleep_platforms = {"sleepiq", "eight_sleep"}
+        sleep_device_ids = {
+            e.get("device_id")
+            for e in entities
+            if e.get("device_id") and str(e.get("platform", "")).lower() in sleep_platforms
+        }
+        sleep_controls = list(dict.fromkeys(_filter_valid([
             e["entity_id"]
             for e in entities
-            if e.get("domain") in ("select", "number", "sensor", "binary_sensor")
-            and "sleepnumber" in e.get("entity_id", "").lower()
-        ])
+            if (
+                str(e.get("platform", "")).lower() in sleep_platforms
+                or (e.get("device_id") and e.get("device_id") in sleep_device_ids)
+                or (not e.get("platform") and "sleepnumber" in e.get("entity_id", "").lower())
+            )
+            and e.get("domain") in ("select", "number", "switch", "light", "button")
+            and str(e.get("entity_category") or "").lower() != "diagnostic"
+        ])))
+        sleep_ents = sleep_controls
 
         # Spoke 1: HVAC Thermostats
         hvac_cards: list[dict[str, Any]] = [

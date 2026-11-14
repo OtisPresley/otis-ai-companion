@@ -437,18 +437,20 @@ export const modalsMixin = {
     ].includes(mode);
   },
 
-  _getAvailableUsers() {
+  _getAvailableUsers(includeIgnored = false) {
     const userMap = new Map();
     // Strictly discover registered person.* entities from Home Assistant states
     const states = this._hass?.states || {};
-    const ignored = new Set((this._userRules?.ignored_persons || []).map((x) => String(x).toLowerCase()));
+    const ignored = includeIgnored
+      ? new Set()
+      : new Set((this._userRules?.ignored_persons || []).map((x) => String(x).toLowerCase()));
     const profiles = this._userRules?.person_profiles || {};
 
     for (const eid in states) {
       if (eid.startsWith("person.")) {
         const cleanEid = eid.toLowerCase();
-        if (ignored.has(cleanEid)) continue;
-        if ((profiles[cleanEid] || profiles[eid])?.entity_type === "ignored") continue;
+        if (!includeIgnored && ignored.has(cleanEid)) continue;
+        if (!includeIgnored && (profiles[cleanEid] || profiles[eid])?.entity_type === "ignored") continue;
         const p = states[eid];
         const name = p.attributes?.friendly_name || eid.replace("person.", "").replace(/_/g, " ");
         userMap.set(cleanEid, { id: eid, name: name });
@@ -520,11 +522,11 @@ export const modalsMixin = {
           ? `
                 <div style="display: flex; align-items: center; gap: 10px; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--otis-surface-border);">
                   <span style="color: var(--otis-text-muted); font-size: 0.75rem; font-weight: 600;">Select User:</span>
-                  <select id="theme-user-select" style="flex: 1; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--otis-surface-border); background: var(--otis-card-bg); color: var(--otis-text); font-size: 0.80rem;">
-                    ${this._getAvailableUsers()
+                  <select id="theme-user-select" style="flex: 1; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--otis-surface-border); background: var(--otis-card-bg, #0f172a); color: var(--otis-text, #f1f5f9); font-size: 0.80rem;">
+                    ${this._getAvailableUsers(true)
             .map(
               (u) => `
-                      <option value="${this._escapeHtml(u.id)}" ${u.id === this._selectedThemeUserId ? "selected" : ""}>
+                      <option value="${this._escapeHtml(u.id)}" ${u.id === this._selectedThemeUserId ? "selected" : ""} style="background: var(--otis-card-bg, #0f172a); color: var(--otis-text, #f1f5f9);">
                         👤 ${this._escapeHtml(u.name)}${u.id === this._hass?.user?.id ? " (You)" : ""}
                       </option>
                     `
@@ -539,6 +541,8 @@ export const modalsMixin = {
           `
       }
 
+          ${this._hass?.user?.is_admin
+        ? `
           <!-- AI Natural Language Generator Prompt -->
           <div class="guide-box" style="display: flex; flex-direction: column; gap: 8px;">
             <div style="font-weight: 700; font-size: 0.85rem; color: var(--otis-primary);">
@@ -583,6 +587,8 @@ export const modalsMixin = {
               </button>
             </div>
           </div>
+          `
+        : ""}
 
           <!-- Custom Saved Themes -->
           ${customThemes.length > 0
@@ -1067,6 +1073,7 @@ export const modalsMixin = {
     const quietVol = rules.quiet_hours_volume !== undefined ? rules.quiet_hours_volume : 25;
     const preferredSpeaker = rules.preferred_speaker || "";
     const audioFollowEnabled = rules.audio_follow_enabled !== false;
+    const preconditioningEnabled = Boolean(rules.predictive_preconditioning_enabled);
     const voiceAnnouncementsEnabled = rules.voice_announcements_enabled !== false;
     const voiceFilterPassersby = rules.voice_filter_passersby !== false;
 
@@ -1098,6 +1105,14 @@ export const modalsMixin = {
             <div class="rules-setting-desc">Automatically migrates active music playback to whichever room you walk into based on multi-sensor presence tracking.</div>
           </div>
           <input type="checkbox" id="rules-input-audio-follow-enabled" ${audioFollowEnabled ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
+        </label>
+
+        <label class="rules-setting-row" style="cursor: pointer;">
+          <div>
+            <div class="rules-setting-label">Predictive Climate &amp; Room Pre-Conditioning</div>
+            <div class="rules-setting-desc">Automatically pre-cools or pre-stages rooms (e.g., Theater, Master) when presence transitions suggest you are heading there.</div>
+          </div>
+          <input type="checkbox" id="rules-input-preconditioning-enabled" ${preconditioningEnabled ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
         </label>
 
         <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 6px;">Quiet Hours Etiquette:</div>
@@ -1879,17 +1894,33 @@ export const modalsMixin = {
       const curUserId = this._hass?.user?.id;
       const isAll = !isSubview && Boolean(applyAllUsers || this._themeApplyScope === "all");
       const targetId = isSubview ? curUserId : (targetUserId || curUserId);
+      const targetPersonAuthUid =
+        targetId && String(targetId).startsWith("person.")
+          ? this._hass?.states?.[targetId]?.attributes?.user_id
+          : null;
+      const isCurrentUser =
+        !isAll && (!targetId || targetId === curUserId || (targetPersonAuthUid && targetPersonAuthUid === curUserId));
+      const isSpecificOtherUser = !isAll && !isCurrentUser;
 
-      // 1. Call backend services
-      try {
-        await this._hass.callService("frontend", "set_theme", { name: themeKey });
-      } catch (_) { }
+      const users = this._getAvailableUsers(true);
+      const targetUser = targetId ? users.find((u) => u.id === targetId) : null;
 
-      try {
-        const payload = { name: themeKey, user_id: isAll ? "all" : targetId };
-        await this._hass.callService("otis_ai", "apply_theme", payload);
-      } catch (svcErr) {
-        console.warn("Could not call otis_ai.apply_theme:", svcErr);
+      if (isSpecificOtherUser) {
+        await this._hass.callService("otis_ai", "apply_theme", { name: themeKey, user_id: targetId });
+        this._showToast(`🎨 Assigned theme to ${targetUser ? targetUser.name : targetId}: ${themeKey}`);
+        return;
+      }
+
+      // 1. Call backend services (global only when applying to All Users)
+      if (isAll) {
+        try {
+          await this._hass.callService("frontend", "set_theme", { name: themeKey });
+        } catch (_) { }
+        try {
+          await this._hass.callService("otis_ai", "apply_theme", { name: themeKey, user_id: "all", all_users: true });
+        } catch (svcErr) {
+          console.warn("Could not call otis_ai.apply_theme:", svcErr);
+        }
       }
 
       // 2. Set user theme directly in Home Assistant per-user profile storage via WebSocket
@@ -1925,8 +1956,6 @@ export const modalsMixin = {
         localStorage.setItem("selectedTheme", JSON.stringify({ ...existing, theme: themeKey }));
       } catch (_) { }
 
-      const users = this._getAvailableUsers();
-      const targetUser = targetId ? users.find((u) => u.id === targetId) : null;
       const scopeDesc = isAll ? "for all users (Global Sync)" : targetUser ? `for ${targetUser.name}` : "for your profile";
       this._showToast(`🎨 Theme applied ${scopeDesc}: ${themeKey}`);
     } catch (err) {

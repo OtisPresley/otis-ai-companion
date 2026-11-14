@@ -266,6 +266,25 @@ class LogMonitor:
                 _LOGGER.debug("Error querying system_log records: %s", err)
         return []
 
+    @staticmethod
+    def _parse_log_record(r: Any) -> tuple[str, str, str, str, int, float, Any]:
+        """Extract normalized fields from a dict or LogEntry system_log record."""
+        is_dict = isinstance(r, dict)
+        getter = r.get if is_dict else lambda k, d=None: getattr(r, k, d)
+        name = str(getter("name", "") or "")
+        msg_list = getter("message", []) or []
+        level = str(getter("level", "ERROR") or "ERROR").upper()
+        exc = str(getter("exception", "") or "")
+        count = int(getter("count", 1) or 1)
+        timestamp = float(getter("timestamp", None) or time.time())
+        source = getter("source", []) or []
+        msg_text = (
+            "\n".join(str(m) for m in msg_list)
+            if isinstance(msg_list, (list, tuple))
+            else str(msg_list)
+        )
+        return name, msg_text, level, exc, count, timestamp, source
+
     async def async_audit_logs(self) -> dict[str, list[dict[str, Any]]]:
         """Audit current system log entries, separating bugs from self-healing/transient notices."""
         await self.async_load()
@@ -277,28 +296,13 @@ class LogMonitor:
         ha_version = getattr(self.hass.config, "version", "2026.x")
 
         for r in records:
-            if isinstance(r, dict):
-                name = str(r.get("name") or "")
-                msg_list = r.get("message") or []
-                level = str(r.get("level") or "ERROR").upper()
-                exc = str(r.get("exception") or "")
-                count = int(r.get("count") or 1)
-                timestamp = float(r.get("timestamp") or time.time())
-                source = r.get("source") or []
-            else:
-                name = str(getattr(r, "name", "") or "")
-                msg_list = getattr(r, "message", []) or []
-                level = str(getattr(r, "level", "ERROR") or "ERROR").upper()
-                exc = str(getattr(r, "exception", "") or "")
-                count = int(getattr(r, "count", 1) or 1)
-                timestamp = float(getattr(r, "timestamp", None) or time.time())
-                source = getattr(r, "source", []) or []
-            msg_text = "\n".join(str(m) for m in msg_list) if isinstance(msg_list, (list, tuple)) else str(msg_list)
+            name, msg_text, level, exc, count, timestamp, source = self._parse_log_record(r)
 
             combined_raw = f"{name} {msg_text} {exc}".lower()
 
             # Extract domain
             domain = ""
+            from_traceback = False
             if name.startswith("custom_components."):
                 parts = name.split(".")
                 domain = parts[1] if len(parts) > 1 else "custom"
@@ -306,7 +310,15 @@ class LogMonitor:
                 parts = name.split(".")
                 domain = parts[2] if len(parts) > 2 else "core"
             else:
-                domain = name.split(".")[0]
+                tb_match = re.search(
+                    r"(?:custom_components|homeassistant[/\\.]components)[/\\.]([a-zA-Z0-9_]+)",
+                    f"{msg_text}\n{exc}\n{source}",
+                )
+                if tb_match:
+                    domain = tb_match.group(1)
+                    from_traceback = True
+                else:
+                    domain = name.split(".")[0]
 
             friendly_name = domain.replace("_", " ").title()
             target_repo = await self.async_resolve_target_repo(domain)
@@ -316,7 +328,7 @@ class LogMonitor:
             error_id = hashlib.sha256(sig_text.encode("utf-8")).hexdigest()[:12]
 
             # 1. Skip non-integration / user config domains & standard library loggers
-            if not (name.startswith("custom_components.") or name.startswith("homeassistant.components.")):
+            if not (name.startswith("custom_components.") or name.startswith("homeassistant.components.") or from_traceback):
                 continue
 
             if (
@@ -545,3 +557,81 @@ class LogMonitor:
             })
 
         return cards
+
+    async def async_summarize_logs_for_copilot(self) -> str:
+        """Build a concise, sanitized Markdown summary of current HA system logs for Assist Co-Pilot."""
+        audit = await self.async_audit_logs()
+        bugs = audit.get("integration_bugs", [])
+        self_healing = audit.get("self_healing", [])
+        records = self.get_system_log_records()
+
+        bug_loggers = {(b.get("logger", ""), b.get("short_error", "")[:40]) for b in bugs}
+        other_issues: list[dict[str, Any]] = []
+        seen_other: set[str] = set()
+
+        for r in records:
+            name, msg_text, level, _exc, count, _ts, _src = self._parse_log_record(r)
+            name = name or "homeassistant"
+            if level not in ("CRITICAL", "ERROR", "WARNING"):
+                continue
+            sanitized = sanitize_log_data(msg_text).splitlines()[0] if msg_text else ""
+            if len(sanitized) > 140:
+                sanitized = sanitized[:137] + "..."
+            if (name, sanitized[:40]) in bug_loggers:
+                continue
+            dedup_key = f"{level}:{name}:{sanitized[:60]}"
+            if dedup_key in seen_other:
+                continue
+            seen_other.add(dedup_key)
+            other_issues.append({
+                "level": level,
+                "logger": name,
+                "count": count,
+                "message": sanitized or "(no message)",
+            })
+
+        # Sort other issues: CRITICAL -> ERROR -> WARNING, then highest count
+        sev_rank = {"CRITICAL": 0, "ERROR": 1, "WARNING": 2}
+        other_issues.sort(key=lambda x: (sev_rank.get(x["level"], 3), -x["count"]))
+
+        if not bugs and not other_issues and not self_healing:
+            return (
+                "📋 **Home Assistant System Log Audit**\n\n"
+                "I inspected your live Home Assistant `system_log` buffer (`"
+                f"{len(records)}` total record(s)) and found **no active integration bugs, errors, or warnings** that need to be addressed right now."
+            )
+
+        lines: list[str] = [
+            f"📋 **Home Assistant System Log Audit** ({len(records)} active `system_log` record(s))\n"
+        ]
+        if bugs:
+            lines.append(f"**1. Integration Bugs / Unhandled Exceptions ({len(bugs)}):**")
+            for b in bugs[:6]:
+                lines.append(
+                    f"• `{b['domain']}` ({b['level']}, {b['count']}x): {b['short_error']} — *logger:* `{b['logger']}`"
+                )
+            lines.append("")
+
+        if other_issues:
+            shown = other_issues[:8]
+            lines.append(f"**{'2' if bugs else '1'}. Errors & Warnings ({len(other_issues)} unique):**")
+            for item in shown:
+                lines.append(
+                    f"• **[{item['level']}]** `{item['logger']}` ({item['count']}x): {item['message']}"
+                )
+            if len(other_issues) > len(shown):
+                lines.append(f"• *...and {len(other_issues) - len(shown)} more warning/error entries.*")
+            lines.append("")
+
+        if self_healing:
+            domains = sorted({n.get("integration_name", n.get("domain", "unknown")) for n in self_healing})
+            lines.append(
+                f"**Transient / Self-Healing Notices ({len(self_healing)}):** "
+                f"Temporary timeouts/reconnects in {', '.join(domains[:5])} — usually resolve automatically."
+            )
+            lines.append("")
+
+        lines.append(
+            "Ask me about any specific logger/integration above to troubleshoot it, or open **Proactive Feed** to file a sanitized GitHub bug report."
+        )
+        return "\n".join(lines)

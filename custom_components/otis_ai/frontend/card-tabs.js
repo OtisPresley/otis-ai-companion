@@ -1268,10 +1268,10 @@ export const tabsMixin = {
         : ""
       }
 
-        <!-- Main 2-Column Media Studio Grid -->
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 16px; align-items: start;">
-          <!-- Left Column: Now Playing + Active Zone Volume Mixer -->
-          <div style="display: flex; flex-direction: column; gap: 14px;">
+        ${(() => {
+          const isCompact = Boolean(this._config?.compact);
+          const compactTab = this._compactMediaTab || "favorites";
+          const nowPlayingHtml = `
             <!-- Now Playing & Streamer Transport Card -->
             <div style="background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 14px; position: relative; overflow: hidden;">
               <div style="display: flex; align-items: center; gap: 14px;">
@@ -1357,8 +1357,9 @@ export const tabsMixin = {
               `
           : ""
       }
-            </div>
+            </div>`;
 
+          const mixerHtml = `
             <!-- Active Zone & Linked Rooms Volume Mixer -->
             <div style="background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;">
               <div style="display: flex; align-items: center; justify-content: space-between;">
@@ -1395,11 +1396,9 @@ export const tabsMixin = {
         })
         .join("")}
               </div>
-            </div>
-          </div>
+            </div>`;
 
-          <!-- Right Column: Zone & Input Routing + Multi-Room Link Grid + Per-User Favorites -->
-          <div style="display: flex; flex-direction: column; gap: 14px;">
+          const routingHtml = `
             <!-- Speaker Zone & Input Source Routing Card -->
             <div style="background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;">
               <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
@@ -1604,8 +1603,9 @@ export const tabsMixin = {
               </div>
             `
         : ""
-      }
+      }`;
 
+          const favoritesHtml = `
             <!-- Per-User & Household Favorites Card -->
             <div style="background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;">
               <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
@@ -1756,9 +1756,47 @@ export const tabsMixin = {
                 </div>
               `
       }
+            </div>`;
+
+          if (isCompact) {
+            return `
+              <div style="display: flex; flex-direction: column; gap: 10px;">
+                ${nowPlayingHtml}
+                <div class="compact-media-tabs"${this._config?.show_header === false ? ' style="grid-template-columns: repeat(3, 1fr) auto;"' : ""}>
+                  <button type="button" class="compact-media-tab btn-compact-media-tab ${compactTab === "favorites" ? "active" : ""}" data-compact-tab="favorites">
+                    ★ Favorites${favorites.length ? ` (${favorites.length})` : ""}
+                  </button>
+                  <button type="button" class="compact-media-tab btn-compact-media-tab ${compactTab === "volumes" ? "active" : ""}" data-compact-tab="volumes">
+                    🎚️ Volumes (${mixerZones.length})
+                  </button>
+                  <button type="button" class="compact-media-tab btn-compact-media-tab ${compactTab === "routing" ? "active" : ""}" data-compact-tab="routing">
+                    🔗 Link &amp; Route
+                  </button>
+                  ${this._config?.show_header === false
+                    ? `<button type="button" class="compact-media-tab" id="btn-open-themes" title="Personalize Theme" style="padding: 6px 9px;">🎨</button>`
+                    : ""}
+                </div>
+                <div class="compact-media-tab-panel">
+                  ${compactTab === "volumes" ? mixerHtml : compactTab === "routing" ? routingHtml : favoritesHtml}
+                </div>
+              </div>
+            `;
+          }
+
+          return `
+            <!-- Main 2-Column Media Studio Grid -->
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 16px; align-items: start;">
+              <div style="display: flex; flex-direction: column; gap: 14px;">
+                ${nowPlayingHtml}
+                ${mixerHtml}
+              </div>
+              <div style="display: flex; flex-direction: column; gap: 14px;">
+                ${routingHtml}
+                ${favoritesHtml}
+              </div>
             </div>
-          </div>
-        </div>
+          `;
+        })()}
       </div>
     `;
   },

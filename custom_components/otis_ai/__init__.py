@@ -14,7 +14,7 @@ from typing import Any, Literal
 import yaml
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse, callback
 
 try:
     from homeassistant.exceptions import Unauthorized
@@ -1112,6 +1112,17 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     return True
 
 
+def _schedule_background_task(hass: HomeAssistant, coro: Any, name: str) -> None:
+    """Schedule a non-blocking background task that does not delay HA bootstrap."""
+    task = None
+    if hasattr(hass, "async_create_background_task"):
+        task = hass.async_create_background_task(coro, name)
+    elif hasattr(hass, "async_create_task"):
+        task = hass.async_create_task(coro)
+    if not isinstance(task, asyncio.Task) and asyncio.iscoroutine(coro):
+        coro.close()
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Otis AI Companion from a config entry."""
     _LOGGER.debug("Setting up Otis AI Companion entry: %s", entry.entry_id)
@@ -1181,24 +1192,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Start real-time presence tracking and publish initial fused presence states
     vision_manager.async_start_presence_tracking()
     vision_manager.publish_initial_perimeter_sentinel_state()
-    pres_coro = vision_manager.async_publish_fused_presence_states()
-    if hasattr(hass, "async_create_task"):
-        pres_task = hass.async_create_task(pres_coro)
-        if not isinstance(pres_task, asyncio.Task) and asyncio.iscoroutine(pres_coro):
-            pres_coro.close()
+    _schedule_background_task(
+        hass,
+        vision_manager.async_publish_fused_presence_states(),
+        "otis_ai_publish_fused_presence",
+    )
     habit_manager = BehavioralHabitManager(hass, spatial_manager=spatial_manager, energy_manager=energy_manager, vision_manager=vision_manager)
     commissioning_manager = AutonomousCommissioningManager(hass, spatial_manager=spatial_manager)
     federation_manager = FederationManager(hass)
     mesh_manager = MeshManager(hass)
     presence_fusion_manager = PresenceFusionManager(hass)
     vision_manager.presence_fusion_manager = presence_fusion_manager
-    fused_coro = presence_fusion_manager.async_fuse_presence(use_cache=False)
-    if hasattr(hass, "async_create_task"):
-        fused_task = hass.async_create_task(fused_coro)
-        if not isinstance(fused_task, asyncio.Task) and asyncio.iscoroutine(fused_coro):
-            fused_coro.close()
-    elif asyncio.iscoroutine(fused_coro):
-        fused_coro.close()
+    _schedule_background_task(
+        hass,
+        presence_fusion_manager.async_fuse_presence(use_cache=False),
+        "otis_ai_initial_presence_fusion",
+    )
     log_monitor = LogMonitor(hass)
     agent_orchestrator = MultiAgentOrchestrator(
         hass,
@@ -1214,6 +1223,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await asyncio.gather(
         spatial_manager.async_load(),
         floorplan_parser.async_load(),
+        vision_manager.async_load(),
         dashboard_manager.async_ensure_admin_companion_dashboard(),
         dashboard_manager.async_ensure_user_command_center_dashboard(),
         sentinel_manager.async_load_preferences(),
@@ -1224,11 +1234,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         log_monitor.async_load(),
     )
     federation_manager.publish_telemetry()
-    fed_coro = federation_manager.async_start_background_sync()
-    if hasattr(hass, "async_create_task"):
-        fed_task = hass.async_create_task(fed_coro)
-        if not isinstance(fed_task, asyncio.Task) and asyncio.iscoroutine(fed_coro):
-            fed_coro.close()
+    _schedule_background_task(
+        hass,
+        federation_manager.async_start_background_sync(),
+        "otis_ai_federation_sync",
+    )
     engine = DiscoveryEngine(
         hass,
         spatial_manager=spatial_manager,
@@ -1252,17 +1262,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     async def _async_sync_dashboards_on_startup() -> None:
         try:
-            if not getattr(hass, "is_running", True):
-                start_event = asyncio.Event()
-                hass.bus.async_listen_once(
-                    EVENT_HOMEASSISTANT_STARTED,
-                    lambda _: start_event.set(),
-                )
-                try:
-                    await asyncio.wait_for(start_event.wait(), timeout=120.0)
-                except TimeoutError:
-                    pass
             await asyncio.sleep(0.5)
+            try:
+                await theme_manager.async_load_and_register_themes()
+            except Exception as tm_err:
+                _LOGGER.debug("Could not refresh stored themes on HA started: %s", tm_err)
             engine.invalidate_cache()
             cap_map = await engine.async_build_capability_map(force_refresh=True)
             await dashboard_manager.async_ensure_admin_companion_dashboard(cap_map)
@@ -1275,10 +1279,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as sync_err:
             _LOGGER.debug("Could not run initial dashboard sync: %s", sync_err)
 
-    dash_coro = _async_sync_dashboards_on_startup()
-    dash_task = hass.async_create_task(dash_coro)
-    if not isinstance(dash_task, asyncio.Task) and asyncio.iscoroutine(dash_coro):
-        dash_coro.close()
+    if getattr(hass, "is_running", True) or not hasattr(hass, "bus"):
+        _schedule_background_task(
+            hass,
+            _async_sync_dashboards_on_startup(),
+            "otis_ai_startup_dashboard_sync",
+        )
+    else:
+        @callback
+        def _on_ha_started(_event: Any) -> None:
+            _schedule_background_task(
+                hass,
+                _async_sync_dashboards_on_startup(),
+                "otis_ai_startup_dashboard_sync",
+            )
+
+        unsub_start = hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _on_ha_started)
+        if hasattr(entry, "async_on_unload") and callable(unsub_start):
+            entry.async_on_unload(unsub_start)
 
     # Register Walkthrough Upload View & Media View
     media_dir = hass.config.path(".storage", DOMAIN, "media")
@@ -3564,549 +3582,104 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     _LOGGER.debug("Registering Otis AI services")
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_GET_CAPABILITY_MAP,
-        handle_get_capability_map,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_GET_SUGGESTIONS,
-        handle_get_suggestions,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_APPLY_SUGGESTION,
-        handle_apply_suggestion,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_CHAT,
-        handle_chat,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_GET_SPATIAL_MAP,
-        handle_get_spatial_map,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_UPDATE_SPATIAL_MAP,
-        handle_update_spatial_map,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_GENERATE_FLOORPLAN,
-        handle_generate_floorplan,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_RECALCULATE_FLOORPLAN,
-        handle_recalculate_floorplan,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_UPDATE_FLOORPLAN_LAYOUT,
-        handle_update_floorplan_layout,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_PIN_FLOORPLAN_ENTITY,
-        handle_pin_floorplan_entity,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_UNPIN_FLOORPLAN_ENTITY,
-        handle_unpin_floorplan_entity,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_GENERATE_THEME,
-        handle_generate_theme,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_APPLY_THEME,
-        handle_apply_theme,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_LIST_THEMES,
-        handle_list_themes,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_DELETE_THEME,
-        handle_delete_theme,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_RUN_SENTINEL_WATCHDOG,
-        handle_run_sentinel_watchdog,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_REMEDIATE_ANOMALY,
-        handle_remediate_anomaly,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_GET_SENTINEL_TELEMETRY,
-        handle_get_sentinel_telemetry,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_IGNORE_SENTINEL_ALERT,
-        handle_ignore_sentinel_alert,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_CREATE_COMMAND_CENTER,
-        handle_create_command_center,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_SYNC_DASHBOARDS,
-        handle_sync_dashboards,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_REGENERATE_DASHBOARDS,
-        handle_regenerate_dashboards,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_EXECUTE_MACRO,
-        handle_execute_macro,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_ROLLBACK_MACRO,
-        handle_rollback_macro,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_CANCEL_PRECONDITIONING,
-        handle_cancel_preconditioning,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_LIST_MACROS,
-        handle_list_macros,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_AUDIO_HANDOFF,
-        handle_audio_handoff,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_MEDIA_FOLLOW_ME,
-        handle_media_follow_me,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_RELEASE_IDLE_SOURCES,
-        handle_release_idle_sources,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_NOTIFY_VOICE,
-        handle_notify_voice,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_GET_ENERGY_SUMMARY,
-        handle_get_energy_summary,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_LOAD_SHED,
-        handle_load_shed,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_RESTORE_SHED_LOADS,
-        handle_restore_shed_loads,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_OPTIMIZE_BATTERY_SCHEDULE,
-        handle_optimize_battery_schedule,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_GET_ENERGY_ARBITRAGE_PLAN,
-        handle_get_energy_arbitrage_plan,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_SCHEDULE_EV_CHARGING,
-        handle_schedule_ev_charging,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_EXECUTE_ENERGY_ARBITRAGE,
-        handle_execute_energy_arbitrage,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_GET_PRESENCE_STATES,
-        handle_get_presence_states,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_FUSE_PRESENCE,
-        handle_fuse_presence,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_TRILATERATE_BLE,
-        handle_trilaterate_ble,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_ANALYZE_CAMERA,
-        handle_analyze_camera,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_AUDIT_PERIMETER,
-        handle_audit_perimeter,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_GET_INTRUDER_TRACKS,
-        handle_get_intruder_tracks,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_ANNOUNCE_VISUAL_ALERT,
-        handle_announce_visual_alert,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_EVALUATE_CONTEXTUAL_ALERTS,
-        handle_evaluate_contextual_alerts,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_MINE_HABITS,
-        handle_mine_habits,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_GET_CIRCADIAN_CURVES,
-        handle_get_circadian_curves,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_AUDIT_HABIT_DEVIATIONS,
-        handle_audit_habit_deviations,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_AUDIT_UNASSIGNED_ENTITIES,
-        handle_audit_unassigned_entities,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_AUTO_COMMISSION_ENTITIES,
-        handle_auto_commission_entities,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_REGISTER_FEDERATED_NODE,
-        handle_register_federated_node,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_REMOVE_FEDERATED_NODE,
-        handle_remove_federated_node,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_SYNC_FEDERATED_NODES,
-        handle_sync_federated_nodes,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_CALL_REMOTE_SERVICE,
-        handle_call_remote_service,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_GET_FEDERATION_STATUS,
-        handle_get_federation_status,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_BROADCAST_CLUSTER_MESSAGE,
-        handle_broadcast_cluster_message,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_FORWARD_REMOTE_COMMAND,
-        handle_forward_remote_command,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_GET_USER_RULES,
-        handle_get_user_rules,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_SET_USER_RULES,
-        handle_set_user_rules,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_DISMISS_RECOMMENDATION,
-        handle_dismiss_recommendation,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_HIDE_RECOMMENDATION,
-        handle_hide_recommendation,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_RESTORE_RECOMMENDATION,
-        handle_restore_recommendation,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_RESET_DISMISSED_RECOMMENDATIONS,
-        handle_reset_dismissed_recommendations,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_DUCK_MEDIA,
-        handle_duck_media,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_RESTORE_MEDIA,
-        handle_restore_media,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_GET_VOICE_ASSIST_STATUS,
-        handle_get_voice_assist_status,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_TEST_LOCAL_LLM,
-        handle_test_local_llm,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_BENCHMARK_LOCAL_LLM,
-        handle_benchmark_local_llm,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_PULL_LOCAL_LLM_MODEL,
-        handle_pull_local_llm,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_MANAGE_LOCAL_LLM_ADDON,
-        handle_manage_local_llm_addon,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    _register_admin_service(
-        hass,
-        DOMAIN,
-        SERVICE_EXECUTE_TOOL_PLAN,
-        handle_execute_tool_plan,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_INDEX_DOCUMENT,
-        handle_index_document,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_QUERY_KNOWLEDGE,
-        handle_query_knowledge_base,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_INDEX_ENTITY_HISTORY,
-        handle_index_entity_history,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_CLEAR_KNOWLEDGE,
-        handle_clear_knowledge_base,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_SYNC_ENTITY_TELEMETRY,
-        handle_sync_entity_telemetry,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_INDEX_DEVICE_MANUAL,
-        handle_index_device_manual,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_TOGGLE_AUDIO_FOLLOW,
-        handle_toggle_audio_follow,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_TOGGLE_VOICE_ANNOUNCEMENTS,
-        handle_toggle_voice_announcements,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_CONFIRM_PERSON_IDENTITY,
-        handle_confirm_person_identity,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_UPDATE_PERSON_PROFILE,
-        handle_update_person_profile,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_REMOVE_PERSON_PROFILE,
-        handle_remove_person_profile,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_AUDIT_MESH_HEALTH,
-        handle_audit_mesh_health,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_HEAL_MESH_NODE,
-        handle_heal_mesh_node,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_ORCHESTRATE_MULTI_AGENT,
-        handle_orchestrate_multi_agent,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_CONFIGURE_VOICE_SATELLITE,
-        handle_configure_voice_satellite,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN,
-        SERVICE_ARBITRATE_SATELLITE_AUDIO,
-        handle_arbitrate_satellite_audio,
-        supports_response=SupportsResponse.OPTIONAL,
-    )
+    service_specs: list[tuple[str, Any, bool]] = [
+        (SERVICE_GET_CAPABILITY_MAP, handle_get_capability_map, False),
+        (SERVICE_GET_SUGGESTIONS, handle_get_suggestions, False),
+        (SERVICE_APPLY_SUGGESTION, handle_apply_suggestion, True),
+        (SERVICE_CHAT, handle_chat, False),
+        (SERVICE_GET_SPATIAL_MAP, handle_get_spatial_map, False),
+        (SERVICE_UPDATE_SPATIAL_MAP, handle_update_spatial_map, True),
+        (SERVICE_GENERATE_FLOORPLAN, handle_generate_floorplan, True),
+        (SERVICE_RECALCULATE_FLOORPLAN, handle_recalculate_floorplan, True),
+        (SERVICE_UPDATE_FLOORPLAN_LAYOUT, handle_update_floorplan_layout, True),
+        (SERVICE_PIN_FLOORPLAN_ENTITY, handle_pin_floorplan_entity, True),
+        (SERVICE_UNPIN_FLOORPLAN_ENTITY, handle_unpin_floorplan_entity, True),
+        (SERVICE_GENERATE_THEME, handle_generate_theme, True),
+        (SERVICE_APPLY_THEME, handle_apply_theme, True),
+        (SERVICE_LIST_THEMES, handle_list_themes, False),
+        (SERVICE_DELETE_THEME, handle_delete_theme, True),
+        (SERVICE_RUN_SENTINEL_WATCHDOG, handle_run_sentinel_watchdog, False),
+        (SERVICE_REMEDIATE_ANOMALY, handle_remediate_anomaly, True),
+        (SERVICE_GET_SENTINEL_TELEMETRY, handle_get_sentinel_telemetry, False),
+        (SERVICE_IGNORE_SENTINEL_ALERT, handle_ignore_sentinel_alert, True),
+        (SERVICE_CREATE_COMMAND_CENTER, handle_create_command_center, True),
+        (SERVICE_SYNC_DASHBOARDS, handle_sync_dashboards, True),
+        (SERVICE_REGENERATE_DASHBOARDS, handle_regenerate_dashboards, True),
+        (SERVICE_EXECUTE_MACRO, handle_execute_macro, False),
+        (SERVICE_ROLLBACK_MACRO, handle_rollback_macro, False),
+        (SERVICE_CANCEL_PRECONDITIONING, handle_cancel_preconditioning, False),
+        (SERVICE_LIST_MACROS, handle_list_macros, False),
+        (SERVICE_AUDIO_HANDOFF, handle_audio_handoff, False),
+        (SERVICE_MEDIA_FOLLOW_ME, handle_media_follow_me, False),
+        (SERVICE_RELEASE_IDLE_SOURCES, handle_release_idle_sources, False),
+        (SERVICE_NOTIFY_VOICE, handle_notify_voice, False),
+        (SERVICE_GET_ENERGY_SUMMARY, handle_get_energy_summary, False),
+        (SERVICE_LOAD_SHED, handle_load_shed, True),
+        (SERVICE_RESTORE_SHED_LOADS, handle_restore_shed_loads, True),
+        (SERVICE_OPTIMIZE_BATTERY_SCHEDULE, handle_optimize_battery_schedule, True),
+        (SERVICE_GET_ENERGY_ARBITRAGE_PLAN, handle_get_energy_arbitrage_plan, False),
+        (SERVICE_SCHEDULE_EV_CHARGING, handle_schedule_ev_charging, True),
+        (SERVICE_EXECUTE_ENERGY_ARBITRAGE, handle_execute_energy_arbitrage, True),
+        (SERVICE_GET_PRESENCE_STATES, handle_get_presence_states, False),
+        (SERVICE_FUSE_PRESENCE, handle_fuse_presence, False),
+        (SERVICE_TRILATERATE_BLE, handle_trilaterate_ble, False),
+        (SERVICE_ANALYZE_CAMERA, handle_analyze_camera, False),
+        (SERVICE_AUDIT_PERIMETER, handle_audit_perimeter, False),
+        (SERVICE_GET_INTRUDER_TRACKS, handle_get_intruder_tracks, False),
+        (SERVICE_ANNOUNCE_VISUAL_ALERT, handle_announce_visual_alert, False),
+        (SERVICE_EVALUATE_CONTEXTUAL_ALERTS, handle_evaluate_contextual_alerts, False),
+        (SERVICE_MINE_HABITS, handle_mine_habits, False),
+        (SERVICE_GET_CIRCADIAN_CURVES, handle_get_circadian_curves, False),
+        (SERVICE_AUDIT_HABIT_DEVIATIONS, handle_audit_habit_deviations, False),
+        (SERVICE_AUDIT_UNASSIGNED_ENTITIES, handle_audit_unassigned_entities, False),
+        (SERVICE_AUTO_COMMISSION_ENTITIES, handle_auto_commission_entities, True),
+        (SERVICE_REGISTER_FEDERATED_NODE, handle_register_federated_node, True),
+        (SERVICE_REMOVE_FEDERATED_NODE, handle_remove_federated_node, True),
+        (SERVICE_SYNC_FEDERATED_NODES, handle_sync_federated_nodes, False),
+        (SERVICE_CALL_REMOTE_SERVICE, handle_call_remote_service, True),
+        (SERVICE_GET_FEDERATION_STATUS, handle_get_federation_status, False),
+        (SERVICE_BROADCAST_CLUSTER_MESSAGE, handle_broadcast_cluster_message, True),
+        (SERVICE_FORWARD_REMOTE_COMMAND, handle_forward_remote_command, True),
+        (SERVICE_GET_USER_RULES, handle_get_user_rules, False),
+        (SERVICE_SET_USER_RULES, handle_set_user_rules, True),
+        (SERVICE_DISMISS_RECOMMENDATION, handle_dismiss_recommendation, True),
+        (SERVICE_HIDE_RECOMMENDATION, handle_hide_recommendation, True),
+        (SERVICE_RESTORE_RECOMMENDATION, handle_restore_recommendation, True),
+        (SERVICE_RESET_DISMISSED_RECOMMENDATIONS, handle_reset_dismissed_recommendations, True),
+        (SERVICE_DUCK_MEDIA, handle_duck_media, False),
+        (SERVICE_RESTORE_MEDIA, handle_restore_media, False),
+        (SERVICE_GET_VOICE_ASSIST_STATUS, handle_get_voice_assist_status, False),
+        (SERVICE_TEST_LOCAL_LLM, handle_test_local_llm, True),
+        (SERVICE_BENCHMARK_LOCAL_LLM, handle_benchmark_local_llm, True),
+        (SERVICE_PULL_LOCAL_LLM_MODEL, handle_pull_local_llm, True),
+        (SERVICE_MANAGE_LOCAL_LLM_ADDON, handle_manage_local_llm_addon, True),
+        (SERVICE_EXECUTE_TOOL_PLAN, handle_execute_tool_plan, True),
+        (SERVICE_INDEX_DOCUMENT, handle_index_document, True),
+        (SERVICE_QUERY_KNOWLEDGE, handle_query_knowledge_base, False),
+        (SERVICE_INDEX_ENTITY_HISTORY, handle_index_entity_history, True),
+        (SERVICE_CLEAR_KNOWLEDGE, handle_clear_knowledge_base, True),
+        (SERVICE_SYNC_ENTITY_TELEMETRY, handle_sync_entity_telemetry, False),
+        (SERVICE_INDEX_DEVICE_MANUAL, handle_index_device_manual, True),
+        (SERVICE_TOGGLE_AUDIO_FOLLOW, handle_toggle_audio_follow, True),
+        (SERVICE_TOGGLE_VOICE_ANNOUNCEMENTS, handle_toggle_voice_announcements, True),
+        (SERVICE_CONFIRM_PERSON_IDENTITY, handle_confirm_person_identity, True),
+        (SERVICE_UPDATE_PERSON_PROFILE, handle_update_person_profile, True),
+        (SERVICE_REMOVE_PERSON_PROFILE, handle_remove_person_profile, True),
+        (SERVICE_AUDIT_MESH_HEALTH, handle_audit_mesh_health, False),
+        (SERVICE_HEAL_MESH_NODE, handle_heal_mesh_node, True),
+        (SERVICE_ORCHESTRATE_MULTI_AGENT, handle_orchestrate_multi_agent, False),
+        (SERVICE_CONFIGURE_VOICE_SATELLITE, handle_configure_voice_satellite, True),
+        (SERVICE_ARBITRATE_SATELLITE_AUDIO, handle_arbitrate_satellite_audio, False),
+    ]
+    for svc_name, svc_handler, is_admin_only in service_specs:
+        if is_admin_only:
+            _register_admin_service(
+                hass, DOMAIN, svc_name, svc_handler, supports_response=SupportsResponse.OPTIONAL
+            )
+        else:
+            hass.services.async_register(
+                DOMAIN, svc_name, svc_handler, supports_response=SupportsResponse.OPTIONAL
+            )
 
     # Assist Co-Pilot Self-Optimization Admin Services
     async def handle_copilot_tune_rule(call: ServiceCall) -> ServiceResponse:
@@ -5930,6 +5503,14 @@ class OtisAIConversationAgent(AbstractAgent):
             active_agent_display = f"Local Edge ({self.local_llm_manager.model})"
             active_agent_id = f"local_llm:{self.local_llm_manager.model}"
 
+        def _finalize_fast_path(speech_text: str, detail_text: str) -> conversation.ConversationResult:
+            session_data["last_resolved_agent"] = active_agent_display
+            session_data["last_resolved_agent_id"] = active_agent_id
+            session_data["last_failover_occurred"] = False
+            fire_progress("agent_resolution", f"Resolved by {active_agent_display}", detail_text)
+            self._record_turn(session_data, user_input.text, speech_text)
+            return self._create_response(user_input, speech_text)
+
         # 2. Build the capability map
         fire_progress("topology", "Querying Topology", "Inspecting spatial adjacency graph & active entities")
         capability_map = await self.engine.async_build_capability_map()
@@ -6036,16 +5617,10 @@ class OtisAIConversationAgent(AbstractAgent):
                 "2. I will **not** generate or offer to deploy an automation referencing imaginary triggers or actions.\n\n"
                 f"If you would like to build an automation using your real devices (such as {sample_str}), tell me which room or device you want to use!"
             )
-            session_data["last_resolved_agent"] = active_agent_display
-            session_data["last_resolved_agent_id"] = active_agent_id
-            session_data["last_failover_occurred"] = False
-            fire_progress(
-                "agent_resolution",
-                f"Resolved by {active_agent_display}",
+            return _finalize_fast_path(
+                speech,
                 f"Verified against live Home Assistant entity registry ({active_agent_display})",
             )
-            self._record_turn(session_data, user_input.text, speech)
-            return self._create_response(user_input, speech)
 
         # B0. Home Assistant Core & System Status Queries (e.g. "What is the current status of HA Core?")
         is_ha_core_status_query = (
@@ -6120,13 +5695,80 @@ class OtisAIConversationAgent(AbstractAgent):
                 + (f" All primary residents have their schedules accounted for, and quiet hours are in effect with volume capped at {max_vol}%." if qh_active else "")
                 + "\n\nIs there a specific aspect of HA Core you'd like me to check further?"
             )
+            return _finalize_fast_path(
+                speech,
+                f"HA Core live system telemetry verified with {active_agent_display}",
+            )
+
+        # B0b. Home Assistant System Log Audit (e.g. "Look at my current HA logs and let me know what items need to be addressed")
+        _log_target_phrases = (
+            "ha log", "ha logs", "home assistant log", "home assistant logs",
+            "system log", "system logs", "current log", "current logs",
+            "error log", "error logs", "recent log", "recent logs",
+        )
+        _log_action_phrases = (
+            "look at", "check", "analyze", "analyse", "audit", "review",
+            "inspect", "read", "show", "what", "any issue", "any error",
+            "need to be addressed", "need to be fixed", "errors", "warnings", "summarize",
+        )
+        is_ha_log_query = (
+            not is_create_auto_intent
+            and any(p in user_lower for p in _log_target_phrases)
+            and any(a in user_lower for a in _log_action_phrases)
+        )
+        if is_ha_log_query and getattr(self, "log_monitor", None):
+            user_id = getattr(getattr(user_input, "context", None), "user_id", None)
+            if user_id and hasattr(self.hass, "auth"):
+                ha_user = await self.hass.auth.async_get_user(user_id)
+                if ha_user is not None and not getattr(ha_user, "is_admin", False):
+                    return _finalize_fast_path(
+                        "🔒 Home Assistant system logs are restricted to administrator accounts.",
+                        "Admin permission required for system logs",
+                    )
+            fire_progress("domain", "Live System Log Audit", "Inspecting Home Assistant system_log records and classifying issues")
+            speech = await self.log_monitor.async_summarize_logs_for_copilot()
+            return _finalize_fast_path(
+                speech,
+                f"Live Home Assistant system_log audit completed by {active_agent_display}",
+            )
+
+        # B0b. Home Assistant System Log Audit (e.g. "Look at my current HA logs and let me know what items need to be addressed")
+        _log_target_phrases = (
+            "ha log", "ha logs", "home assistant log", "home assistant logs",
+            "system log", "system logs", "current log", "current logs",
+            "error log", "error logs", "recent log", "recent logs",
+        )
+        _log_action_phrases = (
+            "look at", "check", "analyze", "analyse", "audit", "review",
+            "inspect", "read", "show", "what", "any issue", "any error",
+            "need to be addressed", "need to be fixed", "errors", "warnings", "summarize",
+        )
+        is_ha_log_query = (
+            not is_create_auto_intent
+            and any(p in user_lower for p in _log_target_phrases)
+            and any(a in user_lower for a in _log_action_phrases)
+        )
+        if is_ha_log_query and getattr(self, "log_monitor", None):
+            user_id = getattr(getattr(user_input, "context", None), "user_id", None)
+            if user_id and hasattr(self.hass, "auth"):
+                ha_user = await self.hass.auth.async_get_user(user_id)
+                if ha_user is not None and not getattr(ha_user, "is_admin", False):
+                    speech = "🔒 Home Assistant system logs are restricted to administrator accounts."
+                    session_data["last_resolved_agent"] = active_agent_display
+                    session_data["last_resolved_agent_id"] = active_agent_id
+                    session_data["last_failover_occurred"] = False
+                    fire_progress("agent_resolution", f"Resolved by {active_agent_display}", "Admin permission required for system logs")
+                    self._record_turn(session_data, user_input.text, speech)
+                    return self._create_response(user_input, speech)
+            fire_progress("domain", "Live System Log Audit", "Inspecting Home Assistant system_log records and classifying issues")
+            speech = await self.log_monitor.async_summarize_logs_for_copilot()
             session_data["last_resolved_agent"] = active_agent_display
             session_data["last_resolved_agent_id"] = active_agent_id
             session_data["last_failover_occurred"] = False
             fire_progress(
                 "agent_resolution",
                 f"Resolved by {active_agent_display}",
-                f"HA Core live system telemetry verified with {active_agent_display}",
+                f"Live Home Assistant system_log audit completed by {active_agent_display}",
             )
             self._record_turn(session_data, user_input.text, speech)
             return self._create_response(user_input, speech)
@@ -8539,9 +8181,12 @@ class DiscoveryEngine:
         cap_map["federation"] = federation_data
 
         themes = []
+        user_themes = {}
         if self.theme_manager:
             themes = await self.theme_manager.async_list_otis_themes()
+            user_themes = await self.theme_manager.async_get_user_themes()
         cap_map["themes"] = themes
+        cap_map["user_themes"] = user_themes
         cap_map["theme_presets"] = [
             {"key": k, "name": v["name"], "description": v["description"], "preview": v["preview"], "dark_mode": v.get("dark_mode", True)}
             for k, v in PRESET_THEMES.items()
