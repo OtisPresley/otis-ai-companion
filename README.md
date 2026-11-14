@@ -61,9 +61,9 @@ It replaces fragile Jinja2 templates, hardcoded entity mappings, and rigid autom
 - 🎵 **Agnostic Player-to-Service Platform Mapping & Media Studio (`v0.3.0`)**: Flexible physical input-to-upstream-player mapping with universal candidate player discovery (supporting Music Assistant, Alexa Media Player, VLC Telnet, Yamaha MusicCast Zone 2/3, Plex, Jellyfin, and all Home Assistant media players), in-card Music Assistant library browsing (Playlists, Radio, Artists, Albums), interactive station picker in Add Favorite, and unified frosted glassmorphism across all Command Center views.
 - 📐 **Interactive Floor Plan Editor, Live Walkthrough Progress & ES Module Card (`v0.4.0`)**: Dynamic area-driven floor plans (zero hardcoded layouts), editable room labels & sub-labels, top-layer draggable architectural features (`Stairs`, `Pool`, `Porch`, plus custom **🪜 + Stairs** and **⬜ + Box** additions), live auto-resuming walkthrough regeneration progress bar, automatic Spatial Adjacency Graph synchronization on layout edits, and a modularized ES module frontend (`card-styles.js`, `floorplan-3d.js`, `card-modals.js`, `card-tabs.js`, `otis-companion-card.js`).
 
-<div align="center">
-  <img width="1141" height="1189" alt="image" src="https://github.com/user-attachments/assets/d436b1ab-42eb-4452-bab0-29603fafd105" />
-</div>
+> [!NOTE]
+> **📸 Screenshot Placeholder — Interactive Floor Plan Editor, Live Walkthrough Progress & ES Module Card (`v0.4.0`)**  
+> *Replace with an updated v0.4.0 screenshot of this view.*
 
 ---
 
@@ -285,9 +285,9 @@ Otis AI Companion provides **85 registered services** structured by architectura
 
 ## 🎛️ Otis Companion Lovelace Card
 
-<p align="center">
-  <img width="900" alt="image" src="https://github.com/user-attachments/assets/130799df-68c6-473e-9ce0-23ace664d392" />
-</p>
+> [!NOTE]
+> **📸 Screenshot Placeholder — 🎛️ Otis Companion Lovelace Card**  
+> *Replace with an updated v0.4.0 screenshot of this view.*
 
 The custom Lovelace card (`custom:otis-companion-card`) provides an interactive interface for dashboards:
 
@@ -300,13 +300,13 @@ show_suggestions: true
 show_chat: true
 ```
 
-<p align="center">
-  <img width="1141" height="1189" alt="image" src="https://github.com/user-attachments/assets/6ac90d43-a2d4-48f6-b9a2-4797e49086d1" />
-</p>
+> [!NOTE]
+> **📸 Screenshot Placeholder — show_chat: true**  
+> *Replace with an updated v0.4.0 screenshot of this view.*
 
-<p align="center">
-  <img width="900" alt="image" src="https://github.com/user-attachments/assets/284cd924-0840-4f2a-bd2d-fd737070816b" />
-</p>
+> [!NOTE]
+> **📸 Screenshot Placeholder — show_chat: true**  
+> *Replace with an updated v0.4.0 screenshot of this view.*
 
 ### Features:
 * **Interactive Rules Launchpad & Onboarding Wizard**: `⚙️ Rules` chip launches a 5-tab modal for dashboard & layout preferences, persona selection (Concierge, Butler, Minimalist, Custom), response verbosity, autonomy safeguards (deadbolt & alarm confirmation), quiet hours volume limiting, and custom household rules with first-run onboarding banner.
@@ -315,15 +315,15 @@ show_chat: true
 * **3D Floor Plan Orbit, Glass Walls & Dashboard Sync**: Interactive 3D isometric canvas with 360° orbit, pitch incline, raised glass walls with click-through room drawers, and 1-click `💾 Save 3D to Dashboard` persistence.
 * **Interactive Room Identity Training Cards**: Live camera feeds and Frigate/NVR detection snapshots embedded directly inside room identity training cards with 1-click resident, guest, pet, unknown person/animal, and false-positive feedback buttons.
 * **Clipboard Image Pasting, Native Text Copy & Turn Retry**: Direct clipboard image pasting (`Ctrl+V`) into Assist chat for multimodal visual diagnostics, native text selection and clipboard copy across all chat bubbles and code blocks, conversation agent attribution badges, and instant 1-click turn retry (`🔄 Retry`).
-<p align="center">
-  <img width="900" alt="image" src="https://github.com/user-attachments/assets/f80d88bd-a68f-4681-8c7f-2538568eb0af" />
-</p>
+> [!NOTE]
+> **📸 Screenshot Placeholder — Clipboard Image Pasting, Native Text Copy & Turn Retry**  
+> *Replace with an updated v0.4.0 screenshot of this view.*
 * **Proactive Feed Dismissal & Storage Persistence**: Sleek "Ignore this" and quick-dismiss buttons on all recommendation cards, backed by persistent HA storage (`.storage/otis_ai_rules`), with interactive "Show Ignored / Reset Ignored" toggles in card header, card editor, and rules modal.
 * **Resilient Command Center Home View**: Glance strip seamlessly displaying live weather forecast (`weather.home`) and calendar agenda events, with automatic registry fallback and persistence protection across all 16 room subviews.
 * **6 Theme Presets & Voice STT**: `ha_native` (Default, follows HA theme), `cyberpunk`, `midnight`, `emerald`, `sunset`, and `light_frost`, with integrated microphone streaming and 5-bar animated audio equalizer in both Chat and Theme Studio.
-<p align="center">
-  <img width="1141" height="1189" alt="image" src="https://github.com/user-attachments/assets/e91a9a72-d6d3-46c3-817f-d3483270190d" />
-</p>
+> [!NOTE]
+> **📸 Screenshot Placeholder — 6 Theme Presets & Voice STT**  
+> *Replace with an updated v0.4.0 screenshot of this view.*
 * **Vector Floor Plan Studio & Dynamic Pins**: High-performance SVG canvas editor with dynamic matrix transforms (`getScreenCTM()`), dual `ResizeObserver` for zero-drift responsive pin tracking across all aspect ratios, native `ha-state-icon` rendering, and drag-and-drop pin editing.
 * **Live Markdown Preview**: Auto-expanding live markdown preview above the chat input box.
 * **Visual Card Editor**: Complete visual configuration via Home Assistant's dashboard editor.
