@@ -478,3 +478,55 @@ def test_conversation_agent_ha_log_audit_fast_path():
     )
     speech = asyncio.run(agent.async_process(user_input))
     assert "Home Assistant System Log Audit" in speech
+
+
+def test_conversation_agent_suggest_automations_grounded():
+    """Verify 'Suggest automations for my active areas' returns grounded suggestions consistently."""
+    from types import SimpleNamespace
+    from custom_components.otis_ai import OtisAIConversationAgent
+
+    hass = MagicMock()
+    hass.data = {"otis_ai": {}}
+    hass.states.async_all = MagicMock(return_value=[])
+    hass.bus.async_fire = MagicMock()
+
+    entry = MagicMock()
+    entry.entry_id = "test_entry"
+    entry.options = {}
+    entry.data = {}
+
+    engine = MagicMock()
+    engine.async_build_capability_map = AsyncMock(return_value={
+        "areas": {"study": {"name": "Study", "entities": ["light.study_desk"]}},
+        "entities": [{"entity_id": "light.study_desk", "domain": "light", "area_id": "study", "state": "off"}],
+        "proactive_suggestions": [
+            {
+                "id": "s1",
+                "title": "Auto-Off Study Desk Light",
+                "category": "automation",
+                "action_type": "create_automation",
+                "entity_id": "light.study_desk",
+                "area": "Study",
+                "description": "Turn off light.study_desk after 15 minutes of inactivity.",
+            },
+            {
+                "id": "s_bad",
+                "title": "Fake Device Automation",
+                "category": "automation",
+                "action_type": "create_automation",
+                "entity_id": "light.does_not_exist",
+                "description": "Should be filtered out.",
+            },
+        ],
+    })
+    agent = OtisAIConversationAgent(hass, entry, engine, MagicMock())
+    agent._create_response = MagicMock(side_effect=lambda ui, sp: sp)
+    user_input = SimpleNamespace(
+        text="Suggest automations for my active areas",
+        conversation_id="conv_pc_stale",
+        context=SimpleNamespace(user_id=None),
+        language="en",
+    )
+    speech = asyncio.run(agent.async_process(user_input))
+    assert "Auto-Off Study Desk Light" in speech
+    assert "Fake Device Automation" not in speech

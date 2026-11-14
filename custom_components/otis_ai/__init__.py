@@ -4621,6 +4621,15 @@ class OtisAIConversationAgent(AbstractAgent):
             macro_plan = self.macro_manager.build_smart_macro(macro_template_target, capability_map=cap_map)
             safety = self.macro_manager.inspect_safety(macro_plan["steps"])
 
+            if not macro_plan["steps"]:
+                speech = f"I checked your live Home Assistant devices, and there are no matching entities to run **{macro_plan['name']}**."
+                session_data["last_resolved_agent"] = "Otis Grounded Engine"
+                session_data["last_resolved_agent_id"] = "otis_grounded_engine"
+                session_data["last_failover_occurred"] = False
+                fire_progress("agent_resolution", "Resolved by Otis Grounded Engine", "Verified against live entity registry")
+                self._record_turn(session_data, user_input.text, speech)
+                return self._create_response(user_input, speech)
+
             if safety["requires_confirmation"]:
                 m_id = f"macro_{int(time.time())}_{uuid.uuid4().hex[:6]}"
                 sessions[conv_id] = {
@@ -4637,7 +4646,13 @@ class OtisAIConversationAgent(AbstractAgent):
                 for w in safety["safety_warnings"]:
                     lines.append(f"• {w}")
                 lines.append("\nWould you like me to execute this sequence now? Say 'yes' or 'confirm' to execute, or 'cancel'.")
-                return self._create_response(user_input, "\n".join(lines))
+                speech = "\n".join(lines)
+                session_data["last_resolved_agent"] = "Otis Grounded Engine"
+                session_data["last_resolved_agent_id"] = "otis_grounded_engine"
+                session_data["last_failover_occurred"] = False
+                fire_progress("agent_resolution", "Resolved by Otis Grounded Engine", "Macro safety check prepared")
+                self._record_turn(session_data, user_input.text, speech)
+                return self._create_response(user_input, speech)
             else:
                 res = await self.macro_manager.async_execute_macro(
                     macro_name=macro_plan["name"],
@@ -4649,7 +4664,13 @@ class OtisAIConversationAgent(AbstractAgent):
                     lines.append(f"{s_i}. {s['name']}")
                 lines.append(f"\n• State snapshot saved for {res.get('snapshot_entities_count', 0)} entities.")
                 lines.append("*(Say 'undo' or 'rollback' anytime to revert your devices to their prior states)*")
-                return self._create_response(user_input, "\n".join(lines))
+                speech = "\n".join(lines)
+                session_data["last_resolved_agent"] = "Otis Grounded Engine"
+                session_data["last_resolved_agent_id"] = "otis_grounded_engine"
+                session_data["last_failover_occurred"] = False
+                fire_progress("agent_resolution", "Resolved by Otis Grounded Engine", "Macro executed with live entity snapshot")
+                self._record_turn(session_data, user_input.text, speech)
+                return self._create_response(user_input, speech)
 
         # Check for theme styling commands
         if any(w in user_text for w in ("create theme", "generate theme", "new theme", "make theme", "build theme")):
@@ -5734,6 +5755,61 @@ class OtisAIConversationAgent(AbstractAgent):
             return _finalize_fast_path(
                 speech,
                 f"Live Home Assistant system_log audit completed by {active_agent_display}",
+            )
+
+        # B0c. Grounded Automation Suggestions (e.g. "Suggest automations for my active areas")
+        is_suggest_auto_query = (
+            not is_create_auto_intent
+            and any(
+                p in user_lower
+                for p in (
+                    "suggest automations",
+                    "suggest new automations",
+                    "recommend automations",
+                    "automation suggestions",
+                    "automations for my active areas",
+                )
+            )
+        )
+        if is_suggest_auto_query:
+            fire_progress("domain", "Grounded Automation Discovery", "Inspecting live active areas and vetted automation opportunities")
+            proactive_suggs = [
+                s for s in (capability_map.get("proactive_suggestions") or [])
+                if isinstance(s, dict)
+                and s.get("title")
+                and (not s.get("entity_id") or str(s.get("entity_id")).lower() in state_ids_set)
+            ]
+            # Filter out noise/GitHub-only items if automation/energy/security/habit items exist
+            auto_suggs = [
+                s for s in proactive_suggs
+                if s.get("action_type") in ("create_automation", "deploy_automation", "apply_macro", "remediate")
+                or s.get("category") in ("automation", "energy", "security", "climate", "presence", "comfort")
+            ] or proactive_suggs
+
+            if auto_suggs:
+                lines = ["💡 **Grounded Automation Suggestions (Verified Against Live Entities):**\n"]
+                for idx, s in enumerate(auto_suggs[:5], 1):
+                    area_lbl = f" *({s['area']})*" if s.get("area") else ""
+                    desc = str(s.get("description") or "").strip()
+                    if len(desc) > 160:
+                        desc = desc[:157] + "..."
+                    lines.append(f"{idx}. **{s['title']}**{area_lbl}\n   {desc}")
+                lines.append("\nSay **\"apply suggestion 1\"** or ask me to draft YAML for any item above.")
+                speech = "\n".join(lines)
+            else:
+                active_area_names = [
+                    info.get("name", aid)
+                    for aid, info in areas_dict.items()
+                    if info.get("entities")
+                ][:6]
+                area_str = ", ".join(f"**{a}**" for a in active_area_names) if active_area_names else "your active rooms"
+                speech = (
+                    f"💡 Your active areas ({area_str}) currently have no pending automation gaps in the Proactive Feed. "
+                    "Tell me a specific room and trigger you'd like to automate, and I'll draft it using your live entities."
+                )
+            return _finalize_fast_path(
+                speech,
+                f"Grounded automation suggestions verified against {len(state_ids_set)} live entities",
             )
 
         # B1. Step-by-Step Guidance Queries (e.g. "How do I Vision False-Positive Filter Calibrated (Great Room)? Give me step-by-step guidance.")

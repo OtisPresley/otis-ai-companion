@@ -810,69 +810,96 @@ class MacroManager:
 
         if any(w in template_slug for w in ("movie", "cinema", "theater")):
             display_name = "Movie Night Mode"
-
-            # 1. Dim media/living room lights
-            target_lights: list[str] = []
+            ent_area_tokens = ("theater", "cinema", "media", "living", "great_room", "family_room")
             if area_name:
-                area_clean = area_name.lower().replace(" ", "_")
-                target_lights = [lt for lt in lights if area_clean in lt]
-            if not target_lights:
-                target_lights = [lt for lt in lights if any(k in lt for k in ("living", "media", "theater", "tv", "cinema", "great_room"))]
-            if not target_lights and lights:
-                target_lights = lights[:2]
+                ent_area_tokens = (area_name.lower().replace(" ", "_"),)
 
+            cap_entities = (capability_map or {}).get("entities", []) or []
+            ent_area_eids = {
+                e["entity_id"]
+                for e in cap_entities
+                if e.get("entity_id")
+                and any(t in str(e.get("area_id") or "").lower() for t in ent_area_tokens)
+            }
+
+            def _in_ent_area(eid: str) -> bool:
+                return eid in ent_area_eids or any(t in eid.lower() for t in ent_area_tokens)
+
+            # 1. Dim entertainment/theater room lights
+            target_lights = [lt for lt in lights if _in_ent_area(lt)]
             if target_lights:
+                sample_lt = ", ".join(target_lights[:3]) + ("..." if len(target_lights) > 3 else "")
                 steps.append({
-                    "name": f"Dim Lighting in Entertainment Zone ({len(target_lights)} lights to 15%)",
+                    "name": f"Dim Entertainment Lighting ({len(target_lights)} light(s): {sample_lt} → 15%)",
                     "domain": "light",
                     "service": "turn_on",
                     "target": {"entity_id": target_lights},
                     "data": {"brightness_pct": 15},
                 })
 
-            # 2. Select TV / HDMI Matrix source
-            target_tv = tv_cinemas[0] if tv_cinemas else (
-                next((m for m in media_players if any(k in m for k in ("tv", "cinema", "living", "theater"))), None)
+            # 2. Power on TV / Cinema Display (only select_source if source_list exists)
+            target_tv = next((p for p in tv_cinemas if _in_ent_area(p)), None) or (
+                tv_cinemas[0] if tv_cinemas else next(
+                    (m for m in media_players if _in_ent_area(m) and any(k in m for k in ("tv", "cinema", "projector", "display"))),
+                    None,
+                )
             )
             if target_tv:
-                source_choice = matrix_inputs[0] if matrix_inputs else "Apple TV"
-                steps.append({
-                    "name": f"Power On Cinema Display & Select '{source_choice}'",
-                    "domain": "media_player",
-                    "service": "select_source",
-                    "target": {"entity_id": target_tv},
-                    "data": {"source": source_choice},
-                })
+                tv_state = next((s for s in all_states if s.entity_id == target_tv), None)
+                tv_attrs = (tv_state.attributes or {}) if tv_state and isinstance(getattr(tv_state, "attributes", None), dict) else {}
+                source_list = list(tv_attrs.get("source_list") or [])
+                valid_source = next((s for s in matrix_inputs if s in source_list), None) or (source_list[0] if source_list else None)
+                if valid_source:
+                    steps.append({
+                        "name": f"Set {target_tv} source to '{valid_source}'",
+                        "domain": "media_player",
+                        "service": "select_source",
+                        "target": {"entity_id": target_tv},
+                        "data": {"source": valid_source},
+                    })
+                elif tv_state and tv_state.state in ("off", "standby"):
+                    steps.append({
+                        "name": f"Power On {target_tv}",
+                        "domain": "media_player",
+                        "service": "turn_on",
+                        "target": {"entity_id": target_tv},
+                    })
 
-            # 3. Lower comfort climate for viewing
-            if climates:
-                target_clim = climates[0]
+            # 3. Adjust climate only if a thermostat is in the entertainment area (or single non-utility home thermostat)
+            ent_climates = [c for c in climates if _in_ent_area(c)]
+            non_util_climates = [
+                c for c in climates
+                if not any(k in c.lower() for k in ("pool", "spa", "hot_tub", "garage", "sleep", "bed"))
+            ]
+            target_clim = ent_climates[0] if ent_climates else (non_util_climates[0] if len(non_util_climates) == 1 else None)
+            if target_clim:
                 steps.append({
-                    "name": "Adjust Climate Comfort to 68°F",
+                    "name": f"Adjust {target_clim} to 68°F",
                     "domain": "climate",
                     "service": "set_temperature",
                     "target": {"entity_id": target_clim},
                     "data": {"temperature": 68},
                 })
 
-            # 4. Set AVR / Audio volume
-            target_audio = matrix_zones[0] if matrix_zones else (
-                next((m for m in media_players if any(k in m for k in ("avr", "receiver", "amp", "soundbar", "great_room"))), None)
+            # 4. Set AVR / Audio volume only for entertainment area players
+            target_audio = next((z for z in matrix_zones if _in_ent_area(z)), None) or (
+                next((m for m in media_players if _in_ent_area(m) and any(k in m for k in ("avr", "receiver", "amp", "soundbar"))), None)
             )
             if target_audio:
                 steps.append({
-                    "name": "Set Soundbar / AVR Volume to 45%",
+                    "name": f"Set {target_audio} Volume to 45%",
                     "domain": "media_player",
                     "service": "volume_set",
                     "target": {"entity_id": target_audio},
                     "data": {"volume_level": 0.45},
                 })
 
-            # 5. Close shades/blinds in area
-            room_covers = [c for c in covers if any(k in c for k in ("living", "media", "theater", "blind", "shade"))]
+            # 5. Close shades/blinds only in the entertainment area
+            room_covers = [c for c in covers if _in_ent_area(c)]
             if room_covers:
+                sample_cov = ", ".join(room_covers[:3]) + ("..." if len(room_covers) > 3 else "")
                 steps.append({
-                    "name": f"Close Window Blinds ({len(room_covers)} covers)",
+                    "name": f"Close Entertainment Blinds ({len(room_covers)} cover(s): {sample_cov})",
                     "domain": "cover",
                     "service": "close_cover",
                     "target": {"entity_id": room_covers},

@@ -1890,9 +1890,10 @@ export const modalsMixin = {
   async _applyThemeDirect(themeKey, targetUserId = null, applyAllUsers = false) {
     if (!this._hass || !themeKey) return;
     try {
-      const isSubview = this._isSubviewMode();
+      const isAdmin = Boolean(this._hass?.user?.is_admin);
+      const isSubview = this._isSubviewMode() || !isAdmin;
       const curUserId = this._hass?.user?.id;
-      const isAll = !isSubview && Boolean(applyAllUsers || this._themeApplyScope === "all");
+      const isAll = isAdmin && !isSubview && Boolean(applyAllUsers || this._themeApplyScope === "all");
       const targetId = isSubview ? curUserId : (targetUserId || curUserId);
       const targetPersonAuthUid =
         targetId && String(targetId).startsWith("person.")
@@ -1900,14 +1901,16 @@ export const modalsMixin = {
           : null;
       const isCurrentUser =
         !isAll && (!targetId || targetId === curUserId || (targetPersonAuthUid && targetPersonAuthUid === curUserId));
-      const isSpecificOtherUser = !isAll && !isCurrentUser;
+      const isSpecificOtherUser = isAdmin && !isAll && !isCurrentUser;
 
       const users = this._getAvailableUsers(true);
       const targetUser = targetId ? users.find((u) => u.id === targetId) : null;
 
       if (isSpecificOtherUser) {
         await this._hass.callService("otis_ai", "apply_theme", { name: themeKey, user_id: targetId });
-        this._showToast(`🎨 Assigned theme to ${targetUser ? targetUser.name : targetId}: ${themeKey}`);
+        this._showToast(
+          `🎨 Assigned theme to ${targetUser ? targetUser.name : targetId}: ${themeKey} (applies on their next dashboard load)`
+        );
         return;
       }
 
