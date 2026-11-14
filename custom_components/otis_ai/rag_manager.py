@@ -118,7 +118,7 @@ def cosine_similarity(v1: list[float] | None, v2: list[float] | None) -> float:
     """Compute cosine similarity between two numeric vectors."""
     if not v1 or not v2 or len(v1) != len(v2):
         return 0.0
-    dot = sum(a * b for a, b in zip(v1, v2))
+    dot = sum(a * b for a, b in zip(v1, v2, strict=True))
     norm1 = math.sqrt(sum(a * a for a in v1))
     norm2 = math.sqrt(sum(b * b for b in v2))
     if norm1 > 0.0 and norm2 > 0.0:
@@ -235,6 +235,7 @@ class RAGKnowledgeManager:
         self._store = Store(hass, STORAGE_VERSION, storage_key)
         self._chunks: dict[str, dict[str, Any]] = {}
         self._documents: dict[str, dict[str, Any]] = {}
+        self._distilled_syntax_ref: str = ""
         self._loaded: bool = False
 
     async def async_load(self) -> None:
@@ -246,6 +247,7 @@ class RAGKnowledgeManager:
             if isinstance(data, dict):
                 self._chunks = data.get("chunks", {})
                 self._documents = data.get("documents", {})
+                self._distilled_syntax_ref = str(data.get("distilled_syntax_ref", "") or "")
                 _LOGGER.debug(
                     "Loaded %d knowledge chunks across %d documents from storage",
                     len(self._chunks),
@@ -262,6 +264,9 @@ class RAGKnowledgeManager:
         if not self._chunks:
             await self._async_seed_default_knowledge()
 
+        if not self._distilled_syntax_ref:
+            self._rebuild_distilled_syntax_reference()
+
         self.async_update_rag_sensor()
 
     async def async_save(self) -> None:
@@ -270,6 +275,7 @@ class RAGKnowledgeManager:
             await self._store.async_save({
                 "chunks": self._chunks,
                 "documents": self._documents,
+                "distilled_syntax_ref": self._distilled_syntax_ref,
                 "updated_at": time.time(),
             })
             self.async_update_rag_sensor()
@@ -828,3 +834,206 @@ class RAGKnowledgeManager:
                 doc_id=doc["doc_id"],
                 metadata=doc.get("metadata", {"seeded": True}),
             )
+
+    async def async_sync_ha_docs(
+        self,
+        force: bool = False,
+        max_age_s: float = 86400.0,
+    ) -> dict[str, Any]:
+        """Fetch and index latest official Home Assistant documentation & developer references."""
+        await self.async_load()
+        now = time.time()
+
+        if not force:
+            all_fresh = all(
+                (now - float(self._documents.get(spec["doc_id"], {}).get("metadata", {}).get("fetched_at", 0.0))) < max_age_s
+                for spec in HA_OFFICIAL_DOCS_SOURCES
+            )
+            if all_fresh:
+                return {
+                    "synced": 0,
+                    "skipped": len(HA_OFFICIAL_DOCS_SOURCES),
+                    "failed": 0,
+                    "cached": True,
+                }
+
+        import aiohttp
+        from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
+        session = async_get_clientsession(self.hass)
+        synced = 0
+        skipped = 0
+        failed = 0
+
+        for spec in HA_OFFICIAL_DOCS_SOURCES:
+            doc_id = spec["doc_id"]
+            url = spec["url"]
+            title = spec["title"]
+            existing_meta = self._documents.get(doc_id, {}).get("metadata", {})
+            last_fetched = float(existing_meta.get("fetched_at", 0.0))
+            if not force and (now - last_fetched) < max_age_s:
+                skipped += 1
+                continue
+
+            try:
+                async with session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                    headers={"User-Agent": "HomeAssistant-OtisAI/1.0"},
+                ) as resp:
+                    if resp.status != 200:
+                        _LOGGER.debug("HA doc fetch returned HTTP %s for %s", resp.status, url)
+                        failed += 1
+                        continue
+                    raw_md = await resp.text()
+            except Exception as err:
+                _LOGGER.debug("Could not fetch HA doc %s: %s", url, err)
+                failed += 1
+                continue
+
+            cleaned = _clean_ha_doc_markdown(raw_md)
+            if not cleaned:
+                failed += 1
+                continue
+
+            content_hash = hashlib.sha256(cleaned.encode("utf-8")).hexdigest()
+            if not force and existing_meta.get("content_hash") == content_hash:
+                # Refresh fetched_at timestamp without re-chunking/re-embedding
+                if doc_id in self._documents:
+                    self._documents[doc_id].setdefault("metadata", {})["fetched_at"] = now
+                    await self.async_save()
+                skipped += 1
+                continue
+
+            if doc_id in self._documents:
+                await self.async_clear_knowledge(document_id=doc_id)
+
+            await self.async_index_document(
+                title=title,
+                content=cleaned,
+                category="ha_docs",
+                doc_id=doc_id,
+                metadata={
+                    "source_url": url,
+                    "content_hash": content_hash,
+                    "fetched_at": now,
+                    "topic": spec.get("topic", "automation"),
+                },
+            )
+            synced += 1
+
+        if synced > 0 or not self._distilled_syntax_ref:
+            self._rebuild_distilled_syntax_reference()
+            await self.async_save()
+
+        _LOGGER.info(
+            "Otis HA Docs Sync complete: %d updated, %d unchanged/skipped, %d failed",
+            synced,
+            skipped,
+            failed,
+        )
+        return {
+            "synced": synced,
+            "skipped": skipped,
+            "failed": failed,
+            "cached": False,
+        }
+
+    def _rebuild_distilled_syntax_reference(self) -> str:
+        """Compile a compact local YAML syntax reference from synced ha_docs chunks."""
+        ha_texts: list[str] = [
+            str(c.get("content", ""))
+            for c in self._chunks.values()
+            if c.get("category") == "ha_docs"
+        ]
+        self._distilled_syntax_ref = build_distilled_ha_syntax_reference(ha_texts)
+        return self._distilled_syntax_ref
+
+    def get_distilled_syntax_reference(self) -> str:
+        """Return the locally cached distilled HA YAML syntax reference (zero network I/O)."""
+        if not self._distilled_syntax_ref:
+            self._rebuild_distilled_syntax_reference()
+        return self._distilled_syntax_ref
+
+
+HA_OFFICIAL_DOCS_SOURCES: list[dict[str, str]] = [
+    {
+        "doc_id": "ha_doc:automation_yaml",
+        "title": "Home Assistant Automation YAML Syntax",
+        "topic": "automation",
+        "url": "https://raw.githubusercontent.com/home-assistant/home-assistant.io/current/source/_docs/automation/yaml.markdown",
+    },
+    {
+        "doc_id": "ha_doc:automation_trigger",
+        "title": "Home Assistant Automation Triggers",
+        "topic": "automation",
+        "url": "https://raw.githubusercontent.com/home-assistant/home-assistant.io/current/source/_docs/automation/trigger.markdown",
+    },
+    {
+        "doc_id": "ha_doc:automation_condition",
+        "title": "Home Assistant Conditions (state, numeric_state, template)",
+        "topic": "automation",
+        "url": "https://raw.githubusercontent.com/home-assistant/home-assistant.io/current/source/_docs/automation/condition.markdown",
+    },
+    {
+        "doc_id": "ha_doc:automation_action",
+        "title": "Home Assistant Actions & Building Blocks (choose, sequence, action)",
+        "topic": "automation",
+        "url": "https://raw.githubusercontent.com/home-assistant/home-assistant.io/current/source/_docs/automation/action.markdown",
+    },
+    {
+        "doc_id": "ha_doc:automation_modes",
+        "title": "Home Assistant Automation Modes (single, restart, queued, parallel)",
+        "topic": "automation",
+        "url": "https://raw.githubusercontent.com/home-assistant/home-assistant.io/current/source/_docs/automation/modes.markdown",
+    },
+    {
+        "doc_id": "ha_doc:scripts_syntax",
+        "title": "Home Assistant Script Syntax & Sequences",
+        "topic": "automation",
+        "url": "https://raw.githubusercontent.com/home-assistant/home-assistant.io/current/source/_docs/script.markdown",
+    },
+    {
+        "doc_id": "ha_doc:templating",
+        "title": "Home Assistant Jinja2 Templating",
+        "topic": "templating",
+        "url": "https://raw.githubusercontent.com/home-assistant/home-assistant.io/current/source/_docs/templating.markdown",
+    },
+    {
+        "doc_id": "ha_doc:fan_domain",
+        "title": "Home Assistant Fan Integration & Actions",
+        "topic": "domain",
+        "url": "https://raw.githubusercontent.com/home-assistant/home-assistant.io/current/source/_integrations/fan.markdown",
+    },
+]
+
+
+def _clean_ha_doc_markdown(raw_md: str, max_chars: int = 12000) -> str:
+    """Strip Jekyll frontmatter and Liquid tags from HA documentation Markdown."""
+    if not raw_md:
+        return ""
+    text = re.sub(r"^---\s*\n.*?\n---\s*\n", "", raw_md, count=1, flags=re.DOTALL)
+    text = re.sub(r"\{%-?\s*(?:raw|endraw|comment|endcomment)\s*-?%\}", "", text)
+    text = re.sub(r"\{%-?.*?-?%\}", "", text, flags=re.DOTALL)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if len(text) > max_chars:
+        text = text[:max_chars].rsplit("\n", 1)[0].strip()
+    return text
+
+
+def build_distilled_ha_syntax_reference(ha_doc_texts: list[str] | None = None) -> str:
+    """Build a compact, verified Home Assistant YAML syntax cheat-sheet from synced docs."""
+    joined = "\n".join(ha_doc_texts or []).lower()
+    uses_plural_blocks = (not joined) or ("triggers:" in joined and "actions:" in joined)
+    uses_action_key = (not joined) or ("action:" in joined)
+    top_keys = "alias:, description:, triggers:, conditions:, actions:, mode:" if uses_plural_blocks else "alias:, trigger:, condition:, action:, mode:"
+    act_key = "action:" if uses_action_key else "service:"
+    return (
+        "VERIFIED HA YAML SYNTAX REFERENCE (synced locally from official HA docs):\n"
+        f"- Top-level dict keys: {top_keys} (mode: single|restart|queued|parallel)\n"
+        "- Triggers: - trigger: state (with entity_id:, optional to:/from:), - trigger: numeric_state (with entity_id:, above:/below:)\n"
+        "- Conditions: - condition: state (with entity_id:, state: \"on\"|\"off\"), - condition: numeric_state (with entity_id:, above:/below:), - condition: or / and (with conditions: list)\n"
+        f"- Actions: - {act_key} domain.service with target: {{entity_id: ...}} and data: {{...}}\n"
+        "- Branching: - choose: (list of items with conditions: list and sequence: list), plus optional default: list\n"
+        "- Fans: fan.set_percentage (data: {percentage: 33|66|100}) and fan.turn_off targeting fan.* entity"
+    )

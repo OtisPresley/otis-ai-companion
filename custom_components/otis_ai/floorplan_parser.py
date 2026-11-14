@@ -7,6 +7,7 @@ import functools
 import html
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -43,155 +44,10 @@ UPPER_KEYWORDS = {
     "office", "laundry", "guest_room", "guest_bedroom", "hallway"
 }
 
-# Architectural blueprint templates mapping normalized area keys to contiguous (x, y, w, h) footprints
-# Ground Floor & Outdoor Plan (y = 85..690):
-# - Great Room (x=260..760, y=225..445) is ONE unified open-concept space containing:
-#   * Living Area & Breakfast Nook (great_room: x=260..570)
-#   * Kitchen Area (kitchen: x=570..760)
-GROUND_AND_OUTDOOR_BLUEPRINT: dict[str, dict[str, Any]] = {
-    "backyard": {
-        "x": 180, "y": 85, "width": 580, "height": 140,
-        "sub_zones": ["Deck & Grill", "Hot Tub", "Side Gate"],
-        "doors": [("bottom", 600, 44, "Mudroom Door", "outward-left")],
-    },
-    "pool": {
-        "x": 760, "y": 85, "width": 320, "height": 140,
-        "sub_zones": ["Swimming Pool", "Pool Equipment"],
-        "is_water": True,
-        "doors": [("left", 140, 50, "Pool Deck", "inward-top")],
-    },
-    "great_room": {
-        "x": 260, "y": 225, "width": 310, "height": 220,
-        "container_title": "GREAT ROOM (Living Area • Kitchen Area • Breakfast Nook)",
-        "container_bounds": (260, 225, 500, 220),
-        "sub_zones": ["Living Area", "Breakfast Nook"],
-        "open_right": True,
-        "doors": [("bottom", 230, 60, "Open to Foyer", "cased"), ("bottom", 80, 50, "Dining", "cased")],
-        "windows": [("top", 320, 60, "Backyard View", "exterior"), ("left", 280, 50, "Patio Window", "exterior")],
-    },
-    "kitchen": {
-        "x": 570, "y": 225, "width": 190, "height": 220,
-        "parent_container": "great_room",
-        "display_subtitle": "Kitchen Area (Inside Great Room)",
-        "sub_zones": ["Kitchen Island", "Kitchen Camera"],
-        "open_left": True,
-        "doors": [("right", 265, 36, "To Mudroom", "inward-top")],
-        "windows": [("top", 620, 50, "Garden Window", "exterior")],
-    },
-    "mudroom": {
-        "x": 760, "y": 225, "width": 160, "height": 130,
-        "sub_zones": ["Back Stairs (UP ↗)"],
-        "has_stairs_up": True,
-        "doors": [
-            ("top", 800, 32, "To Backyard", "outward-left"),
-            ("left", 265, 36, "Kitchen", "inward-top"),
-            ("bottom", 810, 28, "Powder Rm", "inward-left"),
-            ("right", 275, 34, "To Garage", "inward-top"),
-        ],
-    },
-    "downstairs_bath": {
-        "x": 760, "y": 355, "width": 160, "height": 90,
-        "sub_zones": ["Powder Room"],
-        "doors": [("top", 810, 28, "Mudroom", "inward-left")],
-        "windows": [("right", 390, 30, "Bath Window", "exterior")],
-    },
-    "garage": {
-        "x": 920, "y": 225, "width": 260, "height": 360,
-        "sub_zones": ["Large 2-Car Bay", "Small Bay • Water Heater"],
-        "doors": [
-            ("left", 275, 34, "Mudroom", "inward-top"),
-            ("bottom", 960, 90, "Large Garage Door", "garage"),
-            ("bottom", 1090, 55, "Small Bay Door", "garage"),
-        ],
-        "windows": [("right", 320, 45, "Side Garage Window", "exterior")],
-    },
-    "dining_room": {
-        "x": 260, "y": 445, "width": 210, "height": 140,
-        "sub_zones": ["Formal Dining"],
-        "doors": [("right", 495, 44, "Foyer", "cased"), ("top", 340, 50, "Great Room", "cased")],
-        "windows": [("bottom", 280, 55, "Front Dining Window", "exterior"), ("left", 480, 45, "Side Dining Window", "exterior")],
-    },
-    "foyer": {
-        "x": 470, "y": 445, "width": 140, "height": 140,
-        "sub_zones": ["Main Entry"],
-        "doors": [
-            ("bottom", 520, 40, "Front Door", "inward-right"),
-            ("top", 510, 55, "Great Room", "cased"),
-            ("left", 495, 44, "Dining", "cased"),
-            ("right", 495, 36, "Study", "inward-top"),
-        ],
-    },
-    "study": {
-        "x": 610, "y": 445, "width": 150, "height": 140,
-        "sub_zones": ["Study Closet"],
-        "doors": [("left", 495, 36, "Foyer", "inward-top")],
-        "windows": [("bottom", 650, 45, "Study Front Window", "exterior")],
-    },
-    "frontyard": {
-        "x": 260, "y": 585, "width": 920, "height": 105,
-        "sub_zones": ["Front Porch & Doorbell Cam", "Wrap-Around Driveway", "Driveway Cam → Side Gate"],
-        "doors": [("top", 520, 40, "Front Entry", "inward-right")],
-    },
-}
-
-# Upper Level Floor Plan (Drawn Separately at y = 805..1185):
-# Left-to-right top row matches the physical orientation above the Ground Floor:
-# Guest Room -> Laundry Room -> Office -> Gym (aligned above the Mudroom Back Stairs on the right)
-UPPER_FLOOR_BLUEPRINT: dict[str, dict[str, Any]] = {
-    "guest_room": {
-        "x": 180, "y": 805, "width": 270, "height": 150,
-        "sub_zones": ["Guest Bedroom", "Ensuite Guest Bath"],
-        "doors": [("bottom", 300, 36, "Hallway", "inward-right")],
-        "windows": [("top", 240, 55, "Guest Bed Window", "exterior"), ("left", 850, 45, "Guest Side Window", "exterior")],
-    },
-    "laundry_room": {
-        "x": 450, "y": 805, "width": 190, "height": 150,
-        "sub_zones": ["Upper Laundry"],
-        "doors": [("bottom", 525, 36, "Hallway", "inward-left")],
-        "windows": [("top", 510, 40, "Laundry Window", "exterior")],
-    },
-    "office": {
-        "x": 640, "y": 805, "width": 210, "height": 150,
-        "sub_zones": ["Upstairs Office"],
-        "doors": [("bottom", 725, 36, "Hallway", "inward-right")],
-        "windows": [("top", 710, 50, "Office North Window", "exterior")],
-    },
-    "gym": {
-        "x": 850, "y": 805, "width": 230, "height": 150,
-        "sub_zones": ["Stair Landing (DN ↙)", "Reading Nook", "Fitness Zone"],
-        "has_stairs_down": True,
-        "doors": [("bottom", 810, 44, "Upper Hall", "inward-left")],
-        "windows": [("top", 920, 55, "Gym North Window", "exterior"), ("right", 860, 45, "Gym East Window", "exterior")],
-    },
-    "hallway": {
-        "x": 180, "y": 955, "width": 680, "height": 70,
-        "sub_zones": ["Upper Corridor Spine", "Hall Bath"],
-        "doors": [("right", 975, 40, "To Theater", "inward-top")],
-    },
-    "theater": {
-        "x": 860, "y": 955, "width": 280, "height": 185,
-        "sub_zones": ["Home Theater • Wall Tablet", "AV Equipment Closet"],
-        "doors": [("left", 975, 40, "Hallway", "inward-top")],
-        "windows": [("right", 1010, 40, "Theater Window", "exterior")],
-    },
-    "master_bath": {
-        "x": 180, "y": 1025, "width": 270, "height": 160,
-        "container_title": "MASTER SUITE (Master Bedroom • Master Bath • Walk-In Closet)",
-        "container_bounds": (180, 1025, 680, 160),
-        "sub_zones": ["Master Bathroom", "Powder Room"],
-        "open_right": True,
-        "doors": [("top", 300, 40, "Hallway", "inward-right"), ("right", 1085, 45, "To Master Bed", "cased")],
-        "windows": [("bottom", 240, 50, "Master Bath Window", "exterior"), ("left", 1070, 45, "Bath Side Window", "exterior")],
-    },
-    "master": {
-        "x": 450, "y": 1025, "width": 410, "height": 160,
-        "parent_container": "master_bath",
-        "sub_zones": ["Master Bedroom • TV Wall", "Walk-In Closet"],
-        "open_left": True,
-        "doors": [("top", 560, 40, "Hallway", "inward-left")],
-        "windows": [("bottom", 540, 60, "Master Bed Window", "exterior"), ("bottom", 680, 60, "Master Nook Window", "exterior")],
-    },
-}
+# Floor plan layouts are dynamically synthesized from Home Assistant areas and walkthrough features.
+# Kept as empty dicts for backwards compatibility with callers/tests.
+GROUND_AND_OUTDOOR_BLUEPRINT: dict[str, dict[str, Any]] = {}
+UPPER_FLOOR_BLUEPRINT: dict[str, dict[str, Any]] = {}
 
 
 def classify_area_zone(area_key: str, area_name: str) -> str:
@@ -508,6 +364,290 @@ def sanitize_corrupted_svg_text(svg: str) -> str:
     )
 
 
+def select_intelligent_room_controls(
+    room_ents: list[dict[str, Any]],
+    valid_eids: set[str] | None = None,
+    area_name: str = "",
+    area_id: str = "",
+    max_controls: int = 3,
+    devices_map: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Select up to max_controls high-utility, diverse controllable devices for a room."""
+    reject_keywords = (
+        "cleaning", "customized_cleaning", "clean_record", "mop", "water_box",
+        "child_lock", "dnd", "carpet_boost", "gentle_mode", "auto_empty", "dock_led",
+        "auto_dust_collecting", "cleaning_sequence", "resume_cleaning", "multi_floor_map",
+        "sleep_pause", "super_sleep", "sleep_number", "responsive_air",
+        "pause_mode", "smart_sleeper", "bed_presence", "sleep_tracker",
+        "ice_maker", "ice_plus", "express_freeze", "sabbath", "door_alarm",
+        "filter_reset", "fresh_air", "water_filter", "air_filter",
+        "poe", "port_", "switch_port", "status_led", "led_ring", "night_vision",
+        "screen_saver", "auto_update", "cloud_connection", "mesh_reboot",
+        "restart", "reboot", "tamper", "pairing", "update", "firmware",
+        "mute", "do_not_disturb", "beep", "buzzer", "indicator", "identify",
+        "detect", "motion", "recordings", "snapshots", "review_alerts", "review_detections",
+        "infra_red", "record_audio", "siren_on_event", "email_on_event", "ftp_upload",
+        "push_notifications", "privacy_mode", "button_sound", "no_command_mode",
+        "pure_direct", "party_mode", "enhancer", "amazon_kids", "_led",
+    )
+    noisy_switch_platforms = {"frigate", "reolink", "snmp_switch_manager", "unifi", "alexa_media"}
+
+    native_media_platforms = {
+        "androidtv_remote", "androidtv", "apple_tv", "webostv", "samsungtv",
+        "braviatv", "roku", "lg_netcast", "firetv", "yamaha_musiccast",
+        "yamaha_ynca", "denonavr", "onkyo", "marantz", "sonos", "heos",
+        "bluesound", "kef", "control4_mediaplayer",
+    }
+    secondary_media_platforms = {"cast", "airplay", "plex"}
+    assistant_media_platforms = {"alexa_media", "browser_mod"}
+    wrapper_media_platforms = {"music_assistant", "dlna_dmr", "upnp"}
+
+    domain_candidates: dict[str, list[tuple[float, dict[str, Any]]]] = {
+        "light": [],
+        "media_player": [],
+        "fan": [],
+        "switch": [],
+        "cover": [],
+        "lock": [],
+        "climate": [],
+        "vacuum": [],
+    }
+
+    aname_norm = area_name.lower()
+
+    for e in room_ents:
+        eid = e.get("entity_id", "")
+        if not eid or (valid_eids and eid not in valid_eids):
+            continue
+        if e.get("entity_category") in ("config", "diagnostic"):
+            continue
+        if e.get("disabled_by") or e.get("hidden_by"):
+            continue
+
+        dom = e.get("domain") or (eid.split(".")[0] if "." in eid else "")
+        if dom not in domain_candidates:
+            continue
+
+        fname = (e.get("name") or e.get("friendly_name") or eid).lower()
+        ename_norm = eid.lower()
+        plat = str(e.get("platform") or "").lower()
+        if dom == "switch" and plat in noisy_switch_platforms:
+            continue
+        if any(rk in ename_norm or rk in fname for rk in reject_keywords):
+            continue
+
+        dev_id = e.get("device_id")
+        dev_info = devices_map.get(dev_id) if isinstance(devices_map, dict) and dev_id else None
+        dev_name = str((dev_info.get("name") if isinstance(dev_info, dict) else None) or e.get("device_name") or "")
+        dev_model = str((dev_info.get("model") if isinstance(dev_info, dict) else None) or "").lower()
+
+        base_score = 0.0
+        if dom == "light":
+            base_score = 100.0
+            if aname_norm and aname_norm in fname:
+                base_score += 40.0
+            if any(k in fname or k in ename_norm for k in ("main", "ceiling", "overhead", "chandelier", "recessed", "downlight", "island", "table")):
+                base_score += 30.0
+            if any(k in fname or k in ename_norm for k in ("accent", "cabinet", "closet", "nightlight", "strip", "bias", "under_cabinet", "counter")):
+                base_score -= 30.0
+        elif dom == "media_player":
+            base_score = 90.0
+            if plat in native_media_platforms:
+                base_score += 80.0
+            elif plat in secondary_media_platforms:
+                base_score += 20.0
+            elif plat in assistant_media_platforms:
+                base_score -= 40.0
+            elif plat in wrapper_media_platforms:
+                base_score -= 80.0
+            if any(k in dev_model for k in ("dashboard display", "renderer", "universal group")):
+                base_score -= 60.0
+            if any(k in fname or k in ename_norm or k in dev_name.lower() for k in ("tv", "television", "apple_tv", "shield", "roku", "soundbar", "sonos", "receiver", "avr", "stereo")):
+                base_score += 35.0
+            if plat == "control4_mediaplayer":
+                base_score += 20.0
+        elif dom == "fan":
+            base_score = 85.0
+            if any(k in fname or k in ename_norm for k in ("ceiling", "fan", "exhaust", "vent")):
+                base_score += 25.0
+        elif dom == "climate":
+            base_score = 80.0
+            if any(k in fname or k in ename_norm for k in ("thermostat", "hvac", "ac", "furnace", "pool")):
+                base_score += 20.0
+        elif dom == "cover":
+            base_score = 75.0
+            if any(k in fname or k in ename_norm for k in ("garage", "shades", "blinds", "curtain", "door")):
+                base_score += 25.0
+        elif dom == "lock":
+            base_score = 75.0
+            if any(k in fname or k in ename_norm for k in ("front", "garage", "deadbolt", "entry")):
+                base_score += 25.0
+        elif dom == "switch":
+            base_score = 60.0
+            if any(k in fname or k in ename_norm for k in ("fan", "exhaust", "vent", "bath_fan", "fireplace", "heater", "fountain", "pump", "pool", "disposal", "lamp")):
+                base_score += 35.0
+            elif any(k in fname or k in ename_norm for k in ("plug", "outlet", "switch")):
+                base_score += 15.0
+        elif dom == "vacuum":
+            base_score = 65.0
+
+        raw_dedup = dev_name or (e.get("name") or e.get("friendly_name") or eid.split(".", 1)[-1])
+        dedup_norm = re.sub(r"[^a-z0-9]+", " ", raw_dedup.lower()).strip()
+        dedup_norm = re.sub(r"\s+\d+$", "", dedup_norm).strip()
+        domain_candidates[dom].append((base_score, {
+            "entity": eid,
+            "domain": dom,
+            "name": e.get("name") or e.get("friendly_name") or eid,
+            "device_id": dev_id,
+            "dedup_key": dedup_norm or eid,
+        }))
+
+    for dom in domain_candidates:
+        domain_candidates[dom].sort(key=lambda x: x[0], reverse=True)
+
+    # Deduplicate media_player entities that represent the same physical device across integrations
+    if domain_candidates["media_player"]:
+        deduped_media: list[tuple[float, dict[str, Any]]] = []
+        seen_dev_ids: set[str] = set()
+        seen_media_keys: set[str] = set()
+        for score, cand in domain_candidates["media_player"]:
+            did = cand.get("device_id")
+            dkey = cand.get("dedup_key") or cand["entity"]
+            if did and did in seen_dev_ids:
+                continue
+            if dkey in seen_media_keys:
+                continue
+            if did:
+                seen_dev_ids.add(did)
+            seen_media_keys.add(dkey)
+            deduped_media.append((score, cand))
+        domain_candidates["media_player"] = deduped_media
+
+    selected: list[dict[str, Any]] = []
+    cfg_map = {
+        "light": {"color": "#38bdf8", "action": "toggle"},
+        "switch": {"color": "#a855f7", "action": "toggle"},
+        "media_player": {"color": "#ec4899", "action": "more-info"},
+        "fan": {"color": "#06b6d4", "action": "toggle"},
+        "climate": {"color": "#f97316", "action": "more-info"},
+        "cover": {"color": "#eab308", "action": "toggle"},
+        "lock": {"color": "#10b981", "action": "more-info"},
+        "vacuum": {"color": "#8b5cf6", "action": "more-info"},
+    }
+
+    if domain_candidates["light"]:
+        best = domain_candidates["light"].pop(0)[1]
+        selected.append({"entity": best["entity"], "color": cfg_map["light"]["color"], "action": cfg_map["light"]["action"]})
+
+    entertainment_or_comfort: list[tuple[float, dict[str, Any]]] = []
+    for key in ("media_player", "fan", "climate"):
+        if domain_candidates[key]:
+            entertainment_or_comfort.append(domain_candidates[key][0])
+
+    if entertainment_or_comfort:
+        entertainment_or_comfort.sort(key=lambda x: x[0], reverse=True)
+        best_ec = entertainment_or_comfort[0][1]
+        domain_candidates[best_ec["domain"]] = [
+            c for c in domain_candidates[best_ec["domain"]] if c[1]["entity"] != best_ec["entity"]
+        ]
+        selected.append({
+            "entity": best_ec["entity"],
+            "color": cfg_map[best_ec["domain"]]["color"],
+            "action": cfg_map[best_ec["domain"]]["action"],
+        })
+
+    remaining_candidates: list[tuple[float, dict[str, Any]]] = []
+    for cands in domain_candidates.values():
+        remaining_candidates.extend(cands)
+    remaining_candidates.sort(key=lambda x: x[0], reverse=True)
+
+    while len(selected) < max_controls and remaining_candidates:
+        media_selected = sum(1 for s in selected if s["entity"].startswith("media_player."))
+        has_non_media_left = any(c[1]["domain"] != "media_player" for c in remaining_candidates)
+        if media_selected >= 2 and has_non_media_left:
+            idx = next((i for i, c in enumerate(remaining_candidates) if c[1]["domain"] != "media_player"), 0)
+            cand = remaining_candidates.pop(idx)[1]
+        else:
+            cand = remaining_candidates.pop(0)[1]
+        cdom = cand["domain"]
+        selected.append({
+            "entity": cand["entity"],
+            "color": cfg_map[cdom]["color"],
+            "action": cfg_map[cdom]["action"],
+        })
+
+    return selected
+
+
+def compute_room_center_pin_positions(
+    rx: float,
+    ry: float,
+    rw: float,
+    rh: float,
+    count: int = 0,
+    sub_zones_count: int = 0,
+    has_container: bool = False,
+) -> tuple[int, list[tuple[float, float]]]:
+    """Compute non-crowded room pin capacity and centered (x, y) positions avoiding room text.
+
+    Returns (max_pins, positions) where positions has min(count, max_pins) coordinates
+    situated outward from the center of the text-free interior of the room.
+    """
+    pin_spacing_x = 34.0
+    pin_spacing_y = 32.0
+
+    # Room header sits at y+22 (or y+34 inside container), subzone-pills stack 16px each below it
+    header_offset = 34.0 if has_container else 22.0
+    text_bottom_y = ry + header_offset + (sub_zones_count * 16.0) + 18.0
+    if text_bottom_y > ry + rh - 24.0 and rw >= 360.0:
+        # Wide, short rooms (e.g. Hallway, Frontyard): left-aligned text occupies only the left ~240px,
+        # so place pins vertically centered in the open right-of-text interior instead of overflowing the bottom.
+        safe_left = max(rx + 22.0, min(rx + rw * 0.35, rx + 240.0))
+        safe_right = max(safe_left + 16.0, rx + rw - 22.0)
+        safe_top = ry + 18.0
+        safe_bottom = max(safe_top, ry + rh - 18.0)
+    else:
+        safe_left = rx + 22.0
+        safe_right = max(safe_left + 16.0, rx + rw - 22.0)
+        safe_bottom = max(ry + 24.0, ry + rh - 18.0)
+        safe_top = min(safe_bottom, max(ry + 40.0, text_bottom_y))
+
+    usable_w = max(0.0, safe_right - safe_left)
+    usable_h = max(0.0, safe_bottom - safe_top)
+
+    max_cols = max(1, int(usable_w // pin_spacing_x))
+    max_rows = max(1, int(usable_h // pin_spacing_y))
+    max_pins = max(1, min(8, max_cols * max_rows))
+
+    n = min(max(0, count), max_pins)
+    if n == 0:
+        return max_pins, []
+
+    center_x = (safe_left + safe_right) / 2.0
+    center_y = (safe_top + safe_bottom) / 2.0
+
+    if n <= max_cols and (n < 4 or max_rows == 1 or usable_w >= n * pin_spacing_x):
+        cols = n
+    else:
+        cols = min(max_cols, max(2, math.ceil(n / max_rows)))
+        if max_rows >= 2 and n >= 4:
+            cols = min(max_cols, math.ceil(n / 2))
+    rows = math.ceil(n / cols)
+
+    positions: list[tuple[float, float]] = []
+    for idx in range(n):
+        row = idx // cols
+        col = idx % cols
+        row_items = cols if row < rows - 1 else (n - row * cols)
+        px = center_x + (col - (row_items - 1) / 2.0) * pin_spacing_x
+        py = center_y + (row - (rows - 1) / 2.0) * pin_spacing_y
+        px = round(max(safe_left, min(safe_right, px)), 1)
+        py = round(max(safe_top, min(safe_bottom, py)), 1)
+        positions.append((px, py))
+
+    return max_pins, positions
+
+
 class FloorplanParser:
     """Parses video walkthroughs, audio callouts, and topological graphs into interactive SVG floorplans."""
 
@@ -519,6 +659,34 @@ class FloorplanParser:
         self._initialized: bool = False
         self._cached_svg_room_bounds: dict[str, dict[str, float]] = {}
         self._floorplan_exists: bool = False
+        self._regen_progress: dict[str, Any] = {
+            "active": False,
+            "percent": 0,
+            "stage": "Idle",
+            "discovered_areas": [],
+            "error": None,
+        }
+
+    def get_regen_progress(self) -> dict[str, Any]:
+        """Return live background floorplan regeneration progress."""
+        return dict(self._regen_progress)
+
+    def _set_regen_progress(
+        self,
+        percent: int,
+        stage: str,
+        active: bool = True,
+        discovered_areas: list[str] | None = None,
+        error: str | None = None,
+    ) -> None:
+        """Update live background floorplan regeneration progress."""
+        self._regen_progress = {
+            "active": active,
+            "percent": max(0, min(100, int(percent))),
+            "stage": stage,
+            "discovered_areas": list(discovered_areas) if discovered_areas is not None else list(self._regen_progress.get("discovered_areas") or []),
+            "error": error,
+        }
 
     async def _async_run_in_executor(self, func: Any, *args: Any, **kwargs: Any) -> Any:
         """Execute a blocking function in the Home Assistant executor pool."""
@@ -546,7 +714,7 @@ class FloorplanParser:
             return bounds
         self._floorplan_exists = True
         try:
-            with open(svg_file_path, "r", encoding="utf-8") as svg_f:
+            with open(svg_file_path, encoding="utf-8") as svg_f:
                 svg_txt = svg_f.read()
             if not isinstance(svg_txt, str):
                 return bounds
@@ -555,8 +723,11 @@ class FloorplanParser:
                 svg_txt,
             ):
                 aid_svg = m.group(1)
+                z_m = re.search(r'\bdata-zone="([^"]*)"', m.group(0))
+                zone_svg = z_m.group(1) if z_m else "main"
                 bounds[aid_svg] = {
                     "id": aid_svg,
+                    "zone": zone_svg,
                     "x": float(m.group(2)),
                     "y": float(m.group(3)),
                     "width": float(m.group(4)),
@@ -641,7 +812,7 @@ class FloorplanParser:
         if not os.path.isfile(full_path):
             return None
         try:
-            with open(full_path, "r", encoding="utf-8") as f:
+            with open(full_path, encoding="utf-8") as f:
                 return f.read()
         except Exception as err:
             _LOGGER.debug("Could not read floorplan SVG content: %s", err)
@@ -859,7 +1030,7 @@ class FloorplanParser:
         if hasattr(self.hass, "data") and isinstance(self.hass.data, dict):
             otis_data = self.hass.data.get(DOMAIN, {})
             if isinstance(otis_data, dict):
-                for k, v in otis_data.items():
+                for _k, v in otis_data.items():
                     if isinstance(v, dict) and "data" in v:
                         entry_cfg = v.get("data", {})
                         if isinstance(entry_cfg, dict):
@@ -880,9 +1051,9 @@ class FloorplanParser:
         return api_key, model
 
     async def async_extract_keyframes_from_video(
-        self, video_path: str, output_dir: str, prefix: str = "frame", max_frames: int = 8
+        self, video_path: str, output_dir: str, prefix: str = "frame", max_frames: int = 24
     ) -> list[str]:
-        """Extract sampled JPEG keyframes from a walkthrough video using ffmpeg for visual layout analysis."""
+        """Extract evenly-spaced JPEG keyframes across the full walkthrough video using ffmpeg."""
         def _check_inputs() -> tuple[bool, str | None]:
             if not os.path.exists(video_path):
                 return False, None
@@ -896,11 +1067,31 @@ class FloorplanParser:
         if not valid or not ffmpeg_bin:
             return []
 
+        # Probe duration with ffmpeg -i so fps spans the entire video rather than stopping early
+        duration_sec = 0.0
+        try:
+            probe_proc = await asyncio.create_subprocess_exec(
+                ffmpeg_bin, "-i", video_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, probe_err = await probe_proc.communicate()
+            m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", (probe_err or b"").decode("utf-8", "ignore"))
+            if m:
+                duration_sec = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+        except Exception:
+            duration_sec = 0.0
+
+        fps_val = (
+            max(0.03, min(1.0, max_frames / max(duration_sec, 1.0)))
+            if duration_sec > 0
+            else 0.2
+        )
         pattern = os.path.join(output_dir, f"{prefix}_%02d.jpg")
         cmd = [
             ffmpeg_bin,
             "-i", video_path,
-            "-vf", "fps=1/10,scale=512:-1",
+            "-vf", f"fps={fps_val:.4f},scale=512:-1",
             "-frames:v", str(max_frames),
             "-q:v", "6",
             "-y",
@@ -970,14 +1161,22 @@ class FloorplanParser:
             "`upper` for upstairs/second floor).\n"
             "6. Identify any doors mentioned or seen, noting the room, wall side (`top`, `bottom`, `left`, `right`), "
             "and swing orientation (`inward-left`, `inward-right`, `outward-left`, `outward-right`, `sliding`, or `cased`).\n"
-            "7. Identify any windows mentioned or seen, noting the room and wall side (`top`, `bottom`, `left`, `right`).\n\n"
+            "7. Identify any windows mentioned or seen, noting the room and wall side (`top`, `bottom`, `left`, `right`).\n"
+            "8. Identify any staircases (room, direction `up` or `down`, and label) and outdoor architectural features "
+            "(such as `pool`, `deck_stairs`, or `front_porch`).\n"
+            "9. Estimate each room's visual shape (`wide`, `tall`, `square`, or `corridor`) and relative size (`large`, `medium`, or `small`), "
+            "and list directional room-to-room connections seen in the video (`side` of `from` where `to` connects: `top`, `bottom`, `left`, `right`, and `type`: `open`, `door`, or `stairs`).\n\n"
             "Respond strictly with valid JSON matching this schema:\n"
             '{"transcript": "...", "ordered_areas": ["area_id_1", "area_id_2"], '
             '"adjacencies": [["area_id_1", "area_id_2"]], '
             '"contained_areas": {"great_room": ["kitchen"]}, '
             '"floor_assignments": {"area_id_1": "outdoor", "area_id_2": "main"}, '
             '"doors": [{"room": "foyer", "wall": "bottom", "orientation": "inward-right", "label": "Front Door"}], '
-            '"windows": [{"room": "dining_room", "wall": "bottom", "label": "Bay Window"}]}'
+            '"windows": [{"room": "dining_room", "wall": "bottom", "label": "Bay Window"}], '
+            '"stairs": [{"room": "foyer", "direction": "up", "label": "Front Stairs (UP ↗)"}], '
+            '"outdoor_features": [{"room": "backyard", "feature": "pool", "label": "Pool & Patio"}], '
+            '"room_shapes": {"great_room": {"shape": "wide", "size": "large"}}, '
+            '"directional_connections": [{"from": "foyer", "to": "great_room", "side": "top", "type": "open"}]}'
         )
 
         candidate_models = [preferred_model]
@@ -994,7 +1193,7 @@ class FloorplanParser:
                 {"text": prompt},
                 {"inline_data": {"mime_type": mime_type, "data": audio_b64}},
             ]
-            for fp in (frame_paths or [])[:6]:
+            for fp in (frame_paths or [])[:24]:
                 if os.path.exists(fp):
                     try:
                         with open(fp, "rb") as imgf:
@@ -1023,7 +1222,7 @@ class FloorplanParser:
                     headers={"Content-Type": "application/json"},
                 )
                 try:
-                    with urllib.request.urlopen(req, timeout=90) as resp:
+                    with urllib.request.urlopen(req, timeout=180) as resp:
                         return json.loads(resp.read().decode("utf-8"))
                 except Exception as err:
                     last_err = err
@@ -1135,6 +1334,61 @@ class FloorplanParser:
                         })
             result["detected_windows"] = windows_out
 
+            # Stairs, outdoor features, room shapes, and directional connections
+            stairs_out: list[dict[str, Any]] = []
+            for raw_s in parsed.get("stairs") or []:
+                if isinstance(raw_s, dict):
+                    r_id = resolve_area_identifier(str(raw_s.get("room") or ""), valid_ids)
+                    direction = str(raw_s.get("direction") or "up").lower()
+                    if r_id and direction in ("up", "down"):
+                        stairs_out.append({
+                            "room": r_id,
+                            "direction": direction,
+                            "label": str(raw_s.get("label") or f"Stairs ({direction.upper()})"),
+                        })
+            result["stairs"] = stairs_out
+
+            outdoor_out: list[dict[str, Any]] = []
+            for raw_o in parsed.get("outdoor_features") or []:
+                if isinstance(raw_o, dict):
+                    r_id = resolve_area_identifier(str(raw_o.get("room") or ""), valid_ids)
+                    feat = str(raw_o.get("feature") or "").lower()
+                    if r_id and feat:
+                        outdoor_out.append({
+                            "room": r_id,
+                            "feature": feat,
+                            "label": str(raw_o.get("label") or feat.replace("_", " ").title()),
+                        })
+            result["outdoor_features"] = outdoor_out
+
+            shapes_out: dict[str, dict[str, str]] = {}
+            raw_shapes = parsed.get("room_shapes") or {}
+            if isinstance(raw_shapes, dict):
+                for raw_rk, sval in raw_shapes.items():
+                    r_id = resolve_area_identifier(str(raw_rk), valid_ids)
+                    if r_id and isinstance(sval, dict):
+                        shape = str(sval.get("shape") or "square").lower()
+                        size = str(sval.get("size") or "medium").lower()
+                        if shape in ("wide", "tall", "square", "corridor") and size in ("large", "medium", "small"):
+                            shapes_out[r_id] = {"shape": shape, "size": size}
+            result["room_shapes"] = shapes_out
+
+            dir_conns_out: list[dict[str, str]] = []
+            for raw_c in parsed.get("directional_connections") or []:
+                if isinstance(raw_c, dict):
+                    f_id = resolve_area_identifier(str(raw_c.get("from") or ""), valid_ids)
+                    t_id = resolve_area_identifier(str(raw_c.get("to") or ""), valid_ids)
+                    side = str(raw_c.get("side") or "").lower()
+                    ctype = str(raw_c.get("type") or "door").lower()
+                    if f_id and t_id and f_id != t_id and side in ("top", "bottom", "left", "right"):
+                        dir_conns_out.append({
+                            "from": f_id,
+                            "to": t_id,
+                            "side": side,
+                            "type": ctype if ctype in ("open", "door", "stairs") else "door",
+                        })
+            result["directional_connections"] = dir_conns_out
+
             _LOGGER.info(
                 "Walkthrough audio analysis complete: %d areas ordered (%s), %d adjacencies, doors=%d, windows=%d",
                 len(ordered),
@@ -1167,6 +1421,10 @@ class FloorplanParser:
         combined_contained_areas: dict[str, list[str]] = {}
         combined_detected_doors: list[dict[str, Any]] = []
         combined_detected_windows: list[dict[str, Any]] = []
+        combined_stairs: list[dict[str, Any]] = []
+        combined_outdoor_features: list[dict[str, Any]] = []
+        combined_room_shapes: dict[str, dict[str, str]] = {}
+        combined_dir_connections: list[dict[str, str]] = []
         discovered_area_names: list[str] = []
 
         area_name_by_id = {a.get("id"): a.get("name", a.get("id")) for a in area_list}
@@ -1197,7 +1455,7 @@ class FloorplanParser:
             if not frame_paths and video_path and await self._async_run_in_executor(os.path.exists, video_path):
                 frame_dir = os.path.join(upload_dir, f"_frames_clip_{idx}")
                 frame_paths = await self.async_extract_keyframes_from_video(
-                    video_path, frame_dir, prefix=f"clip{idx}", max_frames=6
+                    video_path, frame_dir, prefix=f"clip{idx}", max_frames=24
                 )
 
             # 3. Analyze audio + frames with multimodal AI
@@ -1265,6 +1523,16 @@ class FloorplanParser:
                 for w in analysis.get("detected_windows") or []:
                     if w not in combined_detected_windows:
                         combined_detected_windows.append(w)
+                for st in analysis.get("stairs") or []:
+                    if st not in combined_stairs:
+                        combined_stairs.append(st)
+                for feat in analysis.get("outdoor_features") or []:
+                    if feat not in combined_outdoor_features:
+                        combined_outdoor_features.append(feat)
+                combined_room_shapes.update(analysis.get("room_shapes") or {})
+                for dc in analysis.get("directional_connections") or []:
+                    if dc not in combined_dir_connections:
+                        combined_dir_connections.append(dc)
 
             # Cleanup temporary frame directory
             if frame_dir and await self._async_run_in_executor(os.path.isdir, frame_dir):
@@ -1272,6 +1540,19 @@ class FloorplanParser:
                     await self.hass.async_add_executor_job(shutil.rmtree, frame_dir, True)
                 except Exception:
                     pass
+
+        walkthrough_features = {
+            "stairs": combined_stairs,
+            "outdoor_features": combined_outdoor_features,
+            "room_shapes": combined_room_shapes,
+            "directional_connections": combined_dir_connections,
+        }
+        if hasattr(self, "_metadata") and isinstance(self._metadata, dict):
+            self._metadata["walkthrough_features"] = walkthrough_features
+            if combined_transcripts:
+                self._metadata["transcripts"] = combined_transcripts
+            if combined_ordered_areas:
+                self._metadata["spoken_order"] = combined_ordered_areas
 
         return {
             "transcript": "\n".join(combined_transcripts),
@@ -1282,6 +1563,7 @@ class FloorplanParser:
             "floor_assignments": combined_floor_assignments,
             "detected_doors": combined_detected_doors,
             "detected_windows": combined_detected_windows,
+            "walkthrough_features": walkthrough_features,
             "discovered_names": discovered_area_names,
             "clips_processed": len(clips),
         }
@@ -1329,6 +1611,8 @@ class FloorplanParser:
         video_path: str | None = None,
         spoken_order: list[str] | str | None = None,
         walkthrough_completed: bool | None = None,
+        reset_layout: bool = False,
+        reanalyze_walkthrough: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Synthesize interactive vector SVG floor plan with multi-floor zones and active entities."""
@@ -1337,6 +1621,56 @@ class FloorplanParser:
         entities = capability_map.get("entities", [])
         spatial_graph = capability_map.get("spatial_graph", {})
         adjacencies = spatial_graph.get("adjacencies", {})
+
+        if reset_layout:
+            if not self._initialized:
+                await self.async_load()
+            self._cached_svg_room_bounds = {}
+            self._metadata["custom_layout"] = {"rooms": [], "badges": []}
+            self._metadata["deleted_rooms"] = []
+            self._metadata["walkthrough_features"] = {}
+            self._metadata["transcripts"] = []
+
+        if reanalyze_walkthrough and not video_path and getattr(self, "hass", None):
+            media_dir = self.hass.config.path(".storage", DOMAIN, "media")
+
+            def _find_stored_walkthrough_clips() -> list[str]:
+                if not os.path.isdir(media_dir):
+                    return []
+                return sorted(
+                    os.path.join(media_dir, f)
+                    for f in os.listdir(media_dir)
+                    if f.startswith("walkthrough_upload") and f.lower().endswith((".mp4", ".mov", ".webm", ".mkv"))
+                )
+
+            stored_clips = await self._async_run_in_executor(_find_stored_walkthrough_clips)
+            if stored_clips:
+                self._set_regen_progress(15, f"Re-analyzing {len(stored_clips)} stored walkthrough video(s)...", active=True, discovered_areas=[])
+                area_list = [
+                    {"id": aid, "name": (ainfo.get("name") if isinstance(ainfo, dict) else None) or aid}
+                    for aid, ainfo in areas_map.items()
+                ]
+
+                def _on_wt_progress(stage_msg: str, disc_list: list[str]) -> None:
+                    self._set_regen_progress(
+                        min(78, 20 + len(disc_list) * 3),
+                        stage_msg,
+                        active=True,
+                        discovered_areas=disc_list,
+                    )
+
+                wt_res = await self.async_process_multiclip_walkthrough(
+                    stored_clips, area_list, upload_dir=media_dir, progress_callback=_on_wt_progress
+                )
+                if wt_res.get("ordered_areas"):
+                    spoken_order = wt_res["ordered_areas"]
+                if wt_res.get("detected_doors"):
+                    kwargs["detected_doors"] = wt_res["detected_doors"]
+                if wt_res.get("detected_windows"):
+                    kwargs["detected_windows"] = wt_res["detected_windows"]
+                walkthrough_completed = True
+        if reset_layout or reanalyze_walkthrough:
+            self._set_regen_progress(84, "Synthesizing vector SVG floor plan & placing room pins...", active=True)
 
         # Normalize spoken order if provided, or fall back to previously stored spoken_order
         order_list: list[str] = []
@@ -1377,7 +1711,7 @@ class FloorplanParser:
 
         # Order rooms within each zone based on walkthrough spoken order if available
         if order_list:
-            for z, r_list in zones.items():
+            for _z, r_list in zones.items():
                 def _sort_key(room: dict[str, Any]) -> int:
                     key = normalize_area_key(room["id"])
                     name_key = normalize_area_key(room["name"])
@@ -1391,7 +1725,7 @@ class FloorplanParser:
         detected_doors = kwargs.get("detected_doors") or []
         detected_windows = kwargs.get("detected_windows") or []
         if detected_doors or detected_windows:
-            for z, r_list in zones.items():
+            for _z, r_list in zones.items():
                 for r in r_list:
                     rid = r["id"]
                     for d in detected_doors:
@@ -1486,6 +1820,7 @@ class FloorplanParser:
         badges: list[dict[str, Any]] | None = None,
         rooms: list[dict[str, Any]] | None = None,
         deleted_rooms: list[str] | None = None,
+        custom_features: list[dict[str, Any]] | None = None,
         svg_relative_path: str = DEFAULT_OUTPUT_SVG_PATH,
     ) -> dict[str, Any]:
         """Update SVG floorplan device marker coordinates and area boundary geometry, or delete rooms."""
@@ -1501,7 +1836,7 @@ class FloorplanParser:
         def read_sync() -> str | None:
             if not os.path.exists(output_full_path):
                 return None
-            with open(output_full_path, "r", encoding="utf-8") as f:
+            with open(output_full_path, encoding="utf-8") as f:
                 return f.read()
 
         svg_content = await self._async_run_in_executor(read_sync)
@@ -1563,10 +1898,10 @@ class FloorplanParser:
                 # Match <g ... class="entity-badge" ... data-entity-id="eid" ... transform="...">
                 pattern = rf'(<g\b[^>]*class="[^"]*entity-badge[^"]*"[^>]*data-entity-id="{re.escape(eid)}"[^>]*?)(\s+transform="translate\([^)]*\)")?'
 
-                def _badge_sub(match: re.Match) -> str:
+                def _badge_sub(match: re.Match, _bx: float = bx, _by: float = by) -> str:
                     prefix = match.group(1)
                     prefix = re.sub(r'\s+transform="[^"]*"', '', prefix)
-                    return f'{prefix} transform="translate({bx}, {by})"'
+                    return f'{prefix} transform="translate({_bx}, {_by})"'
 
                 new_svg, count = re.subn(pattern, _badge_sub, svg_content)
                 if count > 0:
@@ -1621,10 +1956,10 @@ class FloorplanParser:
                         else:
                             inner = re.sub(r'<rect[^>]*class="room-rect"[^>]*/>', f'<polygon points="{points_esc}" class="room-polygon" />', inner)
                     else:
-                        def _rect_sub(rmatch: re.Match) -> str:
+                        def _rect_sub(rmatch: re.Match, _rx: float = rx, _ry: float = ry, _rw: float = rw, _rh: float = rh) -> str:
                             tag = rmatch.group(0)
                             tag = re.sub(r'\s+(?:x|y|width|height)="[^"]*"', '', tag)
-                            return f'<rect x="{rx}" y="{ry}" width="{rw}" height="{rh}"' + tag[5:]
+                            return f'<rect x="{_rx}" y="{_ry}" width="{_rw}" height="{_rh}"' + tag[5:]
 
                         inner = re.sub(
                             r'<rect\b[^>]*class="[^"]*(?:room-box|room-rect)[^"]*"[^>]*/>',
@@ -1632,14 +1967,29 @@ class FloorplanParser:
                             inner,
                         )
 
+                    # Preserve header offset (34px inside multi-zone containers, 22px otherwise)
+                    has_container_offset = (
+                        "container-shell" in inner
+                        or "container-banner" in inner
+                        or "has-container" in header
+                    )
+                    hdr_y_off = 34 if has_container_offset else 22
+
                     # Update text label position cleanly inside attributes
-                    def _text_sub(tmatch: re.Match) -> str:
+                    def _text_sub(
+                        tmatch: re.Match,
+                        _rx: float = rx,
+                        _ry: float = ry,
+                        _hdr_y_off: int = hdr_y_off,
+                        _rname: Any = rname,
+                        _rid: str = rid,
+                    ) -> str:
                         orig_content = tmatch.group(1)
                         cleaned_txt = re.sub(r'^(?:\s*(?:x|y)="[^"]*"[>\s]*)+', '', orig_content).strip()
-                        display_name = rname.strip() if (rname and str(rname).strip()) else cleaned_txt
+                        display_name = _rname.strip() if (_rname and str(_rname).strip()) else cleaned_txt
                         if not display_name:
-                            display_name = rid.replace('_', ' ').title()
-                        return f'<text x="{round(rx + 14, 1)}" y="{round(ry + 22, 1)}" class="room-header">{html.escape(html.unescape(display_name))}</text>'
+                            display_name = _rid.replace('_', ' ').title()
+                        return f'<text x="{round(_rx + 14, 1)}" y="{round(_ry + _hdr_y_off, 1)}" class="room-header">{html.escape(html.unescape(display_name))}</text>'
 
                     inner = re.sub(
                         r'<text\b[^>]*class="[^"]*(?:room-header|room-label)[^"]*"[^>]*>(.*?)</text>',
@@ -1647,35 +1997,66 @@ class FloorplanParser:
                         inner,
                     )
 
-                    # Update internal architectural subzone pills in sync with room coordinates
-                    pill_idx = 0
+                    # Update internal architectural subzone pills in sync with room coordinates (or replace if sub_zones supplied)
+                    if "sub_zones" in r and isinstance(r.get("sub_zones"), list):
+                        new_pills = []
+                        for _pill_i, sz_item in enumerate(r["sub_zones"]):
+                            sz_clean = str(sz_item or "").strip()
+                            if not sz_clean:
+                                continue
+                            py = round(ry + hdr_y_off + 18 + len(new_pills) * 16, 1)
+                            new_pills.append(
+                                f'    <text x="{round(rx + 16, 1)}" y="{py}" class="subzone-pill">▪ {html.escape(sz_clean)}</text>'
+                            )
+                        inner = re.sub(
+                            r'\n?\s*<text\b[^>]*class="[^"]*subzone-pill[^"]*"[^>]*>.*?</text>',
+                            "",
+                            inner,
+                        )
+                        if new_pills:
+                            pill_block = "\n" + "\n".join(new_pills)
+                            inner, replaced_hdr = re.subn(
+                                r'(<text\b[^>]*class="[^"]*(?:room-header|room-label)[^"]*"[^>]*>.*?</text>)',
+                                lambda m, _pb=pill_block: m.group(1) + _pb,
+                                inner,
+                                count=1,
+                            )
+                            if not replaced_hdr:
+                                inner = pill_block + "\n" + inner
+                    else:
+                        pill_idx = 0
 
-                    def _pill_sub(pmatch: re.Match) -> str:
-                        nonlocal pill_idx
-                        orig_txt = pmatch.group(1)
-                        clean_pill = re.sub(r'^(?:\s*(?:x|y)="[^"]*"[>\s]*)+', '', orig_txt).strip()
-                        py = round(ry + 22 + 18 + pill_idx * 16, 1)
-                        pill_idx += 1
-                        return f'<text x="{round(rx + 16, 1)}" y="{py}" class="subzone-pill">{html.escape(html.unescape(clean_pill))}</text>'
+                        def _pill_sub(
+                            pmatch: re.Match,
+                            _rx: float = rx,
+                            _ry: float = ry,
+                            _hdr_y_off: int = hdr_y_off,
+                        ) -> str:
+                            nonlocal pill_idx
+                            orig_txt = pmatch.group(1)
+                            clean_pill = re.sub(r'^(?:\s*(?:x|y)="[^"]*"[>\s]*)+', '', orig_txt).strip()
+                            py = round(_ry + _hdr_y_off + 18 + pill_idx * 16, 1)
+                            pill_idx += 1
+                            return f'<text x="{round(_rx + 16, 1)}" y="{py}" class="subzone-pill">{html.escape(html.unescape(clean_pill))}</text>'
 
-                    inner = re.sub(
-                        r'<text\b[^>]*class="[^"]*subzone-pill[^"]*"[^>]*>(.*?)</text>',
-                        _pill_sub,
-                        inner,
-                    )
+                        inner = re.sub(
+                            r'<text\b[^>]*class="[^"]*subzone-pill[^"]*"[^>]*>(.*?)</text>',
+                            _pill_sub,
+                            inner,
+                        )
 
                     # Update internal entity badges in sync with room coordinates
                     b_idx = 0
 
-                    def _badge_sub(bmatch: re.Match) -> str:
+                    def _badge_sub(bmatch: re.Match, _rx: float = rx, _ry: float = ry, _rh: float = rh) -> str:
                         nonlocal b_idx
                         badge_full = bmatch.group(0)
                         eid_match = re.search(r'data-entity-id="([^"]*)"', badge_full)
                         if eid_match and eid_match.group(1) in explicit_badge_ids:
                             b_idx += 1
                             return badge_full
-                        bx = round(rx + 16 + b_idx * 24, 1)
-                        by = round(ry + rh - 18, 1)
+                        bx = round(_rx + 16 + b_idx * 24, 1)
+                        by = round(_ry + _rh - 18, 1)
                         b_idx += 1
                         badge_no_tr = re.sub(r'\s+transform="[^"]*"', '', badge_full)
                         return re.sub(r'^(<g\b[^>]*?)>', rf'\1 transform="translate({bx}, {by})">', badge_no_tr, count=1)
@@ -1686,27 +2067,78 @@ class FloorplanParser:
                         inner,
                     )
 
-                    # Update internal stairs in sync with room coordinates if present
-                    sx = round(rx + rw - 58, 1)
-                    sy = round(ry + rh - 42, 1)
+                    # Update internal stairs in sync with room coordinates or explicit feature position
+                    r_features = r.get("features") if isinstance(r.get("features"), dict) else {}
+                    stairs_feat = r_features.get("stairs") if isinstance(r_features.get("stairs"), dict) else None
+                    sx = round(float(stairs_feat["x"]), 1) if (stairs_feat and "x" in stairs_feat) else round(rx + rw - 58, 1)
+                    sy = round(float(stairs_feat["y"]), 1) if (stairs_feat and "y" in stairs_feat) else round(ry + rh - 42, 1)
                     inner = re.sub(
-                        r'(<rect\b[^>]*fill="rgba\(56,\s*189,\s*248,\s*0\.12\)"[^>]*?)\s+x="[^"]*"\s+y="[^"]*"',
+                        r'(<g\b[^>]*class="[^"]*room-feature[^"]*"[^>]*data-feature="stairs"[^>]*>)',
+                        f'<g class="room-feature" data-feature="stairs" data-x="{sx}" data-y="{sy}">',
+                        inner,
+                    )
+                    inner = re.sub(
+                        r'(<rect\b[^>]*class="stairs-step"[^>]*?)\s+x="[^"]*"\s+y="[^"]*"',
                         rf'\1 x="{sx}" y="{sy}"',
+                        inner,
+                    )
+                    inner = re.sub(
+                        r'(<rect\b[^>]*?)\s+x="[^"]*"\s+y="[^"]*"([^>]*class="stairs-step")',
+                        rf'\1 x="{sx}" y="{sy}"\2',
                         inner,
                     )
                     step_i = 0
 
-                    def _step_sub(smatch: re.Match) -> str:
+                    def _step_sub(smatch: re.Match, _sx: float = sx, _sy: float = sy) -> str:
                         nonlocal step_i
                         step_i += 1
-                        lx = round(sx + step_i * 9, 1)
-                        return f'<line x1="{lx}" y1="{sy}" x2="{lx}" y2="{round(sy + 28, 1)}" class="stairs-step" />'
+                        lx = round(_sx + step_i * 9, 1)
+                        return f'<line x1="{lx}" y1="{_sy}" x2="{lx}" y2="{round(_sy + 28, 1)}" class="stairs-step" />'
 
                     inner = re.sub(
                         r'<line\b[^>]*class="stairs-step"[^>]*/>',
                         _step_sub,
                         inner,
                     )
+
+                    # Update pool / front_porch feature boxes if custom coordinates were provided
+                    for feat_key in ("pool", "front_porch"):
+                        f_pos = r_features.get(feat_key) if isinstance(r_features.get(feat_key), dict) else None
+                        if not f_pos or "x" not in f_pos or "y" not in f_pos:
+                            continue
+                        fx = round(float(f_pos["x"]), 1)
+                        fy = round(float(f_pos["y"]), 1)
+                        feat_pat = rf'<g\b[^>]*class="[^"]*room-feature[^"]*"[^>]*data-feature="{feat_key}"[^>]*>([\s\S]*?)</g>'
+
+                        def _feat_sub(
+                            fmatch: re.Match,
+                            _feat_key: str = feat_key,
+                            _fx: float = fx,
+                            _fy: float = fy,
+                        ) -> str:
+                            f_body = fmatch.group(1)
+                            w_m = re.search(r'<rect\b[^>]*\swidth="([^"]+)"', f_body)
+                            h_m = re.search(r'<rect\b[^>]*\sheight="([^"]+)"', f_body)
+                            fw = float(w_m.group(1)) if w_m else (170.0 if _feat_key == "pool" else 200.0)
+                            fh = float(h_m.group(1)) if h_m else (64.0 if _feat_key == "pool" else 20.0)
+                            f_body = re.sub(
+                                r'(<rect\b[^>]*?)\s+x="[^"]*"\s+y="[^"]*"',
+                                rf'\1 x="{_fx}" y="{_fy}"',
+                                f_body,
+                                count=1,
+                            )
+                            tx = round(_fx + fw / 2.0, 1)
+                            ty = round(_fy + (fh / 2.0 + 4.0 if _feat_key == "pool" else 13.0), 1)
+                            f_body = re.sub(
+                                r'(<text\b[^>]*?)\s+x="[^"]*"\s+y="[^"]*"',
+                                rf'\1 x="{tx}" y="{ty}"',
+                                f_body,
+                                count=1,
+                            )
+                            return f'<g class="room-feature" data-feature="{_feat_key}" data-x="{_fx}" data-y="{_fy}">{f_body}</g>'
+
+                        inner = re.sub(feat_pat, _feat_sub, inner, count=1)
+
                     svg_content = svg_content[:s_idx] + header + inner + "</g>" + svg_content[e_idx:]
                     updated_rooms += 1
 
@@ -1722,7 +2154,9 @@ class FloorplanParser:
                     if b.get("delete") or b.get("deleted"):
                         existing_badges.pop(b["entity_id"], None)
                     else:
-                        existing_badges[b["entity_id"]] = b
+                        b_copy = dict(b)
+                        b_copy.setdefault("custom", True)
+                        existing_badges[b["entity_id"]] = b_copy
             custom_layout["badges"] = list(existing_badges.values())
 
         if rooms:
@@ -1731,7 +2165,15 @@ class FloorplanParser:
                 if isinstance(r, dict):
                     rid = r.get("id")
                     if rid and rid not in to_delete and not r.get("delete"):
-                        existing_rooms[rid] = r
+                        merged_r = dict(existing_rooms.get(rid, {}))
+                        for k, v in r.items():
+                            if k == "features" and isinstance(v, dict) and isinstance(merged_r.get("features"), dict):
+                                merged_f = dict(merged_r["features"])
+                                merged_f.update(v)
+                                merged_r["features"] = merged_f
+                            else:
+                                merged_r[k] = v
+                        existing_rooms[rid] = merged_r
             custom_layout["rooms"] = [r for r in existing_rooms.values() if r.get("id") not in to_delete]
 
         if to_delete:
@@ -1741,6 +2183,44 @@ class FloorplanParser:
                     del_list.append(did)
             if "rooms" in custom_layout and isinstance(custom_layout["rooms"], list):
                 custom_layout["rooms"] = [r for r in custom_layout["rooms"] if r.get("id") not in to_delete]
+
+        # 3b. Persist & apply independent custom features (stairs, labeled boxes)
+        if custom_features:
+            existing_cf = {
+                cf["id"]: cf
+                for cf in (custom_layout.get("custom_features") or [])
+                if isinstance(cf, dict) and cf.get("id")
+            }
+            for cf in custom_features:
+                if not isinstance(cf, dict) or not cf.get("id"):
+                    continue
+                fid = str(cf["id"])
+                cf_pat = rf'\n?\s*<g\b[^>]*data-custom-id="{re.escape(fid)}"[^>]*>[\s\S]*?</g>'
+                svg_content = re.sub(cf_pat, "", svg_content)
+                if cf.get("delete") or cf.get("deleted"):
+                    existing_cf.pop(fid, None)
+                    continue
+                merged_cf = dict(existing_cf.get(fid, {}))
+                merged_cf.update(cf)
+                existing_cf[fid] = merged_cf
+                cf_markup = self._render_custom_feature_svg(merged_cf)
+                target_zone = str(merged_cf.get("zone") or "main").lower()
+                if target_zone == "upper":
+                    anchor_re = r'(<g\b[^>]*id="plan-upper"[^>]*>[\s\S]*?)(  </g>\s*\n\s*</g>\s*<!-- /view-mode-2d -->)'
+                else:
+                    anchor_re = r'(<g\b[^>]*id="plan-ground"[^>]*>[\s\S]*?)(  </g>\s*\n\s*(?:<!-- PLAN 2|</g>\s*<!-- /view-mode-2d -->))'
+                svg_content, inserted = re.subn(
+                    anchor_re,
+                    lambda m, mk=cf_markup: f"{m.group(1)}{mk}{m.group(2)}",
+                    svg_content,
+                    count=1,
+                )
+                if not inserted:
+                    if '</g>  <!-- /view-mode-2d -->' in svg_content:
+                        svg_content = svg_content.replace('</g>  <!-- /view-mode-2d -->', f'{cf_markup}  </g>  <!-- /view-mode-2d -->', 1)
+                    elif '</svg>' in svg_content:
+                        svg_content = svg_content.replace('</svg>', f'{cf_markup}</svg>', 1)
+            custom_layout["custom_features"] = list(existing_cf.values())
 
         self._metadata["last_layout_update"] = int(time.time())
         await self.async_save_metadata(self._metadata)
@@ -1861,6 +2341,226 @@ class FloorplanParser:
         res["entity_id"] = entity_id
         return res
 
+    async def async_recalculate_floorplan(
+        self,
+        capability_map: dict[str, Any],
+        preserve_custom_pins: bool = True,
+        output_relative_path: str = DEFAULT_OUTPUT_SVG_PATH,
+    ) -> dict[str, Any]:
+        """Force recalculation of floorplan SVG layout and auto-placed room entity pins."""
+        if not self._initialized:
+            await self.async_load()
+
+        custom_layout = self._metadata.setdefault("custom_layout", {})
+        if not isinstance(custom_layout, dict):
+            custom_layout = {}
+            self._metadata["custom_layout"] = custom_layout
+
+        old_badges = custom_layout.get("badges", []) if isinstance(custom_layout.get("badges"), list) else []
+        if preserve_custom_pins:
+            kept_badges = [
+                dict(b)
+                for b in old_badges
+                if isinstance(b, dict) and b.get("entity_id") and b.get("custom") and not (b.get("delete") or b.get("deleted"))
+            ]
+        else:
+            kept_badges = []
+
+        cleared_count = max(0, len(old_badges) - len(kept_badges))
+        custom_layout["badges"] = kept_badges
+
+        res = await self.async_generate_svg_floorplan(
+            capability_map,
+            output_relative_path=output_relative_path,
+        )
+        await self.async_save_metadata(self._metadata)
+        return {
+            "status": "ok",
+            "badges_cleared": cleared_count,
+            "badges_preserved": len(kept_badges),
+            "svg_path": res.get("svg_path", output_relative_path),
+            "room_count": res.get("room_count", 0),
+        }
+
+    def build_effective_badges(
+        self,
+        areas_map: dict[str, Any] | None,
+        entities_list: list[dict[str, Any]] | None,
+        devices_map: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return custom_layout badges augmented with centered default room pins for uncustomized rooms."""
+        meta = getattr(self, "_metadata", {}) or {}
+        c_layout = meta.get("custom_layout", {}) if isinstance(meta, dict) else {}
+        if not isinstance(c_layout, dict):
+            c_layout = {}
+        deleted_rooms = set(meta.get("deleted_rooms", [])) if isinstance(meta, dict) else set()
+
+        raw_badges = c_layout.get("badges", []) if isinstance(c_layout.get("badges"), list) else []
+
+        if not areas_map or not entities_list:
+            return [
+                dict(b)
+                for b in raw_badges
+                if isinstance(b, dict) and b.get("entity_id") and not (b.get("delete") or b.get("deleted"))
+            ]
+
+        valid_eids = {
+            e["entity_id"]
+            for e in entities_list
+            if isinstance(e, dict)
+            and e.get("entity_id")
+            and not e.get("disabled_by")
+            and not e.get("hidden_by")
+            and e.get("state") not in ("unknown", "unavailable", None, "")
+        }
+        entities_by_area: dict[str, list[dict[str, Any]]] = {}
+        entity_area_map: dict[str, str] = {}
+        for e in entities_list:
+            if not isinstance(e, dict) or not e.get("entity_id"):
+                continue
+            aid = e.get("area_id")
+            if aid:
+                entities_by_area.setdefault(str(aid), []).append(e)
+                entity_area_map[str(e["entity_id"])] = str(aid)
+
+        # Build live room bounds from SVG cache + custom_layout rooms, falling back to orthogonal layout
+        rooms_by_id: dict[str, dict[str, Any]] = {}
+        for aid_svg, b_val in getattr(self, "_cached_svg_room_bounds", {}).items():
+            if isinstance(b_val, dict):
+                rooms_by_id[str(aid_svg)] = dict(b_val)
+
+        if isinstance(c_layout.get("rooms"), list):
+            for cr in c_layout["rooms"]:
+                if isinstance(cr, dict) and cr.get("id"):
+                    rid = str(cr["id"])
+                    entry = rooms_by_id.setdefault(rid, {})
+                    for k in ("x", "y", "width", "height", "name"):
+                        if k in cr and cr[k] is not None:
+                            entry[k] = cr[k]
+
+        # If no cached SVG bounds exist yet, compute orthogonal layout from areas_map
+        if not rooms_by_id:
+            zones_in: dict[str, list[dict[str, Any]]] = {"main": [], "upper": [], "outdoor": []}
+            for aid, ainfo in areas_map.items():
+                aname = (ainfo.get("name") if isinstance(ainfo, dict) else None) or str(aid)
+                z = classify_area_zone(str(aid), str(aname))
+                zones_in.setdefault(z, []).append({
+                    "id": str(aid),
+                    "name": str(aname),
+                    "zone": z,
+                    "entities": entities_by_area.get(str(aid), []),
+                })
+            layout = self._calculate_orthogonal_layout(zones_in)
+            for rlist in layout.values():
+                for r in rlist:
+                    rooms_by_id[str(r["id"])] = dict(r)
+
+        def _is_legacy_bottom_auto_badge(badge: dict[str, Any]) -> bool:
+            """Detect unflagged legacy auto-generated bottom-row badges so rooms upgrade to center-outward pins."""
+            if badge.get("custom"):
+                return False
+            bx, by = badge.get("x"), badge.get("y")
+            if bx is None or by is None:
+                return False
+            try:
+                fx, fy = float(bx), float(by)
+            except (TypeError, ValueError):
+                return False
+            for r in rooms_by_id.values():
+                rx = float(r.get("x", 0))
+                ry = float(r.get("y", 0))
+                rw = float(r.get("width", 0))
+                rh = float(r.get("height", 0))
+                if rx <= fx <= rx + rw and ry <= fy <= ry + rh:
+                    if abs((ry + rh - 23.8) - fy) <= 1.5:
+                        return True
+            return False
+
+        custom_badges: list[dict[str, Any]] = []
+        deleted_eids: set[str] = set()
+        custom_eids: set[str] = set()
+        for b in raw_badges:
+            if not isinstance(b, dict) or not b.get("entity_id"):
+                continue
+            eid = str(b["entity_id"])
+            if b.get("delete") or b.get("deleted"):
+                deleted_eids.add(eid)
+            elif not _is_legacy_bottom_auto_badge(b):
+                custom_badges.append(dict(b))
+                custom_eids.add(eid)
+
+        control_domains = {"light", "switch", "media_player", "fan", "climate", "cover", "lock", "vacuum"}
+
+        # Determine which rooms already have user-placed controllable pins
+        customized_rooms: set[str] = set()
+        for b in custom_badges:
+            eid = str(b["entity_id"])
+            dom = eid.split(".")[0] if "." in eid else ""
+            if dom not in control_domains:
+                continue
+            if eid in entity_area_map:
+                customized_rooms.add(entity_area_map[eid])
+            bx = b.get("x")
+            by = b.get("y")
+            if bx is not None and by is not None:
+                try:
+                    fx, fy = float(bx), float(by)
+                    for rid, r in rooms_by_id.items():
+                        rx = float(r.get("x", 0))
+                        ry = float(r.get("y", 0))
+                        rw = float(r.get("width", 0))
+                        rh = float(r.get("height", 0))
+                        if rx <= fx <= rx + rw and ry <= fy <= ry + rh:
+                            customized_rooms.add(rid)
+                except (TypeError, ValueError):
+                    pass
+
+        effective_badges = list(custom_badges)
+        for rid, r in rooms_by_id.items():
+            if rid in deleted_rooms or rid in customized_rooms:
+                continue
+            room_ents = entities_by_area.get(rid, [])
+            if not room_ents:
+                continue
+            rx = float(r.get("x", 0))
+            ry = float(r.get("y", 0))
+            rw = float(r.get("width", 0))
+            rh = float(r.get("height", 0))
+            if rw <= 0 or rh <= 0:
+                continue
+
+            ainfo = areas_map.get(rid, {})
+            rname = str(r.get("name") or (ainfo.get("name") if isinstance(ainfo, dict) else None) or rid)
+            bp = GROUND_AND_OUTDOOR_BLUEPRINT.get(rid) or UPPER_FLOOR_BLUEPRINT.get(rid) or {}
+            sub_zones_count = len(r.get("sub_zones") or bp.get("sub_zones") or [])
+            has_container = bool(r.get("container_bounds") or r.get("parent_container") or bp.get("container_bounds") or bp.get("parent_container"))
+
+            max_pins, _ = compute_room_center_pin_positions(
+                rx, ry, rw, rh, count=0, sub_zones_count=sub_zones_count, has_container=has_container
+            )
+            ctrls = [
+                c for c in select_intelligent_room_controls(
+                    room_ents, valid_eids, area_name=rname, area_id=rid, max_controls=max_pins, devices_map=devices_map
+                )
+                if c["entity"] not in deleted_eids and c["entity"] not in custom_eids
+            ]
+            if not ctrls:
+                continue
+
+            _, positions = compute_room_center_pin_positions(
+                rx, ry, rw, rh, count=len(ctrls), sub_zones_count=sub_zones_count, has_container=has_container
+            )
+            for ctrl, (px, py) in zip(ctrls, positions, strict=False):
+                effective_badges.append({
+                    "entity_id": ctrl["entity"],
+                    "x": px,
+                    "y": py,
+                    "area_id": rid,
+                    "auto_default": True,
+                })
+
+        return effective_badges
+
     def _place_zone_rooms(
         self,
         rooms: list[dict[str, Any]],
@@ -1924,16 +2624,76 @@ class FloorplanParser:
                         shifted_windows.append(norm_w)
                     extra_meta["windows"] = shifted_windows
             else:
-                col = unmapped_idx % 4
-                row = unmapped_idx // 4
-                room_w, room_h = 250, 140
-                x = 60 + col * (room_w + 16)
-                y = base_y + row * (room_h + 16)
-                while _overlaps(x, y, room_w, room_h):
-                    y += room_h + 16
+                # Size from walkthrough room_shapes if available
+                wf = (getattr(self, "_metadata", {}) or {}).get("walkthrough_features") or {}
+                shapes_map = wf.get("room_shapes", {}) if isinstance(wf, dict) else {}
+                dir_conns = wf.get("directional_connections", []) if isinstance(wf, dict) else []
+                shape_info = shapes_map.get(norm_id) or shapes_map.get(room["id"]) or {}
+                shape_kind = str(shape_info.get("shape", "square")).lower()
+                size_kind = str(shape_info.get("size", "medium")).lower()
+                dim_table = {
+                    ("wide", "large"): (340, 170),
+                    ("wide", "medium"): (280, 130),
+                    ("wide", "small"): (210, 105),
+                    ("tall", "large"): (180, 240),
+                    ("tall", "medium"): (150, 200),
+                    ("tall", "small"): (120, 160),
+                    ("corridor", "large"): (380, 75),
+                    ("corridor", "medium"): (300, 70),
+                    ("corridor", "small"): (220, 65),
+                    ("square", "large"): (260, 200),
+                    ("square", "medium"): (210, 150),
+                    ("square", "small"): (140, 110),
+                }
+                room_w, room_h = dim_table.get((shape_kind, size_kind), (250, 140))
+
+                # Try placing flush against a connected already-placed room on the video-observed side
+                placed_by_id = {normalize_area_key(p["id"]): p for p in placed}
+                opposite_side = {"top": "bottom", "bottom": "top", "left": "right", "right": "left"}
+                cand_coords: list[tuple[int, int]] = []
+                for dc in dir_conns:
+                    if not isinstance(dc, dict):
+                        continue
+                    f_key = normalize_area_key(str(dc.get("from", "")))
+                    t_key = normalize_area_key(str(dc.get("to", "")))
+                    side = str(dc.get("side", "")).lower()
+                    anchor = None
+                    place_side = None
+                    if t_key == norm_id and f_key in placed_by_id:
+                        anchor = placed_by_id[f_key]
+                        place_side = side
+                    elif f_key == norm_id and t_key in placed_by_id:
+                        anchor = placed_by_id[t_key]
+                        place_side = opposite_side.get(side)
+                    if anchor and place_side:
+                        ax, ay, aw, ah = int(anchor["x"]), int(anchor["y"]), int(anchor["width"]), int(anchor["height"])
+                        if place_side == "right":
+                            cand_coords.append((ax + aw, ay))
+                        elif place_side == "left":
+                            cand_coords.append((ax - room_w, ay))
+                        elif place_side == "bottom":
+                            cand_coords.append((ax, ay + ah))
+                        elif place_side == "top":
+                            cand_coords.append((ax, ay - room_h))
+
+                chosen_xy = None
+                for cx, cy in cand_coords:
+                    if cx >= 20 and cy >= 40 and not _overlaps(cx, cy, room_w, room_h):
+                        chosen_xy = (cx, cy)
+                        break
+
+                if chosen_xy:
+                    x, y = chosen_xy
+                else:
+                    col = unmapped_idx % 4
+                    row = unmapped_idx // 4
+                    x = 60 + col * (room_w + 16)
+                    y = base_y + row * (room_h + 16)
+                    while _overlaps(x, y, room_w, room_h):
+                        y += room_h + 16
+                    unmapped_idx += 1
                 w, h = room_w, room_h
                 extra_meta = {}
-                unmapped_idx += 1
 
             used_boxes.append((x, y, w, h))
             placed.append({
@@ -1944,11 +2704,103 @@ class FloorplanParser:
                 "y": y,
                 "width": w,
                 "height": h,
-                "entities": room["entities"],
-                "adjacent_areas": room["adjacent_areas"],
+                "entities": room.get("entities", []),
+                "adjacent_areas": room.get("adjacent_areas", []),
                 **extra_meta,
             })
         return placed
+
+    def _apply_walkthrough_features(self, layout: dict[str, list[dict[str, Any]]]) -> None:
+        """Enrich placed rooms with walkthrough-detected stairs, pool/deck, and covered front porch."""
+        meta = getattr(self, "_metadata", {}) or {}
+        if not isinstance(meta, dict):
+            return
+        walkthrough_completed = bool(meta.get("walkthrough_completed", False))
+        spoken_order = {str(s).lower() for s in (meta.get("spoken_order") or [])}
+        wf = meta.get("walkthrough_features") or {}
+        stairs_list = wf.get("stairs", []) if isinstance(wf, dict) else []
+        outdoor_list = wf.get("outdoor_features", []) if isinstance(wf, dict) else []
+        dir_conns_check = wf.get("directional_connections", []) if isinstance(wf, dict) else []
+
+        if not (walkthrough_completed or spoken_order or stairs_list or outdoor_list or dir_conns_check):
+            return
+
+        placed_outdoor_ids = {str(r.get("id", "")).lower() for r in layout.get("outdoor", [])}
+        all_rooms = [r for r_list in layout.values() for r in r_list]
+        room_by_id = {str(r.get("id", "")).lower(): r for r in all_rooms}
+
+        for st in stairs_list:
+            if not isinstance(st, dict):
+                continue
+            rid = str(st.get("room", "")).lower()
+            target = room_by_id.get(rid)
+            if not target:
+                continue
+            direction = str(st.get("direction", "up")).lower()
+            if direction == "down":
+                target["has_stairs_down"] = True
+            else:
+                target["has_stairs_up"] = True
+            label = str(st.get("label") or "").strip()
+            if label and not target.get("_custom_sub_zones"):
+                sz = list(target.get("sub_zones") or [])
+                if label not in sz:
+                    sz.append(label)
+                target["sub_zones"] = sz
+
+        for feat in outdoor_list:
+            if not isinstance(feat, dict):
+                continue
+            rid = str(feat.get("room", "")).lower()
+            ftype = str(feat.get("feature", "")).lower()
+            target = room_by_id.get(rid)
+            if not target:
+                continue
+            if ftype == "pool" and "pool" not in placed_outdoor_ids:
+                target["has_pool"] = True
+            elif ftype == "front_porch":
+                target["has_front_porch"] = True
+
+        # Ensure directional_connections from video analysis have shared-wall doorways/openings
+        dir_conns = wf.get("directional_connections", []) if isinstance(wf, dict) else []
+        for dc in dir_conns:
+            if not isinstance(dc, dict):
+                continue
+            r1 = room_by_id.get(str(dc.get("from", "")).lower())
+            r2 = room_by_id.get(str(dc.get("to", "")).lower())
+            if not r1 or not r2:
+                continue
+            ctype = str(dc.get("type", "door")).lower()
+            style = "cased" if ctype == "open" else "swing"
+            x1, y1, w1, h1 = int(r1["x"]), int(r1["y"]), int(r1["width"]), int(r1["height"])
+            x2, y2, w2, h2 = int(r2["x"]), int(r2["y"]), int(r2["width"]), int(r2["height"])
+
+            shared_side = None
+            door_pos = None
+            # Horizontal shared wall (top/bottom)
+            ox = min(x1 + w1, x2 + w2) - max(x1, x2)
+            oy = min(y1 + h1, y2 + h2) - max(y1, y2)
+            if ox >= 28:
+                if abs((y1 + h1) - y2) <= 6:
+                    shared_side = "bottom"
+                    door_pos = int(max(x1, x2) + ox / 2 - 18)
+                elif abs((y2 + h2) - y1) <= 6:
+                    shared_side = "top"
+                    door_pos = int(max(x1, x2) + ox / 2 - 18)
+            elif oy >= 28:
+                if abs((x1 + w1) - x2) <= 6:
+                    shared_side = "right"
+                    door_pos = int(max(y1, y2) + oy / 2 - 18)
+                elif abs((x2 + w2) - x1) <= 6:
+                    shared_side = "left"
+                    door_pos = int(max(y1, y2) + oy / 2 - 18)
+
+            if shared_side and door_pos is not None:
+                existing_doors = [normalize_door_spec(d, r1) for d in (r1.get("doors") or [])]
+                if not any(d.get("side") == shared_side for d in existing_doors):
+                    r1_doors = list(r1.get("doors") or [])
+                    r1_doors.append((shared_side, door_pos, 36, f"To {r2.get('name', r2.get('id'))}", "inward-left", style))
+                    r1["doors"] = r1_doors
 
     def _calculate_orthogonal_layout(
         self, zones: dict[str, list[dict[str, Any]]]
@@ -2012,7 +2864,7 @@ class FloorplanParser:
                 custom_rooms_map[aid_svg]["width"] = b_val["width"]
                 custom_rooms_map[aid_svg]["height"] = b_val["height"]
 
-        for zone_k, room_list in layout.items():
+        for room_list in layout.values():
             for r in room_list:
                 rid = r.get("id")
                 if rid in custom_rooms_map:
@@ -2026,6 +2878,11 @@ class FloorplanParser:
                         r["height"] = cr["height"]
                     if cr.get("name"):
                         r["name"] = cr["name"]
+                    if "sub_zones" in cr and isinstance(cr["sub_zones"], list):
+                        r["sub_zones"] = list(cr["sub_zones"])
+                        r["_custom_sub_zones"] = True
+                    if isinstance(cr.get("features"), dict):
+                        r["features"] = dict(cr["features"])
 
         # Filter out deleted rooms
         deleted_rooms = set()
@@ -2035,9 +2892,12 @@ class FloorplanParser:
         for zone_k in list(layout.keys()):
             layout[zone_k] = [r for r in layout[zone_k] if r.get("id") not in deleted_rooms]
 
+        # Automatically enrich layout from walkthrough analysis, spoken_order, and spatial graph
+        self._apply_walkthrough_features(layout)
+
         # Automatic exterior window placement for rooms that don't have windows defined
         all_placed = [r for r_list in layout.values() for r in r_list]
-        for z_key, r_list in layout.items():
+        for _z_key, r_list in layout.items():
             for r in r_list:
                 if not r.get("windows"):
                     detected_wins = detect_exterior_windows(r, all_placed)
@@ -2467,8 +3327,11 @@ class FloorplanParser:
       }}
       .badge-circle {{ fill: rgba(15, 23, 42, 0.92); stroke: {accent_color}; stroke-width: 1.5; }}
       .badge-icon {{ fill: {text_color}; font-size: 10px; text-anchor: middle; dominant-baseline: middle; }}
-      .door-cut, .door-leaf, .door-swing, .door-garage, .door-sliding, .window-cut, .window-sill, .window-pane, .window-cap, .stairs-step {{
+      .door-cut, .door-leaf, .door-swing, .door-garage, .door-sliding, .window-cut, .window-sill, .window-pane, .window-cap {{
         pointer-events: none;
+      }}
+      .room-feature, .room-feature * {{
+        pointer-events: all;
       }}
       .door-cut {{ stroke: {accent_secondary}; stroke-width: 4; stroke-linecap: round; }}
       .door-leaf {{ stroke: {accent_color}; stroke-width: 2.2; stroke-linecap: round; }}
@@ -2617,6 +3480,13 @@ class FloorplanParser:
                 for r in outdoor_rooms:
                     svg_parts.append(self._render_room_svg(r, entity_by_id, accent_color))
                 svg_parts.append('    </g>\n')
+            custom_feats = (self._metadata.get("custom_layout", {}) if isinstance(getattr(self, "_metadata", None), dict) else {}).get("custom_features") or []
+            ground_cfs = [cf for cf in custom_feats if isinstance(cf, dict) and cf.get("id") and str(cf.get("zone") or "main").lower() != "upper"]
+            if ground_cfs:
+                svg_parts.append('    <g class="room-features-overlay">\n')
+                for cf in ground_cfs:
+                    svg_parts.append(self._render_custom_feature_svg(cf))
+                svg_parts.append('    </g>\n')
             svg_parts.append('  </g>\n')
 
         # PLAN 2: UPPER LEVEL FLOOR PLAN (Drawn Separately)
@@ -2643,6 +3513,13 @@ class FloorplanParser:
             )
             for r in upper_rooms:
                 svg_parts.append(self._render_room_svg(r, entity_by_id, accent_color))
+            custom_feats = (self._metadata.get("custom_layout", {}) if isinstance(getattr(self, "_metadata", None), dict) else {}).get("custom_features") or []
+            upper_cfs = [cf for cf in custom_feats if isinstance(cf, dict) and cf.get("id") and str(cf.get("zone") or "main").lower() == "upper"]
+            if upper_cfs:
+                svg_parts.append('    <g class="room-features-overlay">\n')
+                for cf in upper_cfs:
+                    svg_parts.append(self._render_custom_feature_svg(cf))
+                svg_parts.append('    </g>\n')
             svg_parts.append('  </g>\n')
 
         svg_parts.append('  </g>  <!-- /view-mode-2d -->\n\n')
@@ -2660,6 +3537,36 @@ class FloorplanParser:
 
         svg_parts.append('</svg>\n')
         return "".join(svg_parts)
+
+    def _render_custom_feature_svg(self, feat: dict[str, Any]) -> str:
+        """Render an independent draggable stairs or labeled box SVG group."""
+        fid = html.escape(str(feat.get("id") or "custom"), quote=True)
+        ftype = str(feat.get("type") or "box").lower()
+        zone = html.escape(str(feat.get("zone") or "main").lower(), quote=True)
+        fx = round(float(feat.get("x", 400.0)), 1)
+        fy = round(float(feat.get("y", 250.0)), 1)
+        if ftype == "stairs":
+            lines = [
+                f'    <g class="room-feature custom-feature" data-custom-id="{fid}" data-feature="stairs" data-zone="{zone}" data-x="{fx}" data-y="{fy}">\n',
+                f'      <rect x="{fx}" y="{fy}" width="44" height="28" fill="rgba(56, 189, 248, 0.12)" stroke="#38bdf8" stroke-width="1" rx="2" class="stairs-step" />\n',
+            ]
+            for step_i in range(1, 5):
+                lx = round(fx + step_i * 9, 1)
+                lines.append(
+                    f'      <line x1="{lx}" y1="{fy}" x2="{lx}" y2="{round(fy + 28, 1)}" class="stairs-step" />\n'
+                )
+            lines.append("    </g>\n")
+            return "".join(lines)
+        fw = round(max(60.0, float(feat.get("width", 150.0))), 1)
+        fh = round(max(24.0, float(feat.get("height", 56.0))), 1)
+        label = html.escape(str(feat.get("label") or "CUSTOM ZONE").upper())
+        label_attr = html.escape(str(feat.get("label") or "CUSTOM ZONE"), quote=True)
+        return (
+            f'    <g class="room-feature custom-feature" data-custom-id="{fid}" data-feature="box" data-zone="{zone}" data-x="{fx}" data-y="{fy}" data-width="{fw}" data-height="{fh}" data-label="{label_attr}">\n'
+            f'      <rect x="{fx}" y="{fy}" width="{fw}" height="{fh}" rx="6" fill="rgba(6, 182, 212, 0.14)" stroke="#22d3ee" stroke-width="1.2" stroke-dasharray="4 2" />\n'
+            f'      <text x="{round(fx + fw / 2.0, 1)}" y="{round(fy + fh / 2.0 + 4.0, 1)}" text-anchor="middle" fill="#67e8f9" font-size="9" font-weight="700" letter-spacing="1.2">{label}</text>\n'
+            f'    </g>\n'
+        )
 
     def _render_room_svg(
         self, room: dict[str, Any], entity_by_id: dict[str, Any], accent_color: str
@@ -2716,18 +3623,53 @@ class FloorplanParser:
                     f'    <text x="{x + 16}" y="{sy}" class="subzone-pill">▪ {html.escape(str(sz_label))}</text>\n'
                 )
 
+        room_features = room.get("features") if isinstance(room.get("features"), dict) else {}
+
         # Render staircase steps if room contains stairs
         if room.get("has_stairs_up") or room.get("has_stairs_down"):
-            sx = x + w - 58
-            sy = y + h - 42
+            st_pos = room_features.get("stairs") if isinstance(room_features.get("stairs"), dict) else {}
+            sx = round(float(st_pos["x"]), 1) if "x" in st_pos else x + w - 58
+            sy = round(float(st_pos["y"]), 1) if "y" in st_pos else y + h - 42
+            parts.append(f'    <g class="room-feature" data-feature="stairs" data-x="{sx}" data-y="{sy}">\n')
             parts.append(
-                f'    <rect x="{sx}" y="{sy}" width="44" height="28" fill="rgba(56, 189, 248, 0.12)" stroke="#38bdf8" stroke-width="1" rx="2" class="stairs-step" />\n'
+                f'      <rect x="{sx}" y="{sy}" width="44" height="28" fill="rgba(56, 189, 248, 0.12)" stroke="#38bdf8" stroke-width="1" rx="2" class="stairs-step" />\n'
             )
             for step_i in range(1, 5):
-                lx = sx + step_i * 9
+                lx = round(sx + step_i * 9, 1)
                 parts.append(
-                    f'    <line x1="{lx}" y1="{sy}" x2="{lx}" y2="{sy + 28}" class="stairs-step" />\n'
+                    f'      <line x1="{lx}" y1="{sy}" x2="{lx}" y2="{round(sy + 28, 1)}" class="stairs-step" />\n'
                 )
+            parts.append("    </g>\n")
+
+        # Render Pool & Deck Stairs inside Backyard when walkthrough includes pool without separate HA area
+        if room.get("has_pool") and w >= 260:
+            pw, ph = min(170, int(w * 0.28)), max(48, min(90, int(h - 32)))
+            pl_pos = room_features.get("pool") if isinstance(room_features.get("pool"), dict) else {}
+            px = round(float(pl_pos["x"]), 1) if "x" in pl_pos else x + w - pw - 20
+            py = round(float(pl_pos["y"]), 1) if "y" in pl_pos else y + (h - ph) // 2
+            parts.append(f'    <g class="room-feature" data-feature="pool" data-x="{px}" data-y="{py}">\n')
+            parts.append(
+                f'      <rect x="{px}" y="{py}" width="{pw}" height="{ph}" rx="6" fill="rgba(6, 182, 212, 0.14)" stroke="#22d3ee" stroke-width="1.2" stroke-dasharray="4 2" />\n'
+            )
+            parts.append(
+                f'      <text x="{round(px + pw / 2, 1)}" y="{round(py + ph / 2 + 4, 1)}" text-anchor="middle" fill="#67e8f9" font-size="9" font-weight="700" letter-spacing="1.2">POOL &amp; PATIO</text>\n'
+            )
+            parts.append("    </g>\n")
+
+        # Render Covered Front Porch & 2nd-Story Balcony canopy strip between Frontyard and Foyer
+        if room.get("has_front_porch") and w >= 280:
+            porch_w = min(200, int(w * 0.24))
+            fp_pos = room_features.get("front_porch") if isinstance(room_features.get("front_porch"), dict) else {}
+            porch_x = round(float(fp_pos["x"]), 1) if "x" in fp_pos else x + 220
+            porch_y = round(float(fp_pos["y"]), 1) if "y" in fp_pos else y + 6
+            parts.append(f'    <g class="room-feature" data-feature="front_porch" data-x="{porch_x}" data-y="{porch_y}">\n')
+            parts.append(
+                f'      <rect x="{porch_x}" y="{porch_y}" width="{porch_w}" height="20" rx="3" fill="rgba(56, 189, 248, 0.10)" stroke="rgba(56, 189, 248, 0.45)" stroke-width="1" stroke-dasharray="3 2" />\n'
+            )
+            parts.append(
+                f'      <text x="{round(porch_x + porch_w / 2, 1)}" y="{round(porch_y + 13, 1)}" text-anchor="middle" fill="#7dd3fc" font-size="8" font-weight="700" letter-spacing="1">COVERED FRONT PORCH &amp; BALCONY</text>\n'
+            )
+            parts.append("    </g>\n")
 
         # Render doorway openings, door leaves, and swing arcs along walls
         raw_doors = room.get("doors", [])
@@ -2911,7 +3853,7 @@ class FloorplanParser:
         canvas_h = float(self._get_canvas_height(layout_by_zone))
 
         # Embed click elements for primary room lights
-        for zone, rooms in layout_by_zone.items():
+        for _zone, rooms in layout_by_zone.items():
             for r in rooms:
                 lights = [e for e in r.get("entities", []) if e.startswith("light.")]
                 if lights:

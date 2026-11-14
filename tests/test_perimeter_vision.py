@@ -52,6 +52,24 @@ class TestPerimeterVisionAnalysis(unittest.TestCase):
         self.hass.services = MagicMock()
         self.hass.services.async_call = AsyncMock()
 
+        class _EntityMap(dict):
+            def __init__(self, states_mock):
+                super().__init__()
+                self._states_mock = states_mock
+
+            def get(self, key, default=None):
+                if key not in self:
+                    ent = MagicMock()
+                    ent.async_set_state = (
+                        lambda state, attributes=None, _eid=key: self._states_mock.async_set(
+                            _eid, state, attributes or {}
+                        )
+                    )
+                    self[key] = ent
+                return super().get(key, default)
+
+        self.hass.data = {DOMAIN: {"test_entry": {"entities": _EntityMap(self.hass.states)}}}
+
     def test_reexported_module_parity(self):
         """Test that local_llm_manager re-exports LocalLLMManager seamlessly."""
         self.assertIs(LocalLLMManager, ReexportedLocalLLMManager)

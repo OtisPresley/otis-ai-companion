@@ -274,6 +274,51 @@ class TestAudioMigration(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(suppressed)
 
+    async def test_audio_follow_excludes_tv_cinema_players(self) -> None:
+        """Verify Audio Follow-Me and async_audio_handoff never target tv_cinema_players like Shield TV."""
+        from custom_components.otis_ai.audio_manager import AudioHandoffManager
+
+        am = AudioHandoffManager(self.hass)
+        am.async_get_active_media_zones = unittest.mock.AsyncMock(return_value={
+            "matrix_zones": [
+                {
+                    "entity_id": "media_player.matrix_amp_1_study",
+                    "area_id": "study",
+                    "state": "playing",
+                    "source": "Music Assistant",
+                    "volume_level": 0.35,
+                    "platform": "control4_mediaplayer",
+                },
+            ],
+            "other_players": [],
+            "tv_cinema_players": [
+                {
+                    "entity_id": "media_player.shield_android_tv",
+                    "area_id": "theater",
+                    "state": "off",
+                    "source": None,
+                    "volume_level": 0.25,
+                    "platform": "androidtv_remote",
+                },
+            ],
+        })
+
+        res = await am.async_process_spatial_audio_migration(
+            {"source_area": "study", "target_area": "theater", "confidence": 0.90},
+            occupied_areas=["theater"],
+        )
+        self.assertIsNotNone(res)
+        self.assertFalse(res.get("migrated"))
+        self.assertEqual(res.get("reason"), "no_target_player")
+
+        handoff_res = await am.async_audio_handoff(
+            source_area="study",
+            target_area="theater",
+            mode="follow",
+        )
+        self.assertFalse(handoff_res.get("success"))
+        self.hass.services.async_call.assert_not_called()
+
     async def test_agent_classification_and_self_learning_upgrade(self) -> None:
         """Verify Paid vs Free tier scoring, YAML syntax upgrade, and autonomous rule learning."""
         from custom_components.otis_ai import (

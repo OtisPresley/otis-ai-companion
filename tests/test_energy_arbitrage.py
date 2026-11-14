@@ -378,7 +378,12 @@ def test_async_discover_ev_infrastructure(mock_hass, energy_manager):
 
 
 def test_sensor_otis_energy_arbitrage_publishing(mock_hass, energy_manager):
-    """Test publish_energy_arbitrage_telemetry sets sensor.otis_energy_arbitrage with rich attributes."""
+    """Test publish_energy_arbitrage_telemetry updates registered sensor.otis_energy_arbitrage with rich attributes."""
+    from custom_components.otis_ai.const import DOMAIN
+
+    mock_ent = MagicMock()
+    mock_hass.data = {DOMAIN: {"test_entry": {"entities": {"sensor.otis_energy_arbitrage": mock_ent}}}}
+
     plan = {
         "current_action": "store_solar_surplus",
         "mode": "auto",
@@ -395,13 +400,12 @@ def test_sensor_otis_energy_arbitrage_publishing(mock_hass, energy_manager):
     }
 
     energy_manager.publish_energy_arbitrage_telemetry(plan)
-    mock_hass.states.async_set.assert_called_once()
-    args = mock_hass.states.async_set.call_args[0]
-    assert args[0] == "sensor.otis_energy_arbitrage"
-    assert args[1] == "store_solar_surplus"
-    assert args[2]["current_soc_pct"] == 68.0
-    assert args[2]["projected_savings_usd"] == 3.45
-    assert args[2]["ev_charging"]["current_action"] == "smart_ev_solar_charge"
+    mock_ent.async_set_state.assert_called_once()
+    state_val, attrs = mock_ent.async_set_state.call_args[0]
+    assert state_val == "store_solar_surplus"
+    assert attrs["current_soc_pct"] == 68.0
+    assert attrs["projected_savings_usd"] == 3.45
+    assert attrs["ev_charging"]["current_action"] == "smart_ev_solar_charge"
 
 
 def test_conversational_assist_ev_schedule_and_dispatch(mock_hass, energy_manager):

@@ -430,6 +430,35 @@ class TestOtisAICore(unittest.TestCase):
         self.assertEqual(len(startup_map["orphaned_entities"]), 0)
         self.hass.is_running = True
 
+    def test_capability_map_lightweight_skips_suggestions_and_sentinel(self):
+        """Verify include_suggestions=False skips Sentinel/Habit/News and preserves full cache."""
+        from custom_components.otis_ai import DiscoveryEngine
+
+        engine = DiscoveryEngine(self.hass)
+        engine.sentinel_manager = MagicMock()
+        engine.sentinel_manager.async_scan_all_anomalies = AsyncMock(return_value=[{"id": "a1"}])
+        engine.async_generate_proactive_suggestions = AsyncMock(return_value=[{"id": "s1"}])
+
+        # 1. Cold lightweight call skips Sentinel & proactive suggestions and does not poison _cached_cap_map
+        light_map = asyncio.run(engine.async_build_capability_map(include_suggestions=False))
+        self.assertEqual(light_map["proactive_suggestions"], [])
+        self.assertEqual(light_map["sentinel"]["count"], 0)
+        engine.sentinel_manager.async_scan_all_anomalies.assert_not_awaited()
+        engine.async_generate_proactive_suggestions.assert_not_awaited()
+        self.assertIsNone(engine._cached_cap_map)
+
+        # 2. Subsequent full call populates suggestions & caches full map
+        full_map = asyncio.run(engine.async_build_capability_map(include_suggestions=True))
+        self.assertEqual(full_map["proactive_suggestions"], [{"id": "s1"}])
+        self.assertEqual(full_map["sentinel"]["count"], 1)
+        engine.sentinel_manager.async_scan_all_anomalies.assert_awaited_once()
+        engine.async_generate_proactive_suggestions.assert_awaited_once()
+
+        # 3. Cached lightweight call returns empty suggestions without overwriting full cache
+        cached_light = asyncio.run(engine.async_build_capability_map(include_suggestions=False))
+        self.assertEqual(cached_light["proactive_suggestions"], [])
+        self.assertEqual(engine._cached_cap_map["proactive_suggestions"], [{"id": "s1"}])
+
     def test_conversation_agent_no_llm(self):
         """Test conversation agent when no LLM agent is discovered or configured."""
         from custom_components.otis_ai import OtisAIConversationAgent
@@ -549,7 +578,7 @@ class TestOtisAICore(unittest.TestCase):
         agent = OtisAIConversationAgent(self.hass, entry, engine, MagicMock())
         
         user_input = MagicMock()
-        user_input.text = "Turn on the fan"
+        user_input.text = "Create an automation to turn on the fan"
         user_input.conversation_id = "test_conv_id"
         user_input.context = "test_context"
         user_input.language = "en"
@@ -4377,6 +4406,73 @@ class TestModernSectionsDashboardGeneration(unittest.TestCase):
         self.assertIn("cards", home_view)
         self.assertGreaterEqual(len(home_view["cards"]), 3)
 
+    def test_compact_classic_and_compact_pills_wiring(self):
+        """Verify compact/classic dashboard_layout and compact_pills navigation_style across views."""
+        from custom_components.otis_ai.dashboard_manager import DashboardManager
+        from custom_components.otis_ai.rules_manager import BehavioralRulesManager
+
+        rm = BehavioralRulesManager(self.hass)
+        dm = DashboardManager(self.hass, rules_manager=rm)
+
+        cap_map = {
+            "areas": {"living_room": {"name": "Living Room", "entities": ["climate.living_room"]}},
+            "entities": [
+                {"entity_id": "climate.living_room", "domain": "climate", "name": "Living Room Thermostat", "area_id": "living_room", "state": "heat"},
+                {"entity_id": "person.alex", "domain": "person", "name": "Alex", "state": "home"},
+            ],
+        }
+
+        # 1. Compact layout + compact_pills navigation
+        updated = asyncio.run(rm.async_save({
+            "dashboard_layout": "compact",
+            "navigation_style": "compact_pills",
+        }))
+        self.assertEqual(updated["dashboard_layout"], "compact")
+        self.assertEqual(updated["navigation_style"], "compact_pills")
+
+        cfg_compact = dm._build_user_command_center_dashboard_config(cap_map)
+        home_compact = cfg_compact["views"][0]
+        self.assertEqual(home_compact["type"], "sections")
+        self.assertEqual(home_compact["max_columns"], 4)
+        self.assertTrue(home_compact.get("dense_section_placement"))
+
+        studios_grid = home_compact["sections"][0]["cards"][1]
+        self.assertEqual(studios_grid["columns"], 4)
+        self.assertFalse(studios_grid["square"])
+        self.assertEqual(studios_grid["cards"][0]["icon_height"], "20px")
+
+        climate_compact = next(v for v in cfg_compact["views"] if v.get("path") == "climate")
+        self.assertEqual(climate_compact["type"], "sections")
+        self.assertEqual(climate_compact["max_columns"], 4)
+        self.assertTrue(climate_compact.get("dense_section_placement"))
+
+        room_compact = next(v for v in cfg_compact["views"] if v.get("path") == "area_living_room")
+        self.assertEqual(room_compact["type"], "sections")
+        self.assertEqual(room_compact["max_columns"], 4)
+
+        # 2. Classic layout + standard_grid navigation
+        updated_classic = asyncio.run(rm.async_save({
+            "dashboard_layout": "classic",
+            "navigation_style": "standard_grid",
+        }))
+        self.assertEqual(updated_classic["dashboard_layout"], "classic")
+        self.assertEqual(updated_classic["navigation_style"], "standard_grid")
+
+        cfg_classic = dm._build_user_command_center_dashboard_config(cap_map)
+        home_classic = cfg_classic["views"][0]
+        self.assertNotIn("sections", home_classic)
+        self.assertNotIn("type", home_classic)
+        studios_classic = next(c for c in home_classic["cards"] if c.get("title") == "Studios")
+        self.assertEqual(studios_classic["columns"], 3)
+        self.assertTrue(studios_classic["square"])
+
+        climate_classic = next(v for v in cfg_classic["views"] if v.get("path") == "climate")
+        self.assertNotIn("sections", climate_classic)
+
+        room_classic = next(v for v in cfg_classic["views"] if v.get("path") == "area_living_room")
+        self.assertNotIn("sections", room_classic)
+        self.assertTrue(any(c.get("type") == "thermostat" for c in room_classic["cards"]))
+
     def test_content_focus_glance_first_and_studios_first(self):
         """Verify dynamic section and card reordering when user switches primary content focus."""
         from custom_components.otis_ai.dashboard_manager import DashboardManager
@@ -5174,7 +5270,7 @@ action:
             for c in s.get("cards", []):
                 if c.get("heading") == "HVAC Thermostats & Dual-Setpoints":
                     hvac_cards = s["cards"]
-                elif c.get("heading") == "Pool & Spa Water Temperature":
+                elif c.get("heading") == "Pool Heater & Water Temperature":
                     pool_cards = s["cards"]
 
         self.assertTrue(len(hvac_cards) > 0, "Expected HVAC Thermostats & Dual-Setpoints section")
@@ -5184,7 +5280,7 @@ action:
         self.assertIn("target-temperature", feature_types)
         self.assertIn("climate-hvac-modes", feature_types)
 
-        self.assertTrue(len(pool_cards) > 0, "Expected Pool & Spa Water Temperature section")
+        self.assertTrue(len(pool_cards) > 0, "Expected Pool Heater & Water Temperature section")
         pool_tile = next(c for c in pool_cards if c.get("type") == "tile" and c.get("entity") == "climate.pool_heat")
         self.assertEqual(pool_tile["entity"], "climate.pool_heat")
 

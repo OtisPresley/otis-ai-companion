@@ -31,6 +31,17 @@ class TestPresencePreconditioning(unittest.IsolatedAsyncioTestCase):
         def mock_all():
             return list(self._states_store.values())
 
+        from custom_components.otis_ai.const import DOMAIN
+
+        class _EntityMap(dict):
+            def get(self, key, default=None):
+                if key not in self:
+                    ent = MagicMock()
+                    ent.async_set_state = lambda state, attributes=None, _eid=key: mock_set(_eid, state, attributes)
+                    self[key] = ent
+                return super().get(key, default)
+
+        self.hass.data = {DOMAIN: {"test_entry": {"entities": _EntityMap()}}}
         self.hass.states.async_set.side_effect = mock_set
         self.hass.states.get.side_effect = lambda eid: self._states_store.get(eid)
         self.hass.states.async_all.side_effect = mock_all

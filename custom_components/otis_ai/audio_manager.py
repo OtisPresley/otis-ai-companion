@@ -24,6 +24,8 @@ from .const import (
     ATTR_AUDIO_FOLLOW_STATUS,
     ATTR_AUDIO_FOLLOW_TARGET,
     DEFAULT_AUDIO_MIGRATION_CONFIDENCE,
+    is_otis_entity_id,
+    resolve_otis_entity_id,
 )
 from .matrix_presets import is_matrix_entity, is_tv_cinema_player
 
@@ -62,6 +64,18 @@ def filter_zones_by_area(zones: list[dict[str, Any]], area_name: str) -> list[di
     if not norm_area:
         return []
     return [z for z in zones if zone_matches_area(z, norm_area)]
+
+
+def _is_tv_display_player(z: dict[str, Any]) -> bool:
+    """Return True if a zone dict represents a TV/streaming display rather than an audio zone/AVR."""
+    eid = str(z.get("entity_id") or "").lower()
+    platform = str(z.get("platform") or "").lower()
+    d_class = str(z.get("device_class") or "").lower()
+    if is_matrix_entity(eid, platform) or "receiver" in eid or "avr" in eid:
+        return False
+    if d_class == "tv" or platform in ("androidtv_remote", "apple_tv", "roku", "webostv", "samsungtv", "braviatv", "lg_netcast", "firetv"):
+        return True
+    return any(k in eid for k in ("_tv", "android_tv", "shield_tv", "shield_android_tv", "apple_tv", "roku", "fire_tv", "chromecast_tv"))
 
 
 class AudioHandoffManager:
@@ -987,9 +1001,10 @@ class AudioHandoffManager:
             except Exception as s_err:
                 _LOGGER.debug("Spatial adjacency check error: %s", s_err)
 
-        # 2. Discover media players in source and target areas
+        # 2. Discover media players in source and target areas (exclude TVs/displays from audio handoff targets)
         zones_data = await self.async_get_active_media_zones()
         all_zones = zones_data["matrix_zones"] + zones_data["other_players"] + zones_data["tv_cinema_players"]
+        audio_zones = [z for z in all_zones if not _is_tv_display_player(z)]
 
         # Locate source player
         source_player: dict[str, Any] | None = None
@@ -1001,7 +1016,7 @@ class AudioHandoffManager:
 
         if not source_player:
             # Find active/playing zone in source_area
-            source_candidates = filter_zones_by_area(all_zones, source_area_clean)
+            source_candidates = filter_zones_by_area(audio_zones, source_area_clean)
             playing_candidates = [z for z in source_candidates if z["state"] in ("playing", "on")]
             source_player = playing_candidates[0] if playing_candidates else (source_candidates[0] if source_candidates else None)
 
@@ -1013,8 +1028,8 @@ class AudioHandoffManager:
                 "target_area": target_area,
             }
 
-        # Locate target player
-        target_candidates = filter_zones_by_area(all_zones, target_area_clean)
+        # Locate target player (audio zones only; never hand off to TVs/cinema displays)
+        target_candidates = filter_zones_by_area(audio_zones, target_area_clean)
         if not target_candidates:
             return {
                 "success": False,
@@ -1171,7 +1186,8 @@ class AudioHandoffManager:
 
         # Check user toggle entity and Party Mode entity if present
         if hasattr(self.hass, "states") and hasattr(self.hass.states, "get"):
-            for eid in ("switch.otis_audio_follow", "input_boolean.otis_audio_follow"):
+            follow_eid = resolve_otis_entity_id(self.hass, "switch", "audio_follow")
+            for eid in (follow_eid, "switch.otis_audio_follow", "input_boolean.otis_audio_follow"):
                 toggle_st = self.hass.states.get(eid)
                 if toggle_st and toggle_st.state in ("off", "false", "0"):
                     _LOGGER.debug("Audio follow-me disabled by entity toggle '%s'", eid)
@@ -1194,9 +1210,34 @@ class AudioHandoffManager:
         ):
             return await self.async_finalize_audio_handoff()
 
-        # Discover active players
+        # Discover active audio players (exclude TVs/displays from audio follow-me)
         zones_data = await self.async_get_active_media_zones()
-        all_zones = zones_data["matrix_zones"] + zones_data["other_players"] + zones_data["tv_cinema_players"]
+        all_zones = [
+            z for z in (zones_data["matrix_zones"] + zones_data["other_players"] + zones_data["tv_cinema_players"])
+            if not _is_tv_display_player(z)
+        ]
+
+        effective_mappings = self.resolve_effective_input_mappings()
+
+        def _is_zone_actively_playing_music(z: dict[str, Any]) -> bool:
+            st = str(z.get("state") or "").lower()
+            src = str(z.get("source") or "").strip()
+            src_l = src.lower()
+            if src_l in ("home assistant", "tts", "announcements", "none", ""):
+                return st == "playing"
+            if st == "playing":
+                return True
+            if st == "on" and src:
+                mapped_eid = next(
+                    (v for k, v in effective_mappings.items() if k.lower() == src_l),
+                    None,
+                )
+                if mapped_eid and hasattr(self.hass, "states"):
+                    m_st = self.hass.states.get(mapped_eid)
+                    if m_st is not None:
+                        return str(m_st.state).lower() == "playing"
+                return True
+            return False
 
         def _is_active_music_zone(z: dict[str, Any]) -> tuple[int, int]:
             st = str(z.get("state") or "").lower()
@@ -1208,14 +1249,14 @@ class AudioHandoffManager:
         playing_sources: list[dict[str, Any]] = []
         if source_area:
             source_candidates = filter_zones_by_area(all_zones, source_area)
-            playing_sources = [z for z in source_candidates if z["state"] in ("playing", "on")]
+            playing_sources = [z for z in source_candidates if _is_zone_actively_playing_music(z)]
             playing_sources.sort(key=_is_active_music_zone, reverse=True)
 
         # Fallback: if source_area had no playing zone (e.g. walked through a hallway/foyer without speakers)
         # or if source_area was only on an idle TTS channel while another zone is actively streaming music
         other_active = [
             z for z in all_zones
-            if z["state"] in ("playing", "on") and not zone_matches_area(z, target_area)
+            if _is_zone_actively_playing_music(z) and not zone_matches_area(z, target_area)
         ]
         other_active.sort(key=_is_active_music_zone, reverse=True)
 
@@ -1270,6 +1311,14 @@ class AudioHandoffManager:
             return {
                 "migrated": False,
                 "reason": "no_target_player",
+                "source_area": source_area,
+                "target_area": target_area,
+            }
+        if any(_is_zone_actively_playing_music(z) for z in target_candidates):
+            _LOGGER.debug("Target area '%s' is already actively playing media; skipping audio follow overwrite", target_area)
+            return {
+                "migrated": False,
+                "reason": "target_already_playing",
                 "source_area": source_area,
                 "target_area": target_area,
             }
@@ -1396,7 +1445,8 @@ class AudioHandoffManager:
     def _update_spatial_migration_sensor(self, status: str) -> None:
         """Update sensor.otis_spatial_migration with audio follow-me attributes."""
         if hasattr(self.hass, "states") and hasattr(self.hass.states, "get") and hasattr(self.hass.states, "async_set"):
-            st = self.hass.states.get("sensor.otis_spatial_migration")
+            sensor_eid = resolve_otis_entity_id(self.hass, "sensor", "spatial_migration")
+            st = self.hass.states.get(sensor_eid)
             if st:
                 attrs = dict(st.attributes) if st.attributes else {}
                 attrs[ATTR_AUDIO_FOLLOW_ACTIVE] = (status == "following")
@@ -1407,7 +1457,7 @@ class AudioHandoffManager:
                     attrs[ATTR_AUDIO_FOLLOW_PLAYER] = self._active_audio_migration.get("target_player")
                 try:
                     from .sensor import async_update_entity_state
-                    async_update_entity_state(self.hass, "sensor.otis_spatial_migration", st.state, attrs)
+                    async_update_entity_state(self.hass, sensor_eid, st.state, attrs)
                 except Exception as err:
                     _LOGGER.debug("Entity state update notice: %s", err)
 
@@ -1418,7 +1468,7 @@ class AudioHandoffManager:
 
         async def _on_sensor_changed(event):
             data = getattr(event, "data", {})
-            if data.get("entity_id") != "sensor.otis_spatial_migration":
+            if not is_otis_entity_id(data.get("entity_id"), "sensor", "spatial_migration"):
                 return
             new_state = data.get("new_state")
             if not new_state:
@@ -1441,6 +1491,180 @@ class AudioHandoffManager:
 
             self._migration_unsub = self.hass.bus.async_listen(
                 EVENT_STATE_CHANGED, _on_sensor_changed
+            )
+
+    def get_default_unjoin_input(self) -> str:
+        """Return the configured default/return input when zones are unjoined or input playback stops."""
+        rules = self.rules_manager.get_rules() if self.rules_manager else {}
+        return str(rules.get("media_unjoin_input") or "None").strip() or "None"
+
+    async def async_unjoin_zones(
+        self,
+        zone_entity_ids: list[str],
+        default_input: str | None = None,
+    ) -> dict[str, Any]:
+        """Return one or more matrix speaker zones to the configured default/unjoin input."""
+        target_input = str(default_input or self.get_default_unjoin_input()).strip() or "None"
+        reverted: list[str] = []
+        turned_off: list[str] = []
+        errors: list[str] = []
+
+        for zid in zone_entity_ids:
+            z_eid = str(zid or "").strip()
+            if not z_eid:
+                continue
+            st = self.hass.states.get(z_eid) if hasattr(self.hass, "states") else None
+            attrs = (st.attributes or {}) if st else {}
+            source_list = [str(s) for s in (attrs.get("source_list") or []) if s]
+            matched_src = next(
+                (s for s in source_list if s.lower() == target_input.lower()),
+                None,
+            )
+            try:
+                if matched_src is not None:
+                    if target_input.lower() != "none" and st and str(st.state).lower() == "off":
+                        await self.hass.services.async_call(
+                            "media_player",
+                            "turn_on",
+                            {"entity_id": z_eid},
+                            blocking=True,
+                        )
+                    await self.hass.services.async_call(
+                        "media_player",
+                        "select_source",
+                        {"entity_id": z_eid, "source": matched_src},
+                        blocking=True,
+                    )
+                    reverted.append(z_eid)
+                elif target_input.lower() == "none":
+                    await self.hass.services.async_call(
+                        "media_player",
+                        "turn_off",
+                        {"entity_id": z_eid},
+                        blocking=True,
+                    )
+                    turned_off.append(z_eid)
+                else:
+                    await self.hass.services.async_call(
+                        "media_player",
+                        "select_source",
+                        {"entity_id": z_eid, "source": target_input},
+                        blocking=True,
+                    )
+                    reverted.append(z_eid)
+            except Exception as err:
+                _LOGGER.debug("Failed to return zone %s to default input '%s': %s", z_eid, target_input, err)
+                errors.append(f"{z_eid}: {err}")
+
+        return {
+            "success": len(errors) == 0,
+            "default_input": target_input,
+            "reverted": reverted,
+            "turned_off": turned_off,
+            "errors": errors,
+        }
+
+    async def async_apply_default_input_to_idle_zones(
+        self,
+        default_input: str | None = None,
+    ) -> dict[str, Any]:
+        """Route all non-playing matrix zones to the configured default/return input."""
+        target_input = str(default_input or self.get_default_unjoin_input()).strip() or "None"
+        zones_data = await self.async_get_active_media_zones()
+        matrix_zones = zones_data.get("matrix_zones", [])
+        effective_mappings = self.resolve_effective_input_mappings()
+
+        # Build set of inputs whose mapped upstream player is currently playing
+        playing_inputs: set[str] = set()
+        if hasattr(self.hass, "states"):
+            for inp_name, plr_eid in effective_mappings.items():
+                if not plr_eid:
+                    continue
+                plr_st = self.hass.states.get(plr_eid)
+                if plr_st and str(plr_st.state).lower() == "playing":
+                    playing_inputs.add(str(inp_name).strip().lower())
+
+        idle_zones: list[str] = []
+        for z in matrix_zones:
+            z_eid = str(z.get("entity_id") or "").strip()
+            if not z_eid:
+                continue
+            z_state = str(z.get("state") or "").lower()
+            if z_state == "unavailable":
+                continue
+            cur_src = str(z.get("source") or "").strip().lower()
+            if z_state == "playing" or (cur_src and cur_src in playing_inputs):
+                continue
+            if cur_src == target_input.lower() and (target_input.lower() != "none" or z_state == "off"):
+                continue
+            idle_zones.append(z_eid)
+
+        if not idle_zones:
+            return {"success": True, "default_input": target_input, "reverted": [], "turned_off": [], "errors": []}
+        return await self.async_unjoin_zones(idle_zones, default_input=target_input)
+
+    def async_start_input_stop_listener(self) -> None:
+        """Listen for mapped input media players stopping playback and return routed zones to default input."""
+        if getattr(self, "_input_stop_unsub", None):
+            return
+
+        async def _on_input_player_changed(event):
+            data = getattr(event, "data", {})
+            eid = str(data.get("entity_id") or "")
+            if not eid.startswith("media_player."):
+                return
+            old_state = data.get("old_state")
+            new_state = data.get("new_state")
+            if not old_state or not new_state:
+                return
+            if str(old_state.state).lower() != "playing":
+                return
+            if str(new_state.state).lower() not in ("idle", "off", "standby"):
+                return
+
+            effective_mappings = self.resolve_effective_input_mappings()
+            matching_inputs = [
+                inp_name
+                for inp_name, plr_eid in effective_mappings.items()
+                if str(plr_eid or "").strip().lower() == eid.lower()
+            ]
+            if not matching_inputs:
+                return
+
+            default_input = self.get_default_unjoin_input()
+            matching_lower = {inp.lower() for inp in matching_inputs}
+            if default_input.lower() in matching_lower:
+                return
+
+            zones_data = await self.async_get_active_media_zones()
+            matrix_zones = zones_data.get("matrix_zones", [])
+            zones_to_revert = [
+                z["entity_id"]
+                for z in matrix_zones
+                if z.get("entity_id")
+                and str(z.get("state") or "").lower() not in ("off", "unavailable")
+                and str(z.get("source") or "").strip().lower() in matching_lower
+            ]
+            if not zones_to_revert:
+                return
+
+            _LOGGER.info(
+                "Input player %s (%s) stopped playing; returning %d zone(s) to default input '%s'",
+                eid,
+                ", ".join(matching_inputs),
+                len(zones_to_revert),
+                default_input,
+            )
+            await self.async_unjoin_zones(zones_to_revert, default_input=default_input)
+
+        if hasattr(self.hass, "bus") and hasattr(self.hass.bus, "async_listen"):
+            try:
+                from homeassistant.const import EVENT_STATE_CHANGED
+            except ImportError:
+                EVENT_STATE_CHANGED = "state_changed"
+
+            self._input_stop_unsub = self.hass.bus.async_listen(
+                EVENT_STATE_CHANGED, _on_input_player_changed
             )
 
     async def async_release_idle_sources(self) -> dict[str, Any]:

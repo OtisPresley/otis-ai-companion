@@ -351,13 +351,25 @@ class TestVisionPresenceManager(unittest.TestCase):
             MockEntityState("binary_sensor.living_room_motion", "on", {"device_class": "motion", "friendly_name": "LR Motion"}),
             MockEntityState("light.kitchen_lights", "off", {"friendly_name": "Kitchen Lights"}),
         ]
+        from custom_components.otis_ai.const import DOMAIN
+
         self.hass.states.async_all.return_value = states
         published_states = {}
 
-        def mock_async_set(entity_id, state, attributes=None):
-            published_states[entity_id] = {"state": state, "attributes": attributes or {}}
+        def _make_ent(eid):
+            ent = MagicMock()
+            ent.async_set_state = lambda state, attributes=None, _eid=eid: published_states.__setitem__(
+                _eid, {"state": state, "attributes": attributes or {}}
+            )
+            return ent
 
-        self.hass.states.async_set = mock_async_set
+        class _EntityMap(dict):
+            def get(self, key, default=None):
+                if key not in self:
+                    self[key] = _make_ent(key)
+                return super().get(key, default)
+
+        self.hass.data = {DOMAIN: {"test_entry": {"entities": _EntityMap()}}}
 
         mgr = VisionPresenceManager(self.hass)
 

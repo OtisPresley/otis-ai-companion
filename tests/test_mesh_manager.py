@@ -49,8 +49,11 @@ def test_normalize_node_slug():
 @pytest.mark.asyncio
 async def test_audit_mesh_topology_empty():
     """Test mesh audit when no mesh devices exist."""
+    from custom_components.otis_ai.const import DOMAIN
+
     hass = MagicMock()
-    hass.data = {}
+    mock_ent = MagicMock()
+    hass.data = {DOMAIN: {"test_entry": {"entities": {"sensor.otis_mesh_health": mock_ent}}}}
     hass.states = MagicMock()
 
     with patch("homeassistant.helpers.device_registry.async_get", return_value=None), \
@@ -60,10 +63,9 @@ async def test_audit_mesh_topology_empty():
         assert res["total_nodes"] == 0
         assert res["status"] == "no_mesh_detected"
         assert res["health_score"] == 100
-        hass.states.async_set.assert_called_once()
-        args = hass.states.async_set.call_args[0]
-        assert args[0] == "sensor.otis_mesh_health"
-        assert args[1] == "no_mesh_detected"
+        mock_ent.async_set_state.assert_called_once()
+        state_val, _attrs = mock_ent.async_set_state.call_args[0]
+        assert state_val == "no_mesh_detected"
 
 
 @pytest.mark.asyncio

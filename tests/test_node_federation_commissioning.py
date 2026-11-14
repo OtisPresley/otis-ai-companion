@@ -430,17 +430,23 @@ class TestFederationManager(unittest.TestCase):
             {"node_id": "workshop", "domain": "light", "service": "turn_on", "success": True, "duration_ms": 24.1}
         ]
 
+        from custom_components.otis_ai.const import DOMAIN
+
+        ent_cluster = MagicMock()
+        ent_nodes = MagicMock()
+        self.hass.data = {
+            DOMAIN: {
+                "test_entry": {
+                    "entities": {
+                        "sensor.otis_federation_cluster": ent_cluster,
+                        "sensor.otis_federated_nodes": ent_nodes,
+                    }
+                }
+            }
+        }
         self.mgr.publish_telemetry()
-        self.hass.states.async_set.assert_any_call(
-            "sensor.otis_federation_cluster",
-            "healthy",
-            unittest.mock.ANY,
-        )
-        self.hass.states.async_set.assert_any_call(
-            "sensor.otis_federated_nodes",
-            "1/1 Online",
-            unittest.mock.ANY,
-        )
+        ent_cluster.async_set_state.assert_any_call("healthy", unittest.mock.ANY)
+        ent_nodes.async_set_state.assert_any_call("1/1 Online", unittest.mock.ANY)
 
     def test_forward_remote_command_transparent_routing(self):
         """Test transparent forwarding of commands to federated entities."""

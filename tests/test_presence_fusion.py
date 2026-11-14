@@ -40,6 +40,17 @@ def mock_hass():
     def mock_all():
         return list(states_dict.values())
 
+    from custom_components.otis_ai.const import DOMAIN
+
+    class _EntityMap(dict):
+        def get(self, key, default=None):
+            if key not in self:
+                ent = MagicMock()
+                ent.async_set_state = lambda state, attributes=None, _eid=key: mock_set(_eid, state, attributes)
+                self[key] = ent
+            return super().get(key, default)
+
+    hass.data = {DOMAIN: {"test_entry": {"entities": _EntityMap()}}}
     hass.states.async_set = mock_set
     hass.states.get = mock_get
     hass.states.async_all = mock_all
@@ -358,7 +369,6 @@ async def test_async_fuse_presence_full_audit(presence_manager, mock_hass):
     area_mock.id = "office"
     area_mock.name = "Office"
 
-    mock_hass.data = {}
     ar_mock = MagicMock()
     ar_mock.async_list_areas.return_value = [area_mock]
 

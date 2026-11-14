@@ -13,6 +13,8 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
+from .const import is_otis_entity_id, resolve_otis_entity_id
+
 _LOGGER = logging.getLogger(__name__)
 
 CRITICAL_SERVICES = {
@@ -518,7 +520,8 @@ class MacroManager:
     def _update_spatial_migration_sensor(self, preconditioning_state: str) -> None:
         """Update sensor.otis_spatial_migration with active pre-conditioning state and label."""
         if hasattr(self.hass, "states") and hasattr(self.hass.states, "get") and hasattr(self.hass.states, "async_set"):
-            st = self.hass.states.get("sensor.otis_spatial_migration")
+            sensor_eid = resolve_otis_entity_id(self.hass, "sensor", "spatial_migration")
+            st = self.hass.states.get(sensor_eid)
             state_val = st.state if st else "idle"
             attrs = dict(st.attributes) if st and st.attributes else {}
             attrs["preconditioning_state"] = preconditioning_state
@@ -529,7 +532,7 @@ class MacroManager:
                 attrs["action_summary"] = self._active_preconditioning.get("action_summary")
             try:
                 from .sensor import async_update_entity_state
-                async_update_entity_state(self.hass, "sensor.otis_spatial_migration", state_val, attrs)
+                async_update_entity_state(self.hass, sensor_eid, state_val, attrs)
             except Exception as err:
                 _LOGGER.debug("Entity state update notice: %s", err)
 
@@ -754,7 +757,7 @@ class MacroManager:
 
         async def _on_sensor_changed(event):
             data = getattr(event, "data", {})
-            if data.get("entity_id") != "sensor.otis_spatial_migration":
+            if not is_otis_entity_id(data.get("entity_id"), "sensor", "spatial_migration"):
                 return
             new_state = data.get("new_state")
             if not new_state:

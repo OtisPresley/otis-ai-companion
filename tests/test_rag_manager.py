@@ -366,9 +366,12 @@ def test_rag_query_with_recency_boost_and_category_list():
 
 def test_audio_follow_toggle_service_and_rules():
     """Test toggling audio follow updates behavioral rules and publishes switch.otis_audio_follow."""
+    from custom_components.otis_ai.const import DOMAIN
     from custom_components.otis_ai.rules_manager import BehavioralRulesManager
 
     hass = MagicMock()
+    mock_switch = MagicMock()
+    hass.data = {DOMAIN: {"test_entry": {"entities": {"switch.otis_audio_follow": mock_switch}}}}
     mock_store = MagicMock()
     mock_store.async_load = AsyncMock(return_value={"audio_follow_enabled": True})
     mock_store.async_save = AsyncMock(return_value=None)
@@ -377,8 +380,7 @@ def test_audio_follow_toggle_service_and_rules():
         rules_mgr = BehavioralRulesManager(hass)
         rules = asyncio.run(rules_mgr.async_load())
         assert rules["audio_follow_enabled"] is True
-        hass.states.async_set.assert_any_call(
-            "switch.otis_audio_follow",
+        mock_switch.async_set_state.assert_any_call(
             "on",
             {
                 "friendly_name": "Otis Audio Follow-Me",
@@ -391,8 +393,7 @@ def test_audio_follow_toggle_service_and_rules():
         # Toggle to false
         updated = asyncio.run(rules_mgr.async_save({"audio_follow_enabled": False}))
         assert updated["audio_follow_enabled"] is False
-        hass.states.async_set.assert_any_call(
-            "switch.otis_audio_follow",
+        mock_switch.async_set_state.assert_any_call(
             "off",
             {
                 "friendly_name": "Otis Audio Follow-Me",
@@ -401,3 +402,63 @@ def test_audio_follow_toggle_service_and_rules():
                 "description": "Enables or disables autonomous room-to-room audio migration.",
             },
         )
+
+
+def test_rag_manager_sync_ha_docs_and_hash_dedup():
+    """Test async_sync_ha_docs fetches, cleans Jekyll frontmatter, indexes ha_docs, and deduplicates by hash."""
+    from custom_components.otis_ai.rag_manager import HA_OFFICIAL_DOCS_SOURCES, _clean_ha_doc_markdown
+
+    cleaned = _clean_ha_doc_markdown(
+        "---\ntitle: Automation YAML\n---\n{% raw %}\n```yaml\nalias: Test\n```\n{% endraw %}\n"
+    )
+    assert "title: Automation YAML" not in cleaned
+    assert "{% raw %}" not in cleaned
+    assert "alias: Test" in cleaned
+
+    hass = MagicMock()
+    mock_store = MagicMock()
+    mock_store.async_load = AsyncMock(return_value=None)
+    mock_store.async_save = AsyncMock(return_value=None)
+
+    class FakeResp:
+        status = 200
+
+        async def text(self):
+            return "---\ntitle: Doc\n---\nUse `action: fan.set_percentage` and `- choose:` with `conditions:`."
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+    fake_session = MagicMock()
+    fake_session.get = MagicMock(return_value=FakeResp())
+
+    with (
+        patch("custom_components.otis_ai.rag_manager.Store", return_value=mock_store),
+        patch("homeassistant.helpers.aiohttp_client.async_get_clientsession", return_value=fake_session),
+    ):
+        mgr = RAGKnowledgeManager(hass)
+        res1 = asyncio.run(mgr.async_sync_ha_docs())
+        assert res1["synced"] == len(HA_OFFICIAL_DOCS_SOURCES)
+        assert res1["failed"] == 0
+        assert "ha_doc:automation_yaml" in mgr._documents
+        assert mgr._documents["ha_doc:automation_yaml"]["category"] == "ha_docs"
+
+        # Second call within 24h returns cached without network requests
+        fake_session.get.reset_mock()
+        res2 = asyncio.run(mgr.async_sync_ha_docs())
+        assert res2["cached"] is True
+        assert res2["synced"] == 0
+        assert fake_session.get.call_count == 0
+
+        # Forced call with identical content skips re-indexing
+        res3 = asyncio.run(mgr.async_sync_ha_docs(force=False, max_age_s=0.0))
+        assert res3["synced"] == 0
+        assert res3["skipped"] == len(HA_OFFICIAL_DOCS_SOURCES)
+
+        distilled = mgr.get_distilled_syntax_reference()
+        assert "VERIFIED HA YAML SYNTAX REFERENCE" in distilled
+        assert "fan.set_percentage" in distilled
+        assert "- choose:" in distilled

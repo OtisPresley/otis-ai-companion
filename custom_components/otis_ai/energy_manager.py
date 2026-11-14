@@ -365,7 +365,15 @@ class EnergyManager:
                 })
 
             # 5. Sheddable High-Draw Loads & Deferrable Consumers
-            if domain in ("switch", "climate", "water_heater", "number", "select"):
+            excluded_loads: set[str] = set()
+            if hasattr(self.hass, "data") and isinstance(self.hass.data, dict):
+                for v in (self.hass.data.get("otis_ai") or {}).values():
+                    if isinstance(v, dict) and v.get("rules_manager"):
+                        rm_rules = v["rules_manager"].get_rules()
+                        excluded_loads.update(str(x).strip().lower() for x in (rm_rules.get("excluded_load_shed_entities") or []) if x)
+                        break
+
+            if domain in ("switch", "climate", "water_heater", "number", "select") and eid_lower not in excluded_loads:
                 # Critical appliances that must NOT be shed
                 if any(c in eid_lower for c in ("fridge", "refrigerator", "freezer", "alarm", "network", "router", "core")):
                     pass

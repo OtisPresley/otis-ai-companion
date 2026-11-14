@@ -8,7 +8,7 @@ seasonal circadian lighting & temperature curves.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 import logging
 import math
 import os
@@ -142,7 +142,7 @@ def cluster_sequences_to_routines(
                     tz = zoneinfo.ZoneInfo(hass.config.time_zone)
                     dt = datetime.fromtimestamp(ts, tz=tz)
                 else:
-                    dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+                    dt = datetime.fromtimestamp(ts, tz=UTC)
                 hours.append(dt.hour)
             except Exception:
                 hours.append(8)
@@ -587,18 +587,70 @@ class BehavioralHabitManager:
             ts = float(trans.get("timestamp") or time.time())
             corridor_counts.setdefault((fa, ta), []).append(ts)
 
+        from .presence_manager import classify_area_zone
+
+        # Build area -> entity list map to verify actionable capabilities in target rooms
+        area_entities: dict[str, list[str]] = {}
+        try:
+            from homeassistant.helpers import device_registry as dr, entity_registry as er
+
+            ent_reg = er.async_get(self.hass) if hasattr(er, "async_get") else None
+            dev_reg = dr.async_get(self.hass) if hasattr(dr, "async_get") else None
+            if ent_reg and hasattr(ent_reg, "entities"):
+                for ent_entry in ent_reg.entities.values():
+                    if getattr(ent_entry, "disabled_by", None):
+                        continue
+                    aid = getattr(ent_entry, "area_id", None)
+                    if not aid and getattr(ent_entry, "device_id", None) and dev_reg:
+                        dev = dev_reg.async_get(ent_entry.device_id) if hasattr(dev_reg, "async_get") else None
+                        aid = getattr(dev, "area_id", None) if dev else None
+                    if aid:
+                        area_entities.setdefault(str(aid).lower().replace(" ", "_"), []).append(ent_entry.entity_id)
+        except Exception:
+            pass
+
         proposals: list[dict[str, Any]] = []
         for (from_area, to_area), timestamps in corridor_counts.items():
             if len(timestamps) < min_occurrences:
                 continue
 
+            from_title = from_area.replace("_", " ").title()
+            to_title = to_area.replace("_", " ").title()
+
+            # 1. Skip outdoor areas (Frontyard, Backyard, etc.)
+            if classify_area_zone(from_area, from_title) == "outdoor" or classify_area_zone(to_area, to_title) == "outdoor":
+                continue
+
+            # 2. Require direct spatial adjacency when spatial_manager has graph edges for from_area
+            if self.spatial_manager and hasattr(self.spatial_manager, "get_adjacent_areas"):
+                adj_from = [str(a).lower().replace(" ", "_") for a in (self.spatial_manager.get_adjacent_areas(from_area) or [])]
+                adj_to = [str(a).lower().replace(" ", "_") for a in (self.spatial_manager.get_adjacent_areas(to_area) or [])]
+                if (adj_from or adj_to) and to_area not in adj_from and from_area not in adj_to:
+                    continue
+
+            # 3. Verify target area actually has actionable audio or pre-conditioning devices
+            to_ents = area_entities.get(to_area, [])
+            has_audio = False
+            has_precond = False
+            if to_ents:
+                for eid in to_ents:
+                    eid_l = eid.lower()
+                    if eid_l.startswith("media_player.") and not any(
+                        tv in eid_l for tv in ("_tv", "android_tv", "shield", "apple_tv", "roku", "fire_tv")
+                    ):
+                        has_audio = True
+                    elif eid_l.startswith(("climate.", "light.", "fan.")):
+                        has_precond = True
+                if not has_audio and not has_precond:
+                    continue
+            else:
+                # If registry wasn't populated (e.g. unit test), allow if not obviously pass-through
+                has_precond = True
+
             # Calculate confidence based on frequency
             freq_score = min(0.95, 0.70 + (len(timestamps) * 0.05))
             if freq_score < min_confidence:
                 continue
-
-            from_title = from_area.replace("_", " ").title()
-            to_title = to_area.replace("_", " ").title()
 
             # Determine intent profile
             intent_label = "Lifestyle Migration"
@@ -617,13 +669,20 @@ class BehavioralHabitManager:
                 macro_intent = "work_from_home"
                 icon = "mdi:briefcase-check"
 
+            cap_parts: list[str] = []
+            if has_precond:
+                cap_parts.append("soft pre-conditioning")
+            if has_audio:
+                cap_parts.append("follow-me audio")
+            cap_text = " & ".join(cap_parts) if cap_parts else "room transition"
+
             proposals.append({
                 "id": f"spatial_habit_{from_area}_{to_area}",
                 "category": "habits",
                 "title": f"{intent_label}: {from_title} → {to_title}",
                 "description": (
                     f"Otis identified a recurrent migration corridor from {from_title} to {to_title} "
-                    f"({len(timestamps)} recorded transitions). Automate soft pre-conditioning & follow-me audio?"
+                    f"({len(timestamps)} recorded transitions). Automate {cap_text}?"
                 ),
                 "confidence": round(freq_score, 2),
                 "icon": icon,
@@ -635,16 +694,16 @@ class BehavioralHabitManager:
                 "action_payload": {
                     "alias": f"Spatial Migration: {from_title} to {to_title}",
                     "description": f"Automated spatial migration routine mined by Otis AI Companion ({len(timestamps)} occurrences)",
-                    "trigger": [
+                    "triggers": [
                         {
-                            "platform": "state",
+                            "trigger": "state",
                             "entity_id": "sensor.otis_spatial_migration",
                             "to": macro_intent,
                         }
                     ],
-                    "action": [
+                    "actions": [
                         {
-                            "service": "otis_ai.execute_macro",
+                            "action": "otis_ai.execute_macro",
                             "data": {
                                 "target_area": to_area,
                                 "intent": macro_intent,

@@ -32,7 +32,7 @@ def _read_blueprint_snippet(full_path: str, max_lines: int = 120) -> str | None:
     if not os.path.exists(full_path):
         return None
     try:
-        with open(full_path, "r", encoding="utf-8", errors="ignore") as bpf:
+        with open(full_path, encoding="utf-8", errors="ignore") as bpf:
             bp_lines = bpf.read().splitlines()
             bp_snippet = "\n".join(bp_lines[:max_lines])
             if len(bp_lines) > max_lines:
@@ -99,7 +99,7 @@ def _inspect_local_snapshots_sync(
                 continue
             seen_files.add(file_path)
             try:
-                with open(file_path, "r", encoding="utf-8", errors="replace") as f:
+                with open(file_path, encoding="utf-8", errors="replace") as f:
                     content = f.read()
                 content_lower = content.lower()
                 if not any(k in content_lower for k in target_keys) and not any(a in content_lower for a in target_aliases):
@@ -304,7 +304,7 @@ class AutomationManager:
         except Exception as err:
             _LOGGER.debug("Error loading YAML via yaml_util %s: %s", path, err)
         try:
-            with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            with open(path, encoding="utf-8", errors="ignore") as f:
                 res = yaml.safe_load(f)
                 if isinstance(res, (list, dict)):
                     return res
@@ -824,7 +824,7 @@ class AutomationManager:
                     return []
                 errs = []
                 try:
-                    with open(log_path, "r", encoding="utf-8", errors="ignore") as lf:
+                    with open(log_path, encoding="utf-8", errors="ignore") as lf:
                         recent_lines = lf.readlines()[-150:]
                         capturing = False
                         current_err = []

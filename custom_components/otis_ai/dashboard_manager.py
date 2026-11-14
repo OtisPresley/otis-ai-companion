@@ -24,6 +24,11 @@ from .const import (
     COMMAND_CENTER_DASHBOARD_ID,
     COMMAND_CENTER_DASHBOARD_TITLE,
     COMMAND_CENTER_DASHBOARD_URL_PATH,
+    resolve_otis_entity_id,
+)
+from .floorplan_parser import (
+    compute_room_center_pin_positions,
+    select_intelligent_room_controls,
 )
 from .vision_manager import get_canonical_camera_key, stream_priority
 
@@ -304,60 +309,481 @@ class DashboardManager:
             overwrite_config=overwrite,
             force_regenerate=force_regenerate,
         )
-        return await self._async_register_and_save_dashboard(
-            item=item,
-            dashboard_config=dashboard_config,
-            overwrite_config=overwrite,
-            force_regenerate=force_regenerate,
-        )
 
     # Alias for backward compatibility
     async_ensure_command_center_dashboard = async_ensure_user_command_center_dashboard
 
+    def _build_people_and_pets_section(
+        self,
+        user_rules: dict[str, Any],
+        entities_list: list[dict[str, Any]],
+        layout_style: str,
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """Build a People & Pets presence section using profile pictures and live status."""
+        ignored_set = {
+            str(x).strip().lower()
+            for x in (user_rules.get("ignored_persons") or [])
+            if x
+        }
+        profiles = user_rules.get("person_profiles") or {}
+
+        person_candidates: list[dict[str, Any]] = []
+        seen_eids: set[str] = set()
+
+        def _consider(eid: str, state: str, attrs: dict[str, Any]) -> None:
+            if not eid or not eid.startswith("person.") or eid in seen_eids:
+                return
+            seen_eids.add(eid)
+            eid_low = eid.lower()
+            if eid_low in ignored_set:
+                return
+            prof = profiles.get(eid) or profiles.get(eid_low) or {}
+            if isinstance(prof, dict) and prof.get("entity_type") == "ignored":
+                return
+            pic = attrs.get("entity_picture")
+            trackers = attrs.get("device_trackers") or []
+            samples = int(prof.get("samples", 0) or 0) if isinstance(prof, dict) else 0
+            # Skip untracked placeholder accounts with no image and no profile samples
+            if not pic and not trackers and samples < 1:
+                return
+            # Skip guest/ephemeral accounts with no image when primary residents/pets exist
+            person_candidates.append({
+                "entity_id": eid,
+                "state": str(state or "unknown").lower(),
+                "has_pic": bool(pic),
+                "has_trackers": bool(trackers),
+                "samples": samples,
+            })
+
+        for e in entities_list:
+            eid = str(e.get("entity_id") or "")
+            if eid.startswith("person.") and not e.get("disabled_by") and not e.get("hidden_by"):
+                attrs = dict(e.get("attributes") or {})
+                if hasattr(self, "hass") and self.hass and hasattr(self.hass, "states"):
+                    st = self.hass.states.get(eid)
+                    if st:
+                        attrs = {**attrs, **dict(st.attributes)}
+                        _consider(eid, st.state, attrs)
+                        continue
+                _consider(eid, str(e.get("state") or "unknown"), attrs)
+
+        if hasattr(self, "hass") and self.hass and hasattr(self.hass, "states"):
+            for st in self.hass.states.async_all("person"):
+                _consider(st.entity_id, st.state, dict(st.attributes))
+
+        if not person_candidates:
+            return None, None
+
+        # If we have profiled/pictured residents or pets, filter out unpictured unknown placeholders
+        has_primary = any(p["has_pic"] or p["samples"] >= 2 for p in person_candidates)
+        if has_primary:
+            filtered = [
+                p for p in person_candidates
+                if p["has_pic"] or p["samples"] >= 2 or p["state"] == "home"
+            ]
+            if filtered:
+                person_candidates = filtered
+
+        person_candidates.sort(
+            key=lambda p: (
+                0 if p["has_pic"] else 1,
+                0 if p["state"] == "home" else 1,
+                -p["samples"],
+                p["entity_id"],
+            )
+        )
+        person_eids = [p["entity_id"] for p in person_candidates[:8]]
+
+        tile_cards = [
+            {
+                "type": "tile",
+                "entity": eid,
+                "show_entity_picture": True,
+            }
+            for eid in person_eids
+        ]
+        section_obj = {
+            "type": "grid",
+            "cards": [
+                {
+                    "type": "heading",
+                    "heading": "People & Pets",
+                    "icon": "mdi:account-group",
+                    "heading_style": "title",
+                },
+                {
+                    "type": "grid",
+                    "columns": 2 if len(tile_cards) <= 4 else 3,
+                    "square": False,
+                    "cards": tile_cards,
+                },
+            ],
+        }
+        traditional_card = {
+            "type": "glance",
+            "title": "People & Pets",
+            "show_name": True,
+            "show_state": True,
+            "entities": person_eids,
+        } if not self._is_sections_layout(layout_style) else {
+            "type": "grid",
+            "title": "People & Pets",
+            "columns": 2 if len(tile_cards) <= 4 else 3,
+            "square": False,
+            "cards": tile_cards,
+        }
+        return section_obj, traditional_card
+
+    def _has_pool_entities(self, capability_map: dict[str, Any] | None) -> bool:
+        """Return True if any active pool/spa/water-chemistry entities are present in capability_map."""
+        if not capability_map:
+            return False
+        entities = capability_map.get("entities", [])
+        valid_eids = {
+            e["entity_id"]
+            for e in entities
+            if e.get("entity_id")
+            and not e.get("disabled_by")
+            and not e.get("hidden_by")
+        }
+        grouped = self._classify_pool_and_spa_entities(entities, valid_eids)
+        return any(grouped.values())
+
+    def _classify_pool_and_spa_entities(
+        self,
+        entities: list[dict[str, Any]],
+        valid_eids: set[str],
+    ) -> dict[str, list[str]]:
+        """Dynamically classify pool chemistry, chlorinator, pool equipment, and spa entities."""
+        grouped: dict[str, list[str]] = {
+            "chemistry": [],
+            "chemistry_alerts": [],
+            "chlorinator": [],
+            "pool_climates": [],
+            "pool_equipment": [],
+            "spa_climates": [],
+            "spa_controls": [],
+        }
+        allowed_domains = {
+            "sensor",
+            "binary_sensor",
+            "switch",
+            "light",
+            "climate",
+            "number",
+            "select",
+            "vacuum",
+            "button",
+            "time",
+        }
+        ignore_substrings = (
+            "pre_release",
+            "crawl_space",
+            "workspace",
+            "free_space",
+            "used_space",
+            "account_used_space",
+            "otis_spatial",
+            "ap_",
+        )
+        chemistry_keywords = (
+            "waterguru",
+            "iopool",
+            "sutro",
+            "free_chlorine",
+            "total_chlorine",
+            "alkalinity",
+            "calcium_hardness",
+            "total_hardness",
+            "cyanuric",
+            "stabilizer",
+            "saturation_index",
+            "skimmer_flow",
+            "water_temperature",
+            "pool_status",
+            "cassette",
+            "orp",
+        )
+        chlorinator_keywords = (
+            "chlorinat",
+            "salt_level",
+            "chlorinator_salt",
+            "super_chlorin",
+            "orp_setpoint",
+            "sanitizer",
+        )
+        spa_keywords = (
+            "spaclient",
+            "hot_tub",
+            "jacuzzi",
+            "filter_cycle",
+            "heat_mode",
+            "hold_mode",
+            "standby_mode",
+            "temperature_range",
+            "last_known_fault",
+        )
+        pool_equip_keywords = (
+            "pentair",
+            "hayward",
+            "jandy",
+            "screenlogic",
+            "poolio",
+            "pool",
+        )
+
+        for e in entities:
+            eid = str(e.get("entity_id") or "")
+            domain = str(e.get("domain") or (eid.split(".", 1)[0] if "." in eid else ""))
+            if not eid or eid not in valid_eids or domain not in allowed_domains:
+                continue
+            eid_low = eid.lower()
+            name_low = str(e.get("name") or e.get("friendly_name") or "").lower()
+            combined = f"{eid_low} {name_low}"
+            if any(bad in combined for bad in ignore_substrings):
+                continue
+
+            attrs = e.get("attributes") or {}
+            dc = str(e.get("device_class") or attrs.get("device_class") or "").lower()
+            unit = str(e.get("unit_of_measurement") or attrs.get("unit_of_measurement") or "").lower()
+
+            # Normalize 'space' out before checking 'spa' token
+            spa_check = combined.replace("space", "")
+            is_spa = (
+                bool(re.search(r"\bspa\b|_spa\b|\bspa_", spa_check))
+                or any(k in combined for k in spa_keywords)
+            )
+            is_chlorinator = any(k in combined for k in chlorinator_keywords)
+            is_chemistry = (
+                dc == "ph"
+                or any(k in combined for k in chemistry_keywords)
+                or (unit == "ppm" and any(k in combined for k in ("chlorine", "alkalinity", "hardness", "cyanuric", "pool")))
+            ) and not is_chlorinator
+
+            if is_spa and not is_chemistry and not is_chlorinator:
+                if domain == "climate":
+                    grouped["spa_climates"].append(eid)
+                else:
+                    grouped["spa_controls"].append(eid)
+            elif is_chlorinator:
+                grouped["chlorinator"].append(eid)
+            elif is_chemistry:
+                if "alert" in combined or "cassette" in combined or "battery" in combined or "signal" in combined or domain == "button" or "last_measurement" in combined:
+                    grouped["chemistry_alerts"].append(eid)
+                else:
+                    grouped["chemistry"].append(eid)
+            elif any(k in combined for k in pool_equip_keywords):
+                if domain == "climate":
+                    grouped["pool_climates"].append(eid)
+                else:
+                    grouped["pool_equipment"].append(eid)
+
+        def _sort_by_rank(eids: list[str], rank_rules: tuple[tuple[str, ...], ...]) -> list[str]:
+            def _key(eid: str) -> tuple[int, str]:
+                low = eid.lower()
+                for idx, tokens in enumerate(rank_rules):
+                    if any(t in low for t in tokens):
+                        return (idx, low)
+                return (len(rank_rules), low)
+            return sorted(eids, key=_key)
+
+        grouped["chemistry"] = _sort_by_rank(
+            grouped["chemistry"],
+            (
+                ("_status", "pool_status"),
+                ("water_temperature", "water_temp"),
+                ("_ph",),
+                ("free_chlorine",),
+                ("total_chlorine",),
+                ("total_alkalinity", "alkalinity"),
+                ("calcium_hardness",),
+                ("total_hardness",),
+                ("cyanuric", "stabilizer"),
+                ("skimmer_flow",),
+            ),
+        )
+        grouped["chemistry_alerts"] = _sort_by_rank(
+            grouped["chemistry_alerts"],
+            (
+                ("_alert",),
+                ("last_measurement",),
+                ("cassette_remaining", "cassette_days"),
+                ("battery",),
+                ("signal",),
+                ("manual_measurement", "replace_cassette"),
+            ),
+        )
+        grouped["chlorinator"] = _sort_by_rank(
+            grouped["chlorinator"],
+            (
+                ("chlorinator_setpoint", "chlorinator_output"),
+                ("chlorinator",),
+                ("salt",),
+                ("super_chlorin",),
+            ),
+        )
+        grouped["pool_equipment"] = _sort_by_rank(
+            grouped["pool_equipment"],
+            (
+                ("pool_pump", "pool_low_speed", "pool_high_speed"),
+                ("watts", "gpm", "rpm"),
+                ("light", "color"),
+                ("vacuum", "poolio"),
+                ("air_temperature",),
+                ("chemistry_alarm", "freeze_mode", "delay"),
+            ),
+        )
+        grouped["spa_controls"] = _sort_by_rank(
+            grouped["spa_controls"],
+            (
+                ("pump_1",),
+                ("pump_2",),
+                ("light",),
+                ("heat_mode",),
+                ("hold_mode",),
+                ("standby_mode",),
+                ("temperature_range",),
+                ("last_known_fault",),
+                ("filter_cycle_1_status", "filter_cycle_2_status"),
+                ("filter_cycle",),
+            ),
+        )
+
+        return grouped
+
+    def _get_active_studios(self, capability_map: dict[str, Any] | None) -> list[dict[str, Any]]:
+        """Return active Studio definitions with dynamic names based on discovered integrations."""
+        if not capability_map:
+            return [
+                {"key": "floorplan", "name": "Floor Plan", "path": "floorplan", "icon": "mdi:floor-plan", "is_panel": True},
+                {"key": "energy", "name": "Energy Studio", "path": "energy", "icon": "mdi:lightning-bolt"},
+                {"key": "media", "name": "Media Studio", "path": "media", "icon": "mdi:speaker-multiple"},
+                {"key": "security", "name": "Security Center", "path": "security", "icon": "mdi:shield-home"},
+                {"key": "climate", "name": "Climate", "path": "climate", "icon": "mdi:thermostat-box"},
+            ]
+
+        entities = [
+            e for e in capability_map.get("entities", [])
+            if e.get("entity_id")
+            and not e.get("disabled_by")
+            and not e.get("hidden_by")
+            and e.get("state") not in ("unknown", "unavailable", None, "")
+        ]
+        media_topo = capability_map.get("media_topology", {})
+        sec_topo = capability_map.get("security_topology", {})
+        energy_topo = capability_map.get("energy_topology", {})
+
+        has_energy = bool(
+            energy_topo.get("tariff")
+            or energy_topo.get("solar")
+            or energy_topo.get("total_power_w", 0) > 0
+            or any(
+                (e.get("domain") == "sensor" and (e["entity_id"].endswith("_power") or e["entity_id"].endswith("_energy")))
+                or e.get("attributes", {}).get("unit_of_measurement") in ("W", "kW", "Wh", "kWh")
+                or "battery" in e["entity_id"]
+                or "ups" in e["entity_id"]
+                for e in entities
+            )
+        )
+        has_media = bool(
+            media_topo.get("matrix_zones")
+            or media_topo.get("input_streamers")
+            or media_topo.get("tv_cinema_zones")
+            or any(e.get("domain") == "media_player" for e in entities)
+        )
+        has_security = bool(
+            sec_topo.get("alarm_panels")
+            or sec_topo.get("locks")
+            or sec_topo.get("cameras")
+            or sec_topo.get("garage_covers")
+            or any(e.get("domain") in ("alarm_control_panel", "lock", "camera") for e in entities)
+        )
+        has_pool = self._has_pool_entities(capability_map)
+        has_climate = bool(
+            has_pool
+            or any(
+                e.get("domain") in ("climate", "fan")
+                or "sleepnumber" in str(e.get("entity_id", "")).lower()
+                for e in entities
+            )
+        )
+
+        studios: list[dict[str, Any]] = [
+            {"key": "floorplan", "name": "Floor Plan", "path": "floorplan", "icon": "mdi:floor-plan", "is_panel": True}
+        ]
+        if has_energy:
+            studios.append({"key": "energy", "name": "Energy Studio", "path": "energy", "icon": "mdi:lightning-bolt"})
+        if has_media:
+            studios.append({"key": "media", "name": "Media Studio", "path": "media", "icon": "mdi:speaker-multiple"})
+        if has_security:
+            studios.append({"key": "security", "name": "Security Center", "path": "security", "icon": "mdi:shield-home"})
+        if has_climate:
+            studios.append({
+                "key": "climate",
+                "name": "Climate & Pool" if has_pool else "Climate",
+                "path": "climate",
+                "icon": "mdi:thermostat-box",
+            })
+        return studios
+
+    @staticmethod
+    def _is_sections_layout(layout_style: str | None) -> bool:
+        """Return True if layout_style uses Lovelace sections (modern_sections or compact)."""
+        return str(layout_style or "modern_sections").lower() in ("modern_sections", "compact")
+
+    @staticmethod
+    def _resolve_nav_grid_params(nav_style: str | None) -> tuple[int, bool, str | None]:
+        """Return (columns, square, icon_height) for a given navigation_style."""
+        style = str(nav_style or "sleek_buttons").lower()
+        if style == "standard_grid":
+            return 3, True, None
+        if style == "compact_pills":
+            return 4, False, "20px"
+        return 2, False, None
+
+    def _apply_view_layout(
+        self,
+        view: dict[str, Any],
+        cards: list[dict[str, Any]],
+        layout_style: str | None,
+        sections: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Apply modern_sections, compact, or classic layout structure to a Lovelace view."""
+        view["cards"] = cards
+        norm_layout = str(layout_style or "modern_sections").lower()
+        if self._is_sections_layout(norm_layout):
+            view["type"] = "sections"
+            view["max_columns"] = 4 if norm_layout == "compact" else 3
+            if norm_layout == "compact":
+                view["dense_section_placement"] = True
+            view["sections"] = sections if sections is not None else self._convert_cards_to_sections(cards)
+        return view
+
     def _build_studio_navigation_card(
-        self, dashboard_url_path: str = COMMAND_CENTER_DASHBOARD_URL_PATH, nav_style: str = "sleek_buttons"
+        self,
+        dashboard_url_path: str = COMMAND_CENTER_DASHBOARD_URL_PATH,
+        nav_style: str = "sleek_buttons",
+        capability_map: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Build responsive studio navigation buttons matching user's navigation_style."""
-        button_cols = 3 if nav_style == "standard_grid" else 2
-        button_square = (nav_style == "standard_grid")
+        button_cols, button_square, icon_height = self._resolve_nav_grid_params(nav_style)
         nav_buttons = [
             {
                 "type": "button",
                 "name": "Overview",
                 "icon": "mdi:view-dashboard",
+                **({"icon_height": icon_height} if icon_height else {}),
                 "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}"},
             },
-            {
-                "type": "button",
-                "name": "Floor Plan",
-                "icon": "mdi:floor-plan",
-                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/floorplan"},
-            },
-            {
-                "type": "button",
-                "name": "Energy Studio",
-                "icon": "mdi:lightning-bolt",
-                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/energy"},
-            },
-            {
-                "type": "button",
-                "name": "Media Studio",
-                "icon": "mdi:speaker-multiple",
-                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/media"},
-            },
-            {
-                "type": "button",
-                "name": "Security Center",
-                "icon": "mdi:shield-home",
-                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/security"},
-            },
-            {
-                "type": "button",
-                "name": "Climate & Pool",
-                "icon": "mdi:thermostat-box",
-                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/climate"},
-            },
         ]
+        for st in self._get_active_studios(capability_map):
+            nav_buttons.append({
+                "type": "button",
+                "name": st["name"],
+                "icon": st["icon"],
+                **({"icon_height": icon_height} if icon_height else {}),
+                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/{st['path']}"},
+            })
         return {
             "type": "grid",
             "title": "Studio Navigation",
@@ -472,10 +898,8 @@ class DashboardManager:
         if is_panel:
             view["type"] = "panel"
             view["panel"] = True
-        elif layout_style == "modern_sections":
-            view["type"] = "sections"
-            view["max_columns"] = 3
-            view["sections"] = self._convert_cards_to_sections(cards)
+        else:
+            self._apply_view_layout(view, cards, layout_style)
         return view
 
     def _build_user_command_center_dashboard_config(
@@ -571,41 +995,19 @@ class DashboardManager:
         cal_view = user_rules.get("calendar_view", "listDay")
         content_focus = user_rules.get("primary_content_focus", "balanced")
         nav_style = user_rules.get("navigation_style", "sleek_buttons")
-        button_cols = 3 if nav_style == "standard_grid" else 2
-        button_square = (nav_style == "standard_grid")
+        button_cols, button_square, icon_height = self._resolve_nav_grid_params(nav_style)
         initial_cal = "dayGridMonth" if cal_view == "month" else ("listDay" if cal_view == "listDay" else cal_view)
 
+        active_studios = self._get_active_studios(capability_map)
         studio_buttons = [
             {
                 "type": "button",
-                "name": "Floor Plan",
-                "icon": "mdi:floor-plan",
-                "tap_action": {"action": "navigate", "navigation_path": "/command-center/floorplan"},
-            },
-            {
-                "type": "button",
-                "name": "Energy Studio",
-                "icon": "mdi:lightning-bolt",
-                "tap_action": {"action": "navigate", "navigation_path": "/command-center/energy"},
-            },
-            {
-                "type": "button",
-                "name": "Media Studio",
-                "icon": "mdi:speaker-multiple",
-                "tap_action": {"action": "navigate", "navigation_path": "/command-center/media"},
-            },
-            {
-                "type": "button",
-                "name": "Security Center",
-                "icon": "mdi:shield-home",
-                "tap_action": {"action": "navigate", "navigation_path": "/command-center/security"},
-            },
-            {
-                "type": "button",
-                "name": "Climate & Pool",
-                "icon": "mdi:thermostat-box",
-                "tap_action": {"action": "navigate", "navigation_path": "/command-center/climate"},
-            },
+                "name": st["name"],
+                "icon": st["icon"],
+                **({"icon_height": icon_height} if icon_height else {}),
+                "tap_action": {"action": "navigate", "navigation_path": f"/{COMMAND_CENTER_DASHBOARD_URL_PATH}/{st['path']}"},
+            }
+            for st in active_studios
         ]
 
         # Weather & Calendar Glance cards
@@ -645,6 +1047,7 @@ class DashboardManager:
                 "type": "button",
                 "name": area["name"],
                 "icon": self._get_room_icon(area["name"], area["id"]),
+                **({"icon_height": icon_height} if icon_height else {}),
                 "tap_action": {"action": "navigate", "navigation_path": f"/command-center/area_{area['slug']}"},
             }
             for area in active_areas
@@ -735,22 +1138,33 @@ class DashboardManager:
                 ],
             }
 
+        people_sec, people_trad_card = self._build_people_and_pets_section(
+            user_rules, entities_list, layout_style
+        )
+
         # Order sections strictly respecting primary_content_focus
         if content_focus == "glance_first":
-            # Schedule & Weather First -> Active Rooms (if occupied) -> Studios -> Rooms
+            # Schedule & Weather First -> People & Pets -> Active Rooms (if occupied) -> Studios -> Rooms
             sections = [glance_sec]
+            if people_sec:
+                sections.append(people_sec)
             if active_rooms_sec:
                 sections.append(active_rooms_sec)
             sections.extend([studios_sec, rooms_sec])
         elif content_focus == "studios_first":
-            # Studios First -> Active Rooms -> Rooms -> Schedule & Weather
+            # Studios First -> People & Pets -> Active Rooms -> Rooms -> Schedule & Weather
             sections = [studios_sec]
+            if people_sec:
+                sections.append(people_sec)
             if active_rooms_sec:
                 sections.append(active_rooms_sec)
             sections.extend([rooms_sec, glance_sec])
         else:  # "balanced"
-            # Studios Launchpad -> Schedule & Weather -> Active Rooms -> Rooms
-            sections = [studios_sec, glance_sec]
+            # Studios Launchpad -> People & Pets -> Schedule & Weather -> Active Rooms -> Rooms
+            sections = [studios_sec]
+            if people_sec:
+                sections.append(people_sec)
+            sections.append(glance_sec)
             if active_rooms_sec:
                 sections.append(active_rooms_sec)
             sections.append(rooms_sec)
@@ -798,6 +1212,8 @@ class DashboardManager:
         if content_focus == "glance_first":
             if glance_card:
                 home_cards.append(glance_card)
+            if people_trad_card:
+                home_cards.append(people_trad_card)
             if active_rooms_card:
                 home_cards.append(active_rooms_card)
             home_cards.append(studios_card)
@@ -805,6 +1221,8 @@ class DashboardManager:
                 home_cards.append(rooms_card)
         elif content_focus == "studios_first":
             home_cards.append(studios_card)
+            if people_trad_card:
+                home_cards.append(people_trad_card)
             if active_rooms_card:
                 home_cards.append(active_rooms_card)
             if rooms_card:
@@ -813,6 +1231,8 @@ class DashboardManager:
                 home_cards.append(glance_card)
         else:  # "balanced"
             home_cards.append(studios_card)
+            if people_trad_card:
+                home_cards.append(people_trad_card)
             if glance_card:
                 home_cards.append(glance_card)
             if active_rooms_card:
@@ -827,75 +1247,45 @@ class DashboardManager:
             "theme": user_rules.get("theme") or "otis_generate_midnight_slate",
             "badges": [],
         }
-        if layout_style == "modern_sections":
-            home_view["type"] = "sections"
-            home_view["max_columns"] = 3
-            home_view["sections"] = sections
-            home_view["cards"] = home_cards
-        else:
-            home_view["cards"] = home_cards
+        self._apply_view_layout(home_view, home_cards, layout_style, sections=sections)
 
-        media_cards = self._build_media_view_cards(
-            capability_map,
-            dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH,
-            nav_style=nav_style,
-            installed_cards=installed_cards,
-        )
-        sec_cards = self._build_security_view_cards(
-            capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, nav_style=nav_style
-        )
-        clim_cards = self._build_climate_view_cards(
-            capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, nav_style=nav_style, layout_style=layout_style
-        )
-        energy_cards = self._build_energy_view_cards(
-            capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, nav_style=nav_style
-        )
-
-        if svg_stat is None:
-            svg_stat = self._get_floorplan_svg_stat_sync()
-        floorplan_cards = self._build_floorplan_view_cards(
-            capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, svg_stat=svg_stat
-        )
-
-        views: list[dict[str, Any]] = [
-            home_view,
-            self._build_studio_view(
-                "Floor Plan",
-                "floorplan",
-                "mdi:floor-plan",
-                floorplan_cards,
-                layout_style=layout_style,
-                is_panel=True,
-            ),
-            self._build_studio_view(
-                "Energy Studio",
-                "energy",
-                "mdi:lightning-bolt",
-                energy_cards,
-                layout_style=layout_style,
-            ),
-            self._build_studio_view(
-                "Media Studio",
-                "media",
-                "mdi:speaker-multiple",
-                media_cards,
-                layout_style=layout_style,
-            ),
-            self._build_studio_view(
-                "Security Center",
-                "security",
-                "mdi:shield-home",
-                sec_cards,
-                layout_style=layout_style,
-            ),
-            self._build_studio_view(
-                "Climate & Pool",
-                "climate",
-                "mdi:thermostat-box",
-                clim_cards,
-                layout_style=layout_style,
-            ),
-        ]
+        views: list[dict[str, Any]] = [home_view]
+        for st in active_studios:
+            s_key = st["key"]
+            if s_key == "floorplan":
+                if svg_stat is None:
+                    svg_stat = self._get_floorplan_svg_stat_sync()
+                s_cards = self._build_floorplan_view_cards(
+                    capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, svg_stat=svg_stat
+                )
+                views.append(
+                    self._build_studio_view(
+                        st["name"], st["path"], st["icon"], s_cards, layout_style=layout_style, is_panel=True
+                    )
+                )
+            elif s_key == "energy":
+                s_cards = self._build_energy_view_cards(
+                    capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, nav_style=nav_style
+                )
+                views.append(self._build_studio_view(st["name"], st["path"], st["icon"], s_cards, layout_style=layout_style))
+            elif s_key == "media":
+                s_cards = self._build_media_view_cards(
+                    capability_map,
+                    dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH,
+                    nav_style=nav_style,
+                    installed_cards=installed_cards,
+                )
+                views.append(self._build_studio_view(st["name"], st["path"], st["icon"], s_cards, layout_style=layout_style))
+            elif s_key == "security":
+                s_cards = self._build_security_view_cards(
+                    capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, nav_style=nav_style
+                )
+                views.append(self._build_studio_view(st["name"], st["path"], st["icon"], s_cards, layout_style=layout_style))
+            elif s_key == "climate":
+                s_cards = self._build_climate_view_cards(
+                    capability_map, dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH, nav_style=nav_style, layout_style=layout_style
+                )
+                views.append(self._build_studio_view(st["name"], st["path"], st["icon"], s_cards, layout_style=layout_style))
 
         for area in active_areas:
             rview = self._build_room_subview(
@@ -906,6 +1296,7 @@ class DashboardManager:
                 layout_style=layout_style,
                 nav_style=nav_style,
                 dashboard_url_path=COMMAND_CENTER_DASHBOARD_URL_PATH,
+                capability_map=capability_map,
             )
             if rview:
                 views.append(rview)
@@ -950,81 +1341,42 @@ class DashboardManager:
             }
         ]
 
-        # 1. Media Studio Subview
-        media_cards = self._build_media_view_cards(
-            capability_map,
-            dashboard_url_path=OTIS_DASHBOARD_URL_PATH,
-            nav_style=nav_style,
-            installed_cards=installed_cards,
-        )
-        views.append(
-            self._build_studio_view(
-                "Media Studio",
-                "media",
-                "mdi:speaker-multiple",
-                media_cards,
-                layout_style=layout_style,
-            )
-        )
-
-        # 2. Security Center Subview
-        security_cards = self._build_security_view_cards(
-            capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH, nav_style=nav_style
-        )
-        views.append(
-            self._build_studio_view(
-                "Security Center",
-                "security",
-                "mdi:shield-home",
-                security_cards,
-                layout_style=layout_style,
-            )
-        )
-
-        # 3. Climate & Pool Subview
-        climate_cards = self._build_climate_view_cards(
-            capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH, nav_style=nav_style, layout_style=layout_style
-        )
-        views.append(
-            self._build_studio_view(
-                "Climate & Pool",
-                "climate",
-                "mdi:thermostat-box",
-                climate_cards,
-                layout_style=layout_style,
-            )
-        )
-
-        # 4. Floor Plan Subview
-        if svg_stat is None:
-            svg_stat = self._get_floorplan_svg_stat_sync()
-        floorplan_cards = self._build_floorplan_view_cards(
-            capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH, svg_stat=svg_stat
-        )
-        views.append(
-            self._build_studio_view(
-                "Floor Plan",
-                "floorplan",
-                "mdi:floor-plan",
-                floorplan_cards,
-                layout_style=layout_style,
-                is_panel=True,
-            )
-        )
-
-        # 5. Energy Studio Subview
-        energy_cards = self._build_energy_view_cards(
-            capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH, nav_style=nav_style
-        )
-        views.append(
-            self._build_studio_view(
-                "Energy Studio",
-                "energy",
-                "mdi:lightning-bolt",
-                energy_cards,
-                layout_style=layout_style,
-            )
-        )
+        for st in self._get_active_studios(capability_map):
+            s_key = st["key"]
+            if s_key == "floorplan":
+                if svg_stat is None:
+                    svg_stat = self._get_floorplan_svg_stat_sync()
+                s_cards = self._build_floorplan_view_cards(
+                    capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH, svg_stat=svg_stat
+                )
+                views.append(
+                    self._build_studio_view(
+                        st["name"], st["path"], st["icon"], s_cards, layout_style=layout_style, is_panel=True
+                    )
+                )
+            elif s_key == "energy":
+                s_cards = self._build_energy_view_cards(
+                    capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH, nav_style=nav_style
+                )
+                views.append(self._build_studio_view(st["name"], st["path"], st["icon"], s_cards, layout_style=layout_style))
+            elif s_key == "media":
+                s_cards = self._build_media_view_cards(
+                    capability_map,
+                    dashboard_url_path=OTIS_DASHBOARD_URL_PATH,
+                    nav_style=nav_style,
+                    installed_cards=installed_cards,
+                )
+                views.append(self._build_studio_view(st["name"], st["path"], st["icon"], s_cards, layout_style=layout_style))
+            elif s_key == "security":
+                s_cards = self._build_security_view_cards(
+                    capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH, nav_style=nav_style
+                )
+                views.append(self._build_studio_view(st["name"], st["path"], st["icon"], s_cards, layout_style=layout_style))
+            elif s_key == "climate":
+                s_cards = self._build_climate_view_cards(
+                    capability_map, dashboard_url_path=OTIS_DASHBOARD_URL_PATH, nav_style=nav_style, layout_style=layout_style
+                )
+                views.append(self._build_studio_view(st["name"], st["path"], st["icon"], s_cards, layout_style=layout_style))
 
         # 6. Dynamic Area / Room Subviews (/otis-ai/area_<slug>)
         areas_map = capability_map.get("areas", {}) if capability_map else {}
@@ -1102,6 +1454,7 @@ class DashboardManager:
                     layout_style=layout_style,
                     nav_style=nav_style,
                     dashboard_url_path=OTIS_DASHBOARD_URL_PATH,
+                    capability_map=capability_map,
                 )
                 if room_view:
                     views.append(room_view)
@@ -1152,7 +1505,7 @@ class DashboardManager:
         existing_views: list[dict[str, Any]] = []
         if os.path.exists(config_file):
             try:
-                with open(config_file, "r", encoding="utf-8") as f:
+                with open(config_file, encoding="utf-8") as f:
                     content = f.read().strip()
                 if content:
                     existing_data = json.loads(content)
@@ -1168,7 +1521,7 @@ class DashboardManager:
             admin_file = os.path.join(storage_dir, f"lovelace.{OTIS_DASHBOARD_ID}")
             if os.path.exists(admin_file):
                 try:
-                    with open(admin_file, "r", encoding="utf-8") as af:
+                    with open(admin_file, encoding="utf-8") as af:
                         admin_content = af.read().strip()
                     if admin_content:
                         admin_data = json.loads(admin_content)
@@ -1407,7 +1760,7 @@ class DashboardManager:
         overwrite_config: bool = True,
         force_regenerate: bool = False,
     ) -> dict[str, Any]:
-        """Persist dashboard metadata in lovelace_dashboards, write lovelace.<id>, and register live HA panel."""
+        """Persist dashboard metadata via DashboardsCollection + LovelaceStorage and register live HA panel."""
         dash_id = item["id"]
         url_path = item["url_path"]
         self._managed_dashboards[url_path] = dict(item)
@@ -1540,7 +1893,7 @@ class DashboardManager:
 
         storage_col = self._get_dashboards_collection()
         if storage_col is not None and hasattr(storage_col, "data") and isinstance(storage_col.data, dict):
-            for k, v in storage_col.data.items():
+            for _k, v in storage_col.data.items():
                 if isinstance(v, dict):
                     existing_dashboards.append(v)
 
@@ -1635,6 +1988,8 @@ class DashboardManager:
         # 3. Climate, Pool & Energy Operations Dashboard
         climates = [e["entity_id"] for e in entities if e.get("domain") == "climate"]
         fans = [e["entity_id"] for e in entities if e.get("domain") == "fan"]
+        has_pool_for_pro = self._has_pool_entities(capability_map)
+        climate_pro_title = "Climate & Pool" if has_pool_for_pro else "Climate"
         if (
             len(climates) >= 2
             and "otis-climate-energy" not in existing_url_paths
@@ -1645,14 +2000,14 @@ class DashboardManager:
                 "id": "pro_dashboard_climate_pool_energy",
                 "dashboard_id": "otis_climate_energy",
                 "url_path": "otis-climate-energy",
-                "title": "Create Pro Dashboard: Climate, Pool & Comfort Operations",
-                "dashboard_title": "Climate & Pool",
+                "title": f"Create Pro Dashboard: {climate_pro_title} & Comfort Operations",
+                "dashboard_title": climate_pro_title,
                 "icon": "mdi:thermostat-box",
                 "require_admin": False,
                 "priority": "medium",
                 "description": (
-                    f"Detected {len(climates)} climate zones/pool heaters and {len(fans)} fans without a dedicated "
-                    "environmental dashboard. Generates a professional Climate, SleepNumber & Pool control dashboard."
+                    f"Detected {len(climates)} climate zones{'/pool heaters' if has_pool_for_pro else ''} and {len(fans)} fans without a dedicated "
+                    f"environmental dashboard. Generates a professional {climate_pro_title} control dashboard."
                 ),
                 "template": "climate_energy",
             })
@@ -1905,165 +2260,13 @@ class DashboardManager:
         max_controls: int = 3,
     ) -> list[dict[str, Any]]:
         """Select up to max_controls high-utility, diverse controllable devices for a room on the interactive floor plan."""
-        # 1. Reject low-utility clutter patterns (diagnostics, sub-switches, maintenance toggles)
-        reject_keywords = (
-            "cleaning", "customized_cleaning", "clean_record", "mop", "water_box",
-            "child_lock", "dnd", "carpet_boost", "gentle_mode", "auto_empty", "dock_led",
-            "sleep_pause", "super_sleep", "sleep_number", "responsive_air",
-            "pause_mode", "smart_sleeper", "bed_presence", "sleep_tracker",
-            "ice_maker", "ice_plus", "express_freeze", "sabbath", "door_alarm",
-            "filter_reset", "fresh_air", "water_filter", "air_filter",
-            "poe", "port_", "switch_port", "status_led", "led_ring", "night_vision",
-            "screen_saver", "auto_update", "cloud_connection", "mesh_reboot",
-            "restart", "reboot", "tamper", "pairing", "update", "firmware",
-            "mute", "do_not_disturb", "beep", "buzzer", "indicator", "identify",
+        return select_intelligent_room_controls(
+            room_ents,
+            valid_eids,
+            area_name=area_name,
+            area_id=area_id,
+            max_controls=max_controls,
         )
-
-        domain_candidates: dict[str, list[tuple[float, dict[str, Any]]]] = {
-            "light": [],
-            "media_player": [],
-            "fan": [],
-            "switch": [],
-            "cover": [],
-            "lock": [],
-            "climate": [],
-            "vacuum": [],
-        }
-
-        aname_norm = area_name.lower()
-
-        for e in room_ents:
-            eid = e.get("entity_id", "")
-            if not eid or (valid_eids and eid not in valid_eids):
-                continue
-            if e.get("entity_category") in ("config", "diagnostic"):
-                continue
-
-            dom = e.get("domain") or (eid.split(".")[0] if "." in eid else "")
-            if dom not in domain_candidates:
-                continue
-
-            fname = (e.get("name") or e.get("friendly_name") or eid).lower()
-            ename_norm = eid.lower()
-
-            # Reject unwanted clutter
-            if any(rk in ename_norm or rk in fname for rk in reject_keywords):
-                continue
-
-            # Utility scoring
-            base_score = 0.0
-            if dom == "light":
-                base_score = 100.0
-                if aname_norm and aname_norm in fname:
-                    base_score += 40.0
-                if any(k in fname or k in ename_norm for k in ("main", "ceiling", "overhead", "chandelier", "recessed", "downlight", "island", "table")):
-                    base_score += 30.0
-                if any(k in fname or k in ename_norm for k in ("accent", "cabinet", "closet", "nightlight", "strip", "bias", "under_cabinet", "counter")):
-                    base_score -= 30.0
-
-            elif dom == "media_player":
-                base_score = 90.0
-                if any(k in fname or k in ename_norm for k in ("tv", "television", "apple_tv", "shield", "roku", "soundbar", "sonos", "receiver", "avr", "stereo")):
-                    base_score += 35.0
-
-            elif dom == "fan":
-                base_score = 85.0
-                if any(k in fname or k in ename_norm for k in ("ceiling", "fan", "exhaust", "vent")):
-                    base_score += 25.0
-
-            elif dom == "climate":
-                base_score = 80.0
-                if any(k in fname or k in ename_norm for k in ("thermostat", "hvac", "ac", "furnace", "pool")):
-                    base_score += 20.0
-
-            elif dom == "cover":
-                base_score = 75.0
-                if any(k in fname or k in ename_norm for k in ("garage", "shades", "blinds", "curtain", "door")):
-                    base_score += 25.0
-
-            elif dom == "lock":
-                base_score = 75.0
-                if any(k in fname or k in ename_norm for k in ("front", "garage", "deadbolt", "entry")):
-                    base_score += 25.0
-
-            elif dom == "switch":
-                base_score = 60.0
-                if any(k in fname or k in ename_norm for k in ("fan", "exhaust", "vent", "bath_fan", "fireplace", "heater", "fountain", "pump", "pool", "disposal", "lamp")):
-                    base_score += 35.0
-                elif any(k in fname or k in ename_norm for k in ("plug", "outlet", "switch")):
-                    base_score += 15.0
-
-            elif dom == "vacuum":
-                base_score = 65.0
-
-            domain_candidates[dom].append((base_score, {
-                "entity": eid,
-                "domain": dom,
-                "name": e.get("name") or e.get("friendly_name") or eid,
-            }))
-
-        for dom in domain_candidates:
-            domain_candidates[dom].sort(key=lambda x: x[0], reverse=True)
-
-        selected: list[dict[str, Any]] = []
-
-        cfg_map = {
-            "light": {"color": "#38bdf8", "action": "toggle"},
-            "switch": {"color": "#a855f7", "action": "toggle"},
-            "media_player": {"color": "#ec4899", "action": "more-info"},
-            "fan": {"color": "#06b6d4", "action": "toggle"},
-            "climate": {"color": "#f97316", "action": "more-info"},
-            "cover": {"color": "#eab308", "action": "toggle"},
-            "lock": {"color": "#10b981", "action": "more-info"},
-            "vacuum": {"color": "#8b5cf6", "action": "more-info"},
-        }
-
-        # 1. Best Light
-        if domain_candidates["light"]:
-            best = domain_candidates["light"].pop(0)[1]
-            selected.append({
-                "entity": best["entity"],
-                "color": cfg_map["light"]["color"],
-                "action": cfg_map["light"]["action"],
-            })
-
-        # 2. Best Media Player or Fan (or Climate if no separate climate)
-        entertainment_or_comfort: list[tuple[float, dict[str, Any]]] = []
-        if domain_candidates["media_player"]:
-            entertainment_or_comfort.append(domain_candidates["media_player"][0])
-        if domain_candidates["fan"]:
-            entertainment_or_comfort.append(domain_candidates["fan"][0])
-        if domain_candidates["climate"]:
-            entertainment_or_comfort.append(domain_candidates["climate"][0])
-
-        if entertainment_or_comfort:
-            entertainment_or_comfort.sort(key=lambda x: x[0], reverse=True)
-            best_ec = entertainment_or_comfort[0][1]
-            domain_candidates[best_ec["domain"]] = [
-                c for c in domain_candidates[best_ec["domain"]] if c[1]["entity"] != best_ec["entity"]
-            ]
-            selected.append({
-                "entity": best_ec["entity"],
-                "color": cfg_map[best_ec["domain"]]["color"],
-                "action": cfg_map[best_ec["domain"]]["action"],
-            })
-
-        # 3. Best Switch, Cover, Lock, or Second Light / Vacuum if slots remain
-        remaining_candidates: list[tuple[float, dict[str, Any]]] = []
-        for dom, cands in domain_candidates.items():
-            remaining_candidates.extend(cands)
-        remaining_candidates.sort(key=lambda x: x[0], reverse=True)
-
-        while len(selected) < max_controls and remaining_candidates:
-            cand = remaining_candidates.pop(0)[1]
-            cdom = cand["domain"]
-            selected.append({
-                "entity": cand["entity"],
-                "color": cfg_map.get(cdom, {}).get("color", "#38bdf8"),
-                "action": cfg_map.get(cdom, {}).get("action", "toggle"),
-            })
-
-        return selected[:max_controls]
 
     def _get_floorplan_svg_stat_sync(self) -> tuple[bool, int]:
         """Check if floorplan SVG exists on disk and return mtime synchronously."""
@@ -2189,7 +2392,7 @@ class DashboardManager:
                                         "y": float(cb["y"]),
                                     }
 
-                for zone, rooms in layout_by_zone.items():
+                for _zone, rooms in layout_by_zone.items():
                     for r in rooms:
                         aid = r.get("id")
                         if aid in deleted_rooms:
@@ -2250,8 +2453,14 @@ class DashboardManager:
                             },
                         })
 
-                        # 3. Intelligent Entity Controls in bottom horizontal dock
-                        max_ctrls = 2 if rw < 155 else 3
+                        # 3. Intelligent Entity Controls situated from the center of the room (avoiding text)
+                        sub_zones_count = len(r.get("sub_zones") or [])
+                        max_ctrls, _ = compute_room_center_pin_positions(
+                            rx, ry, rw, rh,
+                            count=0,
+                            sub_zones_count=sub_zones_count,
+                            has_container=is_container,
+                        )
                         ctrl_items = self._select_intelligent_room_controls(
                             room_ents,
                             valid_eids,
@@ -2261,22 +2470,22 @@ class DashboardManager:
                         )
 
                         if ctrl_items:
-                            ctrl_top_y = ry + rh - 24
-                            ctrl_top_pct = round(ctrl_top_y / canvas_h * 100, 1)
-                            ctrl_start_x = rx + 30
-                            ctrl_spacing = 46
+                            visible_ctrls = [c for c in ctrl_items if c["entity"] not in deleted_badges_set]
+                            _, center_positions = compute_room_center_pin_positions(
+                                rx, ry, rw, rh,
+                                count=len(visible_ctrls),
+                                sub_zones_count=sub_zones_count,
+                                has_container=is_container,
+                            )
 
-                            for idx, ctrl in enumerate(ctrl_items):
+                            for ctrl, (cx, cy) in zip(visible_ctrls, center_positions, strict=False):
                                 eid = ctrl["entity"]
-                                if eid in deleted_badges_set:
-                                    continue
                                 if eid in custom_badges_map:
                                     item_left_pct = round(custom_badges_map[eid]["x"] / 1300.0 * 100, 1)
                                     item_top_pct = round(custom_badges_map[eid]["y"] / canvas_h * 100, 1)
                                 else:
-                                    ctrl_left_x = ctrl_start_x + (idx * ctrl_spacing)
-                                    item_left_pct = round(ctrl_left_x / 1300.0 * 100, 1)
-                                    item_top_pct = ctrl_top_pct
+                                    item_left_pct = round(cx / 1300.0 * 100, 1)
+                                    item_top_pct = round(cy / canvas_h * 100, 1)
                                 elements.append({
                                     "type": "state-icon",
                                     "entity": eid,
@@ -2375,6 +2584,7 @@ class DashboardManager:
         layout_style: str | None = None,
         nav_style: str | None = None,
         dashboard_url_path: str = COMMAND_CENTER_DASHBOARD_URL_PATH,
+        capability_map: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         """Build a categorized Room Subview for an area containing active entities."""
         active_entities = [
@@ -2396,62 +2606,20 @@ class DashboardManager:
         if nav_style is None:
             nav_style = user_rules.get("navigation_style", "sleek_buttons")
 
-        button_cols = 3 if nav_style == "standard_grid" else 2
-        button_square = (nav_style == "standard_grid")
-        room_nav_buttons = [
-            {
-                "type": "button",
-                "name": "Overview",
-                "icon": "mdi:view-dashboard",
-                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}"},
-            },
-            {
-                "type": "button",
-                "name": "Floor Plan",
-                "icon": "mdi:floor-plan",
-                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/floorplan"},
-            },
-            {
-                "type": "button",
-                "name": "Energy",
-                "icon": "mdi:lightning-bolt",
-                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/energy"},
-            },
-            {
-                "type": "button",
-                "name": "Media",
-                "icon": "mdi:speaker-multiple",
-                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/media"},
-            },
-            {
-                "type": "button",
-                "name": "Security",
-                "icon": "mdi:shield-home",
-                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/security"},
-            },
-            {
-                "type": "button",
-                "name": "Climate",
-                "icon": "mdi:thermostat-box",
-                "tap_action": {"action": "navigate", "navigation_path": f"/{dashboard_url_path}/climate"},
-            },
-        ]
-        nav_grid_card = {
-            "type": "grid",
-            "title": "Navigation",
-            "columns": button_cols,
-            "square": button_square,
-            "cards": room_nav_buttons,
-        }
+        nav_grid_card = self._build_studio_navigation_card(
+            dashboard_url_path=dashboard_url_path,
+            nav_style=nav_style,
+            capability_map=capability_map,
+        )
 
         room_cards: list[dict[str, Any]] = [
+            nav_grid_card,
             {
                 "type": "custom:otis-companion-card",
                 "mode": "room_view",
                 "area_id": area_id,
                 "title": f"📍 {area_name}",
             },
-            nav_grid_card,
         ]
 
         # 1. Lighting & Semantic Switch Classification
@@ -2652,8 +2820,9 @@ class DashboardManager:
         ]
         if climates:
             c_cards: list[dict[str, Any]] = []
+            is_sections = self._is_sections_layout(layout_style)
             for c_eid in climates:
-                if layout_style == "modern_sections":
+                if is_sections:
                     c_cards.append({
                         "type": "tile",
                         "entity": c_eid,
@@ -2668,7 +2837,7 @@ class DashboardManager:
                         "entity": c_eid,
                         "features": [{"type": "climate-hvac-modes"}],
                     })
-            if layout_style == "modern_sections":
+            if is_sections:
                 room_cards.append({
                     "type": "grid",
                     "title": "Climate & Thermostats",
@@ -2762,7 +2931,7 @@ class DashboardManager:
 
         deduped_cameras: list[str] = []
         strategy = self.get_camera_stream_strategy()
-        for gkey, cams in camera_groups.items():
+        for _gkey, cams in camera_groups.items():
             cams.sort(key=lambda x: stream_priority(
                 x.get("entity_id", ""),
                 str(x.get("name") or ""),
@@ -2844,13 +3013,8 @@ class DashboardManager:
             "subview": True,
             "theme": user_rules.get("theme") or "otis_generate_midnight_slate",
             "badges": [],
-            "cards": room_cards,
         }
-        if layout_style == "modern_sections":
-            room_view["type"] = "sections"
-            room_view["max_columns"] = 3
-            room_view["sections"] = self._convert_cards_to_sections(room_cards)
-        return room_view
+        return self._apply_view_layout(room_view, room_cards, layout_style)
 
     def _build_media_view_cards(
         self,
@@ -2862,7 +3026,11 @@ class DashboardManager:
         """Build cards for Media Studio subview or standalone dashboard."""
         if nav_style is None:
             nav_style = self._get_user_rules().get("navigation_style", "sleek_buttons")
-        nav_card = self._build_studio_navigation_card(dashboard_url_path=dashboard_url_path, nav_style=nav_style)
+        nav_card = self._build_studio_navigation_card(
+            dashboard_url_path=dashboard_url_path, nav_style=nav_style, capability_map=capability_map
+        )
+        follow_switch_eid = resolve_otis_entity_id(getattr(self, "hass", None), "switch", "audio_follow")
+        spatial_sensor_eid = resolve_otis_entity_id(getattr(self, "hass", None), "sensor", "spatial_migration")
 
         if not capability_map:
             return [
@@ -2880,12 +3048,12 @@ class DashboardManager:
                     "show_header_toggle": False,
                     "entities": [
                         {
-                            "entity": "switch.otis_audio_follow",
+                            "entity": follow_switch_eid,
                             "name": "Room-to-Room Audio Follow-Me",
                             "icon": "mdi:cast-connected",
                         },
                         {
-                            "entity": "sensor.otis_spatial_migration",
+                            "entity": spatial_sensor_eid,
                             "name": "Current Audio Follow State",
                             "icon": "mdi:transit-connection-variant",
                         },
@@ -2948,12 +3116,12 @@ class DashboardManager:
                 "show_header_toggle": False,
                 "entities": [
                     {
-                        "entity": "switch.otis_audio_follow",
+                        "entity": follow_switch_eid,
                         "name": "Room-to-Room Audio Follow-Me",
                         "icon": "mdi:cast-connected",
                     },
                     {
-                        "entity": "sensor.otis_spatial_migration",
+                        "entity": spatial_sensor_eid,
                         "name": "Current Audio Follow State",
                         "icon": "mdi:transit-connection-variant",
                     },
@@ -3016,7 +3184,9 @@ class DashboardManager:
         """Build cards for Energy Studio subview."""
         if nav_style is None:
             nav_style = self._get_user_rules().get("navigation_style", "sleek_buttons")
-        nav_card = self._build_studio_navigation_card(dashboard_url_path=dashboard_url_path, nav_style=nav_style)
+        nav_card = self._build_studio_navigation_card(
+            dashboard_url_path=dashboard_url_path, nav_style=nav_style, capability_map=capability_map
+        )
 
         if not capability_map:
             return [
@@ -3088,11 +3258,6 @@ class DashboardManager:
         )
 
         cards: list[dict[str, Any]] = [
-            {
-                "type": "custom:otis-companion-card",
-                "mode": "energy",
-                "title": "⚡ Energy, Solar & Grid Studio",
-            },
             nav_card,
             {
                 "type": "markdown",
@@ -3103,6 +3268,11 @@ class DashboardManager:
                     f"`{tariff.get('hours_until_change', 0)}h` until next rate window change.\n"
                     f"{solar_line}"
                 ),
+            },
+            {
+                "type": "custom:otis-companion-card",
+                "mode": "energy",
+                "title": "⚡ Energy, Solar & Grid Studio",
             },
             {
                 "type": "grid",
@@ -3176,7 +3346,11 @@ class DashboardManager:
         """Build cards for Security Center subview or standalone dashboard."""
         if nav_style is None:
             nav_style = self._get_user_rules().get("navigation_style", "sleek_buttons")
-        nav_card = self._build_studio_navigation_card(dashboard_url_path=dashboard_url_path, nav_style=nav_style)
+        nav_card = self._build_studio_navigation_card(
+            dashboard_url_path=dashboard_url_path, nav_style=nav_style, capability_map=capability_map
+        )
+        voice_switch_eid = resolve_otis_entity_id(getattr(self, "hass", None), "switch", "voice_announcements")
+        sentinel_sensor_eid = resolve_otis_entity_id(getattr(self, "hass", None), "sensor", "perimeter_sentinel")
 
         if not capability_map:
             return [
@@ -3194,12 +3368,12 @@ class DashboardManager:
                     "show_header_toggle": False,
                     "entities": [
                         {
-                            "entity": "switch.otis_voice_announcements",
+                            "entity": voice_switch_eid,
                             "name": "Spoken Security Announcements",
                             "icon": "mdi:volume-high",
                         },
                         {
-                            "entity": "sensor.otis_perimeter_sentinel",
+                            "entity": sentinel_sensor_eid,
                             "name": "Perimeter Sentinel Status",
                             "icon": "mdi:shield-search",
                         },
@@ -3244,17 +3418,12 @@ class DashboardManager:
             cam_groups.setdefault(ckey, []).append(c_eid)
         deduped_sec_cameras = []
         strategy = self.get_camera_stream_strategy()
-        for ckey, c_list in cam_groups.items():
+        for c_list in cam_groups.values():
             c_list.sort(key=lambda x: stream_priority(x, x, strategy=strategy))
             deduped_sec_cameras.append(c_list[0])
         cameras = deduped_sec_cameras
 
         cards: list[dict[str, Any]] = [
-            {
-                "type": "custom:otis-companion-card",
-                "mode": "security",
-                "title": "🛡️ Security, Locks & Perimeter Center",
-            },
             nav_card,
             {
                 "type": "markdown",
@@ -3269,16 +3438,21 @@ class DashboardManager:
                 "show_header_toggle": False,
                 "entities": [
                     {
-                        "entity": "switch.otis_voice_announcements",
+                        "entity": voice_switch_eid,
                         "name": "Spoken Security Announcements",
                         "icon": "mdi:volume-high",
                     },
                     {
-                        "entity": "sensor.otis_perimeter_sentinel",
+                        "entity": sentinel_sensor_eid,
                         "name": "Perimeter Sentinel Status",
                         "icon": "mdi:shield-search",
                     },
                 ],
+            },
+            {
+                "type": "custom:otis-companion-card",
+                "mode": "security",
+                "title": "🛡️ Security, Locks & Perimeter Center",
             },
         ]
 
@@ -3383,7 +3557,9 @@ class DashboardManager:
             nav_style = self._get_user_rules().get("navigation_style", "sleek_buttons")
         if layout_style is None:
             layout_style = self._get_user_rules().get("dashboard_layout", "modern_sections")
-        nav_card = self._build_studio_navigation_card(dashboard_url_path=dashboard_url_path, nav_style=nav_style)
+        nav_card = self._build_studio_navigation_card(
+            dashboard_url_path=dashboard_url_path, nav_style=nav_style, capability_map=capability_map
+        )
 
         if not capability_map:
             return [
@@ -3391,8 +3567,8 @@ class DashboardManager:
                 {
                     "type": "markdown",
                     "content": (
-                        "## 🌡️ Climate, Pool & Comfort Operations\n"
-                        "Unified environmental controls for HVAC thermostats, ceiling fans, pool telemetry, and SleepNumber comfort."
+                        "## 🌡️ Climate & Comfort Operations\n"
+                        "Unified environmental controls for HVAC thermostats, ceiling fans, and home comfort."
                     ),
                 }
             ]
@@ -3414,13 +3590,8 @@ class DashboardManager:
 
         climates = _filter_valid([e["entity_id"] for e in entities if e.get("domain") == "climate"])
         fans = _filter_valid([e["entity_id"] for e in entities if e.get("domain") == "fan"])
-        pool_ents = _filter_valid([
-            e["entity_id"]
-            for e in entities
-            if e.get("domain") in ("sensor", "binary_sensor", "switch", "light")
-            and any(k in e.get("entity_id", "").lower() for k in ("pentair", "pool", "waterguru", "spa"))
-            and "pre_release" not in e.get("entity_id", "").lower()
-        ])
+        valid_pool_eids = set(_filter_valid([e["entity_id"] for e in entities if e.get("entity_id")]))
+        pool_grouped = self._classify_pool_and_spa_entities(entities, valid_pool_eids)
         sleep_ents = _filter_valid([
             e["entity_id"]
             for e in entities
@@ -3428,27 +3599,48 @@ class DashboardManager:
             and "sleepnumber" in e.get("entity_id", "").lower()
         ])
 
+        has_pool = any(pool_grouped.values())
+        has_sleep = bool(sleep_ents)
+        climate_title = "Climate & Pool" if has_pool else "Climate"
+        desc_parts = ["HVAC thermostats", "ceiling fans"]
+        if has_pool:
+            desc_parts.append("pool chemistry, chlorinator, equipment & spa")
+        if has_sleep:
+            desc_parts.append("SleepNumber comfort")
+        desc_text = ", ".join(desc_parts[:-1]) + f", and {desc_parts[-1]}"
+
         cards: list[dict[str, Any]] = [
-            {
-                "type": "custom:otis-companion-card",
-                "mode": "climate",
-                "title": "🌡️ Climate, HVAC & Pool Studio",
-            },
             nav_card,
             {
                 "type": "markdown",
                 "content": (
-                    "## 🌡️ Climate, Pool & Comfort Operations\n"
-                    "Unified environmental controls for HVAC thermostats, ceiling fans, pool & water telemetry, and SleepNumber comfort."
+                    f"## 🌡️ {climate_title} & Comfort Operations\n"
+                    f"Unified environmental controls for {desc_text}."
                 ),
-            }
+            },
+            {
+                "type": "custom:otis-companion-card",
+                "mode": "climate",
+                "title": f"🌡️ {climate_title} Studio",
+            },
         ]
 
-        hvac_climates = [c for c in climates if not any(k in c.lower() for k in ("pool", "spa", "pentair"))]
-        pool_climates = [c for c in climates if any(k in c.lower() for k in ("pool", "spa", "pentair"))]
+        spa_climate_set = set(pool_grouped["spa_climates"])
+        pool_climate_set = set(pool_grouped["pool_climates"])
+        hvac_climates = [
+            c for c in climates
+            if c not in spa_climate_set
+            and c not in pool_climate_set
+            and not any(k in c.lower() for k in ("pool", "spa", "pentair"))
+        ]
+        pool_climates = pool_grouped["pool_climates"] or [
+            c for c in climates if c not in spa_climate_set and any(k in c.lower() for k in ("pool", "pentair"))
+        ]
+        spa_climates = pool_grouped["spa_climates"]
 
+        is_sections = self._is_sections_layout(layout_style)
         if hvac_climates:
-            if layout_style == "modern_sections":
+            if is_sections:
                 cards.append({
                     "type": "grid",
                     "title": "HVAC Thermostats & Dual-Setpoints",
@@ -3482,25 +3674,6 @@ class DashboardManager:
                     ],
                 })
 
-        if pool_climates:
-            cards.append({
-                "type": "grid",
-                "title": "Pool & Spa Water Temperature",
-                "columns": min(2, len(pool_climates)),
-                "square": False,
-                "cards": [
-                    {
-                        "type": "tile" if layout_style == "modern_sections" else "thermostat",
-                        "entity": c,
-                        "features": [
-                            {"type": "target-temperature"},
-                            {"type": "climate-hvac-modes"},
-                        ] if layout_style == "modern_sections" else [{"type": "climate-hvac-modes"}],
-                    }
-                    for c in pool_climates[:4]
-                ],
-            })
-
         if fans:
             cards.append({
                 "type": "grid",
@@ -3510,13 +3683,87 @@ class DashboardManager:
                 "cards": [{"type": "tile", "entity": f} for f in fans[:6]],
             })
 
-        if pool_ents:
+        if pool_climates:
+            cards.append({
+                "type": "grid",
+                "title": "Pool Heater & Water Temperature",
+                "columns": min(2, len(pool_climates)),
+                "square": False,
+                "cards": [
+                    {
+                        "type": "tile" if is_sections else "thermostat",
+                        "entity": c,
+                        "features": [
+                            {"type": "target-temperature"},
+                            {"type": "climate-hvac-modes"},
+                        ] if is_sections else [{"type": "climate-hvac-modes"}],
+                    }
+                    for c in pool_climates[:4]
+                ],
+            })
+
+        if pool_grouped["chemistry"]:
+            cards.append({
+                "type": "grid",
+                "title": "Pool Water Chemistry",
+                "columns": min(3, len(pool_grouped["chemistry"])),
+                "square": False,
+                "cards": [
+                    {"type": "tile", "entity": eid}
+                    for eid in pool_grouped["chemistry"][:12]
+                ],
+            })
+
+        if pool_grouped["chemistry_alerts"]:
             cards.append({
                 "type": "entities",
-                "title": "Pool Equipment & Water Chemistry Telemetry",
+                "title": "Water Chemistry Alerts & Sensor Maintenance",
                 "state_color": True,
-                "entities": pool_ents[:10],
+                "entities": pool_grouped["chemistry_alerts"][:12],
             })
+
+        if pool_grouped["chlorinator"]:
+            cards.append({
+                "type": "entities",
+                "title": "Chlorinator & Sanitization",
+                "state_color": True,
+                "entities": pool_grouped["chlorinator"][:10],
+            })
+
+        if pool_grouped["pool_equipment"]:
+            cards.append({
+                "type": "entities",
+                "title": "Pool Pump, Lights & Cleaner",
+                "state_color": True,
+                "entities": pool_grouped["pool_equipment"][:12],
+            })
+
+        if spa_climates or pool_grouped["spa_controls"]:
+            if spa_climates:
+                cards.append({
+                    "type": "grid",
+                    "title": "Spa & Hot Tub Temperature",
+                    "columns": min(2, len(spa_climates)),
+                    "square": False,
+                    "cards": [
+                        {
+                            "type": "tile" if layout_style == "modern_sections" else "thermostat",
+                            "entity": c,
+                            "features": [
+                                {"type": "target-temperature"},
+                                {"type": "climate-hvac-modes"},
+                            ] if layout_style == "modern_sections" else [{"type": "climate-hvac-modes"}],
+                        }
+                        for c in spa_climates[:2]
+                    ],
+                })
+            if pool_grouped["spa_controls"]:
+                cards.append({
+                    "type": "entities",
+                    "title": "Spa Pumps, Modes & Filter Cycles",
+                    "state_color": True,
+                    "entities": pool_grouped["spa_controls"][:16],
+                })
 
         if sleep_ents:
             cards.append({
@@ -3526,7 +3773,7 @@ class DashboardManager:
                 "entities": sleep_ents[:10],
             })
 
-        if not climates and not fans and not pool_ents and not sleep_ents:
+        if not climates and not fans and not has_pool and not sleep_ents:
             cards.append({
                 "type": "markdown",
                 "content": (

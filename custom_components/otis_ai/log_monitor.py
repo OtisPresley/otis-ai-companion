@@ -221,7 +221,7 @@ class LogMonitor:
         custom_manifest_path = self.hass.config.path("custom_components", domain, "manifest.json")
         if os.path.isfile(custom_manifest_path):
             try:
-                with open(custom_manifest_path, "r", encoding="utf-8") as f:
+                with open(custom_manifest_path, encoding="utf-8") as f:
                     m = json.load(f)
                     tracker = m.get("issue_tracker") or m.get("documentation") or ""
                     if "github.com/" in tracker:

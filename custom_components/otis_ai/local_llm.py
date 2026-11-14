@@ -368,7 +368,12 @@ def select_relevant_tools(user_text: str) -> list[dict[str, Any]]:
     Avoids injecting ~2,500 tokens of tool JSON schemas into Local Edge LLM prompts
     for informational, status, guidance, or YAML-authoring queries.
     """
-    text_low = (user_text or "").strip().lower()
+    raw_text = (user_text or "").strip()
+    for marker in ("\nUser Request:", "\nUser:"):
+        if marker in raw_text:
+            raw_text = raw_text.rsplit(marker, 1)[-1].strip()
+            break
+    text_low = raw_text.lower()
     if not text_low:
         return []
 
@@ -454,6 +459,35 @@ def select_relevant_tools(user_text: str) -> list[dict[str, Any]]:
         selected.append("call_ha_service")
 
     return [tool_by_name[name] for name in selected if name in tool_by_name]
+
+
+def _collapse_repetitive_lines(text: str, max_repeats: int = 8) -> str:
+    """Collapse degenerate token-repetition loops (e.g. hundreds of identical '>' lines)."""
+    if not text or "\n" not in text:
+        return text
+    lines = text.splitlines()
+    out: list[str] = []
+    prev_stripped: str | None = None
+    repeat_count = 0
+    truncated = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped and stripped == prev_stripped:
+            repeat_count += 1
+            if repeat_count <= max_repeats:
+                out.append(line)
+            else:
+                truncated = True
+        else:
+            if truncated:
+                out.append("# ... [truncated repetitive model output]")
+                truncated = False
+            prev_stripped = stripped
+            repeat_count = 1 if stripped else 0
+            out.append(line)
+    if truncated:
+        out.append("# ... [truncated repetitive model output]")
+    return "\n".join(out)
 
 
 def extract_tool_calls(
@@ -1346,7 +1380,9 @@ class LocalLLMManager:
             "options": {
                 "temperature": temperature,
                 "num_predict": effective_max_tokens,
-                "num_ctx": 4096,
+                "num_ctx": 8192,
+                "repeat_penalty": 1.15,
+                "repeat_last_n": 128,
                 "stop": ["<|im_end|>", "<|endoftext|>", "Observation:", "User:"],
             },
         }
@@ -1365,7 +1401,7 @@ class LocalLLMManager:
                         data = await resp.json()
                         total_time = max(0.001, time.perf_counter() - t0)
                         msg_obj = data.get("message", {})
-                        msg = msg_obj.get("content", "") or ""
+                        msg = _collapse_repetitive_lines(msg_obj.get("content", "") or "")
                         raw_tools = msg_obj.get("tool_calls", [])
                         extracted_tools = extract_tool_calls(msg, raw_tools)
 
@@ -1377,6 +1413,18 @@ class LocalLLMManager:
                         )
                         if eval_count > 0:
                             self._record_inference_telemetry(chosen_model, tokens_per_sec, total_time)
+
+                        if not msg.strip() and not extracted_tools:
+                            done_reason = data.get("done_reason", "unknown")
+                            return {
+                                "success": False,
+                                "error": f"Local LLM returned an empty response (done_reason={done_reason}, eval_count={eval_count})",
+                                "model": chosen_model,
+                                "tokens_generated": eval_count,
+                                "tokens_evaluated": prompt_eval_count,
+                                "total_duration_s": round(total_time, 2),
+                                "provider": "ollama",
+                            }
 
                         return {
                             "success": True,
@@ -1398,7 +1446,7 @@ class LocalLLMManager:
                             "model": chosen_model,
                             "total_duration_s": round(time.perf_counter() - t0, 2),
                         }
-            except (asyncio.TimeoutError, TimeoutError):
+            except TimeoutError:
                 return {
                     "success": False,
                     "error": f"Local LLM request timed out after {int(req_timeout)}s",
@@ -1461,6 +1509,18 @@ class LocalLLMManager:
                     tokens_per_sec = round(completion_tokens / total_time, 1)
                     if completion_tokens > 0:
                         self._record_inference_telemetry(chosen_model, tokens_per_sec, total_time)
+
+                    if not content.strip() and not extracted_tools:
+                        finish_reason = choices[0].get("finish_reason", "unknown") if choices else "unknown"
+                        return {
+                            "success": False,
+                            "error": f"Local LLM returned an empty response (finish_reason={finish_reason}, completion_tokens={int(completion_tokens)})",
+                            "model": chosen_model,
+                            "tokens_generated": int(completion_tokens),
+                            "tokens_evaluated": usage.get("prompt_tokens", 0),
+                            "total_duration_s": round(total_time, 2),
+                            "provider": "openai_compatible",
+                        }
 
                     return {
                         "success": True,

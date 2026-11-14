@@ -8,7 +8,7 @@ with spatial acoustic arbitration.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 import logging
 import time
 from typing import Any
@@ -324,7 +324,7 @@ class MultiAgentOrchestrator:
 
         primary_agent = selected_agents[0]
         self._last_routing = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "query": clean_prompt[:120],
             "selected_agents": selected_agents,
             "primary_agent": primary_agent,
@@ -526,7 +526,7 @@ class MultiAgentOrchestrator:
         if custom_pipeline is not None:
             cfg["custom_pipeline"] = custom_pipeline.strip()
 
-        cfg["updated_at"] = datetime.now(timezone.utc).isoformat()
+        cfg["updated_at"] = datetime.now(UTC).isoformat()
 
         await self.async_save()
         await self.async_publish_telemetry()
@@ -626,7 +626,7 @@ class MultiAgentOrchestrator:
         )
 
         self._last_arbitration = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "winning_satellite_id": winner["satellite_id"],
             "winning_area_id": winner["area_id"],
             "confidence": winner["score"],
@@ -637,7 +637,7 @@ class MultiAgentOrchestrator:
 
         # Update last_triggered on winner
         if winner["satellite_id"] in self._satellite_configs:
-            self._satellite_configs[winner["satellite_id"]]["last_triggered"] = datetime.now(timezone.utc).isoformat()
+            self._satellite_configs[winner["satellite_id"]]["last_triggered"] = datetime.now(UTC).isoformat()
             try:
                 loop = asyncio.get_running_loop()
                 loop.create_task(self.async_save())
@@ -672,7 +672,7 @@ class MultiAgentOrchestrator:
             "agent_specifications": AGENT_SPECIFICATIONS,
             "metrics": self._metrics,
             "last_routing": self._last_routing,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
         }
         try:
             from .sensor import async_update_entity_state
@@ -691,7 +691,7 @@ class MultiAgentOrchestrator:
             "arbitration_mode": ARBITRATION_PRESENCE_FUSED,
             "deduplication_window_s": DEFAULT_DEDUPLICATION_WINDOW_S,
             "last_arbitration": self._last_arbitration,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
         }
         try:
             from .sensor import async_update_entity_state

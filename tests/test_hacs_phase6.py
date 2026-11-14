@@ -96,7 +96,7 @@ def test_switch_entity_state_lifecycle():
 
 
 def test_async_update_entity_state_dispatches_to_platform_entity():
-    """Verify async_update_entity_state updates registered entity and falls back when unbacked."""
+    """Verify async_update_entity_state updates registered entity and never spoofs hass.states.async_set."""
     hass = MagicMock()
     mock_entity = MagicMock()
     mock_entity.async_set_state = MagicMock()
@@ -115,9 +115,9 @@ def test_async_update_entity_state_dispatches_to_platform_entity():
     async_update_entity_state(hass, "sensor.otis_mesh_health", "healthy", {"nodes": 12})
     mock_entity.async_set_state.assert_called_once_with("healthy", {"nodes": 12})
 
-    # 2. Fallback for unbacked entities
+    # 2. Unbacked entities must NOT spoof hass.states.async_set
     async_update_entity_state(hass, "sensor.otis_unbacked", "active", {})
-    hass.states.async_set.assert_called_with("sensor.otis_unbacked", "active", {})
+    hass.states.async_set.assert_not_called()
 
 
 # ==============================================================================

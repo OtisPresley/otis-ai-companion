@@ -25,6 +25,7 @@ from homeassistant.helpers import (
     entity_registry as er,
 )
 
+from .const import is_non_human_occupancy_entity, is_slow_thermostat_occupancy_entity
 from .floorplan_parser import classify_area_zone
 
 _LOGGER = logging.getLogger(__name__)
@@ -142,8 +143,8 @@ def solve_2d_trilateration(
         # Collinear or ill-conditioned: fall back to inverse-distance weighted centroid
         weights = [1.0 / max(0.1, a["distance"]) ** 2 for a in valid_anchors]
         total_w = sum(weights)
-        cx = sum(a["x"] * w for a, w in zip(valid_anchors, weights)) / total_w
-        cy = sum(a["y"] * w for a, w in zip(valid_anchors, weights)) / total_w
+        cx = sum(a["x"] * w for a, w in zip(valid_anchors, weights, strict=True)) / total_w
+        cy = sum(a["y"] * w for a, w in zip(valid_anchors, weights, strict=True)) / total_w
         return {"x": round(cx, 2), "y": round(cy, 2), "method": "weighted_centroid_fallback", "anchor_count": len(valid_anchors)}
 
     inv_00 = ata_11 / det
@@ -416,6 +417,8 @@ class PresenceFusionManager:
         self._cache_duration_sec: float = 3.0
         self._anchor_positions: dict[str, dict[str, float]] = {}  # {anchor_id: {"x": float, "y": float, "area": str}}
         self._beacon_assignments: dict[str, str] = {}  # {beacon_mac_or_id: user_persona}
+        self._last_pir_motion_ts: dict[str, dict[str, Any]] = {}  # {area_id: {"ts": float, "confidence": float}}
+        self._pir_hold_sec: float = 90.0
 
     def set_anchor_positions(self, anchors: dict[str, dict[str, float]]) -> None:
         """Configure spatial anchor receiver coordinates for BLE trilateration."""
@@ -508,12 +511,12 @@ class PresenceFusionManager:
 
         # Dynamic cross-validation & false positive suppression:
         # Case A: Vacuum / Pet Rejection
-        # If PIR triggered, but thermal target is explicitly 'pet_or_appliance' or 'heat_source', or thermal is 0 with no BLE and no mmWave static
+        # If PIR triggered, and a thermal sensor explicitly classifies it as a pet or appliance
         is_false_pir_suspect = (
             pir.get("active")
             and not mmwave.get("active")
             and not ble.get("active")
-            and (thermal.get("target_type") in ("pet_or_appliance", "heat_source") or not thermal.get("detected"))
+            and thermal.get("target_type") in ("pet_or_appliance", "heat_source")
         )
         if is_false_pir_suspect:
             # Heavily discount PIR to avoid triggering full room occupancy on robot vacuums or pets
@@ -635,18 +638,29 @@ class PresenceFusionManager:
             area_states = [
                 s for s in all_states
                 if entity_to_area.get(s.entity_id) == a_id
-                or re.search(rf"\b{re.escape(a_lower)}\b", (s.attributes.get("friendly_name") or s.entity_id).lower())
+                or (
+                    not entity_to_area.get(s.entity_id)
+                    and re.search(rf"\b{re.escape(a_lower)}\b", (s.attributes.get("friendly_name") or s.entity_id).lower())
+                )
             ]
 
-            # 1. mmWave Radar
+            # 1. mmWave Radar (exclude Otis's own output sensors, slow thermostat & camera occupancy sensors)
             mmwave_eval: dict[str, Any] = {"active": False, "confidence": 0.0, "mode": MMWAVE_STATE_CLEAR}
             for s in area_states:
                 eid_l = s.entity_id.lower()
+                if (
+                    not s.entity_id.startswith("binary_sensor.")
+                    or eid_l.startswith("binary_sensor.otis_")
+                    or is_non_human_occupancy_entity(eid_l)
+                ):
+                    continue
+                if is_slow_thermostat_occupancy_entity(eid_l) or "_person_occupancy" in eid_l:
+                    continue
                 d_class = str(s.attributes.get("device_class") or "").lower()
                 is_mm = (
                     d_class in ("occupancy", "presence")
                     or any(k in eid_l for k in ("mmwave", "radar", "ld2410", "fp1", "fp2", "screek"))
-                ) and s.entity_id.startswith("binary_sensor.")
+                )
                 if is_mm:
                     ev = evaluate_mmwave_signature(s.state, s.attributes)
                     if ev["confidence"] > mmwave_eval["confidence"]:
@@ -699,16 +713,51 @@ class PresenceFusionManager:
                         }
                         break
 
-            # 4. PIR Motion
+            # 4. PIR Motion & Camera Person Detection
             pir_eval: dict[str, Any] = {"active": False, "confidence": 0.0, "seconds_since_motion": None}
+            now_ts = time.time()
             for s in area_states:
                 eid_l = s.entity_id.lower()
+                if (
+                    not s.entity_id.startswith("binary_sensor.")
+                    or eid_l.startswith("binary_sensor.otis_")
+                    or is_non_human_occupancy_entity(eid_l)
+                ):
+                    continue
                 d_class = str(s.attributes.get("device_class") or "").lower()
-                is_pir = (d_class == "motion" or any(k in eid_l for k in ("pir", "motion"))) and s.entity_id.startswith("binary_sensor.")
+                is_slow_therm = is_slow_thermostat_occupancy_entity(eid_l)
+                is_pir = (
+                    d_class == "motion"
+                    or is_slow_therm
+                    or "_person_occupancy" in eid_l
+                    or any(k in eid_l for k in ("pir", "motion"))
+                )
                 if is_pir and "mmwave" not in eid_l and "radar" not in eid_l:
                     if s.state == "on":
-                        pir_eval = {"active": True, "confidence": 0.75, "seconds_since_motion": 0}
+                        conf = 0.70 if is_slow_therm else 0.75
+                        self._last_pir_motion_ts[a_id] = {"ts": now_ts, "confidence": conf}
+                        pir_eval = {
+                            "active": True,
+                            "confidence": conf,
+                            "seconds_since_motion": 0,
+                        }
                         break
+            if not pir_eval["active"]:
+                prev_pir = self._last_pir_motion_ts.get(a_id)
+                if prev_pir:
+                    elapsed = now_ts - float(prev_pir["ts"])
+                    if 0 <= elapsed <= self._pir_hold_sec:
+                        decayed_conf = round(
+                            max(0.32, float(prev_pir["confidence"]) * 0.75 * (1.0 - elapsed / self._pir_hold_sec)),
+                            2,
+                        )
+                        pir_eval = {
+                            "active": False,
+                            "confidence": decayed_conf,
+                            "seconds_since_motion": max(1, int(elapsed)),
+                        }
+                    else:
+                        self._last_pir_motion_ts.pop(a_id, None)
 
             # 5. Acoustic Footprinting (suppressed for outdoor areas due to wind/traffic/animal noise)
             acoustic_eval: dict[str, Any] = {"detected": False, "confidence": 0.0, "event_type": "ambient"}

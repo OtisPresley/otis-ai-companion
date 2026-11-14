@@ -41,6 +41,7 @@ DEFAULT_RULES: dict[str, Any] = {
     "primary_content_focus": "balanced",
     "presence_room_cards": True,
     "dismissed_recommendation_ids": [],
+    "hidden_recommendation_ids": [],
     "show_ignored_recommendations": False,
     "floorplan_view_mode": "2d",
     "floorplan_3d": False,
@@ -60,9 +61,12 @@ DEFAULT_RULES: dict[str, Any] = {
     "agent_health_metrics": {},
     "vision_training_feedback": [],
     "recent_room_verifications": {},
+    "classified_snapshots": [],
+    "excluded_load_shed_entities": [],
     "media_input_mappings": {},
     "media_default_zone": "",
     "media_unjoin_input": "None",
+    "migrated_coordinators": {},
 }
 
 
@@ -213,10 +217,14 @@ class BehavioralRulesManager:
                 merged["quiet_hours_volume"] = max(0, min(100, int(merged["quiet_hours_volume"])))
             except (ValueError, TypeError):
                 merged["quiet_hours_volume"] = 25
-        if "dashboard_layout" in merged and str(merged["dashboard_layout"]).lower() in ("modern_sections", "classic_grid"):
-            merged["dashboard_layout"] = str(merged["dashboard_layout"]).lower()
-        if "navigation_style" in merged and str(merged["navigation_style"]).lower() in ("sleek_buttons", "standard_grid", "tiles"):
-            merged["navigation_style"] = str(merged["navigation_style"]).lower()
+        if "dashboard_layout" in merged:
+            layout_val = str(merged["dashboard_layout"]).lower()
+            if layout_val in ("modern_sections", "compact", "classic", "classic_grid"):
+                merged["dashboard_layout"] = layout_val
+        if "navigation_style" in merged:
+            nav_val = str(merged["navigation_style"]).lower()
+            if nav_val in ("sleek_buttons", "standard_grid", "compact_pills", "tiles"):
+                merged["navigation_style"] = nav_val
         if "calendar_view" in merged and str(merged["calendar_view"]).lower() in ("listday", "month", "listweek"):
             merged["calendar_view"] = "listDay" if str(merged["calendar_view"]).lower() == "listday" else str(merged["calendar_view"]).lower()
         if "primary_content_focus" in merged and str(merged["primary_content_focus"]).lower() in ("balanced", "studios_first", "glance_first"):
@@ -257,6 +265,16 @@ class BehavioralRulesManager:
                 merged["dismissed_recommendation_ids"] = list(dict.fromkeys(str(x) for x in merged["dismissed_recommendation_ids"] if x))
             else:
                 merged["dismissed_recommendation_ids"] = []
+        if "classified_snapshots" in merged:
+            if isinstance(merged["classified_snapshots"], (list, set, tuple)):
+                merged["classified_snapshots"] = list(dict.fromkeys(str(x) for x in merged["classified_snapshots"] if x))[-200:]
+            else:
+                merged["classified_snapshots"] = []
+        if "excluded_load_shed_entities" in merged:
+            if isinstance(merged["excluded_load_shed_entities"], (list, set, tuple)):
+                merged["excluded_load_shed_entities"] = list(dict.fromkeys(str(x).strip().lower() for x in merged["excluded_load_shed_entities"] if x))
+            else:
+                merged["excluded_load_shed_entities"] = []
 
         if "wizard_state" in new_rules and isinstance(new_rules["wizard_state"], dict):
             merged["wizard_state"] = dict(new_rules["wizard_state"])
@@ -327,8 +345,25 @@ class BehavioralRulesManager:
         _LOGGER.info("Otis AI: Reset all dismissed recommendations")
 
     def get_dismissed_recommendations(self) -> list[str]:
-        """Return list of dismissed recommendation IDs."""
+        """Return list of dismissed (ignored) recommendation IDs."""
         return list(self._rules.get("dismissed_recommendation_ids") or [])
+
+    async def async_hide_recommendation(self, rec_id: str) -> list[str]:
+        """Permanently hide a recommendation ID (via X dismiss or completion) without adding to Ignored."""
+        if not self._loaded:
+            await self.async_load()
+        current = list(self._rules.get("hidden_recommendation_ids") or [])
+        rec_id_str = str(rec_id).strip()
+        if rec_id_str and rec_id_str not in current:
+            current.append(rec_id_str)
+            self._rules["hidden_recommendation_ids"] = current
+            await self._store.async_save(self._rules)
+            _LOGGER.info("Otis AI: Permanently hid recommendation '%s'", rec_id_str)
+        return list(self._rules.get("hidden_recommendation_ids") or [])
+
+    def get_hidden_recommendations(self) -> list[str]:
+        """Return list of permanently hidden recommendation IDs."""
+        return list(self._rules.get("hidden_recommendation_ids") or [])
 
     def get_rules(self) -> dict[str, Any]:
         """Return the current behavioral rules."""
@@ -431,6 +466,24 @@ class BehavioralRulesManager:
         _LOGGER.info("Otis AI: Removed and ignored person profile %s", clean_pid)
         return {"success": True, "person_id": clean_pid}
 
+    def _record_classified_snapshot(self, visual_features: dict[str, Any] | None) -> None:
+        """Mark a snapshot key as classified and remove its suggestion ID from dismissed/ignored."""
+        if not isinstance(visual_features, dict) or visual_features.get("reset"):
+            return
+        snap_key = str(visual_features.get("snapshot_key") or "").strip()
+        if snap_key:
+            classified = list(self._rules.get("classified_snapshots") or [])
+            if snap_key in classified:
+                classified.remove(snap_key)
+            classified.append(snap_key)
+            self._rules["classified_snapshots"] = classified[-200:]
+        sugg_id = str(visual_features.get("suggestion_id") or "").strip()
+        if sugg_id:
+            dismissed = list(self._rules.get("dismissed_recommendation_ids") or [])
+            if sugg_id in dismissed:
+                dismissed.remove(sugg_id)
+                self._rules["dismissed_recommendation_ids"] = dismissed
+
     async def async_confirm_person_identity(
         self,
         person_id: str,
@@ -462,6 +515,7 @@ class BehavioralRulesManager:
                 room_verifications = dict(self._rules.get("recent_room_verifications") or {})
                 room_verifications[str(visual_features["area"]).strip().lower()] = time.time()
                 self._rules["recent_room_verifications"] = room_verifications
+            self._record_classified_snapshot(visual_features)
 
             await self._store.async_save(self._rules)
             if hasattr(self.hass, "bus") and hasattr(self.hass.bus, "async_fire"):
@@ -516,6 +570,7 @@ class BehavioralRulesManager:
                     self._rules["recent_room_verifications"] = room_verifications
                 feats.update(visual_features)
                 profile["features"] = feats
+            self._record_classified_snapshot(visual_features)
         else:
             if visual_features and isinstance(visual_features, dict) and visual_features.get("reset"):
                 profile["samples"] = 0
@@ -525,6 +580,7 @@ class BehavioralRulesManager:
             else:
                 cur_conf = float(profile.get("confidence", 0.50))
                 profile["confidence"] = round(max(0.10, cur_conf - 0.15), 2)
+                self._record_classified_snapshot(visual_features)
 
         profiles[clean_pid] = profile
         self._rules["person_profiles"] = profiles
@@ -558,6 +614,10 @@ class BehavioralRulesManager:
         """Return persisted conversation agent availability, latency, and quality metrics."""
         return dict(self._rules.get("agent_health_metrics") or {})
 
+    def get_deprecated_models(self) -> set[str]:
+        """Return model identifiers that returned 404/unavailable/deprecated errors on this instance."""
+        return {str(m).strip() for m in (self._rules.get("deprecated_models") or []) if str(m).strip()}
+
     async def async_record_agent_metric(
         self,
         agent_id: str,
@@ -566,6 +626,7 @@ class BehavioralRulesManager:
         latency_s: float = 0.0,
         quality_penalty: int = 0,
         error_reason: str | None = None,
+        configured_model: str | None = None,
     ) -> dict[str, Any]:
         """Record live performance, availability, and quality telemetry for a conversation agent."""
         if not self._loaded:
@@ -583,7 +644,20 @@ class BehavioralRulesManager:
             "last_error_ts": 0.0,
             "last_error_reason": "",
             "last_success_ts": 0.0,
+            "configured_model": "",
         })
+
+        if configured_model:
+            prev_model = str(m.get("configured_model") or "").strip()
+            if prev_model and prev_model != configured_model:
+                # Model changed since last metric; clear stale error/cooldown history
+                m["success_count"] = 0
+                m["error_count"] = 0
+                m["consecutive_failures"] = 0
+                m["quality_penalties"] = 0
+                m["last_error_ts"] = 0.0
+                m["last_error_reason"] = ""
+            m["configured_model"] = str(configured_model).strip()
 
         now_ts = time.time()
         if success:
@@ -599,6 +673,16 @@ class BehavioralRulesManager:
             m["last_error_ts"] = now_ts
             if error_reason:
                 m["last_error_reason"] = str(error_reason)[:160]
+                err_low = str(error_reason).lower()
+                if configured_model and any(
+                    tok in err_low
+                    for tok in ("404", "not_found", "not found", "no longer available", "deprecated", "does not exist")
+                ):
+                    dep_list = list(self._rules.get("deprecated_models") or [])
+                    clean_mod = str(configured_model).strip()
+                    if clean_mod and clean_mod not in dep_list:
+                        dep_list.append(clean_mod)
+                        self._rules["deprecated_models"] = dep_list[-50:]
 
         if quality_penalty > 0:
             m["quality_penalties"] = int(m.get("quality_penalties", 0)) + int(quality_penalty)
@@ -607,6 +691,43 @@ class BehavioralRulesManager:
         self._rules["agent_health_metrics"] = metrics_map
         await self._store.async_save(self._rules)
         return m
+
+    async def async_reset_agent_metrics_for_model_change(
+        self,
+        agent_ids: list[str],
+        current_model: str,
+    ) -> bool:
+        """Reset stale failure metrics when an agent's configured model has changed."""
+        if not self._loaded:
+            await self.async_load()
+
+        clean_model = str(current_model or "").strip()
+        if not clean_model:
+            return False
+
+        metrics_map = dict(self._rules.get("agent_health_metrics") or {})
+        changed = False
+        for aid in agent_ids:
+            clean_id = str(aid or "").strip()
+            if not clean_id or clean_id not in metrics_map:
+                continue
+            m = dict(metrics_map[clean_id])
+            prev_model = str(m.get("configured_model") or "").strip()
+            if prev_model != clean_model:
+                m["success_count"] = 0
+                m["error_count"] = 0
+                m["consecutive_failures"] = 0
+                m["quality_penalties"] = 0
+                m["last_error_ts"] = 0.0
+                m["last_error_reason"] = ""
+                m["configured_model"] = clean_model
+                metrics_map[clean_id] = m
+                changed = True
+
+        if changed:
+            self._rules["agent_health_metrics"] = metrics_map
+            await self._store.async_save(self._rules)
+        return changed
 
     async def async_learn_from_interaction(
         self,

@@ -1,3 +1,8 @@
+import { CARD_STYLES } from "./card-styles.js?v=0.4.0";
+import { floorplanMixin } from "./floorplan-3d.js?v=0.4.0";
+import { modalsMixin } from "./card-modals.js?v=0.4.0";
+import { tabsMixin } from "./card-tabs.js?v=0.4.0";
+
 /**
  * Otis AI Companion - Lovelace Dashboard Card
  * Version: 0.2.4
@@ -13,7 +18,7 @@
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.3.6";
+const CARD_VERSION = "0.4.0";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -40,6 +45,15 @@ const OTIS_ACTIVE_RULES_STATE = {
   wizardStep: 1,
 };
 
+const OTIS_SHARED_CACHE = {
+  capabilityMap: null,
+  capabilityMapHasSuggestions: false,
+  mediaStudio: null,
+  inFlightCapMap: null,
+  inFlightCapMapLight: null,
+  inFlightMediaStudio: null,
+};
+
 class OtisCompanionCard extends HTMLElement {
   constructor() {
     super();
@@ -50,6 +64,7 @@ class OtisCompanionCard extends HTMLElement {
     this._capabilityMap = null;
     this._suggestions = [];
     this._dismissedIds = this._loadDismissedIds();
+    this._hiddenIds = this._loadHiddenIds();
     this._localShowIgnored = false;
     this._loadingSuggestions = false;
     this._applyingIds = new Set();
@@ -181,6 +196,7 @@ class OtisCompanionCard extends HTMLElement {
     this._editorActive = false;
     this._dirtyBadges = {};
     this._dirtyRooms = {};
+    this._dirtyCustomFeatures = {};
     this._selectedEditorRoomId = null;
     this._resizingHandle = null;
     this._hasUnsavedLayout = false;
@@ -217,6 +233,8 @@ class OtisCompanionCard extends HTMLElement {
 
     // Phase 5: GitHub Device Flow & Issue Reporter
     this._githubModalOpen = false;
+    this._reviewSuggestion = null;
+    this._snapshotLightbox = null;
     this._githubModalStep = "review"; // 'review' | 'device_code' | 'submitting' | 'success' | 'error'
     this._githubModalData = null; // { repo, title, body, error_id, domain }
     this._githubDeviceCode = null; // { device_code, user_code, verification_uri, expires_in }
@@ -246,7 +264,7 @@ class OtisCompanionCard extends HTMLElement {
       if (saved && ["suggestions", "chat", "capabilities", "floorplan", "vision", "media"].includes(saved)) {
         return saved;
       }
-    } catch (_) {}
+    } catch (_) { }
     return "suggestions";
   }
 
@@ -255,7 +273,7 @@ class OtisCompanionCard extends HTMLElement {
       this._activeTab = tab;
       try {
         sessionStorage.setItem("otis_active_tab", tab);
-      } catch (_) {}
+      } catch (_) { }
     }
   }
 
@@ -266,7 +284,7 @@ class OtisCompanionCard extends HTMLElement {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) return parsed;
       }
-    } catch (_) {}
+    } catch (_) { }
     return [];
   }
 
@@ -278,7 +296,7 @@ class OtisCompanionCard extends HTMLElement {
       } else {
         sessionStorage.removeItem("otis_conversation_id");
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 
   _escapeHtml(str) {
@@ -351,6 +369,19 @@ class OtisCompanionCard extends HTMLElement {
             this._render();
           }
         }
+      } else if (this._config?.mode === "vision" || this._activeTab === "vision") {
+        const activeEl = this.shadowRoot.activeElement;
+        const isEditingInput = activeEl && ["INPUT", "SELECT", "TEXTAREA"].includes(activeEl.tagName);
+        if (!isEditingInput && oldHass?.states && hass?.states) {
+          const fusedId = this._resolveOtisEntityId("sensor.otis_fused_presence");
+          const sentinelId = this._resolveOtisEntityId("sensor.otis_perimeter_sentinel");
+          if (
+            oldHass.states[fusedId] !== hass.states[fusedId] ||
+            oldHass.states[sentinelId] !== hass.states[sentinelId]
+          ) {
+            this._render();
+          }
+        }
       }
     }
   }
@@ -364,6 +395,9 @@ class OtisCompanionCard extends HTMLElement {
       this._subscribeRuleEvents();
     }
     this._render();
+    if (this._activeTab === "floorplan") {
+      this._checkAndResumeRegenProgress();
+    }
   }
 
   _syncActiveChatState() {
@@ -490,23 +524,27 @@ class OtisCompanionCard extends HTMLElement {
     if (this._unsubReasoningEvents) {
       try {
         this._unsubReasoningEvents();
-      } catch (_) {}
+      } catch (_) { }
       this._unsubReasoningEvents = null;
     }
     if (this._unsubRuleEvents) {
       try {
         this._unsubRuleEvents();
-      } catch (_) {}
+      } catch (_) { }
       this._unsubRuleEvents = null;
     }
     if (this._reasoningTimer) {
       clearInterval(this._reasoningTimer);
       this._reasoningTimer = null;
     }
+    if (this._regenPollTimer) {
+      clearInterval(this._regenPollTimer);
+      this._regenPollTimer = null;
+    }
     if (this._viewportResizeObserver) {
       try {
         this._viewportResizeObserver.disconnect();
-      } catch (_) {}
+      } catch (_) { }
       this._viewportResizeObserver = null;
     }
   }
@@ -619,13 +657,12 @@ class OtisCompanionCard extends HTMLElement {
         return `
           <div class="thinking-step-row ${s.status}">
             <span class="step-indicator ${s.status}">
-              ${
-                isDone
-                  ? "✓"
-                  : isActive
-                  ? `<span class="step-mini-spinner"></span>`
-                  : "○"
-              }
+              ${isDone
+            ? "✓"
+            : isActive
+              ? `<span class="step-mini-spinner"></span>`
+              : "○"
+          }
             </span>
             <div class="step-info">
               <span class="step-name ${s.status}">${this._escapeHtml(s.title)}</span>
@@ -740,84 +777,194 @@ class OtisCompanionCard extends HTMLElement {
     return document.createElement("otis-companion-card-editor");
   }
 
+  _readSessionCache(storageKey) {
+    try {
+      const raw = sessionStorage.getItem(storageKey);
+      return raw ? JSON.parse(raw) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  _writeSessionCache(storageKey, data) {
+    try {
+      sessionStorage.setItem(storageKey, JSON.stringify(data));
+    } catch (_) {
+      // Fallback for large floorplan SVG payloads exceeding sessionStorage quota
+      if (data && data.floorplan && data.floorplan.svg) {
+        try {
+          const lean = { ...data, floorplan: { ...data.floorplan, svg: undefined } };
+          sessionStorage.setItem(storageKey, JSON.stringify(lean));
+        } catch (__) { }
+      }
+    }
+  }
+
+  _applyCapabilityMap(capMap) {
+    if (!capMap || typeof capMap !== "object") return;
+    this._capabilityMap = {
+      ...(this._capabilityMap || {}),
+      ...capMap,
+      local_llm:
+        capMap.local_llm && Object.keys(capMap.local_llm).length > 0
+          ? capMap.local_llm
+          : this._capabilityMap?.local_llm || capMap.local_llm,
+    };
+    if (capMap.conversation_agent_id) {
+      this._conversationAgentId = capMap.conversation_agent_id;
+    }
+    this._userRules = capMap.user_rules || {};
+    if (this._userRules.wizard_state && typeof this._userRules.wizard_state === "object") {
+      this._wizardState = { ...this._wizardState, ...this._userRules.wizard_state };
+    }
+    if (!this._rulesModalOpen) {
+      this._rulesDraft = { ...this._userRules };
+    }
+    const isFloorplanControlView = this._config.mode === "floorplan_control";
+    if (this._userRules.floorplan_view_mode && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_view_mode"))) {
+      this._floorplanViewMode = this._userRules.floorplan_view_mode;
+    }
+    if (this._userRules.floorplan_azimuth !== undefined && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_orbit_azimuth"))) {
+      this._floorplanAzimuth = parseFloat(this._userRules.floorplan_azimuth) || 0;
+    }
+    if (this._userRules.floorplan_pitch !== undefined && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_pitch_incline"))) {
+      this._floorplanPitch = parseFloat(this._userRules.floorplan_pitch) || 30;
+    }
+    if (this._userRules.floorplan_wall_height !== undefined && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_wall_height"))) {
+      this._floorplanWallHeight = parseFloat(this._userRules.floorplan_wall_height) || 36;
+    }
+    if (this._userRules.floorplan_walls_enabled !== undefined && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_walls_enabled"))) {
+      this._floorplanWallsEnabled = this._userRules.floorplan_walls_enabled !== false;
+    }
+    if (this._userRules.floorplan_zone && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_selected_zone"))) {
+      this._selectedFloorZone = this._userRules.floorplan_zone;
+    }
+    if (this._userRules.floorplan_scale !== undefined && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_scale"))) {
+      const sc = parseFloat(this._userRules.floorplan_scale);
+      if (!isNaN(sc)) this._floorplanScale = Math.max(0.6, Math.min(1.8, sc));
+    }
+    if (Array.isArray(this._userRules.dismissed_recommendation_ids)) {
+      for (const id of this._userRules.dismissed_recommendation_ids) {
+        this._dismissedIds.add(id);
+      }
+      this._saveDismissedIds();
+    }
+    if (Array.isArray(this._userRules.hidden_recommendation_ids)) {
+      for (const id of this._userRules.hidden_recommendation_ids) {
+        this._hiddenIds.add(id);
+      }
+      this._saveHiddenIds();
+    }
+    if (Array.isArray(capMap.proactive_suggestions) && capMap.proactive_suggestions.length > 0) {
+      this._suggestions = capMap.proactive_suggestions;
+    } else if (!this._suggestions?.length && Array.isArray(capMap.proactive_suggestions)) {
+      this._suggestions = capMap.proactive_suggestions;
+    }
+    this._hasWalkthrough = Boolean(capMap.floorplan?.walkthrough_completed);
+    this._hasFloorplan = Boolean(capMap.floorplan?.exists);
+    if (capMap.floorplan?.svg) {
+      this._floorplanSvg = this._cleanAndSanitizeSvg(capMap.floorplan.svg);
+      this._floorplanLoadFailed = false;
+    }
+  }
+
+  _applyMediaStudioData(data) {
+    if (!data || !data.success) return;
+    this._mediaStudioData = data;
+    const zones = data.zones || [];
+    const unjoinInput = data.unjoin_input || "None";
+    if (!this._selectedMediaZoneId || !zones.some((z) => z.entity_id === this._selectedMediaZoneId)) {
+      if (data.default_zone && zones.some((z) => z.entity_id === data.default_zone)) {
+        this._selectedMediaZoneId = data.default_zone;
+      } else {
+        const activeZone = zones.find(
+          (z) =>
+            (z.state === "playing" || z.state === "on") &&
+            z.source &&
+            z.source !== unjoinInput
+        );
+        this._selectedMediaZoneId = activeZone?.entity_id || zones[0]?.entity_id || null;
+      }
+    }
+  }
+
   async _fetchData() {
     if (!this._hass) return;
+    const isSubview = this._isSubviewMode();
+    const includeSuggestions = !isSubview || this._config.show_suggestions === true;
+    const needsMediaStudio = !isSubview || this._config.mode === "media_studio";
     const isInitialLoad = !this._capabilityMap;
+
+    // Instant paint from shared module cache or sessionStorage before background refresh
     if (isInitialLoad) {
-      this._loadingSuggestions = true;
-      this._render();
+      const cachedCap = OTIS_SHARED_CACHE.capabilityMap || this._readSessionCache("otis_cache_cap_map");
+      if (cachedCap && typeof cachedCap === "object") {
+        OTIS_SHARED_CACHE.capabilityMap = cachedCap;
+        this._applyCapabilityMap(cachedCap);
+        if (needsMediaStudio) {
+          const cachedMedia = OTIS_SHARED_CACHE.mediaStudio || this._readSessionCache("otis_cache_media_studio");
+          if (cachedMedia) {
+            OTIS_SHARED_CACHE.mediaStudio = cachedMedia;
+            this._applyMediaStudioData(cachedMedia);
+          }
+        }
+        this._isLoading = false;
+        this._loadingSuggestions = false;
+        this._render();
+      } else {
+        this._loadingSuggestions = includeSuggestions;
+        this._render();
+      }
     }
 
     try {
-      // Call get_capability_map service
-      const res = await this._hass.callService("otis_ai", "get_capability_map", {}, undefined, true, true);
+      const flightKey = includeSuggestions ? "inFlightCapMap" : "inFlightCapMapLight";
+      if (!OTIS_SHARED_CACHE[flightKey]) {
+        const svcData = includeSuggestions ? {} : { include_suggestions: false };
+        OTIS_SHARED_CACHE[flightKey] = this._hass
+          .callService("otis_ai", "get_capability_map", svcData, undefined, true, true)
+          .finally(() => {
+            OTIS_SHARED_CACHE[flightKey] = null;
+          });
+      }
+      const res = await OTIS_SHARED_CACHE[flightKey];
       const capMap = res?.response || res || {};
-      this._capabilityMap = {
-        ...(this._capabilityMap || {}),
-        ...capMap,
-        local_llm: (capMap.local_llm && Object.keys(capMap.local_llm).length > 0) ? capMap.local_llm : (this._capabilityMap?.local_llm || capMap.local_llm),
-      };
-      if (capMap.conversation_agent_id) {
-        this._conversationAgentId = capMap.conversation_agent_id;
-      }
-      this._userRules = capMap.user_rules || {};
-      if (this._userRules.wizard_state && typeof this._userRules.wizard_state === "object") {
-        this._wizardState = { ...this._wizardState, ...this._userRules.wizard_state };
-      }
-      if (!this._rulesModalOpen) {
-        this._rulesDraft = { ...this._userRules };
-      }
-      const isFloorplanControlView = this._config.mode === "floorplan_control";
-      if (this._userRules.floorplan_view_mode && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_view_mode"))) {
-        this._floorplanViewMode = this._userRules.floorplan_view_mode;
-      }
-      if (this._userRules.floorplan_azimuth !== undefined && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_orbit_azimuth"))) {
-        this._floorplanAzimuth = parseFloat(this._userRules.floorplan_azimuth) || 0;
-      }
-      if (this._userRules.floorplan_pitch !== undefined && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_pitch_incline"))) {
-        this._floorplanPitch = parseFloat(this._userRules.floorplan_pitch) || 30;
-      }
-      if (this._userRules.floorplan_wall_height !== undefined && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_wall_height"))) {
-        this._floorplanWallHeight = parseFloat(this._userRules.floorplan_wall_height) || 36;
-      }
-      if (this._userRules.floorplan_walls_enabled !== undefined && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_walls_enabled"))) {
-        this._floorplanWallsEnabled = this._userRules.floorplan_walls_enabled !== false;
-      }
-      if (this._userRules.floorplan_zone && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_selected_zone"))) {
-        this._selectedFloorZone = this._userRules.floorplan_zone;
-      }
-      if (this._userRules.floorplan_scale !== undefined && (isFloorplanControlView || !localStorage.getItem("otis_floorplan_scale"))) {
-        const sc = parseFloat(this._userRules.floorplan_scale);
-        if (!isNaN(sc)) this._floorplanScale = Math.max(0.6, Math.min(1.8, sc));
-      }
-      if (Array.isArray(this._userRules.dismissed_recommendation_ids)) {
-        for (const id of this._userRules.dismissed_recommendation_ids) {
-          this._dismissedIds.add(id);
-        }
-        this._saveDismissedIds();
-      }
-      this._suggestions = capMap.proactive_suggestions || [];
-      this._hasWalkthrough = Boolean(capMap.floorplan?.walkthrough_completed);
-      this._hasFloorplan = Boolean(capMap.floorplan?.exists);
 
-      // Load floorplan SVG if exists (use direct payload if provided)
-      if (capMap.floorplan?.svg) {
-        this._floorplanSvg = this._cleanAndSanitizeSvg(capMap.floorplan.svg);
-        this._floorplanLoadFailed = false;
-      } else if (capMap.floorplan?.exists && !this._floorplanSvg && !this._loadingFloorplan) {
+      // Preserve existing cached suggestions if this was a lightweight studio refresh
+      const mergedForCache = includeSuggestions
+        ? capMap
+        : {
+          ...capMap,
+          proactive_suggestions:
+            OTIS_SHARED_CACHE.capabilityMap?.proactive_suggestions || capMap.proactive_suggestions || [],
+        };
+      OTIS_SHARED_CACHE.capabilityMap = mergedForCache;
+      if (includeSuggestions) {
+        OTIS_SHARED_CACHE.capabilityMapHasSuggestions = true;
+      }
+      this._writeSessionCache("otis_cache_cap_map", mergedForCache);
+      this._applyCapabilityMap(capMap);
+
+      if (capMap.floorplan?.exists && !capMap.floorplan?.svg && !this._floorplanSvg && !this._loadingFloorplan) {
         await this._loadFloorplanSvg(capMap.floorplan.url);
       }
 
-      await this._fetchMediaStudioState();
+      if (needsMediaStudio) {
+        await this._fetchMediaStudioState();
+      }
     } catch (err) {
       console.warn("Otis Companion Card: Could not fetch capability map directly, attempting get_suggestions:", err);
-      try {
-        const sRes = await this._hass.callService("otis_ai", "get_suggestions", {}, undefined, true, true);
-        this._suggestions = sRes?.response?.suggestions || [];
-      } catch (e2) {
-        console.error("Otis Companion Card: Failed to fetch suggestions:", e2);
+      if (includeSuggestions) {
+        try {
+          const sRes = await this._hass.callService("otis_ai", "get_suggestions", {}, undefined, true, true);
+          this._suggestions = sRes?.response?.suggestions || [];
+        } catch (e2) {
+          console.error("Otis Companion Card: Failed to fetch suggestions:", e2);
+        }
       }
-      await this._fetchMediaStudioState();
+      if (needsMediaStudio) {
+        await this._fetchMediaStudioState();
+      }
     } finally {
       this._isLoading = false;
       this._loadingSuggestions = false;
@@ -830,30 +977,25 @@ class OtisCompanionCard extends HTMLElement {
   async _fetchMediaStudioState() {
     if (!this._hass) return;
     try {
-      const resp =
-        typeof this._hass.fetchWithAuth === "function"
-          ? await this._hass.fetchWithAuth("/api/otis_ai/media_studio")
-          : await fetch("/api/otis_ai/media_studio");
-      if (resp && resp.ok) {
-        const data = await resp.json();
-        if (data && data.success) {
-          this._mediaStudioData = data;
-          const zones = data.zones || [];
-          const unjoinInput = data.unjoin_input || "None";
-          if (!this._selectedMediaZoneId || !zones.some((z) => z.entity_id === this._selectedMediaZoneId)) {
-            if (data.default_zone && zones.some((z) => z.entity_id === data.default_zone)) {
-              this._selectedMediaZoneId = data.default_zone;
-            } else {
-              const activeZone = zones.find(
-                (z) =>
-                  (z.state === "playing" || z.state === "on") &&
-                  z.source &&
-                  z.source !== unjoinInput
-              );
-              this._selectedMediaZoneId = activeZone?.entity_id || zones[0]?.entity_id || null;
-            }
+      if (!OTIS_SHARED_CACHE.inFlightMediaStudio) {
+        OTIS_SHARED_CACHE.inFlightMediaStudio = (async () => {
+          const resp =
+            typeof this._hass.fetchWithAuth === "function"
+              ? await this._hass.fetchWithAuth("/api/otis_ai/media_studio")
+              : await fetch("/api/otis_ai/media_studio");
+          if (resp && resp.ok) {
+            return await resp.json();
           }
-        }
+          return null;
+        })().finally(() => {
+          OTIS_SHARED_CACHE.inFlightMediaStudio = null;
+        });
+      }
+      const data = await OTIS_SHARED_CACHE.inFlightMediaStudio;
+      if (data && data.success) {
+        OTIS_SHARED_CACHE.mediaStudio = data;
+        this._writeSessionCache("otis_cache_media_studio", data);
+        this._applyMediaStudioData(data);
       }
     } catch (err) {
       console.debug("Otis Media Studio state fetch warning:", err);
@@ -880,6 +1022,134 @@ class OtisCompanionCard extends HTMLElement {
     return clean;
   }
 
+  _positionRoomFeatureSvg(fGrp, featKey, fx, fy) {
+    if (!fGrp) return;
+    fGrp.setAttribute("data-x", fx);
+    fGrp.setAttribute("data-y", fy);
+    const fRect = fGrp.querySelector("rect");
+    let fw = 170;
+    let fh = 64;
+    if (fRect) {
+      fw = parseFloat(fRect.getAttribute("width") || (featKey === "stairs" ? 44 : featKey === "front_porch" ? 200 : 170));
+      fh = parseFloat(fRect.getAttribute("height") || (featKey === "stairs" ? 28 : featKey === "front_porch" ? 20 : 64));
+      fRect.setAttribute("x", fx);
+      fRect.setAttribute("y", fy);
+    }
+    if (featKey === "stairs") {
+      fGrp.querySelectorAll(".stairs-step").forEach((el, idx) => {
+        if (el.tagName && el.tagName.toLowerCase() === "line") {
+          const stepNum = idx > 0 ? idx : 1;
+          const lx = fx + stepNum * 9;
+          el.setAttribute("x1", lx);
+          el.setAttribute("y1", fy);
+          el.setAttribute("x2", lx);
+          el.setAttribute("y2", fy + 28);
+        }
+      });
+    } else {
+      const fTxt = fGrp.querySelector("text");
+      if (fTxt) {
+        fTxt.setAttribute("x", fx + fw / 2);
+        fTxt.setAttribute("y", fy + (featKey === "front_porch" ? 13 : fh / 2 + 4));
+      }
+    }
+  }
+
+  async _fetchRegenProgressStatus() {
+    const stResp =
+      this._hass && typeof this._hass.fetchWithAuth === "function"
+        ? await this._hass.fetchWithAuth("/api/otis_ai/upload_walkthrough", { method: "GET", cache: "no-store" })
+        : await fetch("/api/otis_ai/upload_walkthrough", { method: "GET", cache: "no-store" });
+    if (!stResp || !stResp.ok) return null;
+    return await stResp.json();
+  }
+
+  _applyRegenProgressToDom(st) {
+    if (!st) return;
+    if (typeof st.percent === "number") {
+      this._regenProgressPercent = st.percent;
+    }
+    if (st.stage) {
+      this._regenProgressText = st.stage;
+    }
+    if (Array.isArray(st.discovered_areas)) {
+      this._regenDiscoveredAreas = st.discovered_areas;
+    }
+    const rRoot = this.shadowRoot;
+    if (rRoot) {
+      const barEl = rRoot.querySelector("#regen-progress-bar");
+      const pctEl = rRoot.querySelector("#regen-progress-pct");
+      const txtEl = rRoot.querySelector("#regen-progress-text");
+      const chipsEl = rRoot.querySelector("#regen-discovered-chips");
+      if (barEl) barEl.style.width = `${Number(this._regenProgressPercent || 0)}%`;
+      if (pctEl) pctEl.textContent = `${Number(this._regenProgressPercent || 0)}%`;
+      if (txtEl && st.stage) txtEl.textContent = st.stage;
+      if (chipsEl && Array.isArray(st.discovered_areas)) {
+        chipsEl.style.marginTop = st.discovered_areas.length ? "8px" : "0px";
+        chipsEl.innerHTML = st.discovered_areas
+          .map((n) => `<span style="font-size: 0.7rem; padding: 2px 8px; border-radius: 999px; background: rgba(56, 189, 248, 0.18); color: #7dd3fc;">✓ ${this._escapeHtml(n)}</span>`)
+          .join("");
+      }
+    }
+  }
+
+  async _finishRegenProgress(errMsg) {
+    if (this._regenPollTimer) {
+      clearInterval(this._regenPollTimer);
+      this._regenPollTimer = null;
+    }
+    if (errMsg) {
+      this._regeneratingFloorplan = false;
+      this._showToast(`Regenerate failed: ${errMsg}`, true);
+      this._render();
+      return;
+    }
+    this._dirtyBadges = {};
+    this._hasUnsavedLayout = false;
+    this._floorplanSvg = null;
+    await this._fetchData(true);
+    await this._loadFloorplanSvg("/api/otis_ai/media/otis_floorplan.svg");
+    this._regeneratingFloorplan = false;
+    this._regenProgressPercent = 100;
+    this._showToast("Floor plan rebuilt from scratch!");
+    this._render();
+  }
+
+  _startRegenPolling() {
+    if (this._regenPollTimer) {
+      clearInterval(this._regenPollTimer);
+      this._regenPollTimer = null;
+    }
+    this._regenPollTimer = setInterval(async () => {
+      try {
+        const st = await this._fetchRegenProgressStatus();
+        if (!st) return;
+        this._applyRegenProgressToDom(st);
+        if (st.error) {
+          await this._finishRegenProgress(st.error);
+        } else if (!st.active && (st.percent >= 100 || st.stage === "Complete" || st.stage === "Idle")) {
+          await this._finishRegenProgress(null);
+        }
+      } catch (_pollErr) {
+        // Ignore transient poll errors during background rebuild
+      }
+    }, 650);
+  }
+
+  async _checkAndResumeRegenProgress() {
+    if (this._regenPollTimer) return;
+    try {
+      const st = await this._fetchRegenProgressStatus();
+      if (!st || !st.active) return;
+      this._regeneratingFloorplan = true;
+      this._applyRegenProgressToDom(st);
+      this._render();
+      this._startRegenPolling();
+    } catch (_err) {
+      // Ignore if endpoint unavailable
+    }
+  }
+
   async _loadFloorplanSvg(url) {
     if (this._loadingFloorplan) return;
     this._loadingFloorplan = true;
@@ -893,14 +1163,14 @@ class OtisCompanionCard extends HTMLElement {
 
       let resp;
       if (this._hass && typeof this._hass.fetchWithAuth === "function") {
-        resp = await this._hass.fetchWithAuth(fetchUrl);
+        resp = await this._hass.fetchWithAuth(fetchUrl, { cache: "no-store" });
       } else {
-        resp = await fetch(fetchUrl);
+        resp = await fetch(fetchUrl, { cache: "no-store" });
       }
 
       if ((!resp || !resp.ok) && targetUrl.includes("authSig=")) {
         if (this._hass && typeof this._hass.fetchWithAuth === "function") {
-          resp = await this._hass.fetchWithAuth("/api/otis_ai/media/otis_floorplan.svg");
+          resp = await this._hass.fetchWithAuth(`/api/otis_ai/media/otis_floorplan.svg?t=${Date.now()}`, { cache: "no-store" });
         }
       }
 
@@ -982,8 +1252,8 @@ class OtisCompanionCard extends HTMLElement {
     const fileList = Array.isArray(filesOrFile)
       ? filesOrFile
       : filesOrFile
-      ? [filesOrFile]
-      : [];
+        ? [filesOrFile]
+        : [];
     if (fileList.length === 0) return;
 
     this._uploadingVideo = true;
@@ -1024,13 +1294,13 @@ class OtisCompanionCard extends HTMLElement {
       const resp =
         this._hass && typeof this._hass.fetchWithAuth === "function"
           ? await this._hass.fetchWithAuth("/api/otis_ai/upload_walkthrough", {
-              method: "POST",
-              body: formData,
-            })
+            method: "POST",
+            body: formData,
+          })
           : await fetch("/api/otis_ai/upload_walkthrough", {
-              method: "POST",
-              body: formData,
-            });
+            method: "POST",
+            body: formData,
+          });
 
       clearInterval(pollTimer);
       const data = await resp.json();
@@ -1039,8 +1309,8 @@ class OtisCompanionCard extends HTMLElement {
         const allNames = Array.isArray(data.detected_area_names)
           ? data.detected_area_names
           : Array.isArray(data.detected_areas)
-          ? data.detected_areas
-          : [];
+            ? data.detected_areas
+            : [];
 
         for (const areaName of allNames) {
           if (!shownSet.has(areaName)) {
@@ -1166,7 +1436,7 @@ class OtisCompanionCard extends HTMLElement {
       } else if (data.action === "open_url" && data.url) {
         window.open(data.url, "_blank", "noopener,noreferrer");
         this._showToast(data.message || `Opening ${data.url}...`);
-        this._dismissedIds.add(sId);
+        await this._hideSuggestion(sId, { silent: true });
         await this._fetchData();
       } else if (data.action === "open_failover_modal") {
         this._failoverModalOpen = true;
@@ -1183,18 +1453,43 @@ class OtisCompanionCard extends HTMLElement {
             }
           }
         }, 100);
+      } else if (data.action === "create_ha_automation" && data.automation_config) {
+        const autoId = String(data.id || Date.now());
+        let apiCreated = false;
+        try {
+          await this._hass.callApi(
+            "POST",
+            `config/automation/config/${encodeURIComponent(autoId)}`,
+            data.automation_config
+          );
+          apiCreated = true;
+        } catch (apiErr) {
+          console.warn("HA config/automation/config API failed, falling back to YAML clipboard:", apiErr);
+        }
+        if (apiCreated) {
+          this._showToast(data.message || `Created automation "${data.automation_config.alias || autoId}" in Home Assistant!`);
+        } else {
+          if (data.yaml && navigator.clipboard) {
+            try {
+              await navigator.clipboard.writeText(data.yaml);
+            } catch (_) { }
+          }
+          this._showToast("HA Automation API unavailable; copied automation YAML to clipboard.", true);
+        }
+        await this._hideSuggestion(sId, { silent: true });
+        await this._fetchData();
       } else if (data.action === "show_yaml" || data.yaml) {
         if (data.yaml && navigator.clipboard) {
           try {
             await navigator.clipboard.writeText(data.yaml);
-          } catch (_) {}
+          } catch (_) { }
         }
         this._showToast(data.message || "YAML copied to clipboard!");
-        this._dismissedIds.add(sId);
+        await this._hideSuggestion(sId, { silent: true });
         await this._fetchData();
       } else if (data.success !== false) {
         this._showToast(data.message || `Applied "${suggestion.title}" successfully!`);
-        this._dismissedIds.add(sId);
+        await this._hideSuggestion(sId, { silent: true });
         // Refresh capability map so Quick Stats Bar and Capabilities Tab stay in sync
         await this._fetchData();
       } else {
@@ -1215,7 +1510,7 @@ class OtisCompanionCard extends HTMLElement {
       if (stored) {
         return new Set(JSON.parse(stored));
       }
-    } catch (_) {}
+    } catch (_) { }
     return new Set();
   }
 
@@ -1226,15 +1521,58 @@ class OtisCompanionCard extends HTMLElement {
       } else {
         localStorage.removeItem("otis_dismissed_suggestions");
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 
-  async _dismissSuggestion(sId) {
+  _loadHiddenIds() {
+    try {
+      const stored = localStorage.getItem("otis_hidden_suggestions");
+      if (stored) {
+        return new Set(JSON.parse(stored));
+      }
+    } catch (_) { }
+    return new Set();
+  }
+
+  _saveHiddenIds() {
+    try {
+      if (this._hiddenIds && this._hiddenIds.size > 0) {
+        localStorage.setItem("otis_hidden_suggestions", JSON.stringify([...this._hiddenIds]));
+      } else {
+        localStorage.removeItem("otis_hidden_suggestions");
+      }
+    } catch (_) { }
+  }
+
+  async _hideSuggestion(sId, opts = {}) {
+    if (!sId) return;
+    this._hiddenIds.add(sId);
+    this._saveHiddenIds();
+    this._render();
+    if (!opts.silent) {
+      this._showToast(opts.toast || "Card dismissed.");
+    }
+    try {
+      if (this._hass) {
+        await this._hass.callService("otis_ai", "hide_recommendation", { recommendation_id: sId });
+      }
+    } catch (err) {
+      console.warn("Could not persist hidden recommendation to backend:", err);
+    }
+  }
+
+  async _dismissCardFromFeed(sId) {
+    return this._hideSuggestion(sId, { toast: "Card dismissed." });
+  }
+
+  async _dismissSuggestion(sId, opts = {}) {
     if (!sId) return;
     this._dismissedIds.add(sId);
     this._saveDismissedIds();
     this._render();
-    this._showToast("Recommendation ignored.");
+    if (!opts.silent) {
+      this._showToast(opts.toast || "Recommendation ignored.");
+    }
     try {
       if (this._hass) {
         await this._hass.callService("otis_ai", "dismiss_recommendation", { recommendation_id: sId });
@@ -1388,7 +1726,7 @@ class OtisCompanionCard extends HTMLElement {
     if (typeof OTIS_ACTIVE_CHAT.abortReject === "function") {
       try {
         OTIS_ACTIVE_CHAT.abortReject(new Error("__OTIS_STOPPED__"));
-      } catch (_) {}
+      } catch (_) { }
       OTIS_ACTIVE_CHAT.abortReject = null;
     }
     if (this._hass) {
@@ -1404,7 +1742,7 @@ class OtisCompanionCard extends HTMLElement {
           false,
           true
         );
-      } catch (_) {}
+      } catch (_) { }
     }
   }
 
@@ -1645,7 +1983,7 @@ class OtisCompanionCard extends HTMLElement {
       latestMessages.push(msgObj);
       try {
         sessionStorage.setItem("otis_chat_messages", JSON.stringify(latestMessages.slice(-50)));
-      } catch (_) {}
+      } catch (_) { }
       this._chatMessages = latestMessages;
       OTIS_ACTIVE_CHAT.instances.forEach((inst) => {
         inst._chatMessages = latestMessages;
@@ -1953,7 +2291,7 @@ class OtisCompanionCard extends HTMLElement {
     if (this._themeRecognition) {
       try {
         this._themeRecognition.stop();
-      } catch (e) {}
+      } catch (e) { }
       this._themeRecognition = null;
     }
     this._isListeningTheme = false;
@@ -2042,14 +2380,14 @@ class OtisCompanionCard extends HTMLElement {
       const encodedCode = this._escapeHtml(cleanCode);
       codeBlocks.push(
         `<div class="code-block-wrapper">` +
-          `<div class="code-block-header">` +
-            `${langLabel}` +
-            `<button type="button" class="code-copy-btn" title="Copy code snippet" data-code="${encodedCode}">` +
-              `<svg viewBox="0 0 24 24" class="copy-icon"><path d="M16 1H4C2.9 1 2 1.9 2 3v14h2V3h12V1zm3 4H8C6.9 5 6 5.9 6 7v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>` +
-              `<span class="copy-label">Copy</span>` +
-            `</button>` +
-          `</div>` +
-          `<pre><code>${escapedCode}</code></pre>` +
+        `<div class="code-block-header">` +
+        `${langLabel}` +
+        `<button type="button" class="code-copy-btn" title="Copy code snippet" data-code="${encodedCode}">` +
+        `<svg viewBox="0 0 24 24" class="copy-icon"><path d="M16 1H4C2.9 1 2 1.9 2 3v14h2V3h12V1zm3 4H8C6.9 5 6 5.9 6 7v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/></svg>` +
+        `<span class="copy-label">Copy</span>` +
+        `</button>` +
+        `</div>` +
+        `<pre><code>${escapedCode}</code></pre>` +
         `</div>`
       );
       return `\n\n@@@OTIS_CB_${idx}@@@\n\n`;
@@ -2229,20 +2567,20 @@ class OtisCompanionCard extends HTMLElement {
         </div>
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px;">
           ${activeList.map((p) => {
-            const pid = p.person_id;
-            const pType = p.entity_type || (/dexter|charles|pet|dog|cat/i.test(p.label || pid) ? "pet" : (/guest/i.test(p.label || pid) ? "guest" : "resident"));
-            const icon = pType === "pet" ? "🐾" : (pType === "guest" ? "👥" : "👤");
-            const samples = Number(p.samples || 0);
-            const confPct = Math.round((p.confidence || 0.50) * 100);
-            const progPct = Math.min(100, Math.round(Math.max((samples / 5) * 100, confPct)));
-            const isComplete = samples >= 5 || confPct >= 85;
-            const statusText = isComplete ? "🟢 Trained" : (samples > 0 ? "🟡 Calibrating" : "🔵 Needs Samples");
-            const barColor = isComplete ? "#10b981" : "#38bdf8";
-            const roomsList = Array.isArray(p.verified_rooms) && p.verified_rooms.length
-              ? `Rooms: ${p.verified_rooms.map((r) => String(r).replace(/_/g, " ")).join(", ")}`
-              : "No room samples verified yet";
+      const pid = p.person_id;
+      const pType = p.entity_type || (/dexter|charles|pet|dog|cat/i.test(p.label || pid) ? "pet" : (/guest/i.test(p.label || pid) ? "guest" : "resident"));
+      const icon = pType === "pet" ? "🐾" : (pType === "guest" ? "👥" : "👤");
+      const samples = Number(p.samples || 0);
+      const confPct = Math.round((p.confidence || 0.50) * 100);
+      const progPct = Math.min(100, Math.round(Math.max((samples / 5) * 100, confPct)));
+      const isComplete = samples >= 5 || confPct >= 85;
+      const statusText = isComplete ? "🟢 Trained" : (samples > 0 ? "🟡 Calibrating" : "🔵 Needs Samples");
+      const barColor = isComplete ? "#10b981" : "#38bdf8";
+      const roomsList = Array.isArray(p.verified_rooms) && p.verified_rooms.length
+        ? `Rooms: ${p.verified_rooms.map((r) => String(r).replace(/_/g, " ")).join(", ")}`
+        : "No room samples verified yet";
 
-            return `
+      return `
               <div style="padding: 8px 10px; border-radius: 8px; background: rgba(0,0,0,0.25); border: 1px solid var(--otis-surface-border); display: flex; flex-direction: column; gap: 5px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
                   <span style="font-weight: 700; font-size: 0.78rem; color: var(--otis-text);">${icon} ${this._escapeHtml(p.label || pid)}</span>
@@ -2264,17 +2602,23 @@ class OtisCompanionCard extends HTMLElement {
                 </div>
               </div>
             `;
-          }).join("")}
+    }).join("")}
         </div>
       </div>
     `;
   }
 
   _renderTrainingVerificationMedia(suggestion) {
-    if (!suggestion || suggestion.action_type !== "confirm_person_identity") return "";
+    if (
+      !suggestion ||
+      (suggestion.action_type !== "confirm_person_identity" &&
+        suggestion.action_type !== "confirm_room_transition")
+    ) {
+      return "";
+    }
     const payload = suggestion.action_payload || {};
-    const areaSlug = String(payload.area || payload.visual_features?.area || "").trim().toLowerCase();
-    const areaName = payload.area_name || payload.visual_features?.area_name || areaSlug || "Room";
+    const areaSlug = String(payload.area || payload.from_area || payload.visual_features?.area || "").trim().toLowerCase();
+    const areaName = payload.area_name || payload.from_area_name || payload.visual_features?.area_name || areaSlug || "Room";
     const states = this._hass?.states || {};
 
     const aliases = new Set([areaSlug, String(areaName).toLowerCase().replace(/\s+/g, "_")].filter(Boolean));
@@ -2393,12 +2737,35 @@ class OtisCompanionCard extends HTMLElement {
     }
 
     const showDual = Boolean(bestDetPic && camPic && bestDetPic !== camPic);
+    const bbox = payload.detection_bbox;
+    let bboxOverlayHtml = "";
+    if (
+      bbox &&
+      Number.isFinite(Number(bbox.ymin)) &&
+      Number.isFinite(Number(bbox.xmin)) &&
+      Number.isFinite(Number(bbox.ymax)) &&
+      Number.isFinite(Number(bbox.xmax))
+    ) {
+      const topPct = Math.max(0, Math.min(99, Number(bbox.ymin) / 10));
+      const leftPct = Math.max(0, Math.min(99, Number(bbox.xmin) / 10));
+      const heightPct = Math.max(1, Math.min(100 - topPct, (Number(bbox.ymax) - Number(bbox.ymin)) / 10));
+      const widthPct = Math.max(1, Math.min(100 - leftPct, (Number(bbox.xmax) - Number(bbox.xmin)) / 10));
+      const boxLbl = this._escapeHtml(bbox.label || detLabel);
+      bboxOverlayHtml = `
+        <div style="position: absolute; top: ${topPct.toFixed(2)}%; left: ${leftPct.toFixed(2)}%; width: ${widthPct.toFixed(2)}%; height: ${heightPct.toFixed(2)}%; border: 2px solid #fbbf24; border-radius: 4px; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.7), 0 0 10px rgba(251, 191, 36, 0.55); pointer-events: none; box-sizing: border-box;">
+          <span style="position: absolute; top: -18px; left: -1px; background: rgba(251, 191, 36, 0.95); color: #0f172a; font-size: 0.60rem; font-weight: 800; padding: 1px 5px; border-radius: 3px; white-space: nowrap; line-height: 1.2;">🎯 ${boxLbl}</span>
+        </div>
+      `;
+    }
 
     return `
       <div style="display: grid; grid-template-columns: ${showDual ? "repeat(auto-fit, minmax(210px, 1fr))" : "1fr"}; gap: 10px; margin: 10px 0; max-width: ${showDual ? "560px" : "320px"};">
         ${bestDetPic ? `
-          <div class="camera-preview-container" data-cam-id="${this._escapeHtml(bestDetEid || camEid || "")}" title="Click to enlarge detection snapshot" style="position: relative; border-radius: 10px; overflow: hidden; border: 1px solid rgba(56, 189, 248, 0.38); background: #090d16; cursor: pointer; aspect-ratio: 16 / 9; max-height: 175px;">
-            <img src="${this._escapeHtml(bestDetPic)}" alt="${this._escapeHtml(areaName)} Detection Snapshot" loading="lazy" style="width: 100%; height: 100%; object-fit: cover; display: block;" onerror="${camPic && camPic !== bestDetPic ? `this.onerror=null; this.src='${this._escapeHtml(camPic)}';` : `this.closest('.camera-preview-container').style.display='none';`}" />
+          <div class="camera-preview-container" data-cam-id="${this._escapeHtml(bestDetEid || camEid || "")}" data-snapshot-pic="${this._escapeHtml(bestDetPic)}" data-snapshot-title="${this._escapeHtml(`${areaName} • ${detLabel} Snapshot${detTimeStr}`)}" data-snapshot-bbox="${this._escapeHtml(bbox ? JSON.stringify(bbox) : "")}" title="Click to enlarge detection snapshot" style="position: relative; border-radius: 10px; overflow: hidden; border: 1px solid rgba(56, 189, 248, 0.38); background: #090d16; cursor: pointer; display: flex; align-items: center; justify-content: center; max-height: 195px;">
+            <div style="position: relative; display: inline-block; max-width: 100%; max-height: 195px;">
+              <img src="${this._escapeHtml(bestDetPic)}" alt="${this._escapeHtml(areaName)} Detection Snapshot" loading="lazy" style="max-width: 100%; max-height: 195px; width: auto; height: auto; display: block;" onerror="${camPic && camPic !== bestDetPic ? `this.onerror=null; this.src='${this._escapeHtml(camPic)}';` : `this.closest('.camera-preview-container').style.display='none';`}" />
+              ${bboxOverlayHtml}
+            </div>
             <span style="position: absolute; top: 6px; left: 6px; background: rgba(15, 23, 42, 0.86); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.45); border-radius: 6px; padding: 2px 7px; font-size: 0.67rem; font-weight: 700; backdrop-filter: blur(6px);">
               🎯 ${this._escapeHtml(detLabel)} Snapshot${this._escapeHtml(detTimeStr)}
             </span>
@@ -2508,7 +2875,7 @@ class OtisCompanionCard extends HTMLElement {
     );
     const priorityRank = { critical: 0, high: 1, medium: 2, low: 3 };
     const activeSuggestions = (this._suggestions || [])
-      .filter((s) => showIgnored || !this._dismissedIds.has(s.id))
+      .filter((s) => !this._hiddenIds.has(s.id) && (showIgnored || !this._dismissedIds.has(s.id)))
       .slice()
       .sort((a, b) => {
         const rankA = priorityRank[String(a.priority || "medium").toLowerCase()] ?? 2;
@@ -2532,7 +2899,7 @@ class OtisCompanionCard extends HTMLElement {
 
     const dashPrefix =
       window.location.pathname.startsWith("/command-center") ||
-      this._config.dashboard_url_path === "command-center"
+        this._config.dashboard_url_path === "command-center"
         ? "/command-center"
         : "/otis-ai";
 
@@ -2566,6 +2933,9 @@ class OtisCompanionCard extends HTMLElement {
     const isRoomMode = this._config.mode === "room_view";
     const isStudioHeaderMode = isSecurityMode || isClimateMode || isEnergyMode || isRoomMode;
     const isAdmin = Boolean(this._hass?.user?.is_admin || this._hass?.user?.is_owner);
+    const rawLayout = String(this._userRules?.dashboard_layout || "modern_sections").toLowerCase();
+    const layoutClass = rawLayout === "classic_grid" ? "classic" : rawLayout;
+    const navClass = String(this._userRules?.navigation_style || "sleek_buttons").toLowerCase();
 
     const prevChatEl = this.shadowRoot ? this.shadowRoot.querySelector("#chat-history") : null;
     const wasChatScrolledUp = Boolean(
@@ -2576,3666 +2946,12 @@ class OtisCompanionCard extends HTMLElement {
 
     this.shadowRoot.innerHTML = `
       <style>
-        :host {
-          display: block;
-          width: 100%;
-          box-sizing: border-box;
-          font-family: var(--ha-card-font-family, 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
-        }
-
-        /* Base Card Styling with Token Architecture for Card-Mod & Custom Themes */
-        :host,
-        ha-card.card-container {
-          /* Fallback Theme Variables (Follows Active HA / System Theme) */
-          --otis-primary: var(--primary-color, #03a9f4);
-          --otis-secondary: var(--accent-color, #ff9800);
-          --otis-bg: var(--ha-card-background, var(--card-background-color, #1e293b));
-          --otis-card-border: var(--ha-card-border-color, var(--divider-color, rgba(128, 128, 128, 0.2)));
-          --otis-card-radius: var(--ha-card-border-radius, 20px);
-          --otis-text: var(--primary-text-color, #f1f5f9);
-          --otis-text-muted: var(--secondary-text-color, #94a3b8);
-          --otis-surface: var(--secondary-background-color, rgba(15, 23, 42, 0.55));
-          --otis-surface-border: var(--divider-color, rgba(128, 128, 128, 0.15));
-          --otis-glow: rgba(var(--rgb-primary-color, 3, 169, 244), 0.25);
-          --otis-badge-bg: rgba(var(--rgb-primary-color, 3, 169, 244), 0.12);
-          --otis-chip-bg: color-mix(in srgb, var(--primary-text-color, #f1f5f9) 6%, transparent);
-          --otis-chip-border: var(--divider-color, rgba(128, 128, 128, 0.18));
-          --otis-input-bg: var(--input-fill-color, var(--card-background-color, rgba(15, 23, 42, 0.6)));
-          --otis-input-border: var(--input-outlined-idle-border-color, var(--divider-color, rgba(128, 128, 128, 0.2)));
-          --otis-user-bubble-bg: var(--primary-color, #03a9f4);
-          --otis-user-bubble-text: #ffffff;
-          --otis-btn-text: #ffffff;
-        }
-
-        ha-card.card-container {
-          position: relative;
-          width: 100%;
-          max-width: 1600px;
-          margin: 0 auto;
-          background: var(--ha-card-background, var(--otis-bg));
-          backdrop-filter: blur(16px);
-          -webkit-backdrop-filter: blur(16px);
-          border: var(--ha-card-border-width, 1px) solid var(--ha-card-border-color, var(--otis-card-border));
-          border-radius: var(--ha-card-border-radius, var(--otis-card-radius));
-          padding: 24px;
-          box-shadow: var(--ha-card-box-shadow, 0 8px 28px rgba(0, 0, 0, 0.14));
-          color: var(--primary-text-color, var(--otis-text));
-          overflow: hidden;
-          transition: border-color 0.3s ease, box-shadow 0.3s ease;
-          box-sizing: border-box;
-        }
-
-        ha-card.card-container:hover {
-          border-color: var(--otis-primary);
-          box-shadow: 0 18px 42px rgba(0, 0, 0, 0.45), 0 0 20px var(--otis-glow);
-        }
-
-        /* Floor Plan Studio Full-Width Mode */
-        ha-card.card-container.mode-floorplan-studio {
-          width: 100% !important;
-          max-width: 100% !important;
-          margin: 0 !important;
-          border-radius: 0 !important;
-          border-left: none !important;
-          border-right: none !important;
-          padding: 16px 20px !important;
-          box-shadow: none !important;
-          min-height: calc(100vh - 80px) !important;
-        }
-
-        ha-card.card-container.mode-floorplan-studio .floorplan-svg-viewport {
-          min-height: calc(100vh - 190px) !important;
-          max-height: none !important;
-          height: calc(100vh - 190px) !important;
-        }
-
-        ha-card.card-container.mode-floorplan-studio .floorplan-svg-viewport svg {
-          height: 100% !important;
-          width: 100% !important;
-        }
-
-        .studio-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          margin-bottom: 14px;
-          padding-bottom: 12px;
-          border-bottom: 1px solid var(--otis-surface-border);
-          flex-wrap: wrap;
-          gap: 10px;
-        }
-
-        /* Curated Theme Presets */
-        ha-card.theme-cyberpunk {
-          --otis-primary: #38bdf8;
-          --otis-secondary: #c084fc;
-          --otis-bg: radial-gradient(135% 120% at 10% 10%, rgba(30, 41, 59, 0.72) 0%, rgba(15, 23, 42, 0.90) 100%);
-          --otis-card-border: rgba(255, 255, 255, 0.12);
-          --otis-text: #f1f5f9;
-          --otis-text-muted: #94a3b8;
-          --otis-surface: rgba(15, 23, 42, 0.55);
-          --otis-surface-border: rgba(255, 255, 255, 0.08);
-          --otis-glow: rgba(56, 189, 248, 0.25);
-          --otis-badge-bg: rgba(56, 189, 248, 0.12);
-          --otis-chip-bg: rgba(255, 255, 255, 0.05);
-          --otis-chip-border: rgba(255, 255, 255, 0.1);
-          --otis-input-bg: rgba(15, 23, 42, 0.6);
-          --otis-input-border: rgba(255, 255, 255, 0.12);
-          --otis-user-bubble-bg: linear-gradient(135deg, #1e293b, #334155);
-          --otis-user-bubble-text: #f8fafc;
-        }
-
-        ha-card.theme-midnight {
-          --otis-primary: #60a5fa;
-          --otis-secondary: #818cf8;
-          --otis-bg: radial-gradient(135% 120% at 10% 10%, rgba(17, 24, 39, 0.88) 0%, rgba(3, 7, 18, 0.98) 100%);
-          --otis-card-border: rgba(255, 255, 255, 0.08);
-          --otis-text: #f3f4f6;
-          --otis-text-muted: #9ca3af;
-          --otis-surface: rgba(17, 24, 39, 0.65);
-          --otis-surface-border: rgba(255, 255, 255, 0.06);
-          --otis-glow: rgba(96, 165, 250, 0.20);
-          --otis-badge-bg: rgba(96, 165, 250, 0.14);
-          --otis-chip-bg: rgba(255, 255, 255, 0.04);
-          --otis-chip-border: rgba(255, 255, 255, 0.08);
-          --otis-input-bg: rgba(10, 15, 28, 0.7);
-          --otis-input-border: rgba(255, 255, 255, 0.1);
-          --otis-user-bubble-bg: linear-gradient(135deg, #1e293b, #0f172a);
-          --otis-user-bubble-text: #f3f4f6;
-        }
-
-        ha-card.theme-emerald {
-          --otis-primary: #34d399;
-          --otis-secondary: #2dd4bf;
-          --otis-bg: radial-gradient(135% 120% at 10% 10%, rgba(6, 78, 59, 0.45) 0%, rgba(2, 44, 34, 0.94) 100%);
-          --otis-card-border: rgba(52, 211, 153, 0.22);
-          --otis-text: #ecfdf5;
-          --otis-text-muted: #a7f3d0;
-          --otis-surface: rgba(4, 30, 24, 0.65);
-          --otis-surface-border: rgba(52, 211, 153, 0.12);
-          --otis-glow: rgba(52, 211, 153, 0.30);
-          --otis-badge-bg: rgba(52, 211, 153, 0.14);
-          --otis-chip-bg: rgba(52, 211, 153, 0.08);
-          --otis-chip-border: rgba(52, 211, 153, 0.18);
-          --otis-input-bg: rgba(2, 44, 34, 0.7);
-          --otis-input-border: rgba(52, 211, 153, 0.25);
-          --otis-user-bubble-bg: linear-gradient(135deg, #064e3b, #047857);
-          --otis-user-bubble-text: #ecfdf5;
-        }
-
-        ha-card.theme-sunset {
-          --otis-primary: #fb923c;
-          --otis-secondary: #f43f5e;
-          --otis-bg: radial-gradient(135% 120% at 10% 10%, rgba(67, 20, 7, 0.50) 0%, rgba(24, 10, 20, 0.94) 100%);
-          --otis-card-border: rgba(251, 146, 60, 0.22);
-          --otis-text: #fff7ed;
-          --otis-text-muted: #fdba74;
-          --otis-surface: rgba(30, 12, 16, 0.65);
-          --otis-surface-border: rgba(251, 146, 60, 0.12);
-          --otis-glow: rgba(251, 146, 60, 0.30);
-          --otis-badge-bg: rgba(251, 146, 60, 0.14);
-          --otis-chip-bg: rgba(251, 146, 60, 0.08);
-          --otis-chip-border: rgba(251, 146, 60, 0.18);
-          --otis-input-bg: rgba(24, 10, 20, 0.7);
-          --otis-input-border: rgba(251, 146, 60, 0.25);
-          --otis-user-bubble-bg: linear-gradient(135deg, #881337, #9f1239);
-          --otis-user-bubble-text: #fff7ed;
-        }
-
-        ha-card.theme-light-frost {
-          --otis-primary: #0284c7;
-          --otis-secondary: #7c3aed;
-          --otis-bg: radial-gradient(135% 120% at 10% 10%, rgba(255, 255, 255, 0.92) 0%, rgba(241, 245, 249, 0.96) 100%);
-          --otis-card-border: rgba(0, 0, 0, 0.08);
-          --otis-text: #0f172a;
-          --otis-text-muted: #475569;
-          --otis-surface: rgba(255, 255, 255, 0.75);
-          --otis-surface-border: rgba(0, 0, 0, 0.06);
-          --otis-glow: rgba(2, 132, 199, 0.15);
-          --otis-badge-bg: rgba(2, 132, 199, 0.10);
-          --otis-chip-bg: rgba(0, 0, 0, 0.04);
-          --otis-chip-border: rgba(0, 0, 0, 0.08);
-          --otis-input-bg: rgba(255, 255, 255, 0.9);
-          --otis-input-border: rgba(0, 0, 0, 0.12);
-          --otis-user-bubble-bg: linear-gradient(135deg, #0284c7, #2563eb);
-          --otis-user-bubble-text: #ffffff;
-          box-shadow: 0 16px 36px rgba(0, 0, 0, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.8);
-        }
-
-        ha-card.theme-ha-native {
-          --otis-primary: var(--primary-color, #03a9f4);
-          --otis-secondary: var(--accent-color, #ff9800);
-          --otis-bg: var(--ha-card-background, var(--card-background-color, #1e293b));
-          --otis-card-border: var(--ha-card-border-color, var(--divider-color, rgba(128, 128, 128, 0.2)));
-          --otis-card-radius: var(--ha-card-border-radius, 16px);
-          --otis-text: var(--primary-text-color, #f1f5f9);
-          --otis-text-muted: var(--secondary-text-color, #94a3b8);
-          --otis-surface: var(--secondary-background-color, rgba(15, 23, 42, 0.55));
-          --otis-surface-border: var(--divider-color, rgba(128, 128, 128, 0.15));
-          --otis-glow: rgba(var(--rgb-primary-color, 3, 169, 244), 0.25);
-          --otis-badge-bg: rgba(var(--rgb-primary-color, 3, 169, 244), 0.12);
-          --otis-chip-bg: color-mix(in srgb, var(--primary-text-color, #f1f5f9) 6%, transparent);
-          --otis-chip-border: var(--divider-color, rgba(128, 128, 128, 0.18));
-          --otis-input-bg: var(--input-fill-color, var(--card-background-color, rgba(15, 23, 42, 0.6)));
-          --otis-input-border: var(--input-outlined-idle-border-color, var(--divider-color, rgba(128, 128, 128, 0.2)));
-          --otis-user-bubble-bg: var(--primary-color, #03a9f4);
-          --otis-user-bubble-text: #ffffff;
-        }
-
-        /* Top Accent Glow */
-        ha-card.card-container::before {
-          content: "";
-          position: absolute;
-          top: 0;
-          left: 10%;
-          right: 10%;
-          height: 2px;
-          background: linear-gradient(90deg, transparent 0%, var(--otis-primary) 50%, var(--otis-secondary) 80%, transparent 100%);
-          opacity: 0.85;
-        }
-
-        /* Header */
-        .card-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          margin-bottom: 16px;
-        }
-
-        .brand-section {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-        }
-
-        .emblem-icon {
-          width: 38px;
-          height: 38px;
-          border-radius: 10px;
-          background: linear-gradient(135deg, color-mix(in srgb, var(--otis-primary) 20%, transparent), color-mix(in srgb, var(--otis-secondary) 20%, transparent));
-          border: 1px solid color-mix(in srgb, var(--otis-primary) 40%, transparent);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          box-shadow: 0 0 14px var(--otis-glow);
-        }
-
-        .emblem-icon svg {
-          width: 24px;
-          height: 24px;
-          fill: none;
-          stroke: var(--otis-primary);
-          stroke-width: 2;
-          stroke-linecap: round;
-          stroke-linejoin: round;
-        }
-
-        .title-group {
-          display: flex;
-          flex-direction: column;
-        }
-
-        .main-title {
-          font-size: 1.15rem;
-          font-weight: 700;
-          letter-spacing: -0.01em;
-          background: linear-gradient(90deg, var(--otis-text) 0%, var(--otis-text-muted) 100%);
-          -webkit-background-clip: text;
-          -webkit-text-fill-color: transparent;
-        }
-
-        .sub-title {
-          font-size: 0.75rem;
-          color: var(--otis-text-muted);
-          display: flex;
-          align-items: center;
-          gap: 6px;
-        }
-
-        .status-dot {
-          width: 6px;
-          height: 6px;
-          border-radius: 50%;
-          background: #34d399;
-          box-shadow: 0 0 6px #34d399;
-          animation: pulse 2s infinite ease-in-out;
-        }
-
-        @keyframes pulse {
-          0%, 100% { opacity: 1; transform: scale(1); }
-          50% { opacity: 0.5; transform: scale(1.2); }
-        }
-
-        .header-actions {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-
-        .icon-btn {
-          background: var(--otis-chip-bg);
-          border: 1px solid var(--otis-chip-border);
-          color: var(--otis-text-muted);
-          border-radius: 8px;
-          padding: 6px 10px;
-          cursor: pointer;
-          font-size: 0.8rem;
-          display: flex;
-          align-items: center;
-          gap: 4px;
-          transition: all 0.2s ease;
-        }
-
-        .icon-btn:hover {
-          background: color-mix(in srgb, var(--otis-primary) 15%, transparent);
-          color: var(--otis-primary);
-          border-color: color-mix(in srgb, var(--otis-primary) 30%, transparent);
-        }
-
-        /* Stats Bar */
-        .stats-bar {
-          display: grid;
-          grid-template-columns: repeat(4, 1fr);
-          gap: 8px;
-          margin-bottom: 16px;
-          background: var(--otis-surface);
-          backdrop-filter: blur(16px);
-          -webkit-backdrop-filter: blur(16px);
-          border-radius: 12px;
-          padding: 8px 12px;
-          border: 1px solid var(--otis-surface-border);
-          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-        }
-
-        .stat-item {
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          text-align: center;
-        }
-
-        .stat-value {
-          font-size: 1rem;
-          font-weight: 700;
-          color: var(--otis-text);
-        }
-
-        .stat-label {
-          font-size: 0.68rem;
-          color: var(--otis-text-muted);
-          text-transform: uppercase;
-          letter-spacing: 0.05em;
-        }
-
-        .stat-item.warning .stat-value {
-          color: #f59e0b;
-        }
-
-        /* Weather & Calendar Glance Strip */
-        .glance-strip {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-          gap: 10px;
-          margin-bottom: 14px;
-        }
-
-        .glance-chip {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          background: var(--otis-surface);
-          backdrop-filter: blur(16px);
-          -webkit-backdrop-filter: blur(16px);
-          border: 1px solid var(--otis-surface-border);
-          border-radius: 12px;
-          padding: 10px 14px;
-          cursor: pointer;
-          transition: all 0.25s ease;
-          user-select: none;
-          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-        }
-
-        .glance-chip:hover {
-          border-color: var(--otis-primary);
-          background: color-mix(in srgb, var(--otis-primary) 8%, var(--otis-surface));
-          transform: translateY(-1px);
-          box-shadow: 0 6px 20px rgba(0, 0, 0, 0.28), 0 0 12px var(--otis-glow);
-        }
-
-        .glance-icon {
-          font-size: 1.5rem;
-          line-height: 1;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          flex-shrink: 0;
-        }
-
-        .glance-text {
-          display: flex;
-          flex-direction: column;
-          gap: 2px;
-          overflow: hidden;
-        }
-
-        .glance-primary {
-          font-size: 0.85rem;
-          font-weight: 700;
-          color: var(--otis-text);
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-
-        .glance-secondary {
-          font-size: 0.72rem;
-          color: var(--otis-text-muted);
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-
-        /* Subview Hub Launchpad */
-        .subviews-launchpad {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-          margin-bottom: 12px;
-          padding: 8px 10px;
-          background: color-mix(in srgb, var(--otis-surface) 60%, transparent);
-          backdrop-filter: blur(16px);
-          -webkit-backdrop-filter: blur(16px);
-          border: 1px solid var(--otis-surface-border);
-          border-radius: 8px;
-          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-        }
-
-        .launchpad-row {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          flex-wrap: wrap;
-        }
-
-        .subviews-label {
-          font-size: 0.72rem;
-          font-weight: 700;
-          text-transform: uppercase;
-          letter-spacing: 0.05em;
-          color: var(--otis-text-muted);
-          margin-right: 4px;
-          min-width: 58px;
-        }
-
-        /* Theme Studio Grid */
-        .theme-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-          gap: 12px;
-          max-height: 380px;
-          overflow-y: auto;
-          padding: 4px;
-        }
-
-        .theme-card {
-          background: color-mix(in srgb, var(--otis-surface) 80%, transparent);
-          border: 1px solid var(--otis-surface-border);
-          border-radius: 12px;
-          padding: 12px;
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-          transition: all 0.15s ease;
-        }
-
-        .theme-card:hover {
-          border-color: var(--otis-primary);
-          transform: translateY(-2px);
-          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-        }
-
-        .theme-swatches {
-          display: flex;
-          gap: 6px;
-          align-items: center;
-        }
-
-        .theme-swatch {
-          width: 18px;
-          height: 18px;
-          border-radius: 50%;
-          border: 1px solid rgba(255, 255, 255, 0.25);
-          box-shadow: 0 2px 4px rgba(0,0,0,0.3);
-        }
-
-        .subview-chip {
-          background: var(--otis-surface);
-          border: 1px solid var(--otis-surface-border);
-          color: var(--otis-text);
-          font-size: 0.74rem;
-          font-weight: 500;
-          padding: 4px 9px;
-          border-radius: 6px;
-          cursor: pointer;
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-          transition: all 0.15s ease;
-        }
-
-        .subview-chip:hover {
-          background: color-mix(in srgb, var(--otis-primary) 15%, transparent);
-          border-color: var(--otis-primary);
-          color: var(--otis-primary);
-          transform: translateY(-1px);
-        }
-
-        .room-chip {
-          background: color-mix(in srgb, var(--otis-surface) 80%, var(--otis-primary) 8%);
-        }
-
-        /* Persona & Behavioral Rules Modal */
-        .persona-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-          gap: 10px;
-        }
-
-        .persona-card {
-          background: color-mix(in srgb, var(--otis-surface) 80%, transparent);
-          border: 1px solid var(--otis-surface-border);
-          border-radius: 12px;
-          padding: 12px;
-          cursor: pointer;
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-          transition: all 0.15s ease;
-        }
-
-        .persona-card:hover {
-          border-color: var(--otis-primary);
-          transform: translateY(-1px);
-        }
-
-        .persona-card.selected {
-          border-color: var(--otis-primary);
-          background: color-mix(in srgb, var(--otis-primary) 12%, var(--otis-surface));
-          box-shadow: 0 0 12px rgba(56, 189, 248, 0.25);
-        }
-
-        .persona-title {
-          font-weight: 700;
-          font-size: 0.88rem;
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          color: var(--otis-text);
-        }
-
-        .persona-desc {
-          font-size: 0.74rem;
-          color: var(--otis-text-muted);
-          line-height: 1.35;
-        }
-
-        .rules-setting-row {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 10px 12px;
-          background: color-mix(in srgb, var(--otis-surface) 60%, transparent);
-          border: 1px solid var(--otis-surface-border);
-          border-radius: 10px;
-          gap: 12px;
-        }
-
-        .rules-setting-label {
-          font-weight: 600;
-          font-size: 0.82rem;
-          color: var(--otis-text);
-        }
-
-        .rules-setting-desc {
-          font-size: 0.72rem;
-          color: var(--otis-text-muted);
-          margin-top: 2px;
-        }
-
-        /* Navigation Tabs */
-        .tabs-nav {
-          display: flex;
-          gap: 6px;
-          background: var(--otis-surface);
-          backdrop-filter: blur(16px);
-          -webkit-backdrop-filter: blur(16px);
-          border-radius: 10px;
-          padding: 4px;
-          margin-bottom: 16px;
-          border: 1px solid var(--otis-surface-border);
-          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-        }
-
-        .tab-btn {
-          flex: 1;
-          background: transparent;
-          border: 1px solid transparent;
-          color: var(--otis-text-muted);
-          font-size: 0.78rem;
-          font-weight: 600;
-          padding: 8px 10px;
-          border-radius: 8px;
-          cursor: pointer;
-          transition: all 0.2s ease;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 6px;
-        }
-
-        .tab-btn:hover {
-          color: var(--otis-text);
-        }
-
-        .tab-btn.active {
-          background: color-mix(in srgb, var(--otis-primary) 15%, transparent);
-          color: var(--otis-primary);
-          border: 1px solid color-mix(in srgb, var(--otis-primary) 35%, transparent);
-          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-        }
-
-        .tab-badge {
-          background: var(--otis-primary);
-          color: #0f172a;
-          font-size: 0.65rem;
-          font-weight: 700;
-          padding: 1px 6px;
-          border-radius: 10px;
-        }
-
-        /* Suggestions List & Category Filter Pills */
-        .category-pills {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          overflow-x: auto;
-          padding-bottom: 4px;
-          margin-bottom: 10px;
-        }
-
-        .category-pill {
-          background: var(--otis-chip-bg);
-          border: 1px solid var(--otis-chip-border);
-          color: var(--otis-text-muted);
-          border-radius: 999px;
-          padding: 4px 11px;
-          font-size: 0.72rem;
-          font-weight: 600;
-          cursor: pointer;
-          white-space: nowrap;
-          transition: all 0.2s ease;
-        }
-
-        .category-pill:hover {
-          color: var(--otis-text);
-          border-color: color-mix(in srgb, var(--otis-primary) 35%, transparent);
-        }
-
-        .category-pill.active {
-          background: color-mix(in srgb, var(--otis-primary) 18%, transparent);
-          color: var(--otis-primary);
-          border-color: var(--otis-primary);
-          box-shadow: 0 0 10px var(--otis-glow);
-        }
-
-        .suggestions-list {
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
-        }
-
-        .suggestion-card {
-          position: relative;
-          background: var(--otis-surface);
-          backdrop-filter: blur(16px);
-          -webkit-backdrop-filter: blur(16px);
-          border: 1px solid var(--otis-surface-border);
-          border-radius: 14px;
-          padding: 14px;
-          transition: all 0.25s ease;
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-        }
-
-        .suggestion-card:hover {
-          border-color: color-mix(in srgb, var(--otis-primary) 35%, transparent);
-          transform: translateY(-1px);
-        }
-
-        .suggestion-top {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-        }
-
-        .suggestion-badge-group {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-        }
-
-        .badge-category {
-          font-size: 0.65rem;
-          font-weight: 700;
-          text-transform: uppercase;
-          letter-spacing: 0.05em;
-          padding: 2px 8px;
-          border-radius: 6px;
-          background: var(--otis-badge-bg);
-          color: var(--otis-primary);
-          border: 1px solid color-mix(in srgb, var(--otis-primary) 25%, transparent);
-        }
-
-        .badge-priority {
-          font-size: 0.65rem;
-          font-weight: 700;
-          text-transform: uppercase;
-          padding: 2px 6px;
-          border-radius: 6px;
-        }
-
-        .badge-priority.high {
-          background: rgba(244, 63, 94, 0.15);
-          color: #fb7185;
-          border: 1px solid rgba(244, 63, 94, 0.3);
-        }
-
-        .badge-priority.medium {
-          background: rgba(245, 158, 11, 0.15);
-          color: #fbbf24;
-          border: 1px solid rgba(245, 158, 11, 0.3);
-        }
-
-        .badge-priority.low {
-          background: rgba(148, 163, 184, 0.15);
-          color: #cbd5e1;
-          border: 1px solid rgba(148, 163, 184, 0.3);
-        }
-
-        .badge-priority.ignored {
-          background: rgba(148, 163, 184, 0.12);
-          color: #94a3b8;
-          border: 1px dashed rgba(148, 163, 184, 0.45);
-        }
-
-        .suggestion-card.is-ignored {
-          opacity: 0.68;
-          border-style: dashed;
-        }
-
-        .suggestion-card.is-ignored:hover {
-          opacity: 0.95;
-        }
-
-        .btn-subtle-toggle {
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid var(--otis-surface-border, rgba(255, 255, 255, 0.1));
-          border-radius: 8px;
-          color: var(--otis-text-muted);
-          font-size: 0.74rem;
-          font-weight: 500;
-          padding: 5px 11px;
-          cursor: pointer;
-          display: inline-flex;
-          align-items: center;
-          gap: 5px;
-          transition: all 0.2s ease;
-        }
-
-        .btn-subtle-toggle:hover {
-          background: rgba(255, 255, 255, 0.1);
-          color: var(--otis-text);
-          border-color: rgba(255, 255, 255, 0.2);
-        }
-
-        .btn-subtle-toggle.active {
-          background: rgba(56, 189, 248, 0.16);
-          border-color: rgba(56, 189, 248, 0.4);
-          color: var(--otis-primary, #38bdf8);
-          font-weight: 600;
-        }
-
-        .btn-dismiss-card {
-          background: transparent;
-          border: 1px solid var(--otis-surface-border, rgba(255, 255, 255, 0.15));
-          border-radius: 8px;
-          color: var(--otis-text-muted);
-          font-size: 0.76rem;
-          font-weight: 500;
-          padding: 6px 12px;
-          cursor: pointer;
-          transition: all 0.2s ease;
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-        }
-
-        .btn-dismiss-card:hover {
-          background: rgba(244, 63, 94, 0.12);
-          border-color: rgba(244, 63, 94, 0.35);
-          color: #f43f5e;
-        }
-
-        .btn-restore {
-          background: rgba(56, 189, 248, 0.1);
-          border: 1px solid rgba(56, 189, 248, 0.3);
-          border-radius: 8px;
-          color: var(--otis-primary, #38bdf8);
-          font-size: 0.76rem;
-          font-weight: 500;
-          padding: 6px 12px;
-          cursor: pointer;
-          transition: all 0.2s ease;
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-        }
-
-        .btn-restore:hover {
-          background: rgba(56, 189, 248, 0.2);
-          border-color: var(--otis-primary, #38bdf8);
-        }
-
-        .dismiss-btn {
-          background: transparent;
-          border: none;
-          color: var(--otis-text-muted);
-          cursor: pointer;
-          font-size: 1rem;
-          padding: 2px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          transition: color 0.2s ease;
-        }
-
-        .dismiss-btn:hover {
-          color: #f43f5e;
-        }
-
-        .suggestion-title {
-          font-size: 0.92rem;
-          font-weight: 600;
-          color: var(--otis-text);
-        }
-
-        .suggestion-desc {
-          font-size: 0.78rem;
-          color: var(--otis-text-muted);
-          line-height: 1.4;
-        }
-
-        .suggestion-actions {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          margin-top: 4px;
-        }
-
-        .apply-btn {
-          background: linear-gradient(135deg, var(--otis-primary) 0%, var(--otis-secondary) 100%);
-          border: none;
-          color: var(--otis-btn-text, #ffffff);
-          font-weight: 600;
-          font-size: 0.78rem;
-          padding: 6px 14px;
-          border-radius: 8px;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          transition: all 0.2s ease;
-          box-shadow: 0 2px 8px var(--otis-glow);
-        }
-
-        .apply-btn:hover {
-          filter: brightness(1.1);
-          box-shadow: 0 4px 14px var(--otis-glow);
-          transform: translateY(-1px);
-        }
-
-        .apply-btn:disabled {
-          opacity: 0.6;
-          cursor: not-allowed;
-          transform: none;
-        }
-
-        .spinner {
-          width: 12px;
-          height: 12px;
-          border: 2px solid rgba(255, 255, 255, 0.3);
-          border-top-color: #ffffff;
-          border-radius: 50%;
-          animation: spin 0.8s linear infinite;
-        }
-
-        @keyframes spin {
-          to { transform: rotate(360deg); }
-        }
-
-        .empty-state {
-          text-align: center;
-          padding: 32px 16px;
-          color: var(--otis-text-muted);
-        }
-
-        .empty-icon {
-          font-size: 2rem;
-          margin-bottom: 8px;
-        }
-
-        /* Chat Section */
-        .chat-container {
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-        }
-
-        .chat-chips {
-          display: flex;
-          gap: 6px;
-          overflow-x: auto;
-          padding-bottom: 4px;
-        }
-
-        .chip-btn {
-          background: var(--otis-chip-bg);
-          border: 1px solid var(--otis-chip-border);
-          color: var(--otis-text-muted);
-          font-size: 0.72rem;
-          padding: 4px 10px;
-          border-radius: 12px;
-          cursor: pointer;
-          white-space: nowrap;
-          transition: all 0.2s ease;
-        }
-
-        .chip-btn:hover {
-          background: color-mix(in srgb, var(--otis-primary) 15%, transparent);
-          color: var(--otis-primary);
-          border-color: color-mix(in srgb, var(--otis-primary) 30%, transparent);
-        }
-
-        .chat-history {
-          min-height: 420px;
-          max-height: 560px;
-          overflow-y: auto;
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-          padding-right: 6px;
-          user-select: text !important;
-          -webkit-user-select: text !important;
-          -moz-user-select: text !important;
-        }
-
-        .chat-bubble {
-          position: relative;
-          max-width: 90%;
-          padding: 10px 14px;
-          border-radius: 14px;
-          font-size: 0.82rem;
-          line-height: 1.5;
-          word-break: break-word;
-          user-select: text !important;
-          -webkit-user-select: text !important;
-          -moz-user-select: text !important;
-          cursor: text;
-        }
-
-        .chat-bubble *,
-        .reasoning-steps-list,
-        .reasoning-steps-list * {
-          user-select: text !important;
-          -webkit-user-select: text !important;
-          -moz-user-select: text !important;
-        }
-
-        .chat-bubble button,
-        .chat-bubble .prompt-copy-btn,
-        .chat-bubble .response-copy-btn,
-        .chat-bubble .response-retry-btn,
-        .chat-bubble .code-copy-btn {
-          user-select: none !important;
-          -webkit-user-select: none !important;
-          cursor: pointer;
-        }
-
-        .chat-bubble p {
-          margin: 0 0 8px 0;
-        }
-        .chat-bubble p:last-child {
-          margin-bottom: 0;
-        }
-
-        .chat-bubble h1, .chat-bubble h2, .chat-bubble h3, .chat-bubble h4 {
-          margin: 12px 0 6px 0;
-          color: var(--otis-text);
-          font-weight: 700;
-          line-height: 1.3;
-        }
-        .chat-bubble h1 { font-size: 1.05rem; }
-        .chat-bubble h2 { font-size: 0.95rem; }
-        .chat-bubble h3 {
-          font-size: 0.88rem;
-          color: var(--otis-primary);
-          border-bottom: 1px solid color-mix(in srgb, var(--otis-primary) 20%, transparent);
-          padding-bottom: 3px;
-        }
-        .chat-bubble h4 { font-size: 0.82rem; }
-        .chat-bubble h1:first-child, .chat-bubble h2:first-child, .chat-bubble h3:first-child {
-          margin-top: 0;
-        }
-
-        .chat-bubble ul, .chat-bubble ol {
-          margin: 6px 0 8px 0;
-          padding-left: 20px;
-        }
-        .chat-bubble li {
-          margin-bottom: 4px;
-        }
-        .chat-bubble li:last-child {
-          margin-bottom: 0;
-        }
-
-        .chat-bubble strong {
-          color: var(--otis-text);
-          font-weight: 700;
-        }
-
-        .chat-bubble em {
-          color: var(--otis-text-muted);
-          font-style: italic;
-        }
-
-        .chat-bubble a {
-          color: var(--otis-primary);
-          text-decoration: underline;
-          text-underline-offset: 2px;
-          transition: opacity 0.2s ease;
-        }
-        .chat-bubble a:hover {
-          opacity: 0.8;
-        }
-
-        .chat-macro-actions {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 8px;
-          margin-top: 10px;
-          padding-top: 8px;
-          border-top: 1px solid rgba(255, 255, 255, 0.08);
-        }
-
-        .macro-action-btn {
-          font-size: 0.72rem;
-          font-weight: 600;
-          padding: 5px 11px;
-          border-radius: 8px;
-          cursor: pointer;
-          transition: all 0.2s ease;
-          display: inline-flex;
-          align-items: center;
-          gap: 5px;
-          border: none;
-        }
-
-        .macro-action-btn.confirm {
-          background: rgba(34, 197, 94, 0.18);
-          border: 1px solid rgba(34, 197, 94, 0.45);
-          color: #4ade80;
-        }
-        .macro-action-btn.confirm:hover {
-          background: rgba(34, 197, 94, 0.35);
-          transform: translateY(-1px);
-        }
-
-        .macro-action-btn.cancel {
-          background: rgba(239, 68, 68, 0.18);
-          border: 1px solid rgba(239, 68, 68, 0.45);
-          color: #f87171;
-        }
-        .macro-action-btn.cancel:hover {
-          background: rgba(239, 68, 68, 0.35);
-          transform: translateY(-1px);
-        }
-
-        .macro-action-btn.rollback {
-          background: rgba(14, 165, 233, 0.18);
-          border: 1px solid rgba(14, 165, 233, 0.45);
-          color: #38bdf8;
-        }
-        .macro-action-btn.rollback:hover {
-          background: rgba(14, 165, 233, 0.35);
-          transform: translateY(-1px);
-        }
-
-        .chat-bubble code {
-          background: color-mix(in srgb, var(--otis-primary) 12%, transparent);
-          color: var(--otis-primary);
-          border: 1px solid color-mix(in srgb, var(--otis-primary) 25%, transparent);
-          padding: 1px 5px;
-          border-radius: 4px;
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-          font-size: 0.76rem;
-        }
-
-        .code-block-wrapper {
-          margin: 10px 0;
-          border-radius: 8px;
-          overflow: hidden;
-          background: rgba(15, 23, 42, 0.9);
-          border: 1px solid var(--otis-surface-border);
-        }
-
-        .code-block-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 4px 10px;
-          background: rgba(0, 0, 0, 0.45);
-          border-bottom: 1px solid var(--otis-surface-border);
-        }
-
-        .code-block-header .code-lang {
-          font-size: 0.68rem;
-          color: var(--otis-primary);
-          text-transform: uppercase;
-          letter-spacing: 0.05em;
-          font-family: ui-monospace, monospace;
-          font-weight: 600;
-        }
-
-        .code-copy-btn {
-          background: rgba(255, 255, 255, 0.06);
-          border: 1px solid rgba(255, 255, 255, 0.18);
-          color: var(--otis-text-muted);
-          border-radius: 4px;
-          height: 22px;
-          padding: 0 8px;
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-          cursor: pointer;
-          transition: all 0.15s ease;
-          font-size: 0.68rem;
-          font-weight: 500;
-        }
-
-        .code-copy-btn:hover {
-          color: #ffffff;
-          background: color-mix(in srgb, var(--otis-primary) 30%, transparent);
-          border-color: var(--otis-primary);
-        }
-
-        .code-block-wrapper pre {
-          margin: 0;
-          padding: 10px 12px;
-          overflow-x: auto;
-          background: transparent;
-        }
-        .code-block-wrapper pre code {
-          background: none;
-          color: #e2e8f0;
-          border: none;
-          padding: 0;
-          font-size: 0.76rem;
-          line-height: 1.45;
-          display: block;
-          white-space: pre;
-        }
-
-        .chat-bubble hr,
-        .chat-live-preview-body hr {
-          border: none;
-          border-top: 1px solid var(--otis-surface-border);
-          margin: 10px 0;
-          opacity: 0.6;
-        }
-
-        .chat-bubble blockquote,
-        .chat-live-preview-body blockquote {
-          margin: 8px 0;
-          padding: 6px 12px;
-          border-left: 3px solid var(--otis-primary);
-          background: color-mix(in srgb, var(--otis-primary) 8%, transparent);
-          border-radius: 0 8px 8px 0;
-          color: var(--otis-text-muted);
-          font-style: italic;
-        }
-
-        .chat-table-wrapper {
-          margin: 8px 0;
-          overflow-x: auto;
-          border-radius: 8px;
-          border: 1px solid var(--otis-surface-border);
-        }
-
-        .chat-table {
-          width: 100%;
-          border-collapse: collapse;
-          font-size: 0.78rem;
-          text-align: left;
-        }
-
-        .chat-table th {
-          background: color-mix(in srgb, var(--otis-primary) 15%, transparent);
-          color: var(--otis-primary);
-          padding: 6px 10px;
-          font-weight: 700;
-          border-bottom: 1px solid var(--otis-surface-border);
-        }
-
-        .chat-table td {
-          padding: 6px 10px;
-          border-bottom: 1px solid color-mix(in srgb, var(--otis-surface-border) 40%, transparent);
-          color: var(--otis-text);
-        }
-
-        .chat-table tr:last-child td {
-          border-bottom: none;
-        }
-
-        .chat-bubble.user {
-          position: relative;
-          align-self: flex-end;
-          background: var(--otis-user-bubble-bg);
-          color: var(--otis-user-bubble-text);
-          border-bottom-right-radius: 3px;
-          border: 1px solid var(--otis-surface-border);
-          backdrop-filter: blur(16px);
-          -webkit-backdrop-filter: blur(16px);
-          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-          padding-right: 36px;
-        }
-
-        .prompt-copy-btn {
-          position: absolute;
-          top: 6px;
-          right: 6px;
-          background: rgba(0, 0, 0, 0.45);
-          border: 1px solid rgba(255, 255, 255, 0.25);
-          color: rgba(255, 255, 255, 0.9);
-          border-radius: 4px;
-          width: 24px;
-          height: 24px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          cursor: pointer;
-          transition: all 0.15s ease;
-          padding: 0;
-          opacity: 0.85;
-          z-index: 2;
-        }
-
-        .copy-icon {
-          width: 13px;
-          height: 13px;
-          fill: currentColor;
-        }
-
-        .chat-bubble.user:hover .prompt-copy-btn,
-        .prompt-copy-btn:hover {
-          opacity: 1;
-          color: #ffffff;
-          background: rgba(14, 165, 233, 0.65);
-          border-color: rgba(56, 189, 248, 0.8);
-          transform: scale(1.1);
-        }
-
-        .chat-bubble.user h1,
-        .chat-bubble.user h2,
-        .chat-bubble.user h3,
-        .chat-bubble.user h4 {
-          color: inherit;
-        }
-
-        .bubble-actions-group {
-          position: absolute;
-          top: 6px;
-          right: 6px;
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-          z-index: 2;
-        }
-
-        .response-retry-btn,
-        .response-copy-btn {
-          background: rgba(0, 0, 0, 0.4);
-          border: 1px solid rgba(255, 255, 255, 0.18);
-          color: var(--otis-text-muted);
-          border-radius: 4px;
-          height: 22px;
-          padding: 0 6px;
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-          cursor: pointer;
-          transition: all 0.15s ease;
-          font-size: 0.68rem;
-          font-weight: 500;
-          opacity: 0.7;
-        }
-
-        .chat-bubble.otis {
-          position: relative;
-          align-self: flex-start;
-          background: var(--otis-surface);
-          color: var(--otis-text);
-          border-bottom-left-radius: 3px;
-          border: 1px solid color-mix(in srgb, var(--otis-primary) 20%, transparent);
-          backdrop-filter: blur(16px);
-          -webkit-backdrop-filter: blur(16px);
-          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-          padding-top: 26px;
-        }
-
-        .chat-bubble.otis:hover .response-retry-btn,
-        .chat-bubble.otis:hover .response-copy-btn,
-        .response-retry-btn:hover,
-        .response-copy-btn:hover {
-          opacity: 1;
-          color: #ffffff;
-          background: color-mix(in srgb, var(--otis-primary) 30%, transparent);
-          border-color: var(--otis-primary);
-        }
-
-        .response-retry-btn:hover svg {
-          transform: rotate(45deg);
-        }
-
-        .response-retry-btn svg {
-          transition: transform 0.2s ease;
-        }
-
-        .chat-bubble.otis.thinking-bubble {
-          border-left: 3px solid #c084fc;
-          background: linear-gradient(135deg, rgba(30, 41, 59, 0.95), rgba(15, 23, 42, 0.95));
-          box-shadow: 0 4px 20px rgba(168, 85, 247, 0.15);
-          padding: 12px 16px;
-          min-width: 220px;
-        }
-
-        .thinking-bubble-header {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          margin-bottom: 8px;
-          font-size: 0.74rem;
-        }
-
-        .thinking-status-pill {
-          display: inline-flex;
-          align-items: center;
-          gap: 5px;
-          padding: 2px 8px;
-          background: rgba(168, 85, 247, 0.2);
-          border: 1px solid rgba(168, 85, 247, 0.5);
-          border-radius: 12px;
-          color: #e9d5ff;
-          font-size: 0.7rem;
-          font-weight: 600;
-          letter-spacing: 0.02em;
-        }
-
-        .pill-pulse-dot {
-          width: 6px;
-          height: 6px;
-          border-radius: 50%;
-          background: #38bdf8;
-          box-shadow: 0 0 6px #38bdf8;
-          animation: dotBounce 1.2s infinite ease-in-out;
-        }
-
-        .thinking-timer {
-          margin-left: auto;
-          font-family: monospace;
-          font-size: 0.74rem;
-          color: #38bdf8;
-          font-weight: 600;
-        }
-
-        .thinking-steps-stream {
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-          margin-bottom: 10px;
-          padding: 8px 10px;
-          background: rgba(15, 23, 42, 0.6);
-          border-radius: 8px;
-          border: 1px solid rgba(255, 255, 255, 0.06);
-        }
-
-        .thinking-step-row {
-          display: flex;
-          align-items: flex-start;
-          gap: 8px;
-          font-size: 0.73rem;
-          transition: all 0.25s ease;
-        }
-
-        .thinking-step-row.pending {
-          opacity: 0.45;
-        }
-
-        .thinking-step-row.active {
-          opacity: 1;
-        }
-
-        .thinking-step-row.done {
-          opacity: 0.85;
-        }
-
-        .step-indicator {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          width: 16px;
-          height: 16px;
-          flex-shrink: 0;
-          font-size: 0.75rem;
-          margin-top: 1px;
-        }
-
-        .step-indicator.done {
-          color: #34d399;
-          font-weight: bold;
-          text-shadow: 0 0 8px rgba(52, 211, 153, 0.6);
-        }
-
-        .step-indicator.active {
-          color: #38bdf8;
-        }
-
-        .step-indicator.pending {
-          color: rgba(255, 255, 255, 0.3);
-        }
-
-        .step-mini-spinner {
-          display: inline-block;
-          width: 11px;
-          height: 11px;
-          border: 2px solid rgba(56, 189, 248, 0.25);
-          border-top-color: #38bdf8;
-          border-radius: 50%;
-          animation: spin 0.75s linear infinite;
-        }
-
-        .step-info {
-          flex: 1;
-          display: flex;
-          flex-direction: column;
-          gap: 1px;
-        }
-
-        .step-name {
-          font-weight: 600;
-          color: #e2e8f0;
-        }
-
-        .step-name.active {
-          color: #38bdf8;
-        }
-
-        .step-name.done {
-          color: #cbd5e1;
-        }
-
-        .step-sub {
-          font-size: 0.68rem;
-          color: #94a3b8;
-          line-height: 1.25;
-        }
-
-        .step-sub.active {
-          color: #a5f3fc;
-        }
-
-        .step-badge {
-          font-family: monospace;
-          font-size: 0.66rem;
-          color: rgba(255, 255, 255, 0.45);
-          align-self: center;
-        }
-
-        /* Reasoning Trace Historical View */
-        .reasoning-trace-container {
-          margin-bottom: 8px;
-          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-          padding-bottom: 6px;
-        }
-
-        .reasoning-trace-toggle {
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          background: rgba(168, 85, 247, 0.12);
-          border: 1px solid rgba(168, 85, 247, 0.3);
-          color: #c084fc;
-          border-radius: 6px;
-          padding: 3px 8px;
-          font-size: 0.71rem;
-          cursor: pointer;
-          transition: all 0.2s ease;
-        }
-
-        .reasoning-trace-toggle:hover {
-          background: rgba(168, 85, 247, 0.22);
-          border-color: rgba(168, 85, 247, 0.5);
-          color: #e9d5ff;
-        }
-
-        .reasoning-brain-icon {
-          font-size: 0.78rem;
-        }
-
-        .reasoning-summary-text {
-          font-weight: 500;
-        }
-
-        .reasoning-chevron {
-          width: 14px;
-          height: 14px;
-          fill: currentColor;
-          transition: transform 0.2s ease;
-        }
-
-        .reasoning-trace-toggle.expanded .reasoning-chevron {
-          transform: rotate(180deg);
-        }
-
-        .reasoning-steps-list {
-          margin-top: 6px;
-          padding: 6px 10px;
-          background: rgba(0, 0, 0, 0.25);
-          border-radius: 6px;
-          border-left: 2px solid #a855f7;
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-        }
-
-        .reasoning-step-item {
-          display: flex;
-          align-items: flex-start;
-          gap: 8px;
-          font-size: 0.71rem;
-        }
-
-        .step-check {
-          color: #34d399;
-          font-weight: bold;
-          flex-shrink: 0;
-        }
-
-        .step-content {
-          flex: 1;
-        }
-
-        .step-content .step-title {
-          font-weight: 600;
-          color: #e2e8f0;
-        }
-
-        .step-content .step-detail {
-          font-size: 0.67rem;
-          color: #94a3b8;
-        }
-
-        .step-time {
-          font-family: monospace;
-          font-size: 0.65rem;
-          color: rgba(255, 255, 255, 0.4);
-        }
-
-        .reasoning-agent-pill {
-          display: inline-flex;
-          align-items: center;
-          gap: 3px;
-          padding: 1px 6px;
-          border-radius: 999px;
-          font-size: 0.65rem;
-          font-weight: 600;
-          vertical-align: middle;
-          margin-left: 4px;
-        }
-
-        .reasoning-agent-pill.cloud {
-          background: rgba(59, 130, 246, 0.2);
-          color: #93c5fd;
-          border: 1px solid rgba(59, 130, 246, 0.4);
-        }
-
-        .reasoning-agent-pill.edge {
-          background: rgba(16, 185, 129, 0.2);
-          color: #6ee7b7;
-          border: 1px solid rgba(16, 185, 129, 0.4);
-        }
-
-        .reasoning-agent-pill.failed {
-          background: rgba(239, 68, 68, 0.2);
-          color: #fca5a5;
-          border: 1px solid rgba(239, 68, 68, 0.4);
-        }
-
-        .reasoning-step-item.resolution {
-          background: rgba(255, 255, 255, 0.04);
-          border-left: 2px solid #38bdf8;
-          padding: 4px 6px 4px 8px;
-          border-radius: 4px;
-        }
-
-        .reasoning-step-item.exhaustion {
-          background: rgba(239, 68, 68, 0.08);
-          border-left: 2px solid #ef4444;
-          padding: 4px 6px 4px 8px;
-          border-radius: 4px;
-        }
-
-        .chat-thinking-banner {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          padding: 9px 14px;
-          margin-bottom: 8px;
-          background: linear-gradient(135deg, rgba(168, 85, 247, 0.15), rgba(59, 130, 246, 0.12));
-          border: 1px solid rgba(168, 85, 247, 0.4);
-          border-radius: 12px;
-          animation: thinkingPulseGlow 2.5s infinite alternate ease-in-out;
-        }
-
-        @keyframes thinkingPulseGlow {
-          0% { border-color: rgba(168, 85, 247, 0.35); box-shadow: 0 0 8px rgba(168, 85, 247, 0.12); }
-          100% { border-color: rgba(59, 130, 246, 0.65); box-shadow: 0 0 16px rgba(59, 130, 246, 0.28); }
-        }
-
-        .thinking-avatar-pulse {
-          position: relative;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          width: 30px;
-          height: 30px;
-          border-radius: 50%;
-          background: rgba(168, 85, 247, 0.25);
-          flex-shrink: 0;
-        }
-
-        .thinking-brain {
-          font-size: 1.05rem;
-          z-index: 1;
-          animation: brainBounce 1.5s infinite ease-in-out;
-        }
-
-        @keyframes brainBounce {
-          0%, 100% { transform: translateY(0); }
-          50% { transform: translateY(-2px); }
-        }
-
-        .thinking-pulse-ring {
-          position: absolute;
-          inset: -2px;
-          border-radius: 50%;
-          border: 2px solid rgba(168, 85, 247, 0.6);
-          animation: pulseRing 1.8s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
-        }
-
-        @keyframes pulseRing {
-          0% { transform: scale(0.8); opacity: 1; }
-          100% { transform: scale(1.4); opacity: 0; }
-        }
-
-        .thinking-text-group {
-          flex: 1;
-          display: flex;
-          flex-direction: column;
-          gap: 2px;
-        }
-
-        .thinking-title {
-          font-size: 0.8rem;
-          font-weight: 700;
-          color: #c084fc;
-          letter-spacing: 0.02em;
-        }
-
-        .thinking-subtitle {
-          font-size: 0.69rem;
-          color: var(--secondary-text-color, #94a3b8);
-        }
-
-        .thinking-dots {
-          display: inline-flex;
-          align-items: center;
-          gap: 4px;
-          flex-shrink: 0;
-        }
-
-        .thinking-dots span {
-          width: 6px;
-          height: 6px;
-          border-radius: 50%;
-          background: #c084fc;
-          display: inline-block;
-          animation: dotBounce 1.4s infinite ease-in-out both;
-        }
-
-        .thinking-dots span:nth-child(1) { animation-delay: -0.32s; }
-        .thinking-dots span:nth-child(2) { animation-delay: -0.16s; }
-
-        @keyframes dotBounce {
-          0%, 80%, 100% { transform: scale(0); opacity: 0.3; }
-          40% { transform: scale(1); opacity: 1; }
-        }
-
-        .chat-bubble.error {
-          border-color: rgba(244, 63, 94, 0.4);
-          color: #fca5a5;
-        }
-
-        .chat-live-preview {
-          margin-bottom: 8px;
-          background: rgba(15, 23, 42, 0.75);
-          backdrop-filter: blur(12px);
-          -webkit-backdrop-filter: blur(12px);
-          border: 1px dashed var(--otis-primary);
-          border-radius: 12px;
-          padding: 8px 12px;
-          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3), 0 0 10px var(--otis-glow);
-          animation: slideDownPreview 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-        }
-
-        @keyframes slideDownPreview {
-          from {
-            opacity: 0;
-            transform: translateY(6px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-
-        .chat-live-preview-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          font-size: 0.68rem;
-          font-weight: 700;
-          text-transform: uppercase;
-          letter-spacing: 0.6px;
-          color: var(--otis-primary);
-          margin-bottom: 6px;
-          padding-bottom: 4px;
-          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-        }
-
-        .chat-live-preview-title {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-        }
-
-        .preview-icon {
-          width: 14px;
-          height: 14px;
-          fill: currentColor;
-        }
-
-        .preview-close-btn {
-          background: transparent;
-          border: none;
-          color: var(--otis-text-muted);
-          cursor: pointer;
-          font-size: 0.8rem;
-          line-height: 1;
-          padding: 2px 4px;
-          border-radius: 4px;
-          transition: all 0.15s ease;
-        }
-
-        .preview-close-btn:hover {
-          color: #f43f5e;
-          background: rgba(244, 63, 94, 0.12);
-        }
-
-        .chat-live-preview-body {
-          max-height: 150px;
-          overflow-y: auto;
-          font-size: 0.82rem;
-          line-height: 1.45;
-          color: var(--otis-text);
-          padding-right: 4px;
-        }
-
-        .chat-live-preview-body h1,
-        .chat-live-preview-body h2,
-        .chat-live-preview-body h3,
-        .chat-live-preview-body h4 {
-          margin: 4px 0 2px 0;
-          font-weight: 700;
-          color: var(--otis-text);
-        }
-
-        .chat-live-preview-body h1 { font-size: 1rem; }
-        .chat-live-preview-body h2 { font-size: 0.92rem; }
-        .chat-live-preview-body h3 { font-size: 0.85rem; }
-        .chat-live-preview-body h4 { font-size: 0.8rem; }
-
-        .chat-live-preview-body ul,
-        .chat-live-preview-body ol {
-          margin: 4px 0 4px 16px;
-          padding: 0;
-        }
-
-        .chat-live-preview-body li {
-          margin-bottom: 2px;
-        }
-
-        .chat-live-preview-body p {
-          margin: 4px 0;
-        }
-
-        .chat-live-preview-body p:first-child {
-          margin-top: 0;
-        }
-
-        .chat-live-preview-body p:last-child {
-          margin-bottom: 0;
-        }
-
-        .chat-live-preview-body strong {
-          color: var(--otis-primary);
-          font-weight: 700;
-        }
-
-        .chat-live-preview-body code {
-          background: rgba(0, 0, 0, 0.35);
-          color: #38bdf8;
-          padding: 1px 4px;
-          border-radius: 4px;
-          font-family: monospace;
-          font-size: 0.8em;
-        }
-
-        .chat-input-bar {
-          display: flex;
-          align-items: flex-end;
-          gap: 8px;
-        }
-
-        .chat-input-wrapper {
-          flex: 1;
-          display: flex;
-          align-items: flex-end;
-          background: var(--otis-input-bg);
-          backdrop-filter: blur(16px);
-          -webkit-backdrop-filter: blur(16px);
-          border: 1px solid var(--otis-input-border);
-          border-radius: 12px;
-          padding: 8px 12px;
-          min-height: 42px;
-          box-sizing: border-box;
-          transition: all 0.2s ease;
-          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-        }
-
-        .chat-input-wrapper:focus-within {
-          border-color: var(--otis-primary);
-          box-shadow: 0 0 10px var(--otis-glow);
-        }
-
-        .chat-input-wrapper.listening {
-          border-color: #f43f5e;
-          box-shadow: 0 0 14px rgba(244, 63, 94, 0.35);
-          background: rgba(244, 63, 94, 0.08);
-        }
-
-        .voice-equalizer {
-          display: inline-flex;
-          align-items: center;
-          gap: 3px;
-          height: 18px;
-          margin-right: 8px;
-          margin-bottom: 3px;
-          flex-shrink: 0;
-        }
-
-        .equalizer-bar {
-          width: 3px;
-          background: #f43f5e;
-          border-radius: 2px;
-          animation: equalizerWave 1s ease-in-out infinite alternate;
-        }
-
-        .equalizer-bar:nth-child(1) { height: 6px; animation-delay: 0.1s; }
-        .equalizer-bar:nth-child(2) { height: 16px; animation-delay: 0.35s; }
-        .equalizer-bar:nth-child(3) { height: 10px; animation-delay: 0.2s; }
-        .equalizer-bar:nth-child(4) { height: 18px; animation-delay: 0.45s; }
-        .equalizer-bar:nth-child(5) { height: 8px; animation-delay: 0.25s; }
-
-        @keyframes equalizerWave {
-          0% {
-            height: 4px;
-            opacity: 0.4;
-          }
-          100% {
-            height: 18px;
-            opacity: 1;
-            box-shadow: 0 0 8px rgba(244, 63, 94, 0.8);
-          }
-        }
-
-        .chat-input {
-          flex: 1;
-          background: transparent;
-          border: none;
-          padding: 0;
-          margin: 0;
-          color: var(--otis-text);
-          font-family: inherit;
-          font-size: 0.82rem;
-          line-height: 1.45;
-          outline: none;
-          resize: none;
-          max-height: 140px;
-          min-height: 24px;
-          overflow-y: auto;
-          box-sizing: border-box;
-        }
-
-        .chat-input::placeholder {
-          color: var(--otis-text-muted);
-        }
-
-        .send-btn, .mic-btn {
-          height: 42px;
-          box-sizing: border-box;
-        }
-
-        .send-btn {
-          background: linear-gradient(135deg, var(--otis-primary) 0%, var(--otis-secondary) 100%);
-          border: none;
-          color: var(--otis-btn-text, #ffffff);
-          font-weight: 700;
-          padding: 8px 14px;
-          border-radius: 10px;
-          cursor: pointer;
-          transition: all 0.2s ease;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-        }
-
-        .send-btn:hover {
-          filter: brightness(1.1);
-        }
-
-        .send-btn:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
-        }
-
-        .send-btn.sending {
-          background: linear-gradient(135deg, rgba(239, 68, 68, 0.28) 0%, rgba(225, 29, 72, 0.35) 100%);
-          border: 1px solid rgba(248, 113, 113, 0.65);
-          color: #fecaca;
-          opacity: 1 !important;
-          cursor: pointer !important;
-          gap: 6px;
-          padding: 8px 12px;
-        }
-
-        .send-btn.sending:hover {
-          background: linear-gradient(135deg, rgba(239, 68, 68, 0.45) 0%, rgba(225, 29, 72, 0.5) 100%);
-          border-color: #f87171;
-          color: #ffffff;
-        }
-
-        .chat-stop-btn {
-          margin-left: auto;
-          background: rgba(239, 68, 68, 0.18);
-          border: 1px solid rgba(248, 113, 113, 0.5);
-          color: #fecaca;
-          font-size: 0.72rem;
-          font-weight: 600;
-          padding: 3px 9px;
-          border-radius: 6px;
-          cursor: pointer;
-          transition: all 0.18s ease;
-          white-space: nowrap;
-        }
-
-        .chat-stop-btn:hover {
-          background: rgba(239, 68, 68, 0.35);
-          border-color: #f87171;
-          color: #ffffff;
-        }
-
-        .mic-btn {
-          background: var(--otis-chip-bg);
-          border: 1px solid var(--otis-chip-border);
-          color: var(--otis-text-muted);
-          width: 38px;
-          height: 38px;
-          border-radius: 10px;
-          cursor: pointer;
-          transition: all 0.2s ease;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          flex-shrink: 0;
-          position: relative;
-        }
-
-        .mic-btn:hover {
-          background: color-mix(in srgb, var(--otis-primary) 15%, transparent);
-          color: var(--otis-primary);
-          border-color: color-mix(in srgb, var(--otis-primary) 30%, transparent);
-        }
-
-        .mic-btn.listening {
-          background: rgba(244, 63, 94, 0.2);
-          border-color: #f43f5e;
-          color: #f43f5e;
-          box-shadow: 0 0 14px rgba(244, 63, 94, 0.4);
-          animation: micPulse 1.5s infinite ease-in-out;
-        }
-
-        .attach-btn {
-          background: var(--otis-chip-bg);
-          border: 1px solid var(--otis-chip-border);
-          color: var(--otis-text-muted);
-          width: 38px;
-          height: 38px;
-          border-radius: 10px;
-          cursor: pointer;
-          transition: all 0.2s ease;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          flex-shrink: 0;
-        }
-
-        .attach-btn:hover {
-          background: color-mix(in srgb, var(--otis-primary) 15%, transparent);
-          color: var(--otis-primary);
-          border-color: color-mix(in srgb, var(--otis-primary) 30%, transparent);
-        }
-
-        .attach-btn:disabled {
-          opacity: 0.5;
-          cursor: not-allowed;
-        }
-
-        .chat-attachments-tray {
-          display: flex;
-          gap: 8px;
-          flex-wrap: wrap;
-          margin-bottom: 8px;
-          padding: 6px 10px;
-          background: rgba(0, 0, 0, 0.2);
-          border-radius: 8px;
-          border: 1px dashed var(--otis-chip-border);
-        }
-
-        .chat-attachment-item {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          background: var(--otis-surface);
-          border: 1px solid var(--otis-surface-border);
-          border-radius: 6px;
-          padding: 4px 8px;
-          font-size: 0.76rem;
-          color: var(--otis-text);
-        }
-
-        .chat-attachment-thumb {
-          width: 30px;
-          height: 30px;
-          border-radius: 4px;
-          object-fit: cover;
-        }
-
-        .chat-attachment-name {
-          max-width: 140px;
-          white-space: nowrap;
-          overflow: hidden;
-          text-overflow: ellipsis;
-        }
-
-        .chat-attachment-remove {
-          cursor: pointer;
-          background: none;
-          border: none;
-          color: #f43f5e;
-          font-weight: bold;
-          font-size: 0.85rem;
-          padding: 0 3px;
-        }
-
-        .bubble-attachments {
-          display: flex;
-          gap: 6px;
-          flex-wrap: wrap;
-          margin-bottom: 8px;
-        }
-
-        .bubble-attachment-img {
-          max-width: 200px;
-          max-height: 140px;
-          border-radius: 8px;
-          object-fit: cover;
-          border: 1px solid rgba(255, 255, 255, 0.15);
-          cursor: pointer;
-        }
-
-        .bubble-attachment-file {
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          padding: 4px 10px;
-          background: rgba(0, 0, 0, 0.3);
-          border: 1px solid rgba(255, 255, 255, 0.1);
-          border-radius: 6px;
-          font-size: 0.74rem;
-        }
-
-        @keyframes micPulse {
-          0%, 100% {
-            transform: scale(1);
-            box-shadow: 0 0 8px rgba(244, 63, 94, 0.3);
-          }
-          50% {
-            transform: scale(1.08);
-            box-shadow: 0 0 18px rgba(244, 63, 94, 0.6);
-          }
-        }
-
-        .mic-icon {
-          width: 18px;
-          height: 18px;
-          fill: currentColor;
-        }
-
-        /* Capabilities Drawer */
-        .capabilities-panel {
-          font-size: 0.8rem;
-          color: var(--otis-text-muted);
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-        }
-
-        .cap-block {
-          background: var(--otis-surface);
-          border-radius: 10px;
-          padding: 10px 14px;
-          border: 1px solid var(--otis-surface-border);
-        }
-
-        .cap-title {
-          font-weight: 600;
-          color: var(--otis-text);
-          margin-bottom: 4px;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-        }
-
-        .maturity-bar-track {
-          width: 100%;
-          height: 8px;
-          background: rgba(255, 255, 255, 0.08);
-          border-radius: 999px;
-          overflow: hidden;
-          margin: 8px 0;
-        }
-
-        .maturity-bar-fill {
-          height: 100%;
-          background: linear-gradient(90deg, var(--otis-primary) 0%, var(--otis-secondary) 100%);
-          border-radius: 999px;
-          transition: width 0.4s ease;
-        }
-
-        .maturity-grid {
-          display: grid;
-          grid-template-columns: repeat(5, 1fr);
-          gap: 6px;
-          margin-top: 8px;
-        }
-
-        .maturity-pill {
-          position: relative;
-          background: rgba(255, 255, 255, 0.03);
-          border: 1px solid rgba(255, 255, 255, 0.07);
-          border-radius: 8px;
-          padding: 6px 4px;
-          text-align: center;
-          display: flex;
-          flex-direction: column;
-          gap: 2px;
-          cursor: pointer;
-          transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-
-        .maturity-pill:hover {
-          background: rgba(255, 255, 255, 0.08);
-          border-color: var(--otis-primary);
-          transform: translateY(-2px);
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-          z-index: 50;
-        }
-
-        .maturity-pill-max {
-          border-color: rgba(16, 185, 129, 0.35);
-        }
-
-        .maturity-pill-improve {
-          border-color: rgba(245, 158, 11, 0.35);
-        }
-
-        .maturity-pill-val {
-          font-size: 0.78rem;
-          font-weight: 700;
-          color: var(--otis-primary);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          gap: 3px;
-        }
-
-        .maturity-pill-lbl {
-          font-size: 0.62rem;
-          text-transform: uppercase;
-          color: var(--otis-text-muted);
-        }
-
-        .maturity-tooltip {
-          visibility: hidden;
-          opacity: 0;
-          position: absolute;
-          bottom: calc(100% + 8px);
-          left: 50%;
-          transform: translateX(-50%);
-          width: 240px;
-          background: #0f172a;
-          color: #f1f5f9;
-          text-align: left;
-          border-radius: 8px;
-          padding: 8px 10px;
-          font-size: 0.72rem;
-          line-height: 1.4;
-          border: 1px solid rgba(56, 189, 248, 0.4);
-          box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.85);
-          z-index: 1000;
-          pointer-events: none;
-          transition: opacity 0.2s ease, visibility 0.2s ease;
-          white-space: normal;
-        }
-
-        .maturity-pill:hover .maturity-tooltip {
-          visibility: visible;
-          opacity: 1;
-        }
-
-        .maturity-pill:first-child .maturity-tooltip {
-          left: 0;
-          transform: none;
-        }
-
-        .maturity-pill:last-child .maturity-tooltip {
-          left: auto;
-          right: 0;
-          transform: none;
-        }
-
-        .maturity-tooltip-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          font-weight: 700;
-          font-size: 0.76rem;
-          color: #38bdf8;
-          margin-bottom: 4px;
-          border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-          padding-bottom: 3px;
-        }
-
-        .maturity-tooltip-badge {
-          font-size: 0.62rem;
-          padding: 1px 6px;
-          border-radius: 4px;
-          font-weight: 600;
-        }
-
-        .badge-max {
-          background: rgba(16, 185, 129, 0.2);
-          color: #10b981;
-          border: 1px solid rgba(16, 185, 129, 0.4);
-        }
-
-        .badge-improve {
-          background: rgba(245, 158, 11, 0.2);
-          color: #fbbf24;
-          border: 1px solid rgba(245, 158, 11, 0.4);
-        }
-
-        .maturity-tooltip-body {
-          font-size: 0.7rem;
-          color: #cbd5e1;
-          line-height: 1.35;
-        }
-
-        .maturity-tooltip-action {
-          margin-top: 5px;
-          font-size: 0.65rem;
-          color: #38bdf8;
-          font-weight: 600;
-          border-top: 1px solid rgba(255, 255, 255, 0.08);
-          padding-top: 4px;
-        }
-
-        .topo-tags {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 5px;
-          margin-top: 6px;
-        }
-
-        .topo-tag {
-          background: rgba(255, 255, 255, 0.04);
-          border: 1px solid rgba(255, 255, 255, 0.09);
-          border-radius: 6px;
-          padding: 2px 7px;
-          font-size: 0.7rem;
-          color: var(--otis-text);
-        }
-
-        /* Toast */
-        .toast {
-          position: absolute;
-          bottom: 16px;
-          left: 50%;
-          transform: translateX(-50%) translateY(100px);
-          background: var(--otis-primary);
-          color: var(--otis-btn-text, #ffffff);
-          padding: 8px 16px;
-          border-radius: 8px;
-          font-size: 0.78rem;
-          font-weight: 600;
-          box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-          transition: transform 0.3s cubic-bezier(0.18, 0.89, 0.32, 1.28);
-          pointer-events: none;
-          z-index: 100;
-          white-space: nowrap;
-        }
-
-        .toast.error {
-          background: #e11d48;
-        }
-
-        .toast.show {
-          transform: translateX(-50%) translateY(0);
-        }
-
-        /* Floorplan Tab & Viewer */
-        .floorplan-panel {
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
-        }
-
-        .floorplan-toolbar {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          flex-wrap: wrap;
-          gap: 8px;
-          background: var(--otis-surface);
-          border: 1px solid var(--otis-surface-border);
-          border-radius: 10px;
-          padding: 8px 12px;
-        }
-
-        .view-mode-pills {
-          display: inline-flex;
-          background: rgba(15, 23, 42, 0.65);
-          border: 1px solid var(--otis-surface-border, rgba(56, 189, 248, 0.22));
-          border-radius: 9px;
-          padding: 2px;
-          gap: 2px;
-        }
-
-        .view-mode-pill {
-          background: transparent;
-          border: none;
-          color: var(--otis-text-muted, #94a3b8);
-          font-size: 0.72rem;
-          font-weight: 700;
-          padding: 4px 9px;
-          border-radius: 7px;
-          cursor: pointer;
-          transition: all 0.2s ease;
-        }
-
-        .view-mode-pill:hover {
-          color: #fff;
-        }
-
-        .view-mode-pill.active {
-          background: var(--otis-primary, #0ea5e9);
-          color: #fff;
-          box-shadow: 0 0 8px rgba(14, 165, 233, 0.45);
-        }
-
-        .zone-pills {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          flex-wrap: wrap;
-        }
-
-        .zone-pill {
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid rgba(255, 255, 255, 0.1);
-          color: var(--otis-text-muted);
-          border-radius: 20px;
-          padding: 4px 10px;
-          font-size: 0.72rem;
-          font-weight: 600;
-          cursor: pointer;
-          transition: all 0.2s ease;
-        }
-
-        .zone-pill:hover {
-          background: rgba(255, 255, 255, 0.1);
-          color: var(--otis-text);
-        }
-
-        .zone-pill.active {
-          background: var(--otis-primary);
-          color: var(--otis-btn-text, #ffffff);
-          border-color: var(--otis-primary);
-        }
-
-        .floorplan-actions {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-        }
-
-        .btn-toolbar {
-          background: rgba(255, 255, 255, 0.06);
-          border: 1px solid rgba(255, 255, 255, 0.12);
-          color: var(--otis-text);
-          border-radius: 8px;
-          padding: 5px 10px;
-          font-size: 0.72rem;
-          font-weight: 600;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          gap: 5px;
-          transition: all 0.2s ease;
-        }
-
-        .btn-toolbar:hover {
-          background: rgba(255, 255, 255, 0.12);
-          border-color: var(--otis-primary);
-        }
-
-        .btn-toolbar:disabled,
-        .btn-toolbar.disabled {
-          opacity: 0.4;
-          cursor: not-allowed;
-          pointer-events: none;
-          background: rgba(255, 255, 255, 0.03);
-          border-color: rgba(255, 255, 255, 0.06);
-          color: var(--otis-text-muted);
-        }
-
-        .walkthrough-pending-banner {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 12px;
-          background: rgba(245, 158, 11, 0.1);
-          border: 1px solid rgba(245, 158, 11, 0.3);
-          border-radius: 10px;
-          padding: 8px 12px;
-          margin-bottom: 10px;
-          font-size: 0.74rem;
-          color: #fbbf24;
-        }
-
-        .walkthrough-pending-text {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          line-height: 1.35;
-        }
-
-        .btn-banner-walkthrough {
-          background: #f59e0b;
-          color: #0b0f19;
-          border: none;
-          border-radius: 6px;
-          padding: 5px 10px;
-          font-size: 0.72rem;
-          font-weight: 700;
-          cursor: pointer;
-          white-space: nowrap;
-          transition: background 0.2s;
-        }
-
-        .btn-banner-walkthrough:hover {
-          background: #d97706;
-        }
-
-        .floorplan-svg-viewport {
-          background: #090d16;
-          border: 1px solid var(--otis-surface-border);
-          border-radius: 12px;
-          padding: 8px 12px 12px 12px;
-          overflow: hidden;
-          min-height: 440px;
-          display: flex;
-          justify-content: center;
-          align-items: center;
-          position: relative;
-          box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.5);
-          user-select: none;
-        }
-
-        .floorplan-svg-viewport.view-3d-active {
-          touch-action: none;
-          cursor: grab;
-        }
-
-        .floorplan-svg-viewport.view-3d-active:active {
-          cursor: grabbing;
-        }
-
-        .floorplan-svg-viewport.editor-mode {
-          background-image: radial-gradient(rgba(56, 189, 248, 0.15) 1px, transparent 1px);
-          background-size: 24px 24px;
-          border-color: var(--otis-primary);
-        }
-
-        .floorplan-svg-viewport .entity-badge {
-          display: none !important;
-        }
-
-        .floorplan-svg-viewport svg .room-group,
-        .floorplan-svg-viewport svg .room-box,
-        .floorplan-svg-viewport svg .room-rect,
-        .floorplan-svg-viewport svg .room-polygon {
-          cursor: pointer !important;
-          pointer-events: auto !important;
-        }
-
-        .floorplan-svg-viewport svg .room-group:hover .room-box,
-        .floorplan-svg-viewport svg .room-group:hover .room-rect,
-        .floorplan-svg-viewport svg .room-group:hover .room-polygon,
-        .floorplan-svg-viewport svg .room-box:hover,
-        .floorplan-svg-viewport svg .room-rect:hover,
-        .floorplan-svg-viewport svg .room-polygon:hover {
-          fill-opacity: 1 !important;
-          stroke: var(--otis-primary, #38bdf8) !important;
-          filter: drop-shadow(0 0 14px var(--otis-primary, #38bdf8)) !important;
-        }
-
-        .floorplan-svg-viewport.view-3d-active svg .room-group:hover,
-        .floorplan-svg-viewport.view-3d-active svg .room-box:hover,
-        .floorplan-svg-viewport.view-3d-active svg .room-rect:hover,
-        .floorplan-svg-viewport.view-3d-active svg .room-polygon:hover {
-          cursor: pointer !important;
-        }
-
-        .floorplan-svg-viewport svg .plan-frame,
-        .floorplan-svg-viewport svg .container-shell,
-        .floorplan-svg-viewport svg .container-banner,
-        .floorplan-svg-viewport svg .zone-title,
-        .floorplan-svg-viewport svg .zone-subtitle,
-        .floorplan-svg-viewport svg .subzone-pill,
-        .floorplan-svg-viewport svg .door-cut,
-        .floorplan-svg-viewport svg .door-leaf,
-        .floorplan-svg-viewport svg .door-swing,
-        .floorplan-svg-viewport svg .door-garage,
-        .floorplan-svg-viewport svg .door-sliding,
-        .floorplan-svg-viewport svg .window-cut,
-        .floorplan-svg-viewport svg .window-sill,
-        .floorplan-svg-viewport svg .window-pane,
-        .floorplan-svg-viewport svg .window-cap,
-        .floorplan-svg-viewport svg .stairs-step {
-          pointer-events: none !important;
-        }
-
-        /* 3D Stage & Canvas Projection */
-        .floorplan-3d-stage {
-          perspective: 1200px;
-          perspective-origin: 50% 50%;
-          transform-style: flat;
-          pointer-events: none;
-          width: 100%;
-          height: 100%;
-          min-height: 420px;
-          display: flex;
-          justify-content: center;
-          align-items: center;
-          position: relative;
-          overflow: visible;
-        }
-
-        .floorplan-3d-canvas {
-          position: relative;
-          display: inline-block;
-          max-width: 100%;
-          max-height: 100%;
-          transform-style: preserve-3d;
-          transform-origin: 50% 50%;
-          pointer-events: none;
-          will-change: transform;
-          transition: transform 0.08s ease-out;
-        }
-
-        /* 3D Raised Transparent Walls - Illuminated Architectural Glass */
-        .floorplan-walls-overlay {
-          position: absolute;
-          top: 0;
-          left: 0;
-          width: 100%;
-          height: 100%;
-          pointer-events: none !important;
-          z-index: 6;
-          transform-style: preserve-3d;
-          backface-visibility: visible;
-          -webkit-backface-visibility: visible;
-        }
-
-        .floorplan-3d-room-shell {
-          position: absolute;
-          transform-style: preserve-3d;
-          pointer-events: none !important;
-          background: rgba(14, 165, 233, 0.04);
-          transition: background 0.2s ease, opacity 0.2s ease;
-          backface-visibility: visible;
-          -webkit-backface-visibility: visible;
-        }
-
-        .floorplan-3d-wall {
-          position: absolute;
-          pointer-events: none !important;
-          background: linear-gradient(to top, rgba(14, 165, 233, 0.15) 0%, rgba(56, 189, 248, 0.38) 60%, rgba(56, 189, 248, 0.75) 100%);
-          border-left: 2px solid rgba(56, 189, 248, 0.85);
-          border-right: 2px solid rgba(56, 189, 248, 0.85);
-          box-shadow: 0 0 14px rgba(56, 189, 248, 0.45), inset 0 0 10px rgba(56, 189, 248, 0.25);
-          transform-style: preserve-3d;
-          backface-visibility: visible !important;
-          -webkit-backface-visibility: visible !important;
-          transition: background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
-        }
-
-        .floorplan-3d-room-shell.is-hovered .floorplan-3d-wall,
-        .floorplan-3d-room-shell:hover .floorplan-3d-wall,
-        .floorplan-3d-wall:hover {
-          background: linear-gradient(to top, rgba(56, 189, 248, 0.35) 0%, rgba(56, 189, 248, 0.70) 60%, rgba(56, 189, 248, 1.0) 100%) !important;
-          border-color: #38bdf8 !important;
-          box-shadow: 0 0 22px #38bdf8, inset 0 0 14px rgba(56, 189, 248, 0.5) !important;
-        }
-
-        .door-cut,
-        .door-leaf,
-        .door-swing,
-        .door-garage,
-        .door-sliding,
-        .window-cut,
-        .window-sill,
-        .window-pane,
-        .window-cap,
-        .stairs-step {
-          pointer-events: none !important;
-        }
-
-        .floorplan-3d-wall-north {
-          top: 0;
-          left: 0;
-          width: 100%;
-          height: var(--wall-height, 36px);
-          transform-origin: top center;
-          transform: rotateX(90deg);
-          border-bottom: 3px solid #38bdf8;
-          box-shadow: 0 0 14px #38bdf8;
-        }
-
-        .floorplan-3d-wall-south {
-          bottom: 0;
-          left: 0;
-          width: 100%;
-          height: var(--wall-height, 36px);
-          transform-origin: bottom center;
-          transform: rotateX(-90deg);
-          border-top: 3px solid #38bdf8;
-          box-shadow: 0 0 14px #38bdf8;
-        }
-
-        .floorplan-3d-wall-west {
-          top: 0;
-          left: 0;
-          width: var(--wall-height, 36px);
-          height: 100%;
-          transform-origin: left center;
-          transform: rotateY(-90deg);
-          border-right: 3px solid #38bdf8;
-          box-shadow: 0 0 14px #38bdf8;
-        }
-
-        .floorplan-3d-wall-east {
-          top: 0;
-          right: 0;
-          width: var(--wall-height, 36px);
-          height: 100%;
-          transform-origin: right center;
-          transform: rotateY(90deg);
-          border-left: 3px solid #38bdf8;
-          box-shadow: 0 0 14px #38bdf8;
-        }
-
-        .floorplan-3d-room-shell[data-zone="outdoor"] {
-          display: none !important;
-        }
-
-        /* Contextual presence glow on room walls */
-        .floorplan-3d-room-shell.is-occupied .floorplan-3d-wall {
-          background: linear-gradient(to top, rgba(16, 185, 129, 0.20) 0%, rgba(52, 211, 153, 0.45) 60%, rgba(52, 211, 153, 0.85) 100%);
-          border-left-color: rgba(52, 211, 153, 0.95);
-          border-right-color: rgba(52, 211, 153, 0.95);
-        }
-        .floorplan-3d-room-shell.is-occupied .floorplan-3d-wall-north,
-        .floorplan-3d-room-shell.is-occupied .floorplan-3d-wall-south {
-          border-color: #34d399;
-          box-shadow: 0 0 16px #34d399;
-        }
-        .floorplan-3d-room-shell.is-occupied .floorplan-3d-wall-west,
-        .floorplan-3d-room-shell.is-occupied .floorplan-3d-wall-east {
-          border-color: #34d399;
-          box-shadow: 0 0 16px #34d399;
-        }
-
-        .floorplan-pins-overlay {
-          position: absolute;
-          top: 0;
-          left: 0;
-          width: 100%;
-          height: 100%;
-          pointer-events: none;
-          z-index: 10;
-          transform-style: preserve-3d;
-        }
-
-        .floorplan-device-pin {
-          position: absolute;
-          transform: translate3d(-50%, -50%, 14px) rotateZ(calc(-1 * var(--floorplan-azimuth, 0deg))) rotateX(calc(-1 * var(--floorplan-pitch, 0deg)));
-          transform-origin: 50% 50%;
-          transform-style: preserve-3d;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          cursor: pointer;
-          transition: transform 0.08s ease-out;
-          z-index: 20;
-          pointer-events: auto;
-          width: 26px;
-          height: 26px;
-          --mdc-icon-size: 22px;
-          color: #94a3b8;
-          user-select: none;
-        }
-
-        .floorplan-device-pin:hover {
-          transform: translate3d(-50%, -50%, 14px) rotateZ(calc(-1 * var(--floorplan-azimuth, 0deg))) rotateX(calc(-1 * var(--floorplan-pitch, 0deg))) scale(1.3);
-          z-index: 35;
-        }
-
-        .floorplan-device-pin ha-state-icon {
-          color: inherit !important;
-          --paper-item-icon-color: currentColor !important;
-          --state-icon-color: currentColor !important;
-          transition: color 0.18s ease, filter 0.18s ease;
-        }
-
-        .floorplan-device-pin.is-active ha-state-icon {
-          filter: drop-shadow(0 0 8px currentColor);
-        }
-
-        .floorplan-device-pin.is-draggable {
-          cursor: grab !important;
-        }
-
-        .floorplan-device-pin.is-draggable:active {
-          cursor: grabbing !important;
-        }
-
-        .floorplan-svg-viewport svg {
-          width: 100%;
-          height: 100%;
-          filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4));
-          display: block;
-          pointer-events: auto;
-        }
-
-        .floorplan-svg-viewport.view-3d-active svg {
-          filter: none;
-        }
-
-        /* 3D Orbit & Pitch Controls HUD */
-        .floorplan-3d-hud {
-          position: absolute;
-          top: 10px;
-          right: 10px;
-          z-index: 40;
-          background: rgba(15, 23, 42, 0.88);
-          backdrop-filter: blur(12px);
-          -webkit-backdrop-filter: blur(12px);
-          border: 1px solid rgba(56, 189, 248, 0.35);
-          border-radius: 10px;
-          padding: 8px 12px;
-          max-width: 380px;
-          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
-          font-size: 0.74rem;
-          color: var(--otis-text, #f1f5f9);
-          user-select: none;
-          pointer-events: auto;
-          transition: all 0.2s ease;
-        }
-
-        .floorplan-3d-hud.collapsed {
-          padding: 5px 10px;
-        }
-
-        .floorplan-3d-hud .hud-header {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 8px;
-        }
-
-        .floorplan-3d-hud .hud-title {
-          font-weight: 700;
-          color: var(--otis-primary, #38bdf8);
-          font-size: 0.76rem;
-        }
-
-        .floorplan-3d-hud .hud-badge {
-          background: rgba(56, 189, 248, 0.15);
-          border: 1px solid rgba(56, 189, 248, 0.3);
-          border-radius: 4px;
-          padding: 1px 6px;
-          font-size: 0.68rem;
-          font-weight: 600;
-          color: #93c5fd;
-        }
-
-        .floorplan-3d-hud .btn-hud-toggle {
-          background: transparent;
-          border: none;
-          color: var(--otis-text-muted, #94a3b8);
-          font-size: 0.76rem;
-          cursor: pointer;
-          padding: 2px 4px;
-          border-radius: 4px;
-        }
-
-        .floorplan-3d-hud .btn-hud-toggle:hover {
-          color: #fff;
-          background: rgba(255, 255, 255, 0.1);
-        }
-
-        .floorplan-3d-hud .hud-body {
-          margin-top: 8px;
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
-          border-top: 1px solid rgba(255, 255, 255, 0.08);
-          padding-top: 6px;
-        }
-
-        .floorplan-3d-hud .hud-row {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 8px;
-        }
-
-        .floorplan-3d-hud .hud-label {
-          color: var(--otis-text-muted, #94a3b8);
-          font-size: 0.7rem;
-          min-width: 82px;
-        }
-
-        .floorplan-3d-hud .hud-slider-wrap {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          flex: 1;
-        }
-
-        .floorplan-3d-hud .hud-slider {
-          flex: 1;
-          height: 4px;
-          background: rgba(255, 255, 255, 0.15);
-          border-radius: 2px;
-          outline: none;
-          -webkit-appearance: none;
-          appearance: none;
-        }
-
-        .floorplan-3d-hud .hud-slider::-webkit-slider-thumb {
-          -webkit-appearance: none;
-          appearance: none;
-          width: 13px;
-          height: 13px;
-          border-radius: 50%;
-          background: var(--otis-primary, #38bdf8);
-          cursor: pointer;
-          box-shadow: 0 0 6px rgba(56, 189, 248, 0.6);
-        }
-
-        .floorplan-3d-hud .btn-hud-step {
-          background: rgba(255, 255, 255, 0.08);
-          border: 1px solid rgba(255, 255, 255, 0.15);
-          color: #cbd5e1;
-          font-size: 0.68rem;
-          border-radius: 4px;
-          padding: 2px 6px;
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-
-        .floorplan-3d-hud .btn-hud-step:hover {
-          background: rgba(56, 189, 248, 0.25);
-          border-color: rgba(56, 189, 248, 0.45);
-          color: #fff;
-        }
-
-        .floorplan-3d-hud .hud-val {
-          font-variant-numeric: tabular-nums;
-          font-size: 0.7rem;
-          min-width: 32px;
-          text-align: right;
-          color: #e2e8f0;
-          font-weight: 600;
-        }
-
-        .floorplan-3d-hud .presets-row {
-          align-items: flex-start;
-          margin-top: 2px;
-        }
-
-        .floorplan-3d-hud .hud-presets-wrap {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 3px;
-          flex: 1;
-        }
-
-        .floorplan-3d-hud .btn-preset-pill {
-          background: rgba(15, 23, 42, 0.7);
-          border: 1px solid rgba(255, 255, 255, 0.12);
-          color: #94a3b8;
-          font-size: 0.65rem;
-          padding: 2px 5px;
-          border-radius: 4px;
-          cursor: pointer;
-          transition: all 0.15s;
-        }
-
-        .floorplan-3d-hud .btn-preset-pill:hover {
-          color: #fff;
-          border-color: rgba(56, 189, 248, 0.4);
-        }
-
-        .floorplan-3d-hud .btn-preset-pill.active {
-          background: rgba(56, 189, 248, 0.2);
-          border-color: var(--otis-primary, #38bdf8);
-          color: #fff;
-          font-weight: 700;
-        }
-
-        .floorplan-3d-hud .btn-preset-reset {
-          background: rgba(168, 85, 247, 0.15);
-          border: 1px solid rgba(168, 85, 247, 0.35);
-          color: #c084fc;
-          font-size: 0.65rem;
-          padding: 2px 6px;
-          border-radius: 4px;
-          cursor: pointer;
-          transition: all 0.15s;
-          margin-left: auto;
-        }
-
-        .floorplan-3d-hud .btn-preset-reset:hover {
-          background: rgba(168, 85, 247, 0.3);
-          color: #fff;
-        }
-
-        .floorplan-3d-hud .hud-hint {
-          font-size: 0.64rem;
-          color: var(--otis-text-muted, #94a3b8);
-          text-align: center;
-          margin-top: 4px;
-          font-style: italic;
-        }
-
-        .editor-toolbar-strip {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          background: rgba(56, 189, 248, 0.08);
-          border: 1px solid rgba(56, 189, 248, 0.3);
-          border-radius: 8px;
-          padding: 8px 12px;
-          gap: 8px;
-          flex-wrap: wrap;
-          font-size: 0.74rem;
-          margin-bottom: 8px;
-        }
-
-        .editor-hud {
-          position: absolute;
-          top: 12px;
-          right: 12px;
-          background: rgba(15, 23, 42, 0.9);
-          border: 1px solid var(--otis-primary);
-          color: var(--otis-primary);
-          padding: 4px 10px;
-          border-radius: 6px;
-          font-family: monospace;
-          font-size: 0.72rem;
-          z-index: 20;
-          pointer-events: none;
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
-        }
-
-        .room-inspector-card {
-          position: absolute;
-          top: 16px;
-          right: 16px;
-          background: var(--ha-card-background, #0f172a);
-          border: 1.5px solid var(--otis-primary);
-          border-radius: 12px;
-          padding: 12px 16px;
-          z-index: 30;
-          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
-          max-width: 320px;
-          width: 100%;
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-          font-size: 0.78rem;
-          animation: fadeIn 0.2s ease;
-          user-select: none;
-        }
-
-        .inspector-drag-handle {
-          cursor: grab;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding-bottom: 4px;
-          border-bottom: 1px solid var(--otis-surface-border);
-        }
-
-        .inspector-drag-handle:active {
-          cursor: grabbing;
-        }
-
-        .room-resize-handle {
-          fill: var(--otis-primary);
-          stroke: #ffffff;
-          stroke-width: 2;
-          cursor: pointer;
-          transition: fill 0.15s ease, stroke 0.15s ease;
-        }
-
-        .room-resize-handle:hover {
-          fill: #ffffff;
-          stroke: var(--otis-primary);
-          stroke-width: 3;
-        }
-
-        .room-resize-handle[data-handle="nw"],
-        .room-resize-handle[data-handle="se"] {
-          cursor: nwse-resize;
-        }
-
-        .room-resize-handle[data-handle="ne"],
-        .room-resize-handle[data-handle="sw"] {
-          cursor: nesw-resize;
-        }
-
-        .room-resize-handle[data-handle="n"],
-        .room-resize-handle[data-handle="s"] {
-          cursor: ns-resize;
-        }
-
-        .room-resize-handle[data-handle="e"],
-        .room-resize-handle[data-handle="w"] {
-          cursor: ew-resize;
-        }
-
-        .room-info-card {
-          background: var(--otis-surface);
-          border: 1px solid var(--otis-primary);
-          border-radius: 10px;
-          padding: 10px 14px;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          animation: fadeIn 0.3s ease;
-        }
-
-        /* Modals & Dialogs (Full-Viewport Floating Overlays) */
-        .modal-overlay {
-          position: fixed;
-          top: 0;
-          left: 0;
-          right: 0;
-          bottom: 0;
-          width: 100vw;
-          height: 100vh;
-          background: rgba(0, 0, 0, 0.75);
-          backdrop-filter: blur(8px);
-          -webkit-backdrop-filter: blur(8px);
-          display: flex;
-          justify-content: center;
-          align-items: center;
-          z-index: 99999;
-          padding: 24px;
-          box-sizing: border-box;
-          overflow-y: auto;
-        }
-
-        .modal-card {
-          background: var(--otis-bg, #0f172a);
-          border: 1px solid var(--otis-primary);
-          box-shadow: 0 16px 48px rgba(0, 0, 0, 0.75), 0 0 28px rgba(14, 165, 233, 0.25);
-          border-radius: 16px;
-          width: 100%;
-          max-width: 520px;
-          max-height: calc(100vh - 48px);
-          overflow-y: auto;
-          display: flex;
-          flex-direction: column;
-          gap: 16px;
-          padding: 20px;
-          position: relative;
-          color: var(--otis-text, #f8fafc);
-          box-sizing: border-box;
-          margin: auto;
-        }
-
-        @media (max-width: 600px) {
-          .modal-overlay {
-            padding: 12px;
-          }
-          .modal-card {
-            max-height: calc(100vh - 24px);
-            padding: 16px;
-          }
-        }
-
-        .modal-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: flex-start;
-        }
-
-        .modal-title {
-          font-size: 1.05rem;
-          font-weight: 700;
-          color: var(--otis-text);
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-
-        .modal-subtitle {
-          font-size: 0.75rem;
-          color: var(--otis-text-muted);
-          margin-top: 2px;
-        }
-
-        .modal-close-btn {
-          background: transparent;
-          border: none;
-          color: var(--otis-text-muted);
-          font-size: 1.2rem;
-          cursor: pointer;
-          padding: 4px;
-          line-height: 1;
-          border-radius: 4px;
-        }
-
-        .modal-close-btn:hover {
-          color: #fff;
-          background: rgba(255, 255, 255, 0.1);
-        }
-
-        .guide-box {
-          background: rgba(14, 165, 233, 0.08);
-          border: 1px solid rgba(14, 165, 233, 0.2);
-          border-radius: 10px;
-          padding: 12px;
-          font-size: 0.75rem;
-          line-height: 1.45;
-          color: #bae6fd;
-        }
-
-        .guide-box strong {
-          color: #38bdf8;
-        }
-
-        .guide-box ol {
-          margin: 6px 0 0 16px;
-          padding: 0;
-        }
-
-        .dropzone {
-          border: 2px dashed rgba(255, 255, 255, 0.2);
-          border-radius: 12px;
-          padding: 24px 16px;
-          text-align: center;
-          cursor: pointer;
-          background: rgba(255, 255, 255, 0.02);
-          transition: all 0.2s ease;
-          display: flex;
-          flex-direction: column;
-          align-items: center;
-          gap: 8px;
-        }
-
-        .dropzone:hover, .dropzone.dragover {
-          border-color: var(--otis-primary);
-          background: rgba(14, 165, 233, 0.06);
-        }
-
-        .dropzone-icon {
-          font-size: 2rem;
-        }
-
-        .dropzone-text {
-          font-size: 0.82rem;
-          font-weight: 600;
-          color: var(--otis-text);
-        }
-
-        .dropzone-sub {
-          font-size: 0.7rem;
-          color: var(--otis-text-muted);
-        }
-
-        .order-input-group {
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-
-        .order-input-group label {
-          font-size: 0.72rem;
-          font-weight: 600;
-          color: var(--otis-text-muted);
-        }
-
-        .order-input-group input {
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid var(--otis-surface-border);
-          border-radius: 8px;
-          padding: 8px 12px;
-          color: var(--otis-text);
-          font-size: 0.78rem;
-          outline: none;
-        }
-
-        .order-input-group input:focus {
-          border-color: var(--otis-primary);
-        }
-
-        .modal-actions {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-          margin-top: 4px;
-        }
-
-        .btn-modal-primary {
-          background: var(--otis-primary);
-          color: var(--otis-btn-text, #ffffff);
-          border: none;
-          border-radius: 10px;
-          padding: 10px 16px;
-          font-weight: 700;
-          font-size: 0.84rem;
-          cursor: pointer;
-          display: flex;
-          justify-content: center;
-          align-items: center;
-          gap: 8px;
-          transition: all 0.2s ease;
-        }
-
-        .btn-modal-primary:hover:not(:disabled) {
-          filter: brightness(1.1);
-          box-shadow: 0 4px 14px rgba(14, 165, 233, 0.4);
-        }
-
-        .btn-modal-primary:disabled {
-          opacity: 0.6;
-          cursor: not-allowed;
-        }
-
-        .btn-modal-secondary {
-          background: transparent;
-          border: 1px solid rgba(255, 255, 255, 0.15);
-          color: var(--otis-text);
-          border-radius: 10px;
-          padding: 8px 16px;
-          font-weight: 600;
-          font-size: 0.78rem;
-          cursor: pointer;
-          transition: all 0.2s ease;
-          text-align: center;
-        }
-
-        .btn-modal-secondary:hover:not(:disabled) {
-          background: rgba(255, 255, 255, 0.08);
-          border-color: var(--otis-primary);
-        }
-
-        /* Phase 8: Multi-Modal Vision & Presence Studio Styles */
-        .vision-panel {
-          display: flex;
-          flex-direction: column;
-          gap: 16px;
-          margin-top: 14px;
-        }
-
-        .vision-overview-card {
-          background: color-mix(in srgb, var(--otis-surface) 90%, transparent);
-          border: 1px solid var(--otis-surface-border);
-          border-radius: 14px;
-          padding: 14px 18px;
-          display: flex;
-          flex-wrap: wrap;
-          align-items: center;
-          justify-content: space-between;
-          gap: 12px;
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-        }
-
-        .vision-stats-row {
-          display: flex;
-          align-items: center;
-          gap: 12px;
-          flex-wrap: wrap;
-        }
-
-        .vision-stat-chip {
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          font-size: 0.76rem;
-          font-weight: 600;
-          padding: 4px 10px;
-          border-radius: 8px;
-          background: rgba(255, 255, 255, 0.05);
-          border: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        .vision-stat-chip.occupied {
-          background: rgba(16, 185, 129, 0.15);
-          border-color: rgba(16, 185, 129, 0.4);
-          color: #34d399;
-        }
-
-        .vision-stat-chip.micro_presence {
-          background: rgba(168, 85, 247, 0.15);
-          border-color: rgba(168, 85, 247, 0.4);
-          color: #c084fc;
-        }
-
-        .vision-stat-chip.likely {
-          background: rgba(245, 158, 11, 0.15);
-          border-color: rgba(245, 158, 11, 0.4);
-          color: #fbbf24;
-        }
-
-        .vision-stat-chip.vacant {
-          color: var(--otis-text-muted);
-        }
-
-        .vision-section-title {
-          font-size: 0.88rem;
-          font-weight: 700;
-          color: var(--otis-text);
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          margin-top: 6px;
-        }
-
-        .presence-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-          gap: 12px;
-        }
-
-        .presence-card {
-          background: color-mix(in srgb, var(--otis-surface) 80%, transparent);
-          border: 1px solid var(--otis-surface-border);
-          border-radius: 12px;
-          padding: 12px 14px;
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-          transition: transform 0.15s ease, border-color 0.15s ease;
-        }
-
-        .presence-card:hover {
-          transform: translateY(-2px);
-          border-color: var(--otis-primary);
-        }
-
-        .presence-card-head {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-        }
-
-        .presence-room-name {
-          font-weight: 700;
-          font-size: 0.85rem;
-          color: var(--otis-text);
-        }
-
-        .presence-badge {
-          font-size: 0.68rem;
-          font-weight: 700;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-          padding: 2px 8px;
-          border-radius: 6px;
-        }
-
-        .presence-badge.occupied {
-          background: rgba(16, 185, 129, 0.2);
-          color: #34d399;
-          border: 1px solid rgba(16, 185, 129, 0.4);
-        }
-
-        .presence-badge.micro_presence {
-          background: rgba(168, 85, 247, 0.25);
-          color: #c084fc;
-          border: 1px solid rgba(168, 85, 247, 0.5);
-          box-shadow: 0 0 8px rgba(168, 85, 247, 0.3);
-        }
-
-        .presence-badge.likely_occupied {
-          background: rgba(245, 158, 11, 0.2);
-          color: #fbbf24;
-          border: 1px solid rgba(245, 158, 11, 0.4);
-        }
-
-        .presence-badge.vacant {
-          background: rgba(255, 255, 255, 0.05);
-          color: var(--otis-text-muted);
-          border: 1px solid rgba(255, 255, 255, 0.08);
-        }
-
-        .presence-bar-track {
-          width: 100%;
-          height: 6px;
-          background: rgba(255, 255, 255, 0.08);
-          border-radius: 4px;
-          overflow: hidden;
-        }
-
-        .presence-bar-fill {
-          height: 100%;
-          border-radius: 4px;
-          transition: width 0.3s ease;
-        }
-
-        .presence-bar-fill.occupied {
-          background: linear-gradient(90deg, #10b981, #059669);
-          box-shadow: 0 0 8px rgba(16, 185, 129, 0.4);
-        }
-
-        .presence-bar-fill.micro_presence {
-          background: linear-gradient(90deg, #a855f7, #7c3aed);
-          box-shadow: 0 0 10px rgba(168, 85, 247, 0.5);
-        }
-
-        .presence-bar-fill.likely_occupied {
-          background: linear-gradient(90deg, #f59e0b, #d97706);
-        }
-
-        .presence-bar-fill.vacant {
-          background: rgba(255, 255, 255, 0.2);
-        }
-
-        .presence-sensors-row {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 6px;
-          font-size: 0.70rem;
-        }
-
-        .presence-sensor-pill {
-          padding: 2px 6px;
-          border-radius: 4px;
-          background: rgba(255, 255, 255, 0.04);
-          border: 1px solid rgba(255, 255, 255, 0.08);
-          color: var(--otis-text-muted);
-        }
-
-        .presence-sensor-pill.active {
-          background: rgba(14, 165, 233, 0.15);
-          border-color: rgba(14, 165, 233, 0.4);
-          color: #38bdf8;
-          font-weight: 600;
-        }
-
-        .camera-grid {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-          gap: 14px;
-        }
-
-        .camera-card {
-          background: color-mix(in srgb, var(--otis-surface) 85%, transparent);
-          border: 1px solid var(--otis-surface-border);
-          border-radius: 14px;
-          overflow: hidden;
-          display: flex;
-          flex-direction: column;
-        }
-
-        .camera-preview-container {
-          position: relative;
-          width: 100%;
-          height: 180px;
-          background: #090d16;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          overflow: hidden;
-        }
-
-        .camera-preview-img {
-          width: 100%;
-          height: 100%;
-          object-fit: cover;
-        }
-
-        .camera-cam-badge {
-          position: absolute;
-          top: 8px;
-          left: 8px;
-          background: rgba(0, 0, 0, 0.65);
-          backdrop-filter: blur(4px);
-          border: 1px solid rgba(255, 255, 255, 0.2);
-          color: #ffffff;
-          padding: 2px 8px;
-          border-radius: 6px;
-          font-size: 0.70rem;
-          font-weight: 600;
-        }
-
-        .camera-card-body {
-          padding: 12px 14px;
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-
-        .camera-card-title {
-          font-weight: 700;
-          font-size: 0.85rem;
-          color: var(--otis-text);
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-        }
-
-        .btn-analyze-camera {
-          background: linear-gradient(135deg, var(--otis-primary), color-mix(in srgb, var(--otis-primary) 70%, #9333ea));
-          color: var(--otis-btn-text, #ffffff);
-          border: none;
-          border-radius: 8px;
-          padding: 6px 12px;
-          font-size: 0.76rem;
-          font-weight: 600;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          gap: 6px;
-          transition: filter 0.15s ease;
-        }
-
-        .btn-analyze-camera:hover:not(:disabled) {
-          filter: brightness(1.15);
-        }
-
-        .btn-analyze-camera:disabled {
-          opacity: 0.6;
-          cursor: not-allowed;
-        }
-
-        .vision-audit-result {
-          background: rgba(0, 0, 0, 0.25);
-          border: 1px solid rgba(255, 255, 255, 0.1);
-          border-radius: 8px;
-          padding: 8px 10px;
-          font-size: 0.74rem;
-          display: flex;
-          flex-direction: column;
-          gap: 4px;
-        }
-
-        .tag-pill {
-          display: inline-block;
-          padding: 1px 6px;
-          border-radius: 4px;
-          font-size: 0.68rem;
-          font-weight: 600;
-          background: rgba(255, 255, 255, 0.08);
-          border: 1px solid rgba(255, 255, 255, 0.15);
-          color: var(--otis-text);
-        }
+      ${CARD_STYLES}
       </style>
 
-      <ha-card class="card-container ${themeClass} ${isStudioMode ? "mode-floorplan-studio" : ""} ${isMediaStudioMode ? "mode-media-studio" : ""}">
-        ${
-          isMediaStudioMode
-            ? `
+      <ha-card class="card-container ${themeClass} layout-${this._escapeHtml(layoutClass)} nav-${this._escapeHtml(navClass)} ${isStudioMode ? "mode-floorplan-studio" : ""} ${isMediaStudioMode ? "mode-media-studio" : ""}">
+        ${isMediaStudioMode
+        ? `
           <!-- Media Studio Header -->
           <div class="studio-header">
             <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
@@ -6258,8 +2974,8 @@ class OtisCompanionCard extends HTMLElement {
           </div>
           ${this._renderMediaStudioTab()}
         `
-            : isStudioHeaderMode
-            ? `
+        : isStudioHeaderMode
+          ? `
           <!-- Unified Studio / Room Header -->
           <div class="studio-header">
             <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
@@ -6271,14 +2987,14 @@ class OtisCompanionCard extends HTMLElement {
                 <span class="sub-title">
                   <span class="status-dot"></span>
                   ${this._escapeHtml(
-                    isSecurityMode
-                      ? "Perimeter Sentinel • Smart Locks • Motion & Occupancy Security"
-                      : isClimateMode
-                      ? "HVAC Dual-Setpoints • Ceiling Fans • Pool & Spa Controls"
-                      : isEnergyMode
-                      ? "Predictive Load Shedding • Solar & Inverter • TOU Tariff Management"
-                      : "Live Room Telemetry • Smart Lighting • Environmental Controls"
-                  )}
+            isSecurityMode
+              ? "Perimeter Sentinel • Smart Locks • Motion & Occupancy Security"
+              : isClimateMode
+                ? "HVAC Dual-Setpoints • Ceiling Fans • Pool & Spa Controls"
+                : isEnergyMode
+                  ? "Predictive Load Shedding • Solar & Inverter • TOU Tariff Management"
+                  : "Live Room Telemetry • Smart Lighting • Environmental Controls"
+          )}
                 </span>
               </div>
             </div>
@@ -6289,10 +3005,9 @@ class OtisCompanionCard extends HTMLElement {
             </div>
           </div>
         `
-            : isStudioMode
+          : isStudioMode
             ? `
-          ${
-            !isControlMode
+          ${!isControlMode
               ? `
           <!-- Studio Header (Full Width Blueprint Workspace) -->
           <div class="studio-header">
@@ -6309,14 +3024,13 @@ class OtisCompanionCard extends HTMLElement {
               </div>
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
-              ${
-                isAdmin
-                  ? `
+              ${isAdmin
+                ? `
                 <button type="button" class="btn-toolbar ${this._editorActive ? 'active' : ''}" id="btn-toggle-editor" style="${this._editorActive ? 'background: var(--otis-primary); color: var(--otis-btn-text, #ffffff); border-color: var(--otis-primary);' : ''}">
                   ${this._editorActive ? "🛠️ Exit Editor" : "✏️ Edit Blueprint"}
                 </button>
               `
-                  : ""
+                : ""
               }
               <button type="button" class="icon-btn" id="btn-open-themes" title="Dynamic AI Theme Studio">
                 🎨 Themes
@@ -6325,7 +3039,7 @@ class OtisCompanionCard extends HTMLElement {
           </div>
           `
               : ""
-          }
+            }
           ${this._renderFloorplanTab()}
         `
             : `
@@ -6360,8 +3074,7 @@ class OtisCompanionCard extends HTMLElement {
           </div>
 
           <!-- Quick Stats Bar -->
-          ${
-            this._config.show_stats !== false
+          ${this._config.show_stats !== false
               ? `
             <div class="stats-bar">
               <div class="stat-item">
@@ -6383,7 +3096,7 @@ class OtisCompanionCard extends HTMLElement {
             </div>
           `
               : ""
-          }
+            }
 
           <!-- Weather & Calendar Glance Strip -->
           ${this._renderGlanceStrip()}
@@ -6391,8 +3104,7 @@ class OtisCompanionCard extends HTMLElement {
           <!-- Spatial Migration Pre-Conditioning Status Chip -->
           ${this._renderPreconditioningChip()}
 
-          ${
-            this._shouldShowOnboardingBanner()
+          ${this._shouldShowOnboardingBanner()
               ? `
             <!-- Onboarding Wizard Callout Banner -->
             <div class="onboarding-banner" id="onboarding-banner" style="display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; margin-bottom: 12px; background: linear-gradient(135deg, rgba(14, 165, 233, 0.15), rgba(168, 85, 247, 0.15)); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.2);">
@@ -6412,7 +3124,7 @@ class OtisCompanionCard extends HTMLElement {
             </div>
           `
               : ""
-          }
+            }
 
           <!-- Studio & Room Subviews Launchpad -->
           <div class="subviews-launchpad">
@@ -6428,44 +3140,41 @@ class OtisCompanionCard extends HTMLElement {
                 <button type="button" class="subview-chip" id="btn-regenerate-dashboards" title="Regenerate Command Center, all Studios & Rooms from scratch" style="margin-left: 6px; background: rgba(14, 165, 233, 0.15); border-color: rgba(14, 165, 233, 0.4); color: var(--otis-primary);">⚡ Regenerate</button>
               ` : ""}
             </div>
-            ${
-              activeAreas.length > 0
-                ? `
+            ${activeAreas.length > 0
+              ? `
               <div class="launchpad-row">
                 <span class="subviews-label">Rooms:</span>
                 ${activeAreas
-                  .map(
-                    (room) => `
+                .map(
+                  (room) => `
                   <button type="button" class="subview-chip room-chip" data-subview="${this._escapeHtml(room.path)}">${this._getRoomEmoji(room.name)} ${this._escapeHtml(room.name)}</button>
                 `
-                  )
-                  .join("")}
+                )
+                .join("")}
               </div>
             `
-                : ""
+              : ""
             }
           </div>
 
           <!-- Navigation Tabs -->
           <div class="tabs-nav">
-            ${
-              this._config.show_suggestions !== false
-                ? `
+            ${this._config.show_suggestions !== false
+              ? `
               <button type="button" class="tab-btn ${this._activeTab === "suggestions" ? "active" : ""}" id="tab-suggestions">
                 Proactive Feed
                 ${activeSuggestions.length > 0 ? `<span class="tab-badge">${activeSuggestions.length}</span>` : ""}
               </button>
             `
-                : ""
+              : ""
             }
-            ${
-              this._config.show_chat !== false
-                ? `
+            ${this._config.show_chat !== false
+              ? `
               <button type="button" class="tab-btn ${this._activeTab === "chat" ? "active" : ""}" id="tab-chat">
                 Assist Co-Pilot
               </button>
             `
-                : ""
+              : ""
             }
             <button type="button" class="tab-btn ${this._activeTab === "media" ? "active" : ""}" id="tab-media">
               🎵 Media
@@ -6489,11 +3198,12 @@ class OtisCompanionCard extends HTMLElement {
           ${this._activeTab === "floorplan" ? this._renderFloorplanTab() : ""}
           ${this._activeTab === "vision" ? this._renderVisionTab() : ""}
         `
-        }
+      }
 
-        <!-- Feedback Toast -->
-        <div class="${this._activeToast && Date.now() < this._activeToast.expiresAt ? (this._activeToast.isError ? 'toast error show' : 'toast show') : 'toast'}" id="toast">${this._activeToast && Date.now() < this._activeToast.expiresAt ? this._escapeHtml(this._activeToast.msg) : ""}</div>
       </ha-card>
+
+      <!-- Feedback Toast (Rendered outside ha-card so position: fixed anchors to the browser viewport) -->
+      <div class="${this._activeToast && Date.now() < this._activeToast.expiresAt ? (this._activeToast.isError ? 'toast error show' : 'toast show') : 'toast'}" id="toast">${this._activeToast && Date.now() < this._activeToast.expiresAt ? this._escapeHtml(this._activeToast.msg) : ""}</div>
 
       <!-- Viewport Floating Modals (Rendered outside ha-card to prevent backdrop-filter / overflow containment clipping) -->
       ${this._floorplanModalOpen ? this._renderWalkthroughModal() : ""}
@@ -6504,6 +3214,8 @@ class OtisCompanionCard extends HTMLElement {
       ${this._failoverModalOpen ? this._renderFailoverModal() : ""}
       ${this._rulesModalOpen ? this._renderRulesModal() : ""}
       ${this._githubModalOpen ? this._renderGitHubIssueModal() : ""}
+      ${this._reviewSuggestion ? this._renderReviewSuggestionModal() : ""}
+      ${this._snapshotLightbox ? this._renderSnapshotLightboxModal() : ""}
     `;
 
     this._bindEvents();
@@ -6627,16 +3339,25 @@ class OtisCompanionCard extends HTMLElement {
     `;
   }
 
+  _resolveOtisEntityId(baseEid) {
+    const states = this._hass?.states || {};
+    if (states[baseEid]) return baseEid;
+    const prefix = `${baseEid}_`;
+    const match = Object.keys(states).find((k) => k.startsWith(prefix));
+    return match || baseEid;
+  }
+
   _renderPreconditioningChip() {
-    const sensor = this._hass?.states?.["sensor.otis_spatial_migration"];
+    const sensorEid = this._resolveOtisEntityId("sensor.otis_spatial_migration");
+    const sensor = this._hass?.states?.[sensorEid];
     if (!sensor) return "";
     const pState = sensor.attributes?.preconditioning_state;
     if (pState !== "in_progress") return "";
 
     const label = sensor.attributes?.preconditioning_label || (
       sensor.state === "movie_night" ? "🎬 Theater Pre-Cooling in progress" :
-      sensor.state === "sleep_bedtime" ? "🌙 Master Bedroom Nighttime Pre-Arming in progress" :
-      "⚡ Spatial Pre-Conditioning in progress"
+        sensor.state === "sleep_bedtime" ? "🌙 Master Bedroom Nighttime Pre-Arming in progress" :
+          "⚡ Spatial Pre-Conditioning in progress"
     );
     const macroId = sensor.attributes?.preconditioning_macro_id || "";
     const expiresAt = parseFloat(sensor.attributes?.preconditioning_expires_at) || 0;
@@ -6670,4875 +3391,6 @@ class OtisCompanionCard extends HTMLElement {
           <button type="button" class="btn-cancel-preconditioning subview-chip" data-macro-id="${macroId}" style="background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.45); color: #fca5a5; font-weight: 600; padding: 4px 10px; font-size: 0.74rem; cursor: pointer; border-radius: 6px; white-space: nowrap;">
             ✕ Cancel
           </button>
-        </div>
-      </div>
-    `;
-  }
-
-  _renderSuggestionsTab(visibleSuggestions) {
-    const showIgnored = Boolean(
-      this._localShowIgnored ||
-      this._config.show_ignored ||
-      this._userRules?.show_ignored_recommendations
-    );
-    const activeIgnored = (this._suggestions || []).filter((s) => this._dismissedIds.has(s.id));
-    const ignoredCount = activeIgnored.length;
-    const categories = [
-      { key: "all", label: "All" },
-      { key: "presence", label: "👥 People & Pets" },
-      { key: "migration", label: "🚀 Migrations" },
-      { key: "news", label: "📰 Official News" },
-      { key: "habits", label: "Habits & Routines" },
-      { key: "lighting", label: "Lighting & Auto" },
-      { key: "media", label: "Media" },
-      { key: "security", label: "Security" },
-      { key: "energy", label: "Energy" },
-      { key: "mesh", label: "Mesh & Zigbee" },
-      { key: "dashboard", label: "Dashboards" },
-      { key: "cleanup", label: "Cleanup" },
-      { key: "system", label: "System" },
-    ];
-    return `
-      <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;">
-        <div class="category-pills" style="margin-bottom: 0;">
-          ${categories
-            .map(
-              (c) => `
-            <button type="button" class="category-pill ${this._selectedCategory === c.key ? "active" : ""}" data-category-pill="${c.key}">
-              ${c.label}
-            </button>
-          `
-            )
-            .join("")}
-        </div>
-        ${
-          this._dismissedIds && this._dismissedIds.size > 0
-            ? `
-          <div style="display: flex; align-items: center; gap: 6px; margin-left: auto;">
-            <button type="button" class="btn-subtle-toggle ${showIgnored ? "active" : ""}" id="btn-toggle-show-ignored" title="${showIgnored ? "Hide dismissed suggestions" : "Show dismissed suggestions"}">
-              ${showIgnored ? "👁️ Hide Ignored" : `👁️ Show Ignored (${ignoredCount})`}
-            </button>
-            <button type="button" class="btn-subtle-toggle" id="btn-reset-ignored" title="Restore all ignored suggestions">
-              ↺ Reset
-            </button>
-          </div>
-        `
-            : ""
-        }
-      </div>
-      ${this._selectedCategory === "presence" ? this._renderPeopleTrainingSummaryBanner() : ""}
-      <div class="suggestions-list">
-        ${
-          this._loadingSuggestions
-            ? `<div class="empty-state"><div class="spinner" style="margin: 0 auto 8px auto; width: 20px; height: 20px;"></div>Analyzing home capabilities...</div>`
-            : visibleSuggestions.length === 0
-            ? `<div class="empty-state"><div class="empty-icon">✨</div>${
-                this._selectedCategory === "all"
-                  ? "Your smart home is running optimally! No proactive recommendations right now."
-                  : `No active recommendations in the "${this._selectedCategory}" category.`
-              }</div>`
-            : visibleSuggestions
-                .map((s) => {
-                  const isApplying = this._applyingIds.has(s.id);
-                  const btnLabel = this._getActionLabel(s.action_type);
-                  const isDismissed = this._dismissedIds.has(s.id);
-                  return `
-                    <div class="suggestion-card ${isDismissed ? "is-ignored" : ""}" data-id="${this._escapeHtml(s.id)}">
-                      <div class="suggestion-top">
-                        <div class="suggestion-badge-group">
-                          <span class="badge-category">${this._escapeHtml(s.category || "automation")}</span>
-                          <span class="badge-priority ${this._escapeHtml(s.priority || "medium")}">${this._escapeHtml(s.priority || "medium")}</span>
-                          ${isDismissed ? `<span class="badge-priority ignored">Ignored</span>` : ""}
-                        </div>
-                        ${
-                          isDismissed
-                            ? `<button type="button" class="dismiss-btn" data-restore="${this._escapeHtml(s.id)}" title="Restore recommendation">↺</button>`
-                            : `<button type="button" class="dismiss-btn" data-dismiss="${this._escapeHtml(s.id)}" title="Dismiss recommendation">✕</button>`
-                        }
-                      </div>
-                      <div class="suggestion-title">${this._escapeHtml(s.title || "")}</div>
-                      <div class="suggestion-desc">${this._escapeHtml(s.description || "").replace(/\n/g, "<br>")}</div>
-                      ${s.action_type === "confirm_person_identity" || s.action_type === "confirm_room_transition" ? this._renderTrainingVerificationMedia(s) : ""}
-                      <div class="suggestion-actions">
-                        ${
-                          s.action_type === "sentinel_alert_actions"
-                            ? `
-                          <div style="display: flex; gap: 8px; flex-wrap: wrap; width: 100%;">
-                            ${
-                              isDismissed
-                                ? `<button type="button" class="btn-toolbar btn-restore" data-restore="${this._escapeHtml(s.id)}">↺ Restore Alert</button>`
-                                : `
-                                <button type="button" class="btn-toolbar btn-ignore-alert" data-ignore-id="${this._escapeHtml(s.id)}" style="padding: 6px 12px; font-size: 0.76rem;">
-                                  ${this._escapeHtml(s.action_payload?.dismiss_single_label || "Ignore this alert")}
-                                </button>
-                                <button type="button" class="btn-toolbar btn-ignore-category" data-ignore-cat="${this._escapeHtml(s.action_payload?.category || s.anomaly_type || 'battery')}" style="padding: 6px 12px; font-size: 0.76rem; color: var(--otis-primary); border-color: var(--otis-primary);">
-                                  ${this._escapeHtml(s.action_payload?.dismiss_category_label || "Ignore all alerts in this category")}
-                                </button>
-                              `
-                            }
-                          </div>
-                        `
-                            : s.action_type === "confirm_person_identity" && Array.isArray(s.action_payload?.candidates) && s.action_payload.candidates.length > 0
-                            ? `
-                          <div style="display: flex; flex-direction: column; gap: 8px; width: 100%;">
-                            <div style="font-size: 0.73rem; font-weight: 600; color: var(--otis-primary);">Tap who entered ${this._escapeHtml(s.action_payload.area_name || s.action_payload.area || "this room")}:</div>
-                            <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
-                              ${s.action_payload.candidates.map((cand) => {
-                                const cIcon = cand.entity_type === "pet" ? "🐾" : (cand.entity_type === "guest" ? "👥" : "👤");
-                                return `
-                                  <button type="button" class="apply-btn btn-verify-room-candidate" data-suggestion-id="${this._escapeHtml(s.id)}" data-person-id="${this._escapeHtml(cand.person_id)}" data-person-label="${this._escapeHtml(cand.label)}" data-area="${this._escapeHtml(s.action_payload.area || "")}" data-area-name="${this._escapeHtml(s.action_payload.area_name || "")}" style="padding: 5px 11px; font-size: 0.75rem;">
-                                    ${cIcon} ${this._escapeHtml(cand.label)} (${Math.round((cand.confidence || 0.5) * 100)}%)
-                                  </button>
-                                `;
-                              }).join("")}
-                              <button type="button" class="btn-toolbar btn-verify-room-candidate" data-suggestion-id="${this._escapeHtml(s.id)}" data-person-id="unknown_person" data-person-label="Unknown Person" data-area="${this._escapeHtml(s.action_payload.area || "")}" data-area-name="${this._escapeHtml(s.action_payload.area_name || "")}" title="Log as an unknown visitor, delivery person, or passerby" style="padding: 5px 10px; font-size: 0.74rem; background: rgba(245, 158, 11, 0.14); border: 1px solid rgba(245, 158, 11, 0.45); color: #fbbf24; border-radius: 6px; cursor: pointer;">
-                                🕵️ Unknown Person
-                              </button>
-                              <button type="button" class="btn-toolbar btn-verify-room-candidate" data-suggestion-id="${this._escapeHtml(s.id)}" data-person-id="unknown_animal" data-person-label="Unknown Animal" data-area="${this._escapeHtml(s.action_payload.area || "")}" data-area-name="${this._escapeHtml(s.action_payload.area_name || "")}" title="Log as wildlife or a non-household animal" style="padding: 5px 10px; font-size: 0.74rem; background: rgba(16, 185, 129, 0.14); border: 1px solid rgba(16, 185, 129, 0.45); color: #34d399; border-radius: 6px; cursor: pointer;">
-                                🦊 Unknown Animal
-                              </button>
-                              <button type="button" class="btn-toolbar btn-verify-room-candidate" data-suggestion-id="${this._escapeHtml(s.id)}" data-person-id="not_person_pet" data-person-label="Not Person/Pet" data-area="${this._escapeHtml(s.action_payload.area || "")}" data-area-name="${this._escapeHtml(s.action_payload.area_name || "")}" title="Mark as false positive (wind, shadows, foliage, or object)" style="padding: 5px 10px; font-size: 0.74rem; background: rgba(239, 68, 68, 0.14); border: 1px solid rgba(239, 68, 68, 0.45); color: #f87171; border-radius: 6px; cursor: pointer;">
-                                🚫 Not Person/Pet
-                              </button>
-                              ${
-                                isDismissed
-                                  ? `<button type="button" class="btn-restore" data-restore="${this._escapeHtml(s.id)}">↺ Restore</button>`
-                                  : `<button type="button" class="btn-dismiss-card" data-dismiss="${this._escapeHtml(s.id)}" title="Dismiss this room prompt">Ignore</button>`
-                              }
-                            </div>
-                          </div>
-                        `
-                            : s.action_type === "confirm_room_transition" && Array.isArray(s.action_payload?.candidate_rooms) && s.action_payload.candidate_rooms.length > 0
-                            ? `
-                          <div style="display: flex; flex-direction: column; gap: 8px; width: 100%;">
-                            <div style="font-size: 0.73rem; font-weight: 600; color: var(--otis-primary);">Select which room the ${this._escapeHtml(s.action_payload.subject || "person")} entered from ${this._escapeHtml(s.action_payload.from_area_name || s.action_payload.from_area || "this area")}:</div>
-                            <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
-                              ${s.action_payload.candidate_rooms.map((rm) => `
-                                <button type="button" class="apply-btn btn-confirm-room-transition" data-suggestion-id="${this._escapeHtml(s.id)}" data-to-area="${this._escapeHtml(rm.area_id)}" data-to-area-name="${this._escapeHtml(rm.area_name || rm.area_id)}" style="padding: 5px 11px; font-size: 0.75rem;">
-                                  🚪 ${this._escapeHtml(rm.area_name || rm.area_id)}
-                                </button>
-                              `).join("")}
-                              ${
-                                isDismissed
-                                  ? `<button type="button" class="btn-restore" data-restore="${this._escapeHtml(s.id)}">↺ Restore</button>`
-                                  : `<button type="button" class="btn-dismiss-card" data-dismiss="${this._escapeHtml(s.id)}" title="Dismiss this room transition prompt">Ignore</button>`
-                              }
-                            </div>
-                          </div>
-                        `
-                            : s.action_type === "github_report_issue"
-                            ? `
-                          <div style="display: flex; gap: 8px; flex-wrap: wrap; width: 100%;">
-                            <button type="button" class="apply-btn btn-report-github" data-suggestion-id="${this._escapeHtml(s.id)}" style="padding: 5px 12px; font-size: 0.76rem; background: linear-gradient(135deg, #1f2937 0%, #0284c7 100%); color: #fff; border: 1px solid rgba(255,255,255,0.2);">
-                              🚀 Report to GitHub
-                            </button>
-                            ${
-                              isDismissed
-                                ? `<button type="button" class="btn-restore" data-restore="${this._escapeHtml(s.id)}">↺ Restore</button>`
-                                : `<button type="button" class="btn-dismiss-card" data-dismiss="${this._escapeHtml(s.id)}" title="Ignore this error">Ignore</button>`
-                            }
-                          </div>
-                        `
-                            : s.action_type === "tracked_github_issue"
-                            ? `
-                          <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; width: 100%;">
-                            <a href="${this._escapeHtml(s.action_payload?.issue_url || '#')}" target="_blank" rel="noopener noreferrer" class="apply-btn" style="text-decoration: none; display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; font-size: 0.76rem; background: rgba(14, 165, 233, 0.15); border: 1px solid var(--otis-primary); color: #38bdf8;">
-                              🔗 View on GitHub ↗
-                            </a>
-                            <button type="button" class="btn-toolbar btn-dismiss-tracked-issue" data-track-id="${this._escapeHtml(s.action_payload?.track_id || '')}" style="padding: 5px 10px; font-size: 0.74rem;">
-                              ✕ Dismiss Tracking
-                            </button>
-                          </div>
-                        `
-                            : s.action_type === "dismiss_self_healing_alert"
-                            ? `
-                          <div style="display: flex; gap: 8px; width: 100%;">
-                            <button type="button" class="btn-dismiss-card" data-dismiss="${this._escapeHtml(s.id)}">Acknowledge</button>
-                          </div>
-                        `
-                            : `
-                          <button type="button" class="apply-btn" data-apply="${this._escapeHtml(s.id)}" ${isApplying ? "disabled" : ""}>
-                            ${isApplying ? `<div class="spinner"></div> Applying...` : this._escapeHtml(btnLabel)}
-                          </button>
-                          ${
-                            isDismissed
-                              ? `<button type="button" class="btn-restore" data-restore="${this._escapeHtml(s.id)}" title="Restore to active recommendations">↺ Restore</button>`
-                              : `<button type="button" class="btn-dismiss-card" data-dismiss="${this._escapeHtml(s.id)}" title="Ignore this recommendation">Ignore this</button>`
-                          }
-                        `
-                        }
-                      </div>
-                    </div>
-                  `;
-                })
-                .join("")
-        }
-      </div>
-    `;
-  }
-
-  _renderChatActionButtons(m) {
-    if (m.sender !== "otis" || m.isError) return "";
-    const txt = m.text || "";
-    const hasConfirmPrompt =
-      /Say\s+(?:['"`*]+)?yes(?:['"`*]+)?\s+or\s+(?:['"`*]+)?(?:apply|confirm)(?:['"`*]+)?/i.test(txt) ||
-      txt.includes("Would you like me to deploy and enable") ||
-      txt.includes("Would you like me to create and enable");
-    if (
-      txt.includes("Would you like me to update and deploy this blueprint") ||
-      txt.includes("Would you like me to update this blueprint") ||
-      txt.includes("Would you like me to create this blueprint") ||
-      (txt.toLowerCase().includes("blueprint") && hasConfirmPrompt)
-    ) {
-      return `
-        <div class="chat-macro-actions">
-          <button type="button" class="macro-action-btn confirm" data-chip="apply">🚀 Deploy & Update Blueprint</button>
-          <button type="button" class="macro-action-btn cancel" data-chip="cancel">✕ Cancel</button>
-        </div>
-      `;
-    }
-    if (
-      txt.includes("Would you like me to create and enable this automation") ||
-      txt.includes("Would you like me to deploy and enable") ||
-      ((txt.toLowerCase().includes("automation") || /```yaml[\s\S]*?(?:trigger|triggers):[\s\S]*?(?:action|actions):/i.test(txt)) && hasConfirmPrompt)
-    ) {
-      return `
-        <div class="chat-macro-actions">
-          <button type="button" class="macro-action-btn confirm" data-chip="apply">🚀 Deploy & Enable Automation</button>
-          <button type="button" class="macro-action-btn cancel" data-chip="cancel">✕ Cancel</button>
-        </div>
-      `;
-    }
-    if (
-      txt.includes("Would you like me to create this script") ||
-      (txt.toLowerCase().includes("script") && hasConfirmPrompt)
-    ) {
-      return `
-        <div class="chat-macro-actions">
-          <button type="button" class="macro-action-btn confirm" data-chip="apply">🚀 Deploy & Enable Script</button>
-          <button type="button" class="macro-action-btn cancel" data-chip="cancel">✕ Cancel</button>
-        </div>
-      `;
-    }
-    if (hasConfirmPrompt) {
-      return `
-        <div class="chat-macro-actions">
-          <button type="button" class="macro-action-btn confirm" data-chip="apply">✅ Confirm & Deploy</button>
-          <button type="button" class="macro-action-btn cancel" data-chip="cancel">✕ Cancel</button>
-        </div>
-      `;
-    }
-    if (txt.includes("Say 'undo' or 'rollback'")) {
-      return `
-        <div class="chat-macro-actions">
-          <button type="button" class="macro-action-btn rollback" data-chip="undo macro">↺ Rollback / Undo Macro</button>
-        </div>
-      `;
-    }
-    return "";
-  }
-
-  _renderReasoningTrace(m) {
-    const traceId = m.id || m.timestamp || m.text;
-    const isExpanded = this._expandedReasoningIds.has(traceId);
-    const steps = (m.reasoning && m.reasoning.steps) || [];
-
-    // Check if an agent_resolution step exists
-    const resStep = steps.find((s) => s.id === "agent_resolution" || (s.title && s.title.startsWith("Resolved by")));
-    const failStep = steps.find((s) => s.id === "agent_exhaustion" || (s.title && s.title.includes("Unavailable")));
-    let agentBadge = "";
-    if (resStep) {
-      const isLocal = resStep.title.toLowerCase().includes("local") || resStep.title.toLowerCase().includes("edge");
-      const icon = isLocal ? "⚡" : "☁️";
-      const cleanTitle = resStep.title.replace("Resolved by ", "").trim();
-      agentBadge = ` • <span class="reasoning-agent-pill ${isLocal ? 'edge' : 'cloud'}" title="${this._escapeHtml(resStep.detail || cleanTitle)}">${icon} ${this._escapeHtml(cleanTitle)}</span>`;
-    } else if (failStep) {
-      agentBadge = ` • <span class="reasoning-agent-pill failed" title="${this._escapeHtml(failStep.detail || 'All AI Providers Unavailable')}">⚠️ Unavailable</span>`;
-    }
-
-    return `
-      <div class="reasoning-trace-container">
-        <button type="button" class="reasoning-trace-toggle ${isExpanded ? "expanded" : ""}" data-trace-id="${this._escapeHtml(traceId)}">
-          <span class="reasoning-brain-icon">🧠</span>
-          <span class="reasoning-summary-text">Thought for ${this._escapeHtml(m.reasoning.duration || "a moment")} (${steps.length} steps)${agentBadge}</span>
-          <svg class="reasoning-chevron" viewBox="0 0 24 24"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>
-        </button>
-        <div class="reasoning-steps-list" style="${isExpanded && steps.length > 0 ? "" : "display: none;"}">
-          ${steps
-            .map(
-              (s) => {
-                const isResolution = s.id === "agent_resolution" || (s.title && s.title.startsWith("Resolved by"));
-                const isExhaustion = s.id === "agent_exhaustion" || (s.title && s.title.includes("Unavailable"));
-                const isLocal = isResolution && (s.title.toLowerCase().includes("local") || s.title.toLowerCase().includes("edge"));
-                const checkIcon = isExhaustion ? "⚠️" : isResolution ? (isLocal ? "⚡" : "☁️") : "✓";
-                const itemClass = isExhaustion ? "reasoning-step-item failed exhaustion" : isResolution ? "reasoning-step-item done resolution" : "reasoning-step-item done";
-                return `
-            <div class="${itemClass}">
-              <span class="step-check">${checkIcon}</span>
-              <div class="step-content">
-                <div class="step-title">${this._escapeHtml(s.title || "Step")}</div>
-                <div class="step-detail">${this._escapeHtml(s.detail || "")}</div>
-              </div>
-              <span class="step-time">${this._escapeHtml(s.time || "")}</span>
-            </div>
-          `;
-              }
-            )
-            .join("")}
-        </div>
-      </div>
-    `;
-  }
-
-  _renderChatTab() {
-    return `
-      <div class="chat-container">
-        <div class="chat-chips">
-          <button type="button" class="chip-btn" data-chip="Prep home for movie night">🎬 Movie Night</button>
-          <button type="button" class="chip-btn" data-chip="Goodnight routine">🌙 Goodnight</button>
-          <button type="button" class="chip-btn" data-chip="Party mode">🥂 Party Mode</button>
-          <button type="button" class="chip-btn" data-chip="Lockdown home">🛡️ Lockdown</button>
-          <button type="button" class="chip-btn" data-chip="Energy summary">⚡ Energy Summary</button>
-          <button type="button" class="chip-btn" data-chip="Shed non-essential loads">📉 Shed Loads</button>
-          <button type="button" class="chip-btn" data-chip="Handoff audio to study">🎵 Audio Handoff</button>
-          <button type="button" class="chip-btn" data-chip="Release idle sources">🔇 Idle Guard</button>
-          <button type="button" class="chip-btn" data-chip="Suggest automations for my active areas">💡 Automations</button>
-          <button type="button" class="chip-btn" data-chip="Clean up orphaned entities">🧹 Clean orphans</button>
-          <button type="button" class="chip-btn" data-chip="Undo last macro">↺ Undo</button>
-          <button type="button" class="chip-btn" id="btn-clear-chat" title="Clear conversation history">🗑️ Clear</button>
-        </div>
-        <div class="chat-history" id="chat-history">
-          ${
-            this._chatMessages.length === 0
-              ? `<div class="empty-state" style="padding: 16px;">Ask Otis anything about your automations, devices, or areas.</div>`
-              : this._chatMessages
-                  .map(
-                    (m) => `
-                <div class="chat-bubble ${m.sender} ${m.isError ? "error" : ""}">
-                  ${
-                    m.sender === "user"
-                      ? `
-                    <button type="button" class="prompt-copy-btn" title="Copy prompt to input" data-prompt="${this._escapeHtml(m.text)}">
-                      <svg viewBox="0 0 24 24" class="copy-icon">
-                        <path d="M16 1H4C2.9 1 2 1.9 2 3v14h2V3h12V1zm3 4H8C6.9 5 6 5.9 6 7v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-                      </svg>
-                    </button>
-                  `
-                      : `
-                    <div class="bubble-actions-group">
-                      <button type="button" class="response-retry-btn" title="Retry this turn" data-msg-id="${this._escapeHtml(m.id || "")}">
-                        <svg viewBox="0 0 24 24" class="copy-icon">
-                          <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
-                        </svg>
-                        <span class="retry-label">Retry</span>
-                      </button>
-                      <button type="button" class="response-copy-btn" title="Copy response to clipboard" data-response="${this._escapeHtml(m.text)}">
-                        <svg viewBox="0 0 24 24" class="copy-icon">
-                          <path d="M16 1H4C2.9 1 2 1.9 2 3v14h2V3h12V1zm3 4H8C6.9 5 6 5.9 6 7v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z"/>
-                        </svg>
-                        <span class="copy-label">Copy</span>
-                      </button>
-                    </div>
-                  `
-                  }
-                  ${
-                    m.attachments && m.attachments.length > 0
-                      ? `
-                    <div class="bubble-attachments">
-                      ${m.attachments
-                        .map((att) =>
-                          att.isImage
-                            ? `<img src="${att.data}" class="bubble-attachment-img" alt="${this._escapeHtml(att.name)}" title="${this._escapeHtml(att.name)}" />`
-                            : `<div class="bubble-attachment-file"><span>📄</span> ${this._escapeHtml(att.name)}</div>`
-                        )
-                        .join("")}
-                    </div>
-                  `
-                      : ""
-                  }
-                  ${
-                    m.sender === "otis" && m.reasoning && m.reasoning.steps && m.reasoning.steps.length
-                      ? this._renderReasoningTrace(m)
-                      : ""
-                  }
-                  ${this._renderMarkdown(m.text)}
-                  ${this._renderChatActionButtons(m)}
-                </div>
-              `
-                  )
-                  .join("")
-          }
-          ${
-            this._isSendingChat
-              ? `
-            <div class="chat-bubble otis thinking-bubble" id="active-thinking-bubble">
-              <div class="thinking-bubble-header">
-                <span class="otis-badge">🤖 Otis</span>
-                <span class="thinking-status-pill">
-                  <span class="pill-pulse-dot"></span>
-                  <span id="thinking-pill-text">Reasoning</span>
-                </span>
-                <span class="thinking-timer" id="thinking-elapsed-timer">⏱️ 0.0s</span>
-                <button type="button" class="chat-stop-btn" id="btn-stop-thinking-bubble" title="Stop reasoning">⏹️ Stop</button>
-              </div>
-              <div class="thinking-steps-stream" id="thinking-steps-stream">
-                ${this._renderThinkingStepsStream()}
-              </div>
-              <div class="thinking-wave-container">
-                <div class="typing-wave">
-                  <span></span>
-                  <span></span>
-                  <span></span>
-                </div>
-                <span class="thinking-stage-text" id="thinking-stage-text">${this._escapeHtml(this._getCurrentThinkingStatus())}</span>
-              </div>
-            </div>
-          `
-              : ""
-          }
-        </div>
-        <div class="chat-live-preview" id="chat-live-preview" style="display: none;">
-          <div class="chat-live-preview-header">
-            <div class="chat-live-preview-title">
-              <svg viewBox="0 0 24 24" class="preview-icon">
-                <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
-              </svg>
-              <span>Markdown Live Preview</span>
-            </div>
-            <button type="button" class="preview-close-btn" id="chat-preview-close" title="Dismiss preview">✕</button>
-          </div>
-          <div class="chat-live-preview-body" id="chat-live-preview-body"></div>
-        </div>
-        ${
-          this._isSendingChat
-            ? `
-          <div class="chat-thinking-banner">
-            <div class="thinking-avatar-pulse">
-              <span class="thinking-brain">🧠</span>
-              <span class="thinking-pulse-ring"></span>
-            </div>
-            <div class="thinking-text-group">
-              <div class="thinking-title" id="thinking-banner-title">Otis is reasoning: ${this._escapeHtml(this._getCurrentThinkingTitle())}</div>
-              <div class="thinking-subtitle" id="thinking-banner-sub">${this._escapeHtml(this._getCurrentThinkingStatus())}</div>
-            </div>
-            <button type="button" class="chat-stop-btn" id="btn-stop-thinking-banner" title="Stop reasoning">⏹️ Stop</button>
-          </div>
-        `
-            : ""
-        }
-        ${
-          this._pendingAttachments && this._pendingAttachments.length > 0
-            ? `
-          <div class="chat-attachments-tray">
-            ${this._pendingAttachments
-              .map(
-                (att, i) => `
-              <div class="chat-attachment-item">
-                ${
-                  att.isImage
-                    ? `<img src="${att.data}" class="chat-attachment-thumb" alt="${this._escapeHtml(att.name)}" />`
-                    : `<span>📄</span>`
-                }
-                <span class="chat-attachment-name" title="${this._escapeHtml(att.name)}">${this._escapeHtml(att.name)}</span>
-                <button type="button" class="chat-attachment-remove" data-remove-att="${i}" title="Remove file">✕</button>
-              </div>
-            `
-              )
-              .join("")}
-          </div>
-        `
-            : ""
-        }
-        <div class="chat-input-bar">
-          <input type="file" id="chat-file-input" accept="image/*,.txt,.yaml,.yml,.json,.csv,.log,.svg" multiple style="display:none;" />
-          <button type="button" class="attach-btn" id="chat-attach-btn" title="Attach file or image" ${this._isSendingChat ? "disabled" : ""}>
-            <svg viewBox="0 0 24 24" style="width: 18px; height: 18px; fill: currentColor;">
-              <path d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5a2.5 2.5 0 0 1 5 0v10.5c0 .83-.67 1.5-1.5 1.5s-1.5-.67-1.5-1.5V6H9v9.5a3 3 0 0 0 6 0V5a4 4 0 0 0-8 0v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/>
-            </svg>
-          </button>
-          <div class="chat-input-wrapper ${this._isListening ? "listening" : ""} ${this._isSendingChat ? "sending" : ""}">
-            ${
-              this._isListening
-                ? `
-              <div class="voice-equalizer" title="Listening to speech...">
-                <span class="equalizer-bar"></span>
-                <span class="equalizer-bar"></span>
-                <span class="equalizer-bar"></span>
-                <span class="equalizer-bar"></span>
-                <span class="equalizer-bar"></span>
-              </div>
-            `
-                : ""
-            }
-            <textarea
-              class="chat-input"
-              id="chat-input"
-              rows="1"
-              ${this._isSendingChat ? "disabled" : ""}
-              placeholder="${this._isSendingChat ? "Otis is reasoning & formulating response... please wait" : (this._isListening ? "Listening... speak now" : "Ask Otis or give a voice/text command... (Shift+Enter for newline)")}"
-            >${this._draftChatText || ""}</textarea>
-          </div>
-          <button type="button" class="mic-btn ${this._isListening ? "listening" : ""}" id="chat-mic" title="${this._isListening ? "Listening... click to stop" : "Voice command"}" ${this._isSendingChat ? "disabled" : ""}>
-            <svg viewBox="0 0 24 24" class="mic-icon">
-              <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
-              <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
-            </svg>
-          </button>
-          <button type="button" class="send-btn ${this._isSendingChat ? "sending" : ""}" id="chat-send" title="${this._isSendingChat ? "Stop in-flight reasoning" : "Send message"}">
-            ${
-              this._isSendingChat
-                ? "⏹️ Stop"
-                : "Send"
-            }
-          </button>
-        </div>
-      </div>
-    `;
-  }
-
-  _renderCapabilitiesTab(stats) {
-    const namedAdj = Object.entries(this._capabilityMap?.spatial_graph?.named_adjacencies || {}).filter(
-      ([_, nbrs]) => nbrs && nbrs.length > 0
-    );
-    const integrations = this._capabilityMap?.integrations || [];
-    const maturity = this._capabilityMap?.maturity || {};
-    const mScore = maturity.score ?? 50;
-    const mStage = maturity.stage || "Configured Foundation";
-    const bd = maturity.breakdown || {};
-    const inferredCount =
-      Object.keys(maturity.inferred_device_assignments || {}).length +
-      Object.keys(maturity.inferred_entity_assignments || {}).length;
-
-    const mediaTopo = this._capabilityMap?.media_topology || {};
-    const matrixZones = mediaTopo.matrix_zones || [];
-    const sharedSources = mediaTopo.shared_sources || [];
-    const inputStreamers = mediaTopo.input_streamers || [];
-    const tvZones = mediaTopo.tv_cinema_zones || [];
-
-    const secTopo = this._capabilityMap?.security_topology || {};
-    const alarmPanels = secTopo.alarm_panels || [];
-    const locks = secTopo.locks || [];
-    const garageCovers = secTopo.garage_covers || [];
-    const sirens = secTopo.sirens || [];
-    const cameras = secTopo.cameras || [];
-    const bedSensors = secTopo.bed_occupancy_sensors || [];
-
-    const comm = this._capabilityMap?.commissioning || {};
-    const fed = this._capabilityMap?.federation || {};
-
-    const categories = [
-      { key: "spatial", label: "Spatial", max: 20 },
-      { key: "hygiene", label: "Hygiene", max: 20 },
-      { key: "automation", label: "Automations", max: 20 },
-      { key: "security", label: "Security", max: 20 },
-      { key: "media", label: "Media", max: 20 },
-    ];
-    const tips = maturity.tips || {};
-
-    const getMaturityTip = (key, val) => {
-      if (tips[key]) return tips[key];
-      if (val >= 20) return "20/20 (Perfect) • Fully mature smart home standard achieved.";
-      switch (key) {
-        case "spatial":
-          return `${val}/20 • To reach 20/20: Add at least 3 areas, assign entities to rooms, and create an interactive Floor Plan or walkthrough video.`;
-        case "hygiene":
-          return `${val}/20 • To reach 20/20: Clean up orphaned entities and auto-commission unassigned devices to their rooms.`;
-        case "automation":
-          return `${val}/20 • To reach 20/20: Create essential room occupancy lighting, climate guards, and daily routines to reach 5+ automations/scripts.`;
-        case "security":
-          return `${val}/20 • To reach 20/20: Install an alarm panel (e.g. Alarmo), configure smart locks, and set up presence/occupancy detection.`;
-        case "media":
-          return `${val}/20 • To reach 20/20: Deploy a multi-zone audio router, configure speaker grouping, or pair Music Assistant for whole-home audio.`;
-        default:
-          return `${val}/20 • Complete recommendations in the Proactive Feed to reach 20/20 maturity.`;
-      }
-    };
-
-    return `
-      <div class="capabilities-panel">
-        <div class="cap-block">
-          <div class="cap-title">
-            <span>Smart Home Maturity Score</span>
-            <span style="color: var(--otis-primary); font-weight: 700;">${mScore} / 100 • ${mStage}</span>
-          </div>
-          <div class="maturity-bar-track">
-            <div class="maturity-bar-fill" style="width: ${Math.min(100, Math.max(0, mScore))}%;"></div>
-          </div>
-          <div class="maturity-grid">
-            ${categories
-              .map((c) => {
-                const val = bd[c.key] ?? 0;
-                const tip = getMaturityTip(c.key, val);
-                const isMax = val >= 20;
-                return `
-                  <div class="maturity-pill ${isMax ? "maturity-pill-max" : "maturity-pill-improve"}"
-                       data-cat="${c.key}"
-                       title="${tip.replace(/"/g, "&quot;")}">
-                    <span class="maturity-pill-val">
-                      ${val}/20 ${isMax ? '<span style="color:#10b981; font-size:0.65rem;">✓</span>' : '<span style="color:#f59e0b; font-size:0.65rem;">↑</span>'}
-                    </span>
-                    <span class="maturity-pill-lbl">${c.label}</span>
-                    <div class="maturity-tooltip">
-                      <div class="maturity-tooltip-header">
-                        <span>${c.label} (${val}/20)</span>
-                        <span class="maturity-tooltip-badge ${isMax ? "badge-max" : "badge-improve"}">
-                          ${isMax ? "✓ Mature" : "Improve +"}
-                        </span>
-                      </div>
-                      <div class="maturity-tooltip-body">
-                        ${tip}
-                      </div>
-                      ${
-                        !isMax
-                          ? `<div class="maturity-tooltip-action">💡 Click to view recommendations in Feed ➔</div>`
-                          : ""
-                      }
-                    </div>
-                  </div>
-                `;
-              })
-              .join("")}
-          </div>
-          ${
-            inferredCount > 0
-              ? `<div style="margin-top: 8px; font-size: 0.72rem; color: #fbbf24;">📍 ${inferredCount} unassigned device(s)/entities can be auto-assigned to rooms via the Proactive Feed.</div>`
-              : ""
-          }
-        </div>
-
-        <div class="cap-block">
-          <div class="cap-title">
-            <span>Media &amp; Matrix Audio Architecture</span>
-            <span>${
-              mediaTopo.matrix_amp_detected
-                ? `${this._escapeHtml(mediaTopo.matrix_preset_name || "Matrix Amp")} (${matrixZones.length} Zones)`
-                : `${mediaTopo.total_media_players || 0} Media Players`
-            }</span>
-          </div>
-          <div style="font-size: 0.75rem; line-height: 1.4;">
-            ${
-              mediaTopo.matrix_amp_detected
-                ? `
-                  <div><strong>Hardware Profile:</strong> ${this._escapeHtml(mediaTopo.matrix_preset_name || "Universal Multi-Zone Matrix")}</div>
-                  <div style="margin-top: 3px;"><strong>Output Zones:</strong> ${matrixZones.map((z) => this._escapeHtml(z.name)).join(", ")}</div>
-                  ${
-                    sharedSources.length > 0
-                      ? `<div style="margin-top: 3px;"><strong>Shared Inputs:</strong> ${sharedSources.map((s) => this._escapeHtml(s)).join(", ")}</div>`
-                      : ""
-                  }
-                  ${
-                    inputStreamers.length > 0
-                      ? `<div style="margin-top: 3px;"><strong>Upstream Streamers:</strong> ${inputStreamers.map((s) => this._escapeHtml(s.name)).join(", ")}</div>`
-                      : ""
-                  }
-                `
-                : `<div>No multi-zone matrix audio amplifier detected.</div>`
-            }
-            ${
-              tvZones.length > 0
-                ? `<div style="margin-top: 3px;"><strong>Cinema / TV Displays:</strong> ${tvZones.map((t) => this._escapeHtml(t.name)).join(", ")}</div>`
-                : ""
-            }
-          </div>
-        </div>
-
-        <div class="cap-block">
-          <div class="cap-title">
-            <span>Security &amp; Presence Architecture</span>
-            <span>${secTopo.ready_for_unified_coordinator ? "Coordinator Ready" : "Basic"}</span>
-          </div>
-          <div class="topo-tags">
-            <span class="topo-tag">🛡️ Alarm Panels: ${alarmPanels.length}</span>
-            <span class="topo-tag">🔒 Smart Locks: ${locks.length}</span>
-            <span class="topo-tag">🚗 Garage Doors: ${garageCovers.length}</span>
-            <span class="topo-tag">🚨 Sirens: ${sirens.length}</span>
-            <span class="topo-tag">📷 Cameras: ${cameras.length}</span>
-            <span class="topo-tag">🛏️ Bed Sensors: ${bedSensors.length}</span>
-          </div>
-        </div>
-
-        <div class="cap-block">
-          <div class="cap-title">
-            <span>Mapped Areas</span>
-            <span>${stats.areas}</span>
-          </div>
-          <div>${Object.values(this._capabilityMap?.areas || {})
-            .map((a) => a.name)
-            .join(", ") || "No areas configured"}</div>
-        </div>
-        <div class="cap-block">
-          <div class="cap-title">
-            <span>Spatial Adjacency Graph</span>
-            <span>${this._capabilityMap?.spatial_graph?.connection_count || 0} Connections</span>
-          </div>
-          <div class="spatial-graph-list" style="font-size: 0.76rem; line-height: 1.4; display: flex; flex-direction: column; gap: 4px; max-height: 160px; overflow-y: auto; padding-right: 4px;">
-            ${
-              namedAdj.length === 0
-                ? `<div>No spatial connections mapped yet.</div>`
-                : namedAdj
-                    .map(
-                      ([area, nbrs]) => `
-                      <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); padding: 4px 8px; border-radius: 6px;">
-                        <strong style="color: var(--otis-primary);">${area}</strong>
-                        <span style="color: var(--otis-text-muted); margin: 0 4px;">↔</span>
-                        <span style="color: var(--otis-text);">${nbrs.join(", ")}</span>
-                      </div>
-                    `
-                    )
-                    .join("")
-            }
-          </div>
-        </div>
-        <div class="cap-block">
-          <div class="cap-title">
-            <span>Active Integrations</span>
-            <span>${integrations.length}</span>
-          </div>
-          <div style="font-size: 0.72rem; line-height: 1.3;">
-            ${integrations.slice(0, 16).join(", ")}
-            ${integrations.length > 16 ? "... and more" : ""}
-          </div>
-        </div>
-        <div class="cap-block">
-          <div class="cap-title">
-            <span>Orphaned Entities</span>
-            <span>${stats.orphans}</span>
-          </div>
-          <div>${
-            stats.orphans === 0
-              ? "Registry is clean! Zero orphaned entities detected."
-              : `${stats.orphans} stale or disconnected entities found. Use the Proactive Feed to clean them up.`
-          }</div>
-        </div>
-
-        <div class="cap-block">
-          <div class="cap-title">
-            <span>Autonomous Home Commissioning</span>
-            <span style="color: var(--otis-primary); font-weight: 700;">
-              ${comm.high_confidence_count ?? 0} Eligible / ${comm.total_unassigned_entities ?? 0} Unassigned
-            </span>
-          </div>
-          <div style="font-size: 0.75rem; line-height: 1.4;">
-            ${
-              (comm.total_unassigned_entities ?? 0) === 0
-                ? `<div style="color: #4ade80;">✨ All entities and devices are mapped to physical rooms!</div>`
-                : `
-                  <div>Found <strong>${comm.total_unassigned_entities}</strong> unassigned entities (${comm.high_confidence_count} high-confidence matches).</div>
-                  <div style="margin-top: 6px;">
-                    <button type="button" class="btn-toolbar" id="btn-auto-commission-tab" style="padding: 4px 10px; font-size: 0.72rem; color: var(--otis-primary); border-color: var(--otis-primary);">
-                      ⚡ 1-Click Auto Commission
-                    </button>
-                  </div>
-                `
-            }
-          </div>
-        </div>
-
-        <div class="cap-block">
-          <div class="cap-title">
-            <span>🌐 Multi-Node Federation &amp; Cluster Sync</span>
-            <span style="color: var(--otis-secondary); font-weight: 700;">
-              ${fed.health_score !== undefined ? `${fed.health_score}% Health • ` : ""}${fed.online_nodes ?? 0} / ${fed.total_nodes ?? 0} Online (${fed.avg_latency_ms ?? 0}ms avg)
-            </span>
-          </div>
-          <div style="font-size: 0.75rem; line-height: 1.4;">
-            ${
-              (fed.total_nodes ?? 0) === 0
-                ? `<div>No remote edge nodes registered yet. Register satellite Home Assistant instances to federate states.</div>`
-                : `
-                  <div style="display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px;">
-                    ${(fed.nodes || [])
-                      .map(
-                        (n) => `
-                        <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); padding: 4px 8px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center;">
-                          <div>
-                            <span style="color: ${n.status === "online" ? "#4ade80" : "#f87171"}; font-weight: bold; margin-right: 4px;">●</span>
-                            <strong>${this._escapeHtml(n.name)}</strong> <span style="font-size: 0.70rem; color: var(--otis-text-muted);">(${this._escapeHtml(n.host)}:${this._escapeHtml(n.port)})</span>
-                            <span class="topo-tag" style="font-size: 0.65rem; margin-left: 4px; background: rgba(56, 189, 248, 0.1); color: var(--otis-primary);">${this._escapeHtml((n.role || "satellite").toUpperCase())}</span>
-                          </div>
-                          <div style="display: flex; align-items: center; gap: 6px;">
-                            <span style="font-size: 0.70rem; color: var(--otis-text-muted);">${Number(n.entities_count) || 0} ents</span>
-                            <span style="font-size: 0.70rem; color: var(--otis-text-muted); font-weight: 600;">${n.latency_ms > 0 ? Number(n.latency_ms) + "ms" : this._escapeHtml(n.status)}</span>
-                          </div>
-                        </div>
-                      `
-                      )
-                      .join("")}
-                  </div>
-                  <div style="display: flex; gap: 8px;">
-                    <button type="button" class="btn-toolbar" id="btn-sync-federation-tab" style="padding: 4px 10px; font-size: 0.72rem; color: var(--otis-secondary); border-color: var(--otis-secondary);">
-                      🔄 Sync All Edge Nodes
-                    </button>
-                  </div>
-                `
-            }
-          </div>
-        </div>
-
-        <div class="cap-block">
-          <div class="cap-title">
-            <span>🧠 Local Edge AI (Ollama) &amp; Add-on Control</span>
-            <span style="font-weight: 700; color: ${this._capabilityMap?.local_llm?.online ? '#4ade80' : (this._capabilityMap?.local_llm?.suitability?.addon_installed ? '#fbbf24' : 'var(--otis-text-muted)')};">
-              ${(() => {
-                const llm = this._capabilityMap?.local_llm || {};
-                const suit = llm.suitability || {};
-                if (llm.online) {
-                  return `🟢 Online (${llm.latency_ms ?? 0}ms) • ${this._escapeHtml(llm.active_model || "qwen2.5:3b")}`;
-                }
-                if (suit.addon_installed) {
-                  return `🟡 Add-on ${this._escapeHtml((suit.addon_state || "stopped").toUpperCase())}`;
-                }
-                return "⚪ Offline / Add-on Not Installed";
-              })()}
-            </span>
-          </div>
-          <div style="font-size: 0.75rem; line-height: 1.45;">
-            ${(() => {
-              const llm = this._capabilityMap?.local_llm || {};
-              const suit = llm.suitability || {};
-              const statsObj = llm.addon_stats || {};
-              const runningModels = Array.isArray(llm.running_models) ? llm.running_models : [];
-              const availModels = Array.isArray(llm.available_models) ? llm.available_models : [];
-              const defaultChoices = ["qwen2.5:3b", "qwen2.5:1.5b", "llama3.2-vision:latest"];
-              const modelOptions = Array.from(new Set([...availModels, ...defaultChoices, llm.active_model || "qwen2.5:3b"])).filter(Boolean);
-              const activeModel = llm.active_model || suit.recommended_model || "qwen2.5:3b";
-              const gpuBadge = suit.gpu_detected
-                ? `🎮 GPU/iGPU (${(suit.gpu_devices || []).map((d) => this._escapeHtml(d)).join(", ") || "DRI"})`
-                : "💻 CPU Inference";
-              const suitBadgeColor = suit.can_run && suit.recommended ? "#4ade80" : (suit.can_run ? "#fbbf24" : "#f87171");
-              const suitLabel = suit.can_run && suit.recommended
-                ? "✅ Host Hardware Verified & Recommended"
-                : (suit.can_run ? "⚠️ Host Capable (Lightweight Model Recommended)" : "❌ Host Below Minimum Ollama Specs");
-
-              return `
-                <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 6px; padding: 6px 8px; margin-bottom: 8px;">
-                  <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 4px;">
-                    <strong style="color: ${suitBadgeColor};">${suitLabel}</strong>
-                    <span class="topo-tag" style="font-size: 0.66rem;">${gpuBadge}</span>
-                  </div>
-                  <div style="color: var(--otis-text-muted); font-size: 0.71rem; margin-top: 3px;">
-                    <strong>CPU:</strong> ${this._escapeHtml(suit.cpu_model || "Detected Host CPU")} (${suit.cpu_cores || 0} threads) •
-                    <strong>RAM:</strong> ${suit.ram_avail_gb ?? 0} GB free / ${suit.ram_total_gb ?? 0} GB total •
-                    <strong>Disk:</strong> ${suit.disk_free_gb ?? 0} GB free
-                  </div>
-                </div>
-
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 6px; margin-bottom: 8px;">
-                  <div style="background: rgba(14, 165, 233, 0.06); border: 1px solid rgba(56, 189, 248, 0.16); border-radius: 6px; padding: 5px 8px;">
-                    <div style="font-size: 0.68rem; color: var(--otis-text-muted);">Endpoint &amp; Add-on State</div>
-                    <div style="font-weight: 600; color: var(--otis-text); word-break: break-all;">
-                      ${this._escapeHtml(llm.endpoint_url || "http://127.0.0.1:11434")}
-                    </div>
-                    <div style="font-size: 0.69rem; color: var(--otis-text-muted); margin-top: 2px;">
-                      Add-on: <strong>${suit.addon_installed ? `${this._escapeHtml(suit.addon_slug || "local_otis_ollama")} (${this._escapeHtml(suit.addon_state || "stopped")})` : "Not Installed"}</strong>
-                      ${statsObj.memory_mb !== undefined ? ` • CPU ${statsObj.cpu_percent ?? 0}% • RAM ${statsObj.memory_mb} MB` : ""}
-                    </div>
-                  </div>
-                  <div style="background: rgba(168, 85, 247, 0.06); border: 1px solid rgba(168, 85, 247, 0.16); border-radius: 6px; padding: 5px 8px;">
-                    <div style="font-size: 0.68rem; color: var(--otis-text-muted);">Active Memory (/api/ps) &amp; Installed Models</div>
-                    <div style="font-weight: 600; color: var(--otis-text);">
-                      ${runningModels.length > 0
-                        ? runningModels.map((rm) => `${this._escapeHtml(rm.name)} (${rm.size_mb} MB • ${this._escapeHtml(rm.processor || "CPU")})`).join(", ")
-                        : "Idle (0 MB in RAM — loads on demand)"}
-                    </div>
-                    <div style="font-size: 0.69rem; color: var(--otis-text-muted); margin-top: 2px;">
-                      Pulled (${availModels.length}): ${availModels.length > 0 ? availModels.map((m) => this._escapeHtml(m)).join(", ") : "None"}
-                      ${llm.last_benchmark?.tokens_per_second ? ` • ⚡ ${llm.last_benchmark.tokens_per_second} tok/s` : ""}
-                    </div>
-                  </div>
-                </div>
-
-                <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 8px;">
-                  ${!suit.addon_installed && suit.supervisor_available && suit.can_run ? `
-                    <button type="button" class="btn-toolbar btn-ollama-addon-action" data-ollama-action="install" style="padding: 4px 10px; font-size: 0.72rem; color: #38bdf8; border-color: #38bdf8; font-weight: 700;">
-                      📦 Install &amp; Start Add-on
-                    </button>
-                  ` : ""}
-                  <button type="button" class="btn-toolbar btn-ollama-addon-action" data-ollama-action="start" style="padding: 4px 9px; font-size: 0.71rem; color: #4ade80; border-color: rgba(74, 222, 128, 0.45);">
-                    ▶️ Start
-                  </button>
-                  <button type="button" class="btn-toolbar btn-ollama-addon-action" data-ollama-action="stop" style="padding: 4px 9px; font-size: 0.71rem; color: #f87171; border-color: rgba(248, 113, 113, 0.45);">
-                    ⏹️ Stop
-                  </button>
-                  <button type="button" class="btn-toolbar btn-ollama-addon-action" data-ollama-action="restart" style="padding: 4px 9px; font-size: 0.71rem; color: #fbbf24; border-color: rgba(251, 191, 36, 0.45);">
-                    🔄 Restart
-                  </button>
-                  <button type="button" class="btn-toolbar btn-ollama-addon-action" data-ollama-action="status" style="padding: 4px 9px; font-size: 0.71rem;">
-                    🩺 Refresh Status
-                  </button>
-                  <button type="button" class="btn-toolbar" id="btn-ollama-benchmark" style="padding: 4px 9px; font-size: 0.71rem; color: var(--otis-primary); border-color: var(--otis-primary);">
-                    ⚡ Benchmark
-                  </button>
-                </div>
-
-                <div style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
-                  <select id="ollama-model-select" style="background: rgba(15, 23, 42, 0.75); color: var(--otis-text); border: 1px solid rgba(148, 163, 184, 0.3); border-radius: 6px; padding: 4px 8px; font-size: 0.72rem; flex: 1; min-width: 150px;">
-                    ${modelOptions.map((m) => `
-                      <option value="${this._escapeHtml(m)}" ${m === activeModel ? "selected" : ""}>
-                        ${this._escapeHtml(m)}${availModels.includes(m) ? " (Installed)" : " (Available to Pull)"}
-                      </option>
-                    `).join("")}
-                  </select>
-                  <button type="button" class="btn-toolbar" id="btn-ollama-set-model" style="padding: 4px 9px; font-size: 0.71rem;">
-                    ✓ Set Active
-                  </button>
-                  <button type="button" class="btn-toolbar" id="btn-ollama-pull-model" style="padding: 4px 9px; font-size: 0.71rem; color: #38bdf8; border-color: rgba(56, 189, 248, 0.45);">
-                    ⬇️ Pull Model
-                  </button>
-                  <button type="button" class="btn-toolbar" id="btn-ollama-delete-model" style="padding: 4px 9px; font-size: 0.71rem; color: #f87171; border-color: rgba(248, 113, 113, 0.35);">
-                    🗑️ Delete
-                  </button>
-                </div>
-              `;
-            })()}
-          </div>
-        </div>
-
-        <div class="cap-block">
-          <div class="cap-title">
-            <span>⚡ Context-Aware Energy Arbitrage &amp; Battery Scheduling</span>
-            <span style="color: var(--otis-primary); font-weight: 700;">
-              ${this._capabilityMap?.energy_topology?.arbitrage_plan?.current_soc_pct !== undefined ? `${this._capabilityMap.energy_topology.arbitrage_plan.current_soc_pct}% SoC` : "Ready"} • Mode: ${(this._capabilityMap?.energy_topology?.arbitrage_plan?.mode || "auto").toUpperCase()}
-            </span>
-          </div>
-          <div class="energy-arbitrage-container" style="font-size: 0.75rem; line-height: 1.4;">
-            ${(() => {
-              const energyTopo = this._capabilityMap?.energy_topology || {};
-              const arbitrage = energyTopo.arbitrage_plan || {};
-              const solarInfo = energyTopo.solar || {};
-              return `
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 6px;">
-                  <div>
-                    <strong>Current Action:</strong>
-                    <span class="topo-tag" style="background: rgba(14, 165, 233, 0.15); color: var(--otis-primary); font-weight: bold; margin-left: 4px;">
-                      ${arbitrage.current_action ? arbitrage.current_action.replace(/_/g, " ").toUpperCase() : "OPTIMIZED"}
-                    </span>
-                    <span style="color: var(--otis-text-muted); font-size: 0.70rem; margin-left: 6px;">
-                      (${arbitrage.current_battery_flow_kw > 0 ? `📥 Charging +${arbitrage.current_battery_flow_kw}kW` : (arbitrage.current_battery_flow_kw < 0 ? `📤 Discharging ${Math.abs(arbitrage.current_battery_flow_kw)}kW` : "⏸️ Idle / Holding")})
-                    </span>
-                  </div>
-                  <div style="font-size: 0.72rem; color: #10b981; font-weight: 600;">
-                    💰 Est. Savings: $${(arbitrage.projected_savings_usd || 0).toFixed(2)}/day
-                  </div>
-                </div>
-
-                <!-- Mode Switcher Pills -->
-                <div style="display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap;">
-                  <button type="button" class="btn-toolbar btn-arbitrage-mode ${arbitrage.mode === 'auto' ? 'active' : ''}" data-mode="auto" style="padding: 3px 8px; font-size: 0.70rem;">⚡ Auto</button>
-                  <button type="button" class="btn-toolbar btn-arbitrage-mode ${arbitrage.mode === 'peak_arbitrage' ? 'active' : ''}" data-mode="peak_arbitrage" style="padding: 3px 8px; font-size: 0.70rem;">🔥 Peak Shave</button>
-                  <button type="button" class="btn-toolbar btn-arbitrage-mode ${arbitrage.mode === 'self_consumption' ? 'active' : ''}" data-mode="self_consumption" style="padding: 3px 8px; font-size: 0.70rem;">☀️ Solar Soak</button>
-                  <button type="button" class="btn-toolbar btn-arbitrage-mode ${arbitrage.mode === 'backup_reserve' ? 'active' : ''}" data-mode="backup_reserve" style="padding: 3px 8px; font-size: 0.70rem;">🛡️ Backup (100%)</button>
-                </div>
-
-                <!-- 24-Hour Hourly Timeline Strip -->
-                ${arbitrage.schedule && arbitrage.schedule.length > 0 ? `
-                  <div style="margin-bottom: 6px;">
-                    <div style="font-size: 0.68rem; color: var(--otis-text-muted); margin-bottom: 3px; display: flex; justify-content: space-between;">
-                      <span>24-Hour Horizon Schedule &amp; Tariff Periods</span>
-                      <span>Peak Shaved: ${(arbitrage.projected_peak_shave_kwh || 0).toFixed(1)} kWh</span>
-                    </div>
-                    <div style="display: flex; gap: 2px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: thin;">
-                      ${arbitrage.schedule.map((step) => {
-                        const isPeak = step.tariff_period === 'peak';
-                        const isShoulder = step.tariff_period === 'shoulder';
-                        const bg = isPeak ? 'rgba(239, 68, 68, 0.25)' : (isShoulder ? 'rgba(245, 158, 11, 0.2)' : 'rgba(16, 185, 129, 0.15)');
-                        const border = isPeak ? '#ef4444' : (isShoulder ? '#f59e0b' : '#10b981');
-                        const flowSymbol = step.battery_flow_kw > 0 ? '📥' : (step.battery_flow_kw < 0 ? '📤' : '•');
-                        return `
-                          <div style="flex: 1; min-width: 32px; background: ${bg}; border: 1px solid ${border}; border-radius: 4px; padding: 3px 2px; text-align: center; font-size: 0.62rem;" title="${step.time_label} [${step.tariff_period.toUpperCase()} @ $${step.rate_per_kwh.toFixed(2)}/kWh]: ${step.action} (${step.battery_flow_kw}kW) - Ending SoC: ${step.ending_soc_pct}%">
-                            <div style="font-weight: 600; color: var(--otis-text);">${step.hour}:00</div>
-                            <div style="font-size: 0.60rem; margin: 1px 0;">${flowSymbol}</div>
-                            <div style="color: var(--otis-text-muted); font-size: 0.58rem;">${Math.round(step.ending_soc_pct)}%</div>
-                          </div>
-                        `;
-                      }).join('')}
-                    </div>
-                  </div>
-                ` : ""}
-
-                <!-- Smart EV Charging Section (Phase 7 - shown only when EV is integrated) -->
-                ${arbitrage.ev_charging_plan && Boolean(arbitrage.has_ev) ? `
-                  <div style="margin-top: 8px; margin-bottom: 8px; padding: 6px 8px; background: rgba(14, 165, 233, 0.08); border-radius: 6px; border: 1px solid rgba(14, 165, 233, 0.2);">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                      <span style="font-weight: 600; font-size: 0.70rem; color: var(--otis-primary);">
-                        🚗 Smart EV Charging (${arbitrage.ev_charging_plan.current_soc_pct}% ➔ ${arbitrage.ev_charging_plan.target_soc_pct}% target by ${arbitrage.ev_charging_plan.target_departure_hour}:00)
-                      </span>
-                      <span style="font-size: 0.68rem; color: #10b981; font-weight: 600;">
-                        Est. EV Cost: $${(arbitrage.ev_charging_plan.projected_cost_usd || 0).toFixed(2)}
-                      </span>
-                    </div>
-                    <div style="font-size: 0.68rem; color: var(--otis-text-muted); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px;">
-                      <span>⚡ Status: <strong>${arbitrage.ev_charging_plan.current_action ? arbitrage.ev_charging_plan.current_action.replace(/_/g, " ").toUpperCase() : "IDLE"}</strong> (${arbitrage.ev_charging_plan.current_ev_charge_kw || 0} kW)</span>
-                      <span>☀️ Solar Used: <strong>${(arbitrage.ev_charging_plan.solar_kwh_utilized || 0).toFixed(1)} kWh</strong> • Grid Off-Peak: <strong>${(arbitrage.ev_charging_plan.grid_kwh_utilized || 0).toFixed(1)} kWh</strong></span>
-                    </div>
-                  </div>
-                ` : ""}
-
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px; flex-wrap: wrap; gap: 6px;">
-                  <div style="font-size: 0.70rem; color: var(--otis-text-muted);">
-                    Solar Forecast: <strong>${(arbitrage.daily_solar_forecast_kwh || (solarInfo.production_w ? (solarInfo.production_w * 6 / 1000) : 24.0)).toFixed(1)} kWh</strong> • Baseline Load: <strong>${arbitrage.baseline_load_kw || 1.0} kW</strong>
-                  </div>
-                  <div>
-                    <button type="button" class="btn-toolbar" id="btn-optimize-arbitrage-tab" style="padding: 4px 10px; font-size: 0.72rem; color: var(--otis-primary); border-color: var(--otis-primary);">
-                      ⚡ Re-Optimize
-                    </button>
-                    <button type="button" class="btn-toolbar" id="btn-dispatch-arbitrage-tab" style="padding: 4px 10px; font-size: 0.72rem; color: #10b981; border-color: #10b981; margin-left: 4px;">
-                      ⚡ Apply Dispatch
-                    </button>
-                  </div>
-                </div>
-              `;
-            })()}
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  _renderFloorplanTab() {
-    const isControlOnly = this._config.mode === "floorplan_control";
-    const isAdmin = Boolean(this._hass?.user?.is_admin || this._hass?.user?.is_owner);
-
-    if (!this._floorplanSvg && !this._loadingFloorplan) {
-      setTimeout(() => this._loadFloorplanSvg(this._capabilityMap?.floorplan?.url), 0);
-    }
-
-    return `
-      <div class="floorplan-panel">
-        ${this._renderPreconditioningChip()}
-        <div class="floorplan-toolbar">
-          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-            <div class="view-mode-pills">
-              <button type="button" class="view-mode-pill ${this._floorplanViewMode === "2d" ? "active" : ""}" data-view-mode="2d" title="2D Orthogonal Blueprint">📐 2D</button>
-              <button type="button" class="view-mode-pill ${this._floorplanViewMode === "3d" ? "active" : ""}" data-view-mode="3d" title="Multi-Floor 3D Isometric View">🧊 3D</button>
-            </div>
-            <div class="zone-pills">
-              <button type="button" class="zone-pill ${this._selectedFloorZone === "all" ? "active" : ""}" data-zone="all">All Floors</button>
-              <button type="button" class="zone-pill ${this._selectedFloorZone === "main" ? "active" : ""}" data-zone="main">Ground &amp; Outdoor</button>
-              <button type="button" class="zone-pill ${this._selectedFloorZone === "upper" ? "active" : ""}" data-zone="upper">Upper Level</button>
-              <button type="button" class="zone-pill ${this._selectedFloorZone === "outdoor" ? "active" : ""}" data-zone="outdoor">Outdoor Only</button>
-            </div>
-          </div>
-          <div class="floorplan-actions">
-            ${
-              !isControlOnly
-                ? `
-              <button type="button" class="btn-toolbar" id="btn-open-walkthrough" title="Record video walkthrough to generate or update floor plan">
-                📹 Walkthrough
-              </button>
-              <button type="button" 
-                class="btn-toolbar ${!this._hasWalkthrough ? 'disabled' : ''}" 
-                id="btn-copy-lovelace" 
-                ${!this._hasWalkthrough ? "disabled" : ""}
-                title="${this._hasWalkthrough ? 'Copy Lovelace Dashboard YAML for picture-elements card' : 'Complete a video walkthrough first to unlock Lovelace YAML export'}"
-              >
-                📋 Lovelace YAML
-              </button>
-            `
-                : ""
-            }
-            ${
-              isAdmin && !isControlOnly
-                ? `
-              <button type="button" 
-                class="btn-toolbar ${this._editorActive ? 'active' : ''}" 
-                id="btn-toggle-editor"
-                style="${this._editorActive ? 'background: var(--otis-primary); color: var(--otis-btn-text, #ffffff); border-color: var(--otis-primary);' : ''}"
-                title="Toggle Interactive Floor Plan Edit Mode to drag pins, add/remove devices, and adjust boundaries"
-              >
-                ${this._editorActive ? "🛠️ Exit Edit Mode" : "✏️ Edit Floor Plan"}
-              </button>
-            `
-                : ""
-            }
-          </div>
-        </div>
-
-        ${
-          this._editorActive && isAdmin && !isControlOnly
-            ? `
-          <div class="editor-toolbar-strip">
-            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-              <span style="font-weight: 700; color: var(--otis-primary);">🛠️ Floor Plan Edit Mode:</span>
-              <span style="color: var(--otis-text-muted); font-size: 0.73rem;">Drag pins to position • Click any pin to inspect/remove • Drag walls to resize</span>
-            </div>
-            <div style="display: flex; align-items: center; gap: 6px;">
-              <button type="button" class="btn-toolbar" id="btn-open-add-marker" style="padding: 4px 9px;" title="Add a device entity pin to the floor plan">
-                ➕ Add Entity
-              </button>
-              <button type="button" class="btn-modal-primary" id="btn-save-layout" style="padding: 4px 10px; font-size: 0.74rem;" ${this._savingLayout ? "disabled" : ""}>
-                ${this._savingLayout ? `<div class="spinner" style="width: 12px; height: 12px;"></div> Saving...` : (this._hasUnsavedLayout ? "💾 Save Changes *" : "💾 Save Layout")}
-              </button>
-              <button type="button" class="btn-toolbar" id="btn-exit-editor" style="padding: 4px 8px; color: var(--otis-text-muted);">
-                ✕ Exit
-              </button>
-            </div>
-          </div>
-        `
-            : ""
-        }
-
-        ${
-          !isControlOnly && !this._hasWalkthrough && this._floorplanSvg && !this._editorActive
-            ? `
-          <div class="walkthrough-pending-banner">
-            <div class="walkthrough-pending-text">
-              <span style="font-size: 1rem;">📹</span>
-              <span><strong>Walkthrough Pending:</strong> Current layout is an initial area estimate. Record or upload a video walkthrough calling out rooms to calibrate dimensions and unlock Lovelace YAML.</span>
-            </div>
-            <button type="button" class="btn-banner-walkthrough" id="btn-banner-walkthrough">Start Walkthrough</button>
-          </div>
-        `
-            : ""
-        }
-
-        ${
-          this._loadingFloorplan
-            ? `<div class="empty-state"><div class="spinner" style="margin: 0 auto 8px auto; width: 24px; height: 24px;"></div>Rendering vector floor plan...</div>`
-            : this._floorplanSvg
-            ? `
-            <div class="floorplan-svg-viewport ${this._editorActive && isAdmin && !isControlOnly ? 'editor-mode' : ''} ${this._floorplanViewMode === '3d' ? 'view-3d-active' : ''}" id="floorplan-viewport">
-              ${this._editorActive && isAdmin && !isControlOnly ? `<div class="editor-hud" id="editor-hud">📐 Pointer: --, --</div>` : ''}
-              ${this._floorplanViewMode === '3d' && (!this._editorActive || isControlOnly) ? this._renderFloorplan3dControls(isControlOnly) : ''}
-              <div class="floorplan-3d-stage" id="floorplan-3d-stage">
-                <div class="floorplan-3d-canvas" id="floorplan-canvas" style="--floorplan-azimuth: ${this._floorplanAzimuth}deg; --floorplan-pitch: ${this._floorplanPitch}deg; --wall-height: ${this._floorplanWallHeight || 28}px; aspect-ratio: ${this._selectedFloorZone === 'main' ? '1300 / 713' : (this._selectedFloorZone === 'upper' ? '1300 / 488' : '1300 / 1250')};">
-                  ${this._floorplanSvg}
-                  <div class="floorplan-walls-overlay" id="floorplan-walls-overlay" style="${this._floorplanViewMode === '3d' && this._floorplanWallsEnabled !== false ? '' : 'display: none;'}">
-                    ${this._renderFloorplan3dWalls()}
-                  </div>
-                  ${this._renderFloorplanPins()}
-                </div>
-              </div>
-              ${this._editorActive && isAdmin && !isControlOnly && this._selectedEditorRoomId ? this._renderRoomInspector() : ""}
-            </div>
-            ${
-              !this._editorActive && this._selectedRoomInfo
-                ? `
-              <div class="room-info-card" style="padding: 12px 16px; border-radius: 12px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); margin-top: 12px;">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                  <div>
-                    <div style="font-weight: 700; color: var(--otis-primary); font-size: 0.95rem;">📍 ${this._escapeHtml(this._selectedRoomInfo.name)}</div>
-                    <div style="font-size: 0.74rem; color: var(--otis-text-muted);">
-                      ${(() => {
-                        const presEid = `binary_sensor.otis_presence_${this._selectedRoomInfo.slug}`;
-                        const presState = this._hass?.states?.[presEid];
-                        const isOccupied = presState?.state === "on";
-                        const prob = presState?.attributes?.probability ? Math.round(presState.attributes.probability * 100) : null;
-                        const presBadge = isOccupied
-                          ? `<span style="color: #10b981; font-weight: 700;">🟢 Active (${prob || 85}%)</span>`
-                          : `<span style="color: #94a3b8;">⚪ Vacant</span>`;
-                        return `Zone: ${String(this._selectedRoomInfo.zone).toUpperCase()} • ${this._selectedRoomInfo.entities.length} Devices • ${presBadge}`;
-                      })()}
-                    </div>
-                  </div>
-                  <div style="display: flex; gap: 8px;">
-                    ${this._selectedRoomInfo.slug ? (() => {
-                      const curPath = typeof window !== "undefined" ? window.location.pathname : "";
-                      const seg = curPath.split("/").filter(Boolean)[0] || "command-center";
-                      const navPath = `/${seg}/area_${this._selectedRoomInfo.slug}`;
-                      return `
-                      <button type="button" class="btn-toolbar btn-nav-room" data-room-path="${navPath}" style="padding: 4px 10px; font-size: 0.75rem;">
-                        Open Room Controls →
-                      </button>
-                      `;
-                    })() : ""}
-                    <button type="button" class="btn-toolbar" id="btn-close-room-info" style="padding: 4px 8px;">✕</button>
-                  </div>
-                </div>
-                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-                  ${this._selectedRoomInfo.entities.slice(0, 10).map((eid) => {
-                    const st = this._hass?.states?.[eid];
-                    if (!st) return "";
-                    const isOn = st.state === "on";
-                    const icon = st.attributes?.icon || (eid.startsWith("light.") ? "💡" : eid.startsWith("switch.") ? "🔌" : eid.startsWith("climate.") ? "🌡️" : "⚡");
-                    return `
-                      <button type="button" class="subview-chip btn-quick-toggle" data-entity-id="${this._escapeHtml(eid)}" style="${isOn ? 'background: var(--otis-primary); color: #fff; border-color: var(--otis-primary);' : ''}">
-                        ${this._escapeHtml(icon)} ${this._escapeHtml(st.attributes?.friendly_name || eid.split(".")[1])} (${this._escapeHtml(st.state)})
-                      </button>
-                    `;
-                  }).join("")}
-                </div>
-              </div>
-            `
-                : ""
-            }
-          `
-            : `
-            <div class="empty-state" style="padding: 30px 16px;">
-              <div class="empty-icon" style="font-size: 2.2rem; margin-bottom: 8px;">📐</div>
-              <div style="font-weight: 700; font-size: 0.95rem; margin-bottom: 6px; color: var(--otis-text);">
-                Interactive Multimodal Floor Plan
-              </div>
-              <div style="font-size: 0.78rem; line-height: 1.45; color: var(--otis-text-muted); max-width: 360px; margin: 0 auto 16px auto;">
-                Record a mobile video walkthrough calling out each room as you enter. Otis AI will extract the audio callouts, map wall boundaries, and build a multi-floor interactive vector dashboard.
-              </div>
-              <div style="display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;">
-                <button type="button" class="btn-modal-primary" id="btn-start-walkthrough">
-                  📹 Record / Upload Walkthrough
-                </button>
-                <button type="button" class="btn-modal-secondary" id="btn-quick-generate">
-                  ⚡ Instant Generate from Registered Areas
-                </button>
-              </div>
-            </div>
-          `
-        }
-      </div>
-    `;
-  }
-
-  _renderFloorplan3dControls(isControlOnly = false) {
-    if (this._editorActive) return "";
-    const isCollapsed = Boolean(this._floorplanHudCollapsed);
-    const isLocked = this._floorplanOrbitLocked !== false;
-    const disabledAttr = isLocked ? "disabled" : "";
-    const disabledStyle = isLocked ? "opacity: 0.45; pointer-events: none;" : "";
-
-    return `
-      <div class="floorplan-3d-hud ${isCollapsed ? 'collapsed' : ''}" id="floorplan-3d-hud">
-        <div class="hud-header">
-          <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
-            <span class="hud-icon">🧭</span>
-            <span class="hud-title">3D Orbit &amp; Pitch Controls</span>
-            <span class="hud-badge" id="hud-orbit-readout">${Math.round(this._floorplanAzimuth)}° Az / ${Math.round(this._floorplanPitch)}° Pitch</span>
-          </div>
-          <div style="display: flex; align-items: center; gap: 6px;">
-            <button type="button" class="btn-lock-pill ${isLocked ? 'active' : ''}" id="btn-toggle-3d-lock" title="${isLocked ? 'Unlock to adjust 3D Orbit & Pitch' : 'Lock 3D Orbit & Pitch to prevent accidental movement'}" style="padding: 3px 10px; font-size: 0.72rem; border-radius: 6px; border: 1px solid; cursor: pointer; ${isLocked ? 'background: rgba(245, 158, 11, 0.22); border-color: rgba(245, 158, 11, 0.65); color: #fbbf24; font-weight: 700;' : 'background: rgba(16, 185, 129, 0.22); border-color: rgba(16, 185, 129, 0.65); color: #34d399; font-weight: 700;'}">
-              ${isLocked ? '🔒 Locked' : '🔓 Unlocked'}
-            </button>
-            <button type="button" class="btn-hud-toggle" id="btn-toggle-3d-hud" title="${isCollapsed ? 'Expand 3D Controls' : 'Collapse 3D Controls'}">
-              ${isCollapsed ? '▾' : '▴'}
-            </button>
-          </div>
-        </div>
-        ${!isCollapsed ? `
-        <div class="hud-body">
-          <div class="hud-row" style="${disabledStyle}">
-            <span class="hud-label">Orbit Azimuth:</span>
-            <div class="hud-slider-wrap">
-              <button type="button" class="btn-hud-step" id="btn-azimuth-step-minus" title="Rotate -15°" ${disabledAttr}>⟲</button>
-              <input type="range" min="0" max="360" step="1" value="${Math.round(this._floorplanAzimuth)}" id="slider-orbit-azimuth" class="hud-slider" ${disabledAttr} />
-              <button type="button" class="btn-hud-step" id="btn-azimuth-step-plus" title="Rotate +15°" ${disabledAttr}>⟳</button>
-              <span class="hud-val" id="val-orbit-azimuth">${Math.round(this._floorplanAzimuth)}°</span>
-            </div>
-          </div>
-          <div class="hud-row" style="${disabledStyle}">
-            <span class="hud-label">Pitch Incline:</span>
-            <div class="hud-slider-wrap">
-              <button type="button" class="btn-hud-step" id="btn-pitch-step-minus" title="Lower Incline -5°" ${disabledAttr}>▼</button>
-              <input type="range" min="30" max="75" step="1" value="${Math.round(this._floorplanPitch)}" id="slider-pitch-incline" class="hud-slider" ${disabledAttr} />
-              <button type="button" class="btn-hud-step" id="btn-pitch-step-plus" title="Steepen Incline +5°" ${disabledAttr}>▲</button>
-              <span class="hud-val" id="val-pitch-incline">${Math.round(this._floorplanPitch)}°</span>
-            </div>
-          </div>
-          <div class="hud-row" style="${disabledStyle}">
-            <span class="hud-label">3D Glass Walls:</span>
-            <div style="display: flex; align-items: center; gap: 6px; flex: 1;">
-              <button type="button" class="btn-preset-pill ${this._floorplanWallsEnabled !== false ? 'active' : ''}" id="btn-toggle-3d-walls" title="Toggle Raised 3D Glass Walls" ${disabledAttr}>
-                ${this._floorplanWallsEnabled !== false ? '🏢 Walls ON' : '🏢 Walls OFF'}
-              </button>
-              <button type="button" class="btn-hud-step" id="btn-wall-height-minus" title="Lower Wall Height -4px" ${disabledAttr}>▼</button>
-              <span class="hud-val" id="val-wall-height" style="min-width: 44px; text-align: center;">${Math.round(this._floorplanWallHeight || 28)}px</span>
-              <button type="button" class="btn-hud-step" id="btn-wall-height-plus" title="Raise Wall Height +4px" ${disabledAttr}>▲</button>
-            </div>
-          </div>
-          <div class="hud-row presets-row">
-            <span class="hud-label">Presets:</span>
-            <div class="hud-presets-wrap">
-              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 0 ? 'active' : ''}" data-azimuth="0" data-pitch="55" title="North (Front)" style="${disabledStyle}" ${disabledAttr}>0° N</button>
-              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 45 ? 'active' : ''}" data-azimuth="45" data-pitch="58" title="Isometric NE" style="${disabledStyle}" ${disabledAttr}>45° NE</button>
-              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 90 ? 'active' : ''}" data-azimuth="90" data-pitch="55" title="East" style="${disabledStyle}" ${disabledAttr}>90° E</button>
-              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 135 ? 'active' : ''}" data-azimuth="135" data-pitch="58" title="Isometric SE" style="${disabledStyle}" ${disabledAttr}>135° SE</button>
-              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 180 ? 'active' : ''}" data-azimuth="180" data-pitch="55" title="South (Rear)" style="${disabledStyle}" ${disabledAttr}>180° S</button>
-              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 225 ? 'active' : ''}" data-azimuth="225" data-pitch="58" title="Isometric SW" style="${disabledStyle}" ${disabledAttr}>225° SW</button>
-              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 270 ? 'active' : ''}" data-azimuth="270" data-pitch="55" title="West" style="${disabledStyle}" ${disabledAttr}>270° W</button>
-              <button type="button" class="btn-preset-pill ${Math.round(this._floorplanAzimuth) === 315 ? 'active' : ''}" data-azimuth="315" data-pitch="58" title="Isometric NW" style="${disabledStyle}" ${disabledAttr}>315° NW</button>
-              <button type="button" class="btn-preset-reset" id="btn-reset-3d-view" title="Reset to Default Isometric Projection" style="${disabledStyle}" ${disabledAttr}>↺ Reset</button>
-              ${!isControlOnly ? `<button type="button" class="btn-preset-reset" id="btn-save-3d-dashboard" title="Save current 3D camera angles, walls &amp; zone to the Interactive Floor Plan dashboard view" style="background: rgba(14, 165, 233, 0.22); border-color: rgba(56, 189, 248, 0.55); color: #38bdf8; font-weight: 700;">💾 Save 3D to Dashboard</button>` : ""}
-            </div>
-          </div>
-          <div class="hud-hint">
-            <span>${isLocked ? '🔒 3D Orbit & Pitch locked for clean clicking • Click 🔒 Locked above to unlock' : '🖱️ Drag canvas to orbit freely • Scroll/pinch to zoom'}</span>
-          </div>
-        </div>
-        ` : ''}
-      </div>
-    `;
-  }
-
-  _getFloorplanRooms() {
-    const rooms = [];
-    if (!this._floorplanSvg) return rooms;
-    const gRegex = /<g\b[^>]*\bclass="[^"]*room-group[^"]*"[^>]*\bdata-area-id="([^"]+)"[^>]*\bdata-zone="([^"]+)"[^>]*>([\s\S]*?)<\/g>/gi;
-    let gMatch;
-    while ((gMatch = gRegex.exec(this._floorplanSvg)) !== null) {
-      const rid = gMatch[1];
-      const zone = gMatch[2];
-      // Only indoor rooms have raised 3D glass walls - skip outdoor perimeter
-      if (zone === "outdoor") continue;
-      const inner = gMatch[3];
-      const rectMatch = /<rect\b[^>]*>/i.exec(inner);
-      if (rectMatch) {
-        const tag = rectMatch[0];
-        const xMatch = tag.match(/\bx="([^"]+)"/);
-        const yMatch = tag.match(/\by="([^"]+)"/);
-        const wMatch = tag.match(/\bwidth="([^"]+)"/);
-        const hMatch = tag.match(/\bheight="([^"]+)"/);
-        if (xMatch && yMatch && wMatch && hMatch) {
-          rooms.push({
-            id: rid,
-            zone,
-            x: parseFloat(xMatch[1]),
-            y: parseFloat(yMatch[1]),
-            width: parseFloat(wMatch[1]),
-            height: parseFloat(hMatch[1]),
-          });
-        }
-      }
-    }
-    return rooms;
-  }
-
-  _renderFloorplan3dWalls() {
-    const rooms = this._getFloorplanRooms();
-    if (!rooms.length) return "";
-
-    const curZone = this._selectedFloorZone || "all";
-    let vbX = 0, vbY = 0, vbW = 1300, vbH = 1250;
-    if (curZone === "main") {
-      vbX = 0; vbY = 17; vbW = 1300; vbH = 713;
-    } else if (curZone === "upper") {
-      vbX = 0; vbY = 737; vbW = 1300; vbH = 488;
-    } else {
-      const vbMatch = /viewBox="([^"]+)"/i.exec(this._floorplanSvg || "");
-      if (vbMatch) {
-        const parts = vbMatch[1].split(/[\s,]+/).map(Number);
-        if (parts.length === 4 && !isNaN(parts[2]) && parts[2] > 0) {
-          vbX = parts[0];
-          vbY = parts[1];
-          vbW = parts[2];
-          vbH = parts[3];
-        }
-      }
-    }
-
-    return rooms
-      .map((r) => {
-        const isHidden = (curZone === "main" && r.zone === "upper") ||
-                         (curZone === "upper" && r.zone !== "upper") ||
-                         (curZone === "outdoor" && r.zone !== "outdoor");
-        const pctX = ((r.x - vbX) / vbW) * 100;
-        const pctY = ((r.y - vbY) / vbH) * 100;
-        const pctW = (r.width / vbW) * 100;
-        const pctH = (r.height / vbH) * 100;
-
-        const presEid = `binary_sensor.otis_presence_${r.id.toLowerCase().replace(/[^a-z0-9_]/g, "_")}`;
-        const presState = this._hass?.states?.[presEid];
-        const isOccupied = presState?.state === "on";
-
-        return `
-          <div
-            class="floorplan-3d-room-shell ${isOccupied ? "is-occupied" : ""}"
-            data-room-id="${this._escapeHtml(r.id)}"
-            data-zone="${this._escapeHtml(r.zone)}"
-            data-x="${r.x}"
-            data-y="${r.y}"
-            data-w="${r.width}"
-            data-h="${r.height}"
-            style="${isHidden ? "display: none; " : ""}left: ${pctX.toFixed(3)}%; top: ${pctY.toFixed(3)}%; width: ${pctW.toFixed(3)}%; height: ${pctH.toFixed(3)}%;"
-          >
-            <div class="floorplan-3d-wall floorplan-3d-wall-north"></div>
-            <div class="floorplan-3d-wall floorplan-3d-wall-south"></div>
-            <div class="floorplan-3d-wall floorplan-3d-wall-west"></div>
-            <div class="floorplan-3d-wall floorplan-3d-wall-east"></div>
-          </div>
-        `;
-      })
-      .join("");
-  }
-
-  _renderRoomInspector() {
-    const rid = this._selectedEditorRoomId;
-    if (!rid) return "";
-    const area = this._capabilityMap?.areas?.[rid] || { name: rid };
-    const allAreas = Object.entries(this._capabilityMap?.areas || {}).map(([id, a]) => ({
-      id,
-      name: a.name || id,
-    }));
-    const posStyle = (this._inspectorX !== undefined && this._inspectorY !== undefined)
-      ? `left: ${this._inspectorX}px; top: ${this._inspectorY}px; right: auto; bottom: auto;`
-      : "";
-    return `
-      <div class="room-inspector-card" id="room-inspector" style="${posStyle}">
-        <div class="inspector-drag-handle" id="inspector-header">
-          <strong style="color: var(--otis-primary); font-size: 0.82rem; display: flex; align-items: center; gap: 4px;">
-            <span>📐</span><span>Area Boundary Editor</span>
-            <span style="font-size: 0.65rem; color: var(--otis-text-muted); font-weight: normal; margin-left: 4px;">(drag to move)</span>
-          </strong>
-          <button type="button" class="btn-toolbar" id="btn-close-inspector" style="padding: 2px 6px; font-size: 0.72rem;">✕</button>
-        </div>
-        <div style="display: flex; flex-direction: column; gap: 4px;">
-          <label style="font-size: 0.7rem; color: var(--otis-text-muted);">Bind to HA Area Registry:</label>
-          <select id="editor-area-select" style="background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); border-radius: 6px; padding: 4px 6px; font-size: 0.76rem;">
-            ${allAreas.map(a => `<option value="${this._escapeHtml(a.id)}" ${a.id === rid ? "selected" : ""}>${this._escapeHtml(a.name)} (${this._escapeHtml(a.id)})</option>`).join("")}
-          </select>
-        </div>
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
-          <div>
-            <label style="font-size: 0.68rem; color: var(--otis-text-muted);">X Coord:</label>
-            <input type="number" id="inspector-room-x" style="width: 100%; box-sizing: border-box; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); border-radius: 4px; padding: 3px 6px; font-size: 0.74rem;" />
-          </div>
-          <div>
-            <label style="font-size: 0.68rem; color: var(--otis-text-muted);">Y Coord:</label>
-            <input type="number" id="inspector-room-y" style="width: 100%; box-sizing: border-box; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); border-radius: 4px; padding: 3px 6px; font-size: 0.74rem;" />
-          </div>
-          <div>
-            <label style="font-size: 0.68rem; color: var(--otis-text-muted);">Width:</label>
-            <input type="number" id="inspector-room-w" style="width: 100%; box-sizing: border-box; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); border-radius: 4px; padding: 3px 6px; font-size: 0.74rem;" />
-          </div>
-          <div>
-            <label style="font-size: 0.68rem; color: var(--otis-text-muted);">Height:</label>
-            <input type="number" id="inspector-room-h" style="width: 100%; box-sizing: border-box; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); border-radius: 4px; padding: 3px 6px; font-size: 0.74rem;" />
-          </div>
-        </div>
-        <div style="display: flex; gap: 6px; margin-top: 6px;">
-          <button type="button" class="btn-modal-primary" id="btn-apply-inspector-dim" style="flex: 1; padding: 5px 8px; font-size: 0.74rem;">
-            ✓ Update Boundary
-          </button>
-          <button type="button" class="btn-toolbar" id="btn-delete-inspector-room" style="background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.35); padding: 5px 10px; font-size: 0.74rem; border-radius: 6px; cursor: pointer; display: flex; align-items: center; gap: 4px;">
-            <span>🗑️</span><span>Delete Room</span>
-          </button>
-        </div>
-      </div>
-    `;
-  }
-
-  _projectToIso(x, y) {
-    const originX = 650.0;
-    const originY = 640.0;
-    const scale = 0.58;
-    const cx = 680.0;
-    const cy = 385.0;
-    const cos30 = 0.866025;
-    const sin30 = 0.500000;
-    const isUpper = y >= 720;
-    const yLoc = isUpper ? y - 720 : y;
-    const z = isUpper ? 320.0 : (y >= 580 ? -6.0 : 0.0);
-    const dx = (x - cx) * scale;
-    const dy = (yLoc - cy) * scale;
-    const ix = originX + (dx - dy) * cos30;
-    const iy = originY + (dx + dy) * sin30 - z;
-    return { x: Math.round(ix * 10) / 10, y: Math.round(iy * 10) / 10, isUpper };
-  }
-
-  _renderFloorplanPins() {
-    const rawBadges = this._capabilityMap?.floorplan?.custom_layout?.badges || [];
-    const badgesMap = {};
-    rawBadges.forEach((b) => {
-      if (b && b.entity_id) badgesMap[b.entity_id] = { ...b };
-    });
-    Object.entries(this._dirtyBadges || {}).forEach(([eid, b]) => {
-      if (b.delete) delete badgesMap[eid];
-      else badgesMap[eid] = { ...badgesMap[eid], ...b };
-    });
-
-    const badges = Object.values(badgesMap);
-    if (!badges.length) return "";
-
-    return `
-      <div class="floorplan-pins-overlay" id="floorplan-pins-overlay">
-        ${badges
-          .map((b) => {
-            const eid = b.entity_id;
-            const stateObj = this._hass?.states?.[eid];
-            const name = stateObj?.attributes?.friendly_name || eid;
-            const state = stateObj?.state || "unknown";
-            const isActive = this._isPinEntityActive(stateObj);
-            const activeColor = this._getPinActiveColor(eid);
-            const pinColor = isActive ? activeColor : "#94a3b8";
-            const bx = parseFloat(b.x || 300);
-            const by = parseFloat(b.y || 300);
-            const isoPt = this._projectToIso(bx, by);
-
-            return `
-              <div
-                class="floorplan-device-pin ${isActive ? "is-active" : ""} ${this._editorActive ? "is-draggable" : ""}"
-                data-entity-id="${this._escapeHtml(eid)}"
-                data-x="${bx}"
-                data-y="${by}"
-                data-iso-x="${isoPt.x}"
-                data-iso-y="${isoPt.y}"
-                data-is-upper="${isoPt.isUpper ? "1" : "0"}"
-                title="${this._escapeHtml(name)}: ${this._escapeHtml(state)}"
-                style="display: none; top: 0px; left: 0px; --paper-item-icon-color: ${pinColor}; --paper-item-icon-active-color: ${activeColor}; --state-icon-color: ${pinColor}; --state-icon-active-color: ${activeColor}; color: ${pinColor};"
-              >
-                <ha-state-icon style="color: ${pinColor}; --paper-item-icon-color: ${pinColor}; --state-icon-color: ${pinColor};"></ha-state-icon>
-              </div>
-            `;
-          })
-          .join("")}
-      </div>
-    `;
-  }
-
-  _renderAddMarkerModal() {
-    if (!this._addMarkerModalOpen) return "";
-    const query = (this._addMarkerFilter || "").toLowerCase().trim();
-
-    // 1. Build a comprehensive map of all entities from capabilityMap and this._hass.states
-    const entityMap = new Map();
-    const rawEntities = this._capabilityMap?.entities || [];
-    rawEntities.forEach((e) => {
-      const eid = typeof e === "string" ? e : e?.entity_id;
-      if (!eid) return;
-      const dom = eid.split(".")[0];
-      const aid = typeof e === "object" ? (e.area_id || "") : "";
-      const aname = typeof e === "object" ? (e.area_name || "") : "";
-      entityMap.set(eid, {
-        entity_id: eid,
-        name: (typeof e === "object" && e.name) ? e.name : eid,
-        domain: dom,
-        area_id: aid,
-        area_name: aname,
-      });
-    });
-
-    if (this._hass?.states) {
-      Object.entries(this._hass.states).forEach(([eid, sObj]) => {
-        if (!eid || eid.startsWith("automation.") || eid.startsWith("scene.") || eid.startsWith("script.")) {
-          return;
-        }
-        if (!entityMap.has(eid)) {
-          entityMap.set(eid, {
-            entity_id: eid,
-            name: sObj?.attributes?.friendly_name || eid,
-            domain: eid.split(".")[0],
-            area_id: "",
-            area_name: "",
-          });
-        }
-      });
-    }
-
-    // 2. Resolve room associations via capabilityMap areas and area registries
-    const areasMap = this._capabilityMap?.areas || {};
-    const entityToAreaId = {};
-    const areaIdToName = {};
-
-    Object.entries(areasMap).forEach(([aid, ainfo]) => {
-      const aName = ainfo.name || aid.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-      areaIdToName[aid] = aName;
-      (ainfo.entities || []).forEach((eid) => {
-        entityToAreaId[eid] = aid;
-      });
-    });
-
-    entityMap.forEach((ent) => {
-      if (!ent.area_id && entityToAreaId[ent.entity_id]) {
-        ent.area_id = entityToAreaId[ent.entity_id];
-      }
-      if (ent.area_id && areaIdToName[ent.area_id]) {
-        ent.area_name = areaIdToName[ent.area_id];
-      }
-    });
-
-    // 3. Group by Room
-    const roomGroups = {};
-    Object.entries(areasMap).forEach(([aid, ainfo]) => {
-      roomGroups[aid] = {
-        id: aid,
-        name: ainfo.name || aid.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
-        entities: [],
-      };
-    });
-    const unassignedEntities = [];
-
-    Array.from(entityMap.values()).forEach((ent) => {
-      if (query) {
-        const matches =
-          ent.entity_id.toLowerCase().includes(query) ||
-          ent.name.toLowerCase().includes(query) ||
-          ent.domain.toLowerCase().includes(query) ||
-          (ent.area_name && ent.area_name.toLowerCase().includes(query));
-        if (!matches) return;
-      }
-
-      if (ent.area_id && roomGroups[ent.area_id]) {
-        roomGroups[ent.area_id].entities.push(ent);
-      } else if (ent.area_name) {
-        const foundAid = Object.keys(roomGroups).find(
-          (k) => roomGroups[k].name.toLowerCase() === ent.area_name.toLowerCase()
-        );
-        if (foundAid) {
-          roomGroups[foundAid].entities.push(ent);
-        } else {
-          unassignedEntities.push(ent);
-        }
-      } else {
-        unassignedEntities.push(ent);
-      }
-    });
-
-    const activeRooms = Object.values(roomGroups)
-      .filter((r) => r.entities.length > 0)
-      .sort((a, b) => a.name.localeCompare(b.name));
-
-    const totalMatching =
-      activeRooms.reduce((acc, r) => acc + r.entities.length, 0) + unassignedEntities.length;
-
-    const getDomainIcon = (d) => {
-      switch (d) {
-        case "light": return "💡";
-        case "switch": return "🔌";
-        case "climate": return "🌡️";
-        case "media_player": return "📺";
-        case "camera": return "📹";
-        case "binary_sensor": return "🚶";
-        case "sensor": return "📊";
-        case "cover": return "🪟";
-        case "lock": return "🔒";
-        case "fan": return "💨";
-        default: return "⚡";
-      }
-    };
-
-    return `
-      <div class="modal-overlay" id="add-marker-modal-backdrop">
-        <div class="modal-card" style="max-width: 620px; max-height: calc(100vh - 48px); display: flex; flex-direction: column;">
-          <div class="modal-header">
-            <div>
-              <div class="modal-title"><span>➕</span><span>Add Device Pin to Floor Plan</span></div>
-              <div class="modal-subtitle">Browse devices grouped by room or search to place on your floor plan (${totalMatching} devices)</div>
-            </div>
-            <button type="button" class="modal-close-btn" id="add-marker-close-btn">✕</button>
-          </div>
-
-          <!-- Real-Time Search Filter -->
-          <div style="margin-bottom: 12px;">
-            <input
-              type="text"
-              id="add-marker-search-input"
-              placeholder="🔍 Search by room name, device, domain, or entity ID..."
-              value="${this._addMarkerFilter || ""}"
-              style="width: 100%; box-sizing: border-box; padding: 9px 14px; background: rgba(0,0,0,0.35); border: 1px solid var(--otis-surface-border); border-radius: 8px; color: var(--otis-text); font-size: 0.82rem;"
-            />
-          </div>
-
-          <div style="overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 12px; padding-right: 4px;">
-            ${
-              totalMatching === 0
-                ? `<div style="text-align: center; padding: 32px 0; color: var(--otis-text-muted); font-size: 0.82rem;">No devices matching "${this._escapeHtml(query)}".</div>`
-                : ""
-            }
-            ${activeRooms
-              .map(
-                (r) => `
-              <div style="background: rgba(255,255,255,0.03); border: 1px solid var(--otis-surface-border); border-radius: 10px; padding: 10px 12px;">
-                <div style="font-size: 0.78rem; font-weight: 700; color: var(--otis-primary); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
-                  <div style="display: flex; align-items: center; gap: 6px;">
-                    <span>${this._getRoomEmoji(r.name)}</span>
-                    <span>${this._escapeHtml(r.name)}</span>
-                  </div>
-                  <span style="color: var(--otis-text-muted); font-size: 0.72rem; font-weight: 500;">${r.entities.length} devices</span>
-                </div>
-                <div style="display: flex; flex-wrap: wrap; gap: 6px;">
-                  ${r.entities.map(
-                    (e) => `
-                    <button type="button" class="subview-chip btn-place-entity-pin" data-entity-id="${this._escapeHtml(e.entity_id)}" title="${this._escapeHtml(e.entity_id)}" style="font-size: 0.73rem; padding: 5px 9px; display: inline-flex; align-items: center; gap: 5px;">
-                      <span>${getDomainIcon(e.domain)}</span>
-                      <span style="font-weight: 600;">${this._escapeHtml(e.name !== e.entity_id ? e.name : e.entity_id)}</span>
-                    </button>
-                  `
-                  ).join("")}
-                </div>
-              </div>
-            `
-              )
-              .join("")}
-
-            ${
-              unassignedEntities.length > 0
-                ? `
-              <div style="background: rgba(255,255,255,0.02); border: 1px dashed var(--otis-surface-border); border-radius: 10px; padding: 10px 12px;">
-                <div style="font-size: 0.78rem; font-weight: 700; color: var(--otis-text-muted); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between;">
-                  <div style="display: flex; align-items: center; gap: 6px;">
-                    <span>📦</span>
-                    <span>Unassigned Devices</span>
-                  </div>
-                  <span style="color: var(--otis-text-muted); font-size: 0.72rem; font-weight: 500;">${unassignedEntities.length} devices</span>
-                </div>
-                <div style="display: flex; flex-wrap: wrap; gap: 6px;">
-                  ${unassignedEntities.slice(0, 100).map(
-                    (e) => `
-                    <button type="button" class="subview-chip btn-place-entity-pin" data-entity-id="${this._escapeHtml(e.entity_id)}" title="${this._escapeHtml(e.entity_id)}" style="font-size: 0.73rem; padding: 5px 9px; display: inline-flex; align-items: center; gap: 5px;">
-                      <span>${getDomainIcon(e.domain)}</span>
-                      <span style="font-weight: 600;">${this._escapeHtml(e.name !== e.entity_id ? e.name : e.entity_id)}</span>
-                    </button>
-                  `
-                  ).join("")}
-                </div>
-              </div>
-            `
-                : ""
-            }
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  _renderEditMarkerModal() {
-    if (!this._editMarkerModalOpen || !this._selectedEditorEntityId) return "";
-    const eid = this._selectedEditorEntityId;
-    const hassEntity = this._hass?.states?.[eid];
-    const friendlyName = hassEntity?.attributes?.friendly_name || eid;
-    const stateVal = hassEntity?.state || "active";
-    const dirty = this._dirtyBadges[eid];
-    const curX = dirty ? dirty.x : this._selectedEditorEntityCoords?.x || 340;
-    const curY = dirty ? dirty.y : this._selectedEditorEntityCoords?.y || 260;
-    const domain = eid.split(".")[0];
-
-    const getDomainIcon = (d) => {
-      switch (d) {
-        case "light": return "💡";
-        case "switch": return "🔌";
-        case "climate": return "🌡️";
-        case "media_player": return "📺";
-        case "camera": return "📹";
-        case "binary_sensor": return "🚶";
-        case "sensor": return "📊";
-        case "cover": return "🪟";
-        case "lock": return "🔒";
-        default: return "⚡";
-      }
-    };
-
-    return `
-      <div class="modal-overlay" id="edit-marker-modal-backdrop">
-        <div class="modal-card" style="max-width: 440px; max-height: calc(100vh - 48px); display: flex; flex-direction: column;">
-          <div class="modal-header">
-            <div>
-              <div class="modal-title">
-                <span>${getDomainIcon(domain)}</span>
-                <span>Configure Entity Pin</span>
-              </div>
-              <div class="modal-subtitle">Adjust coordinates, drag position, or remove from blueprint</div>
-            </div>
-            <button type="button" class="modal-close-btn" id="edit-marker-close-btn">✕</button>
-          </div>
-
-          <div style="display: flex; flex-direction: column; gap: 12px; padding: 4px 0;">
-            <!-- Entity Summary -->
-            <div style="padding: 10px 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--otis-surface-border); border-radius: 8px;">
-              <div style="font-weight: 700; font-size: 0.88rem; color: var(--otis-primary); display: flex; align-items: center; justify-content: space-between;">
-                <span>${this._escapeHtml(friendlyName)}</span>
-                <span style="font-size: 0.7rem; font-weight: 600; padding: 2px 8px; border-radius: 6px; background: rgba(56, 189, 248, 0.15); color: #38bdf8;">${this._escapeHtml(stateVal)}</span>
-              </div>
-              <div style="font-size: 0.72rem; color: var(--otis-text-muted); font-family: monospace; margin-top: 4px;">
-                ${this._escapeHtml(eid)}
-              </div>
-            </div>
-
-            <!-- Position Inputs -->
-            <div style="display: flex; gap: 10px; align-items: center;">
-              <div style="flex: 1;">
-                <label style="font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: var(--otis-text-muted);">X Position (px)</label>
-                <input type="number" id="input-marker-x" value="${Math.round(curX)}" style="width: 100%; box-sizing: border-box; padding: 7px 10px; background: rgba(0,0,0,0.35); border: 1px solid var(--otis-surface-border); border-radius: 6px; color: var(--otis-text); font-size: 0.82rem; margin-top: 3px;" />
-              </div>
-              <div style="flex: 1;">
-                <label style="font-size: 0.7rem; font-weight: 700; text-transform: uppercase; color: var(--otis-text-muted);">Y Position (px)</label>
-                <input type="number" id="input-marker-y" value="${Math.round(curY)}" style="width: 100%; box-sizing: border-box; padding: 7px 10px; background: rgba(0,0,0,0.35); border: 1px solid var(--otis-surface-border); border-radius: 6px; color: var(--otis-text); font-size: 0.82rem; margin-top: 3px;" />
-              </div>
-            </div>
-
-            <div style="font-size: 0.73rem; color: var(--otis-text-muted); line-height: 1.4;">
-              💡 <em>You can also click and drag this pin directly across any room on the blueprint canvas.</em>
-            </div>
-          </div>
-
-          <div class="modal-actions" style="display: flex; gap: 8px; justify-content: space-between; margin-top: 8px;">
-            <button type="button" class="btn-toolbar" id="btn-delete-marker" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.1); font-weight: 700;">
-              🗑️ Remove Pin
-            </button>
-            <div style="display: flex; gap: 6px;">
-              <button type="button" class="btn-modal-secondary" id="btn-cancel-edit-marker">
-                Cancel
-              </button>
-              <button type="button" class="btn-modal-primary" id="btn-apply-coords-marker">
-                Apply Coordinates
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  _renderGuideModal() {
-    if (!this._guideModalOpen || !this._currentGuide) return "";
-    const g = this._currentGuide;
-
-    return `
-      <div class="modal-overlay" id="guide-modal-backdrop">
-        <div class="modal-card" style="max-width: 620px; max-height: calc(100vh - 48px); display: flex; flex-direction: column;">
-          <div class="modal-header">
-            <div>
-              <div class="modal-title">
-                <span>📖</span>
-                <span>${this._escapeHtml(g.title || "Smart Home Setup Guide")}</span>
-              </div>
-              <div class="modal-subtitle">
-                Smart Home Maturity Guidance • Pathway to 20/20 Standard
-              </div>
-            </div>
-            <button type="button" class="modal-close-btn" id="guide-modal-close-btn">✕</button>
-          </div>
-
-          <!-- Guide Content -->
-          <div class="guide-box" style="line-height: 1.5; font-size: 0.8rem; display: flex; flex-direction: column; gap: 10px;">
-            <div>
-              <div style="font-weight: 700; color: var(--otis-primary); margin-bottom: 4px;">
-                🎯 Objective &amp; Impact:
-              </div>
-              <div style="color: var(--otis-text); line-height: 1.45;">
-                ${g.description || ""}
-              </div>
-            </div>
-
-            <div>
-              <div style="font-weight: 700; color: var(--otis-primary); margin-bottom: 4px;">
-                📋 Step-by-Step Implementation Guide:
-              </div>
-              <div style="color: var(--otis-text-muted); background: rgba(0, 0, 0, 0.25); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--otis-surface-border); line-height: 1.5;">
-                ${g.guide || g.description || "Follow the recommendations to complete setup."}
-              </div>
-            </div>
-          </div>
-
-          <div class="modal-actions" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px;">
-            <button type="button" class="btn-modal-secondary" id="btn-close-guide-modal">
-              Got It
-            </button>
-            <button type="button" class="btn-modal-primary" id="btn-guide-ask-assist">
-              💬 Ask Otis in Assist Co-Pilot
-            </button>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  _renderWalkthroughModal() {
-    return `
-      <div class="modal-overlay" id="walkthrough-modal-backdrop">
-        <div class="modal-card" style="max-width: 580px; max-height: calc(100vh - 48px); display: flex; flex-direction: column;">
-          <div class="modal-header">
-            <div>
-              <div class="modal-title">
-                <span>📹</span>
-                <span>Video Walkthrough to Floor Plan</span>
-              </div>
-              <div class="modal-subtitle">
-                Transform your mobile phone camera walkthrough into a vector SVG layout
-              </div>
-            </div>
-            <button type="button" class="modal-close-btn" id="modal-close-btn">✕</button>
-          </div>
-
-          <div class="guide-box">
-            <strong>💡 Mobile Walkthrough Instructions:</strong>
-            <ol>
-              <li>Start recording video on your mobile phone while standing in your home entrance.</li>
-              <li>Walk through your home room by room. As you step across each threshold, call out the area clearly (e.g. <em>"Entering Foyer"</em>, <em>"Walking into Kitchen"</em>, <em>"Now in Great Room"</em>, <em>"Stepping out to Backyard"</em>).</li>
-              <li>Upload the video file below (MP4, MOV, WEBM). Otis AI will extract the audio track, detect room callouts, and automatically build your multi-floor vector layout!</li>
-            </ol>
-          </div>
-
-          <!-- Drag and Dropzone -->
-          <input type="file" id="walkthrough-file-input" multiple accept="video/mp4,video/quicktime,video/webm,video/*" style="display: none;" />
-          <div class="dropzone" id="walkthrough-dropzone">
-            <div class="dropzone-icon">📁</div>
-            <div class="dropzone-text" id="dropzone-selected-filename">Tap or drag 1 or more walkthrough videos here</div>
-            <div class="dropzone-sub">Supports selecting multiple MP4, MOV, or WEBM files at once</div>
-          </div>
-
-          <!-- Spoken Order Customization -->
-          <div class="order-input-group">
-            <label for="spoken-order-input">Spoken Room Order (Optional Override / Notes):</label>
-            <input
-              type="text"
-              id="spoken-order-input"
-              placeholder="e.g. Foyer, Great Room, Kitchen, Dining Room, Backyard, Pool"
-              value="${this._escapeHtml(this._spokenOrderOverride || "")}"
-            />
-          </div>
-
-          ${
-            this._uploadingVideo
-              ? `
-            <div style="display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 14px 0;">
-              <div class="spinner" style="width: 28px; height: 28px;"></div>
-              <div id="walkthrough-status-text" style="font-size: 0.86rem; font-weight: 700; color: var(--otis-primary); text-align: center;">
-                ${this._uploadProgressText || "Uploading videos"}
-              </div>
-              <div id="walkthrough-discovered-list" style="display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; max-height: 110px; overflow-y: auto; padding: 2px 6px;">
-                ${(this._discoveredWalkthroughAreas || [])
-                  .map(
-                    (name) =>
-                      `<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:999px;background:rgba(14,165,233,0.16);border:1px solid rgba(56,189,248,0.4);color:#e0f2fe;font-size:0.72rem;font-weight:600;">✓ Discovered ${this._escapeHtml(name)}</span>`
-                  )
-                  .join("")}
-              </div>
-            </div>
-          `
-              : `
-            <div class="modal-actions">
-              <button type="button" class="btn-modal-primary" id="btn-submit-walkthrough" disabled>
-                🚀 Parse Video & Generate Floor Plan
-              </button>
-              <button type="button" class="btn-modal-secondary" id="btn-instant-generate-modal">
-                ⚡ Generate Instantly from Registered HA Areas
-              </button>
-            </div>
-          `
-          }
-        </div>
-      </div>
-    `;
-  }
-
-  _isSubviewMode() {
-    const mode = this._config?.mode;
-    if (!mode || mode === "command_center") return false;
-    return [
-      "media_studio",
-      "security",
-      "climate",
-      "energy",
-      "room_view",
-      "floorplan_studio",
-      "floorplan_control",
-    ].includes(mode);
-  }
-
-  _getAvailableUsers() {
-    const userMap = new Map();
-    // Strictly discover registered person.* entities from Home Assistant states
-    const states = this._hass?.states || {};
-    const ignored = new Set((this._userRules?.ignored_persons || []).map((x) => String(x).toLowerCase()));
-    const profiles = this._userRules?.person_profiles || {};
-
-    for (const eid in states) {
-      if (eid.startsWith("person.")) {
-        const cleanEid = eid.toLowerCase();
-        if (ignored.has(cleanEid)) continue;
-        if ((profiles[cleanEid] || profiles[eid])?.entity_type === "ignored") continue;
-        const p = states[eid];
-        const name = p.attributes?.friendly_name || eid.replace("person.", "").replace(/_/g, " ");
-        userMap.set(cleanEid, { id: eid, name: name });
-      }
-    }
-    return Array.from(userMap.values());
-  }
-
-  _renderThemeModal() {
-    const isSubview = this._isSubviewMode();
-    const presets = this._capabilityMap?.theme_presets || [
-      { key: "cyberpunk", name: "Cyberpunk Neon", preview: { primary: "#00f0ff", accent: "#f43f5e", background: "#070b14", card_bg: "#0f172a" } },
-      { key: "midnight_slate", name: "Midnight Slate", preview: { primary: "#38bdf8", accent: "#818cf8", background: "#0b1120", card_bg: "#1e293b" } },
-      { key: "oled_black", name: "OLED Obsidian", preview: { primary: "#10b981", accent: "#38bdf8", background: "#000000", card_bg: "#111113" } },
-      { key: "sunset_amber", name: "Sunset Amber", preview: { primary: "#f59e0b", accent: "#ea580c", background: "#1c1917", card_bg: "#292524" } },
-      { key: "emerald_luxury", name: "Emerald Luxury", preview: { primary: "#34d399", accent: "#fbbf24", background: "#022c22", card_bg: "#064e3b" } },
-      { key: "nordic_frost", name: "Nordic Frost", preview: { primary: "#0284c7", accent: "#0d9488", background: "#f8fafc", card_bg: "#ffffff" } },
-      { key: "high_contrast", name: "High Contrast", preview: { primary: "#ffff00", accent: "#00ffff", background: "#000000", card_bg: "#000000" } },
-    ];
-    const customThemes = this._capabilityMap?.themes || [];
-
-    return `
-      <div class="modal-overlay" id="theme-modal-backdrop">
-        <div class="modal-card" style="max-width: 620px; max-height: calc(100vh - 48px); display: flex; flex-direction: column;">
-          <div class="modal-header">
-            <div>
-              <div class="modal-title">
-                <span>🎨</span>
-                <span>Dynamic AI Theme Studio</span>
-              </div>
-              <div class="modal-subtitle">
-                ${isSubview ? "Personalize your appearance • Scoped strictly to your profile" : "Collaborative natural language styling & instant live theme application"}
-              </div>
-            </div>
-            <button type="button" class="modal-close-btn" id="theme-modal-close-btn">✕</button>
-          </div>
-
-          ${
-            isSubview
-              ? `
-            <!-- User Scope (Logged In User Only for Dashboard Views & Subviews) -->
-            <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 8px; font-size: 0.78rem;">
-              <span style="color: var(--otis-text-muted); font-weight: 600;">Theme Scope:</span>
-              <span style="color: var(--otis-primary); font-weight: 700; display: inline-flex; align-items: center; gap: 5px;">
-                👤 Current User (${this._escapeHtml(this._hass?.user?.name || "Logged In User")})
-              </span>
-            </div>
-          `
-              : `
-            <!-- User Scope Selector (Otis AI Command Center Card: Available for All Uses) -->
-            <div style="display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 8px; font-size: 0.78rem;">
-              <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
-                <span style="color: var(--otis-text-muted); font-weight: 600;">Apply Scope:</span>
-                <div style="display: flex; gap: 14px; align-items: center; flex-wrap: wrap;">
-                  <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--otis-text);">
-                    <input type="radio" name="theme-scope" id="scope-current" value="current" ${this._themeApplyScope === "current" || !this._themeApplyScope ? "checked" : ""} />
-                    Current User (${this._escapeHtml(this._hass?.user?.name || "Me")})
-                  </label>
-                  <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--otis-text);">
-                    <input type="radio" name="theme-scope" id="scope-specific" value="specific" ${this._themeApplyScope === "specific" ? "checked" : ""} />
-                    Specific User...
-                  </label>
-                  <label style="cursor: pointer; display: flex; align-items: center; gap: 6px; color: var(--otis-text);">
-                    <input type="radio" name="theme-scope" id="scope-all" value="all" ${this._themeApplyScope === "all" ? "checked" : ""} />
-                    All Users (Global Profile Sync)
-                  </label>
-                </div>
-              </div>
-              ${
-                this._themeApplyScope === "specific"
-                  ? `
-                <div style="display: flex; align-items: center; gap: 10px; margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--otis-surface-border);">
-                  <span style="color: var(--otis-text-muted); font-size: 0.75rem; font-weight: 600;">Select User:</span>
-                  <select id="theme-user-select" style="flex: 1; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--otis-surface-border); background: var(--otis-card-bg); color: var(--otis-text); font-size: 0.80rem;">
-                    ${this._getAvailableUsers()
-                      .map(
-                        (u) => `
-                      <option value="${this._escapeHtml(u.id)}" ${u.id === this._selectedThemeUserId ? "selected" : ""}>
-                        👤 ${this._escapeHtml(u.name)}${u.id === this._hass?.user?.id ? " (You)" : ""}
-                      </option>
-                    `
-                      )
-                      .join("")}
-                  </select>
-                </div>
-              `
-                  : ""
-              }
-            </div>
-          `
-          }
-
-          <!-- AI Natural Language Generator Prompt -->
-          <div class="guide-box" style="display: flex; flex-direction: column; gap: 8px;">
-            <div style="font-weight: 700; font-size: 0.85rem; color: var(--otis-primary);">
-              ✨ Collaborative AI Theme Generator
-            </div>
-            <div style="display: flex; gap: 8px; align-items: center;">
-              <input
-                type="text"
-                id="theme-prompt-input"
-                value="${this._escapeHtml(this._draftThemePrompt || '')}"
-                placeholder="${this._isListeningTheme ? 'Listening... describe your dream theme' : 'e.g. Glowing neon cyan and purple with dark slate cards and 16px radius...'}"
-                style="flex: 1; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--otis-surface-border); background: var(--otis-surface); color: var(--otis-text); font-size: 0.82rem;"
-              />
-              ${
-                this._isListeningTheme
-                  ? `
-                <div class="voice-equalizer" title="Listening to speech..." style="margin-right: 4px;">
-                  <span class="equalizer-bar"></span>
-                  <span class="equalizer-bar"></span>
-                  <span class="equalizer-bar"></span>
-                  <span class="equalizer-bar"></span>
-                  <span class="equalizer-bar"></span>
-                </div>
-              `
-                  : ""
-              }
-              <button type="button"
-                class="btn-toolbar btn-theme-mic"
-                id="btn-theme-voice-mic"
-                title="${this._isListeningTheme ? 'Stop microphone' : 'Speak your theme prompt'}"
-                style="padding: 7px 11px; border-radius: 8px; font-size: 0.80rem; display: inline-flex; align-items: center; gap: 5px; ${this._isListeningTheme ? 'background: #ef4444; border-color: #f87171; color: white;' : ''}"
-              >
-                <svg viewBox="0 0 24 24" style="width: 14px; height: 14px; fill: currentColor;"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
-                <span>${this._isListeningTheme ? 'Stop' : 'Speak'}</span>
-              </button>
-              <button type="button"
-                class="btn-modal-primary"
-                id="btn-generate-theme-ai"
-                style="white-space: nowrap;"
-                ${this._generatingTheme ? "disabled" : ""}
-              >
-                ${this._generatingTheme ? `<div class="spinner" style="width: 14px; height: 14px;"></div> Generating...` : "✨ Generate & Apply"}
-              </button>
-            </div>
-          </div>
-
-          <!-- Custom Saved Themes -->
-          ${
-            customThemes.length > 0
-              ? `
-            <div>
-              <div style="font-size: 0.76rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--otis-text-muted); margin-bottom: 8px;">
-                Custom Generated Themes (${customThemes.length})
-              </div>
-              <div class="theme-grid" style="margin-bottom: 14px;">
-                ${customThemes
-                  .map(
-                    (th) => `
-                  <div class="theme-card" style="border-left: 3px solid ${th.preview.primary};">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                      <span style="font-weight: 700; font-size: 0.85rem; color: var(--otis-text);">${this._escapeHtml(th.title)}</span>
-                      <div class="theme-swatches">
-                        <span class="theme-swatch" style="background: ${th.preview.primary};" title="Primary"></span>
-                        <span class="theme-swatch" style="background: ${th.preview.accent};" title="Accent"></span>
-                        <span class="theme-swatch" style="background: ${th.preview.background};" title="Background"></span>
-                      </div>
-                    </div>
-                    <div style="font-size: 0.72rem; color: var(--otis-text-muted);">
-                      Radius: ${th.border_radius} • File: ${th.file_name}
-                    </div>
-                    <div style="display: flex; gap: 6px; margin-top: 4px;">
-                      <button type="button" class="btn-modal-primary btn-apply-theme" data-theme-key="${th.theme_key}" style="flex: 1; padding: 4px 8px; font-size: 0.75rem;">
-                        ⚡ Apply Live
-                      </button>
-                      <button type="button" class="btn-toolbar btn-delete-theme" data-theme-key="${th.theme_key}" style="padding: 4px 8px; color: #f43f5e;" title="Delete Theme">
-                        🗑️
-                      </button>
-                    </div>
-                  </div>
-                `
-                  )
-                  .join("")}
-              </div>
-            </div>
-          `
-              : ""
-          }
-
-          <!-- Curated Baseline Presets -->
-          <div>
-            <div style="font-size: 0.76rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--otis-text-muted); margin-bottom: 8px;">
-              Curated Master Presets (Instant 1-Click Generation & Activation)
-            </div>
-            <div class="theme-grid">
-              ${presets
-                .map(
-                  (p) => `
-                <div class="theme-card" style="border-left: 3px solid ${p.preview.primary};">
-                  <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span style="font-weight: 700; font-size: 0.85rem; color: var(--otis-text);">${this._escapeHtml(p.name)}</span>
-                    <div class="theme-swatches">
-                      <span class="theme-swatch" style="background: ${p.preview.primary};" title="Primary"></span>
-                      <span class="theme-swatch" style="background: ${p.preview.accent};" title="Accent"></span>
-                      <span class="theme-swatch" style="background: ${p.preview.background};" title="Background"></span>
-                    </div>
-                  </div>
-                  <div style="font-size: 0.72rem; color: var(--otis-text-muted); line-height: 1.35;">
-                    ${this._escapeHtml(p.description || "Master aesthetic profile")}
-                  </div>
-                  <button type="button" class="btn-modal-secondary btn-generate-preset" data-preset-key="${p.key}" style="padding: 4px 8px; font-size: 0.75rem; margin-top: 4px;">
-                    ✨ Generate & Set Live
-                  </button>
-                </div>
-              `
-                )
-                .join("")}
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  _renderRulesModal() {
-    const rules = this._rulesDraft || this._userRules || {
-      persona: "concierge",
-      tone: "friendly",
-      response_length: "balanced",
-      autonomy_level: "balanced",
-      require_lock_confirmation: true,
-      require_security_confirmation: true,
-      quiet_hours_enabled: true,
-      quiet_hours_start: "22:00",
-      quiet_hours_end: "07:00",
-      quiet_hours_volume: 25,
-      preferred_speaker: "",
-      custom_instructions: "",
-      dashboard_layout: "modern_sections",
-      navigation_style: "sleek_buttons",
-      calendar_view: "listDay",
-      primary_content_focus: "balanced",
-    };
-
-    const activeTab = this._rulesActiveTab || "dashboard";
-
-    return `
-      <div class="modal-overlay" id="rules-modal-backdrop">
-        <div class="modal-card" style="max-width: 660px; max-height: calc(100vh - 48px); display: flex; flex-direction: column;">
-          <div class="modal-header">
-            <div>
-              <div class="modal-title">
-                <span>⚙️</span>
-                <span>Otis Persona & Household Rules</span>
-              </div>
-              <div class="modal-subtitle">
-                Configure your smart home AI assistant's personality, autonomy safeguards, voice etiquette, and custom guidelines.
-              </div>
-            </div>
-            <button type="button" class="modal-close-btn" id="rules-modal-close-btn">✕</button>
-          </div>
-
-          <!-- Tabs Navigation -->
-          <div style="display: flex; gap: 8px; border-bottom: 1px solid var(--otis-surface-border); padding: 0 0 10px 0; margin-bottom: 16px; overflow-x: auto;">
-            <button type="button" class="tab-btn ${activeTab === "wizard" ? "active" : ""}" id="rules-tab-wizard" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap; font-weight: 600; border-color: ${activeTab === "wizard" ? "var(--otis-primary)" : "rgba(14,165,233,0.3)"}; background: ${activeTab === "wizard" ? "var(--otis-primary)" : "rgba(14,165,233,0.1)"}; color: ${activeTab === "wizard" ? "#fff" : "var(--otis-primary)"};">🧙‍♂️ Rules Wizard</button>
-            <button type="button" class="tab-btn ${activeTab === "dashboard" ? "active" : ""}" id="rules-tab-dashboard" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">📱 Dashboard & Layout</button>
-            <button type="button" class="tab-btn ${activeTab === "persona" ? "active" : ""}" id="rules-tab-persona" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">🎭 Persona & Tone</button>
-            <button type="button" class="tab-btn ${activeTab === "safety" ? "active" : ""}" id="rules-tab-safety" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">🛡️ Autonomy & Safety</button>
-            <button type="button" class="tab-btn ${activeTab === "voice" ? "active" : ""}" id="rules-tab-voice" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">🔊 Voice & Quiet Hours</button>
-            <button type="button" class="tab-btn ${activeTab === "people" ? "active" : ""}" id="rules-tab-people" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">👥 People & Pets</button>
-            <button type="button" class="tab-btn ${activeTab === "instructions" ? "active" : ""}" id="rules-tab-instructions" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">📝 Custom Instructions</button>
-          </div>
-
-          <!-- Tab Content (Scrollable) -->
-          <div style="overflow-y: auto; flex: 1; padding-right: 4px; display: flex; flex-direction: column; gap: 14px;">
-            ${activeTab === "wizard" ? this._renderRulesWizardTab(rules) : ""}
-            ${activeTab === "dashboard" ? this._renderRulesDashboardTab(rules) : ""}
-            ${activeTab === "persona" ? this._renderRulesPersonaTab(rules) : ""}
-            ${activeTab === "safety" ? this._renderRulesSafetyTab(rules) : ""}
-            ${activeTab === "voice" ? this._renderRulesVoiceTab(rules) : ""}
-            ${activeTab === "people" ? this._renderRulesPeopleTab(rules) : ""}
-            ${activeTab === "instructions" ? this._renderRulesInstructionsTab(rules) : ""}
-          </div>
-
-          <!-- Modal Footer -->
-          <div style="display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding-top: 16px; margin-top: 10px; border-top: 1px solid var(--otis-surface-border);">
-            <button type="button" class="subview-chip" id="rules-btn-cancel" style="padding: 6px 14px;">Cancel</button>
-            <button type="button" class="subview-chip" id="rules-btn-save" style="background: var(--otis-primary, #0ea5e9); color: #fff; font-weight: 600; padding: 6px 18px; border: none;">
-              ${this._savingRules ? "Saving..." : "Save Preferences"}
-            </button>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  _renderRulesDashboardTab(rules) {
-    const currentLayout = rules.dashboard_layout || "modern_sections";
-    const currentNav = rules.navigation_style || "sleek_buttons";
-    const currentCal = rules.calendar_view || "listDay";
-    const currentFocus = rules.primary_content_focus || "balanced";
-
-    const layouts = [
-      {
-        id: "modern_sections",
-        emoji: "📱",
-        name: "Modern Responsive Sections",
-        desc: "Adaptive mobile-first layout. Single touch-friendly column on phones, 2 columns on tablets, multi-column on desktop. No crushed cards or wasted voids.",
-      },
-      {
-        id: "classic_grid",
-        emoji: "📊",
-        name: "Classic Card Grid",
-        desc: "Traditional multi-column card grid for users who prefer standard Home Assistant masonry columns.",
-      },
-    ];
-
-    const navStyles = [
-      {
-        id: "sleek_buttons",
-        emoji: "🔘",
-        name: "Sleek Touch Buttons",
-        desc: "Balanced 2-column touch-friendly navigation buttons with contextual room icons.",
-      },
-      {
-        id: "standard_grid",
-        emoji: "🗂️",
-        name: "Standard Grid Cards",
-        desc: "Compact 3-column square buttons across rooms and studios.",
-      },
-    ];
-
-    const calViews = [
-      {
-        id: "listDay",
-        emoji: "📋",
-        name: "Agenda Daily List",
-        desc: "Readable list of upcoming events and times. Scales cleanly on mobile phones without overlapping numbers.",
-      },
-      {
-        id: "month",
-        emoji: "📅",
-        name: "Full Month Grid",
-        desc: "Traditional calendar month matrix with day indicators.",
-      },
-    ];
-
-    return `
-      <div style="display: flex; flex-direction: column; gap: 14px;">
-        <div>
-          <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">Select Dashboard Layout:</div>
-          <div style="font-size: 0.74rem; color: var(--otis-text-muted); margin-top: 2px;">
-            Choose how your Home Command Center and Studio dashboards adapt across phone, tablet, and desktop screens.
-          </div>
-        </div>
-
-        <div class="persona-grid">
-          ${layouts
-            .map(
-              (l) => `
-            <div class="persona-card ${currentLayout === l.id ? "selected" : ""}" data-dashboard-layout="${l.id}">
-              <div class="persona-title">
-                <span>${l.emoji}</span>
-                <span>${l.name}</span>
-              </div>
-              <div class="persona-desc">${l.desc}</div>
-            </div>
-          `
-            )
-            .join("")}
-        </div>
-
-        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 4px;">Navigation Button Style:</div>
-        <div class="persona-grid">
-          ${navStyles
-            .map(
-              (n) => `
-            <div class="persona-card ${currentNav === n.id ? "selected" : ""}" data-navigation-style="${n.id}">
-              <div class="persona-title">
-                <span>${n.emoji}</span>
-                <span>${n.name}</span>
-              </div>
-              <div class="persona-desc">${n.desc}</div>
-            </div>
-          `
-            )
-            .join("")}
-        </div>
-
-        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 4px;">Schedule & Calendar Display:</div>
-        <div class="persona-grid">
-          ${calViews
-            .map(
-              (c) => `
-            <div class="persona-card ${currentCal === c.id ? "selected" : ""}" data-calendar-view="${c.id}">
-              <div class="persona-title">
-                <span>${c.emoji}</span>
-                <span>${c.name}</span>
-              </div>
-              <div class="persona-desc">${c.desc}</div>
-            </div>
-          `
-            )
-            .join("")}
-        </div>
-
-        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 4px;">Content Priority:</div>
-        <div class="rules-setting-row">
-          <div>
-            <div class="rules-setting-label">Primary Dashboard Focus</div>
-            <div class="rules-setting-desc">Sets the arrangement order of studios, schedule, and room controls.</div>
-          </div>
-          <select id="rules-input-content-focus" style="padding: 6px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.8rem;">
-            <option value="balanced" ${currentFocus === "balanced" ? "selected" : ""}>Balanced (Launchpad, Schedule, Rooms)</option>
-            <option value="studios_first" ${currentFocus === "studios_first" ? "selected" : ""}>Quick Navigation First</option>
-            <option value="glance_first" ${currentFocus === "glance_first" ? "selected" : ""}>Schedule & Weather First</option>
-          </select>
-        </div>
-
-        <div class="rules-setting-row" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--otis-surface-border); border-radius: 8px;">
-          <div>
-            <div class="rules-setting-label">Contextual Room Occupancy Cards</div>
-            <div class="rules-setting-desc">Display dynamic room presence & activity cards in Command Center when areas are occupied.</div>
-          </div>
-          <input type="checkbox" id="rules-input-presence-room-cards" ${rules.presence_room_cards !== false ? "checked" : ""} style="cursor: pointer; width: 18px; height: 18px; accent-color: var(--otis-primary);">
-        </div>
-
-        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 6px;">Proactive Recommendations & Feed:</div>
-        <div class="rules-setting-row" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--otis-surface-border); border-radius: 8px;">
-          <div>
-            <div class="rules-setting-label">Show Ignored Recommendations</div>
-            <div class="rules-setting-desc">Display previously dismissed recommendations in the feed with a restore action.</div>
-          </div>
-          <input type="checkbox" id="rules-input-show-ignored" ${rules.show_ignored_recommendations ? "checked" : ""} style="cursor: pointer; width: 18px; height: 18px; accent-color: var(--otis-primary);">
-        </div>
-        <div class="rules-setting-row" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--otis-surface-border); border-radius: 8px;">
-          <div>
-            <div class="rules-setting-label">Dismissed Recommendations</div>
-            <div class="rules-setting-desc">Currently hiding <strong>${(rules.dismissed_recommendation_ids || []).length}</strong> recommendation(s) across your home.</div>
-          </div>
-          <button type="button" class="btn-subtle-toggle" id="rules-btn-reset-dismissed" ${(rules.dismissed_recommendation_ids || []).length === 0 ? "disabled" : ""}>
-            ↺ Reset All Ignored
-          </button>
-        </div>
-
-        <div style="margin-top: 6px; padding: 12px; background: rgba(14, 165, 233, 0.08); border: 1px solid rgba(14, 165, 233, 0.25); border-radius: 8px; display: flex; align-items: center; justify-content: space-between;">
-          <div>
-            <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">Regenerate All Dashboards</div>
-            <div style="font-size: 0.74rem; color: var(--otis-text-muted); margin-top: 2px;">
-              Rebuild Command Center, all Studios, and Room subviews from scratch using active layout preferences.
-            </div>
-          </div>
-          <button type="button" class="subview-chip" id="rules-btn-regenerate-dashboards" style="background: var(--otis-primary); color: #fff; font-weight: 600; padding: 7px 14px; border: none; white-space: nowrap; cursor: pointer;">
-            ⚡ Regenerate Now
-          </button>
-        </div>
-      </div>
-    `;
-  }
-
-  _renderRulesPersonaTab(rules) {
-    const currentPersona = rules.persona || "concierge";
-    const currentTone = rules.tone || "friendly";
-    const currentLength = rules.response_length || "balanced";
-
-    const personas = [
-      {
-        id: "concierge",
-        emoji: "🛎️",
-        name: "Friendly Concierge",
-        desc: "Warm, proactive, and thoughtful. Suggests helpful automation tips and guides you through smart home enhancements.",
-      },
-      {
-        id: "butler",
-        emoji: "🎩",
-        name: "Professional Butler",
-        desc: "Formal, discreet, and impeccably polite. Dedicated to perfection, privacy, and understated execution.",
-      },
-      {
-        id: "minimalist",
-        emoji: "⚡",
-        name: "Technical Minimalist",
-        desc: "Ultra-concise, direct, and telegraphic. Delivers raw answers and fast actions with zero conversational fluff.",
-      },
-      {
-        id: "custom",
-        emoji: "🛠️",
-        name: "Custom Persona",
-        desc: "Tailored directly by your personal household instructions, quirks, nicknames, and behavioral rules.",
-      },
-    ];
-
-    return `
-      <div style="display: flex; flex-direction: column; gap: 14px;">
-        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">Select Assistant Persona:</div>
-        <div class="persona-grid">
-          ${personas
-            .map(
-              (p) => `
-            <div class="persona-card ${currentPersona === p.id ? "selected" : ""}" data-persona-id="${p.id}">
-              <div class="persona-title">
-                <span>${p.emoji}</span>
-                <span>${p.name}</span>
-              </div>
-              <div class="persona-desc">${p.desc}</div>
-            </div>
-          `
-            )
-            .join("")}
-        </div>
-
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 6px;">
-          <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start;">
-            <div class="rules-setting-label">Conversational Tone:</div>
-            <select id="rules-input-tone" style="width: 100%; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);">
-              <option value="friendly" ${currentTone === "friendly" ? "selected" : ""}>Warm & Friendly</option>
-              <option value="formal" ${currentTone === "formal" ? "selected" : ""}>Formal & Respectful</option>
-              <option value="concise" ${currentTone === "concise" ? "selected" : ""}>Ultra-Concise</option>
-              <option value="witty" ${currentTone === "witty" ? "selected" : ""}>Witty & Lighthearted</option>
-            </select>
-          </div>
-
-          <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start;">
-            <div class="rules-setting-label">Response Length:</div>
-            <select id="rules-input-length" style="width: 100%; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);">
-              <option value="concise" ${currentLength === "concise" ? "selected" : ""}>Concise (1-2 sentences)</option>
-              <option value="balanced" ${currentLength === "balanced" ? "selected" : ""}>Balanced (Default)</option>
-              <option value="detailed" ${currentLength === "detailed" ? "selected" : ""}>Detailed & Explanatory</option>
-            </select>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  _renderRulesSafetyTab(rules) {
-    const autonomy = rules.autonomy_level || "balanced";
-    const requireLock = rules.require_lock_confirmation !== false;
-    const requireSec = rules.require_security_confirmation !== false;
-
-    const tiers = [
-      {
-        id: "high",
-        badge: "🟢 High Autonomy",
-        desc: "Acts immediately on all requests. Executes state changes, locks, and routines with zero redundant confirmation.",
-      },
-      {
-        id: "balanced",
-        badge: "🟡 Balanced with Safeguards",
-        desc: "Proactively controls lighting, media, and climate, but requires explicit confirmation before deadbolts or alarm panel changes.",
-      },
-      {
-        id: "strict",
-        badge: "🔴 Strict Confirmation",
-        desc: "Always asks for explicit confirmation before changing any device states or firing automations.",
-      },
-    ];
-
-    return `
-      <div style="display: flex; flex-direction: column; gap: 14px;">
-        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">Autonomy & Safety Policy:</div>
-        <div style="display: flex; flex-direction: column; gap: 10px;">
-          ${tiers
-            .map(
-              (t) => `
-            <div class="persona-card ${autonomy === t.id ? "selected" : ""}" data-autonomy-tier="${t.id}">
-              <div class="persona-title">${t.badge}</div>
-              <div class="persona-desc">${t.desc}</div>
-            </div>
-          `
-            )
-            .join("")}
-        </div>
-
-        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 6px;">Confirmation Guardrails:</div>
-        <div style="display: flex; flex-direction: column; gap: 8px;">
-          <label class="rules-setting-row" style="cursor: pointer;">
-            <div>
-              <div class="rules-setting-label">Require confirmation for Door Deadbolts</div>
-              <div class="rules-setting-desc">Otis asks before locking or unlocking smart deadbolts.</div>
-            </div>
-            <input type="checkbox" id="rules-input-lock-confirm" ${requireLock ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
-          </label>
-
-          <label class="rules-setting-row" style="cursor: pointer;">
-            <div>
-              <div class="rules-setting-label">Require confirmation for Perimeter Security & Alarms</div>
-              <div class="rules-setting-desc">Otis asks before arming or disarming Alarmo / security panels.</div>
-            </div>
-            <input type="checkbox" id="rules-input-sec-confirm" ${requireSec ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
-          </label>
-        </div>
-
-        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 8px;">Assist Co-Pilot Reasoning Timeout:</div>
-        <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 8px;">
-          <div>
-            <div class="rules-setting-label">Reasoning &amp; Failover Timeout</div>
-            <div class="rules-setting-desc">Maximum seconds Otis will wait for cloud LLM reasoning before transparently cascading to the next agent or local edge LLM.</div>
-          </div>
-          <div style="display: flex; align-items: center; gap: 10px; width: 100%;">
-            <input type="number" id="rules-input-reasoning-timeout" min="10" max="300" step="5" value="${rules.reasoning_timeout || (this._capabilityMap && this._capabilityMap.reasoning_timeout) || (this._config && this._config.reasoning_timeout) || 60}" style="width: 90px; padding: 6px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
-            <span style="font-size: 0.78rem; color: var(--otis-text-muted);">seconds (default: 60s)</span>
-          </div>
-          <div style="font-size: 0.72rem; color: var(--otis-text-muted);">
-            Configurable system-wide in <em>Settings ➔ Devices &amp; Services ➔ Otis AI Companion ➔ Configure</em>.
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  _renderRulesVoiceTab(rules) {
-    const quietEnabled = rules.quiet_hours_enabled !== false;
-    const quietStart = rules.quiet_hours_start || "22:00";
-    const quietEnd = rules.quiet_hours_end || "07:00";
-    const quietVol = rules.quiet_hours_volume !== undefined ? rules.quiet_hours_volume : 25;
-    const preferredSpeaker = rules.preferred_speaker || "";
-    const audioFollowEnabled = rules.audio_follow_enabled !== false;
-    const voiceAnnouncementsEnabled = rules.voice_announcements_enabled !== false;
-    const voiceFilterPassersby = rules.voice_filter_passersby !== false;
-
-    return `
-      <div style="display: flex; flex-direction: column; gap: 14px;">
-        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">Proactive Voice Announcements & Camera Intelligence:</div>
-
-        <label class="rules-setting-row" style="cursor: pointer;">
-          <div>
-            <div class="rules-setting-label">Proactive Voice Announcements</div>
-            <div class="rules-setting-desc">Spoken alerts on speakers for arriving visitors, perimeter security alerts, and door opening events.</div>
-          </div>
-          <input type="checkbox" id="rules-input-voice-announcements-enabled" ${voiceAnnouncementsEnabled ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
-        </label>
-
-        <label class="rules-setting-row" style="cursor: pointer;">
-          <div>
-            <div class="rules-setting-label">Filter Sidewalk & Street Passersby</div>
-            <div class="rules-setting-desc">Suppress voice announcements for pedestrian tracks moving across perimeter cameras without lingering or entering.</div>
-          </div>
-          <input type="checkbox" id="rules-input-voice-filter-passersby" ${voiceFilterPassersby ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
-        </label>
-
-        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 4px;">Spatial Audio Follow-Me:</div>
-
-        <label class="rules-setting-row" style="cursor: pointer;">
-          <div>
-            <div class="rules-setting-label">Enable Audio Follow-Me</div>
-            <div class="rules-setting-desc">Automatically migrates active music playback to whichever room you walk into based on multi-sensor presence tracking.</div>
-          </div>
-          <input type="checkbox" id="rules-input-audio-follow-enabled" ${audioFollowEnabled ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
-        </label>
-
-        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 6px;">Quiet Hours Etiquette:</div>
-
-        <label class="rules-setting-row" style="cursor: pointer;">
-          <div>
-            <div class="rules-setting-label">Enable Quiet Hours</div>
-            <div class="rules-setting-desc">Ducks voice announcements and lowers audio playback volume during sleeping hours.</div>
-          </div>
-          <input type="checkbox" id="rules-input-quiet-enabled" ${quietEnabled ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
-        </label>
-
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-          <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start;">
-            <div class="rules-setting-label">Quiet Hours Start:</div>
-            <input type="time" id="rules-input-quiet-start" value="${this._escapeHtml(quietStart)}" style="width: 100%; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
-          </div>
-
-          <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start;">
-            <div class="rules-setting-label">Quiet Hours End:</div>
-            <input type="time" id="rules-input-quiet-end" value="${this._escapeHtml(quietEnd)}" style="width: 100%; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
-          </div>
-        </div>
-
-        <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 8px;">
-          <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
-            <div class="rules-setting-label">Max Spoken Volume during Quiet Hours:</div>
-            <span id="rules-vol-val" style="font-weight: 700; font-size: 0.82rem; color: var(--otis-primary);">${quietVol}%</span>
-          </div>
-          <input type="range" id="rules-input-quiet-vol" min="5" max="100" value="${quietVol}" style="width: 100%; cursor: pointer;" />
-        </div>
-
-        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 6px;">Voice Endpoint:</div>
-        <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start;">
-          <div class="rules-setting-label">Preferred Spoken Speaker / Room:</div>
-          <div class="rules-setting-desc">Primary speaker used for proactive vocal alerts (e.g., media_player.great_room or Great Room). Leave blank for auto.</div>
-          <input type="text" id="rules-input-speaker" value="${this._escapeHtml(preferredSpeaker)}" placeholder="e.g. media_player.great_room or Study" style="width: 100%; padding: 6px 8px; margin-top: 6px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
-        </div>
-
-        ${(() => {
-          const mediaTopo = this._capabilityMap?.media_topology || {};
-          const studioData = this._mediaStudioData || {};
-          const sharedSources = studioData.shared_sources || mediaTopo.shared_sources || [];
-          const candidatePlayers = this._getResolvedCandidatePlayers(studioData, mediaTopo);
-          const effectiveMappings = {
-            ...(mediaTopo.input_mappings || {}),
-            ...(studioData.effective_mappings || {}),
-            ...(rules.media_input_mappings || {}),
-          };
-          const unjoinInput = rules.media_unjoin_input || studioData.unjoin_input || "None";
-          const filteredInputs = sharedSources.filter((s) => s && s.toLowerCase() !== unjoinInput.toLowerCase());
-          if (filteredInputs.length === 0) return "";
-          return `
-            <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 8px;">🔗 Matrix Input-to-Player Mapping (Separate Speakers &amp; Streamers):</div>
-            <div style="font-size: 0.73rem; color: var(--otis-text-muted); line-height: 1.4;">
-              Map physical amplifier/matrix inputs (Control4 Matrix Amp, Sonos, Heos, etc.) to the upstream streaming media player connected to each input (Music Assistant, Alexa Bridge, Plex, VLC, etc.).
-            </div>
-            <div style="display: flex; flex-direction: column; gap: 6px; background: rgba(0,0,0,0.18); padding: 10px; border-radius: 8px; border: 1px solid var(--otis-surface-border);">
-              ${filteredInputs
-                .map((inpName) => {
-                  const mappedEid = effectiveMappings[inpName] || "";
-                  return `
-                    <div style="display: grid; grid-template-columns: minmax(120px, 1fr) 2fr; gap: 10px; align-items: center;">
-                      <span style="font-size: 0.78rem; font-weight: 600; color: var(--otis-text);">🔌 ${this._escapeHtml(inpName)}</span>
-                      <select class="rules-media-mapping-select" data-input-name="${this._escapeHtml(inpName)}" style="width: 100%; padding: 5px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;">
-                        <option value="">-- Unmapped / Auto-Detect --</option>
-                        ${candidatePlayers
-                          .map(
-                            (cp) => `
-                          <option value="${this._escapeHtml(cp.entity_id)}" ${mappedEid === cp.entity_id ? "selected" : ""}>
-                            🎵 ${this._escapeHtml(cp.name)} (${this._escapeHtml(cp.entity_id)})
-                          </option>
-                        `
-                          )
-                          .join("")}
-                      </select>
-                    </div>
-                  `;
-                })
-                .join("")}
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 6px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.06);">
-                <div>
-                  <div style="font-size: 0.72rem; color: var(--otis-text-muted); margin-bottom: 3px;">Unjoin / Idle Input Name:</div>
-                  <input type="text" id="rules-input-media-unjoin" value="${this._escapeHtml(unjoinInput)}" placeholder="None" style="width: 100%; box-sizing: border-box; padding: 5px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;" />
-                </div>
-                <div>
-                  <div style="font-size: 0.72rem; color: var(--otis-text-muted); margin-bottom: 3px;">Household Default Zone:</div>
-                  <select id="rules-input-media-default-zone" style="width: 100%; padding: 5px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;">
-                    <option value="">-- Auto (Active Zone) --</option>
-                    ${(() => {
-                      const zoneMap = new Map();
-                      (studioData.zones || mediaTopo.matrix_zones || []).forEach((z) => {
-                        const eid = typeof z === "string" ? z : z.entity_id;
-                        if (eid) zoneMap.set(eid, z.name || eid);
-                      });
-                      if (this._hass && this._hass.states) {
-                        Object.keys(this._hass.states).forEach((eid) => {
-                          if (eid.startsWith("media_player.") && !zoneMap.has(eid)) {
-                            const st = this._hass.states[eid];
-                            const fn = st?.attributes?.friendly_name || eid;
-                            if (fn.toLowerCase().includes("zone") || eid.includes("zone_")) {
-                              zoneMap.set(eid, fn);
-                            }
-                          }
-                        });
-                      }
-                      return Array.from(zoneMap.entries())
-                        .map(
-                          ([zeid, zname]) => `
-                        <option value="${this._escapeHtml(zeid)}" ${(rules.media_default_zone || studioData.household_default_zone) === zeid ? "selected" : ""}>
-                          🔊 ${this._escapeHtml(zname)}
-                        </option>
-                      `
-                        )
-                        .join("");
-                    })()}
-                  </select>
-                </div>
-              </div>
-            </div>
-          `;
-        })()}
-
-        <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary); margin-top: 10px;">Multi-Agent Specialists & Voice Satellites (Phase 9):</div>
-        <div style="background: rgba(14,165,233,0.06); border: 1px solid rgba(14,165,233,0.2); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.78rem;">
-            <span style="font-weight: 600;">Active Specialists:</span>
-            <span style="color: var(--otis-primary); font-weight: bold;">5 Coordinated Personas</span>
-          </div>
-          <div style="display: flex; flex-wrap: wrap; gap: 6px;">
-            <span class="badge" style="background: rgba(14,165,233,0.15); color: var(--otis-primary); padding: 2px 8px; border-radius: 4px; font-size: 0.72rem;">👑 Executive Butler</span>
-            <span class="badge" style="background: rgba(239,68,68,0.15); color: #ef4444; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem;">🛡️ Sentinel Security</span>
-            <span class="badge" style="background: rgba(34,197,94,0.15); color: #22c55e; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem;">⚡ Energy Architect</span>
-            <span class="badge" style="background: rgba(168,85,247,0.15); color: #a855f7; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem;">🎵 Spatial Media</span>
-            <span class="badge" style="background: rgba(245,158,11,0.15); color: #f59e0b; padding: 2px 8px; border-radius: 4px; font-size: 0.72rem;">⚙️ Automation Engineer</span>
-          </div>
-          <div style="font-size: 0.74rem; color: var(--otis-text-secondary); margin-top: 4px;">
-            Acoustic presence-fused arbitration deduplicates simultaneous voice triggers across satellites using BLE, mmWave, and RSSI metrics.
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  _generateStructuredRulesText() {
-    const w = this._wizardState || {};
-    const lines = [];
-
-    lines.push("### Household & Schedule");
-    if (w.residents) lines.push(`- Primary Residents: ${w.residents}.`);
-    if (w.workHours) lines.push(`- Work-from-Home Routine: ${w.workHours}.`);
-    if (w.sleepHabits) lines.push(`- Sleep & Bed Navigation: ${w.sleepHabits}.`);
-
-    lines.push("\n### Guest Mode & Entertaining");
-    lines.push("- When Guest Mode is ON:");
-    if (w.guestLockCode) lines.push(`  * Add temporary code '${w.guestLockCode}' to exterior deadbolts for guest access.`);
-    if (w.guestDelayedOff) lines.push(`  * Delay automatic bedtime lighting turn-off until ${w.guestDelayedOff}.`);
-    if (w.guestClimateComfort) lines.push("  * Maintain comfortable ambient climate in guest suites.");
-    if (w.holidaySwitches) lines.push("  * Coordinate holiday lighting & seasonal outlets.");
-    lines.push("- When Guest Mode is OFF:");
-    if (w.guestLockCode) lines.push(`  * Delete temporary guest code '${w.guestLockCode}' from deadbolts.`);
-
-    lines.push("\n### Security & Perimeter Safeguards");
-    if (w.requireDeadboltConfirm) lines.push("- Always require explicit spoken confirmation before unlocking exterior deadbolts.");
-    if (w.requireAlarmConfirm) lines.push("- Always require explicit spoken confirmation before changing alarm control panel arm states.");
-    if (w.garageAlertMinutes) lines.push(`- Alert if garage door remains open longer than ${w.garageAlertMinutes} minutes after sunset.`);
-    if (w.perimeterCameraAlerts) lines.push("- Monitor perimeter cameras for unrecognized evening activity.");
-
-    lines.push("\n### Audio & Matrix Media");
-    if (w.matrixRouting) lines.push("- Multi-zone audio: Route upstream bridge streamers (media_player.bridge) to active room zones.");
-    if (w.voiceDucking) lines.push("- Spatially duck background music zones during Voice Assist or vocal announcements.");
-    lines.push(`- Enforce quiet hours between ${w.quietHoursStart || "22:00"} and ${w.quietHoursEnd || "07:00"} with maximum volume capped at ${w.quietVolume || 25}%.`);
-
-    return lines.join("\n");
-  }
-
-  _renderRulesWizardTab(rules) {
-    const step = this._wizardStep || 1;
-    const w = this._wizardState || {};
-
-    const steps = [
-      { num: 1, label: "🏡 Household & Habits" },
-      { num: 2, label: "👥 Guest Mode" },
-      { num: 3, label: "🔒 Security & Perimeter" },
-      { num: 4, label: "🎵 Audio & Media" },
-      { num: 5, label: "✨ Review & Apply" },
-    ];
-
-    return `
-      <div style="display: flex; flex-direction: column; gap: 14px;">
-        <!-- Wizard Stepper Indicator -->
-        <div style="display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px 12px; background: rgba(0,0,0,0.2); border-radius: 8px; border: 1px solid var(--otis-surface-border); overflow-x: auto;">
-          ${steps
-            .map(
-              (s) => `
-            <div class="wizard-step-pill" data-step-nav="${s.num}" style="display: flex; align-items: center; gap: 6px; font-size: 0.74rem; font-weight: ${step === s.num ? "700" : "500"}; color: ${step === s.num ? "#fff" : step > s.num ? "var(--otis-primary)" : "var(--otis-text-muted)"}; background: ${step === s.num ? "var(--otis-primary)" : "transparent"}; padding: 4px 10px; border-radius: 6px; cursor: pointer; white-space: nowrap;">
-              <span>${step > s.num ? "✓" : s.num}</span>
-              <span>${s.label}</span>
-            </div>
-          `
-            )
-            .join("")}
-        </div>
-
-        <!-- Step 1: Household & Habits -->
-        ${
-          step === 1
-            ? `
-          <div style="display: flex; flex-direction: column; gap: 12px;">
-            <div style="font-size: 0.88rem; font-weight: 700; color: var(--otis-primary);">Step 1: Household Members & Daily Habits</div>
-            <div style="font-size: 0.75rem; color: var(--otis-text-muted);">Define who lives in the home and their primary schedules so Otis can coordinate rooms and routines contextually.</div>
-
-            <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 8px;">
-              <div class="rules-setting-label">Primary Residents / Household Members:</div>
-              <div style="font-size: 0.72rem; color: var(--otis-text-muted);">Select active residents from Home Assistant users or enter names below:</div>
-              <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-                ${(() => {
-                  const avail = this._getAvailableUsers();
-                  const curRes = (w.residents || "").split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
-                  return avail
-                    .map((u) => {
-                      const cleanName = u.name || u.id;
-                      const isSel = curRes.some(r => r === cleanName.toLowerCase() || r === u.id.toLowerCase() || cleanName.toLowerCase().includes(r) || r.includes(cleanName.toLowerCase()));
-                      return `
-                        <button type="button" class="subview-chip wiz-resident-chip ${isSel ? 'active' : ''}" data-user-name="${this._escapeHtml(cleanName)}" style="padding: 4px 10px; font-size: 0.75rem; border-radius: 16px; cursor: pointer; ${isSel ? 'background: var(--otis-primary); color: #fff; border-color: var(--otis-primary);' : ''}">
-                          ${isSel ? '✓ ' : '+ '}👤 ${this._escapeHtml(cleanName)}
-                        </button>
-                      `;
-                    })
-                    .join("");
-                })()}
-              </div>
-              <input type="text" id="wiz-residents" value="${this._escapeHtml(w.residents || "")}" placeholder="e.g. Alice, Bob" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
-            </div>
-
-            <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
-              <div class="rules-setting-label">Work-From-Home Rooms & Active Hours:</div>
-              <input type="text" id="wiz-work" value="${this._escapeHtml(w.workHours || "")}" placeholder="e.g. Primary resident works in Study from 9:00 AM to 5:00 PM" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
-            </div>
-
-            <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
-              <div class="rules-setting-label">Sleep & Bed Navigation Preferences:</div>
-              <input type="text" id="wiz-sleep" value="${this._escapeHtml(w.sleepHabits || "")}" placeholder="e.g. Nighttime lights-off triggers when everyone is in bed" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
-            </div>
-          </div>
-        `
-            : ""
-        }
-
-        <!-- Step 2: Guest Mode & Entertaining -->
-        ${
-          step === 2
-            ? `
-          <div style="display: flex; flex-direction: column; gap: 12px;">
-            <div style="font-size: 0.88rem; font-weight: 700; color: var(--otis-primary);">Step 2: Guest Mode & Entertaining</div>
-            <div style="font-size: 0.75rem; color: var(--otis-text-muted);">Specify automated behaviors when guests or visitors are staying in the home.</div>
-
-            <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
-              <div class="rules-setting-label">Temporary Guest Door Lock Code:</div>
-              <div class="rules-setting-desc">Auto-programmed to exterior deadbolts when Guest Mode is turned ON, and auto-deleted when OFF.</div>
-              <input type="text" id="wiz-guest-code" value="${this._escapeHtml(w.guestLockCode || "")}" placeholder="e.g. 4411" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
-            </div>
-
-            <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
-              <div class="rules-setting-label">Guest Bedtime Lighting Delayed Shutoff Time:</div>
-              <div class="rules-setting-desc">Extends living area lighting past normal bedtime when guests are visiting.</div>
-              <input type="time" step="1" id="wiz-guest-off" value="${this._escapeHtml(w.guestDelayedOff || "00:00:00")}" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
-            </div>
-
-            <label class="rules-setting-row" style="cursor: pointer;">
-              <div>
-                <div class="rules-setting-label">Guest Suite Climate Comfort</div>
-                <div class="rules-setting-desc">Automatically maintain conditioned climate in guest rooms when guest mode is active.</div>
-              </div>
-              <input type="checkbox" id="wiz-guest-climate" ${w.guestClimateComfort !== false ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
-            </label>
-
-            <label class="rules-setting-row" style="cursor: pointer;">
-              <div>
-                <div class="rules-setting-label">Coordinate Holiday & Festive Lighting</div>
-                <div class="rules-setting-desc">Synchronize decorative tree, seasonal outlets, and foyer accent lighting.</div>
-              </div>
-              <input type="checkbox" id="wiz-guest-holiday" ${w.holidaySwitches !== false ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
-            </label>
-          </div>
-        `
-            : ""
-        }
-
-        <!-- Step 3: Security & Perimeter Safeguards -->
-        ${
-          step === 3
-            ? `
-          <div style="display: flex; flex-direction: column; gap: 12px;">
-            <div style="font-size: 0.88rem; font-weight: 700; color: var(--otis-primary);">Step 3: Security & Perimeter Safeguards</div>
-            <div style="font-size: 0.75rem; color: var(--otis-text-muted);">Set strict guardrails on physical access points, exterior deadbolts, and perimeter alarms.</div>
-
-            <label class="rules-setting-row" style="cursor: pointer;">
-              <div>
-                <div class="rules-setting-label">Require Confirmation for Door Deadbolts</div>
-                <div class="rules-setting-desc">Otis will never unlock exterior doors without explicit user confirmation.</div>
-              </div>
-              <input type="checkbox" id="wiz-deadbolt-confirm" ${w.requireDeadboltConfirm !== false ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
-            </label>
-
-            <label class="rules-setting-row" style="cursor: pointer;">
-              <div>
-                <div class="rules-setting-label">Require Confirmation for Security Alarm</div>
-                <div class="rules-setting-desc">Explicit confirmation required before disarming alarm panels.</div>
-              </div>
-              <input type="checkbox" id="wiz-alarm-confirm" ${w.requireAlarmConfirm !== false ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
-            </label>
-
-            <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
-              <div class="rules-setting-label">Garage Open Alert Threshold (Minutes):</div>
-              <div class="rules-setting-desc">Time before alert is triggered if garage door remains open after sunset.</div>
-              <input type="number" id="wiz-garage-mins" min="5" max="120" value="${w.garageAlertMinutes || 15}" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
-            </div>
-
-            <label class="rules-setting-row" style="cursor: pointer;">
-              <div>
-                <div class="rules-setting-label">Perimeter Camera Presence Alerts</div>
-                <div class="rules-setting-desc">Audit unfamiliar perimeter motion or vehicle activity during night hours.</div>
-              </div>
-              <input type="checkbox" id="wiz-perimeter-alerts" ${w.perimeterCameraAlerts !== false ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
-            </label>
-          </div>
-        `
-            : ""
-        }
-
-        <!-- Step 4: Audio & Matrix Media -->
-        ${
-          step === 4
-            ? `
-          <div style="display: flex; flex-direction: column; gap: 12px;">
-            <div style="font-size: 0.88rem; font-weight: 700; color: var(--otis-primary);">Step 4: Audio & Matrix Media Preferences</div>
-            <div style="font-size: 0.75rem; color: var(--otis-text-muted);">Configure multi-zone audio streaming, voice assist ducking, and quiet hours.</div>
-
-            <label class="rules-setting-row" style="cursor: pointer;">
-              <div>
-                <div class="rules-setting-label">Multi-Zone Matrix Audio Coordination</div>
-                <div class="rules-setting-desc">Automatically route upstream streamer inputs to occupied room zones and media players.</div>
-              </div>
-              <input type="checkbox" id="wiz-matrix-routing" ${w.matrixRouting !== false ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
-            </label>
-
-            <label class="rules-setting-row" style="cursor: pointer;">
-              <div>
-                <div class="rules-setting-label">Voice Assist Spatial Audio Ducking</div>
-                <div class="rules-setting-desc">Temporarily duck active music playback volume when Voice Assist or Otis speaks.</div>
-              </div>
-              <input type="checkbox" id="wiz-voice-ducking" ${w.voiceDucking !== false ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
-            </label>
-
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-              <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start;">
-                <div class="rules-setting-label">Quiet Hours Start:</div>
-                <input type="time" id="wiz-quiet-start" value="${this._escapeHtml(w.quietHoursStart || "22:00")}" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
-              </div>
-              <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start;">
-                <div class="rules-setting-label">Quiet Hours End:</div>
-                <input type="time" id="wiz-quiet-end" value="${this._escapeHtml(w.quietHoursEnd || "07:00")}" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
-              </div>
-            </div>
-
-            <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 8px;">
-              <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
-                <div class="rules-setting-label">Quiet Hours Spoken Volume Limit:</div>
-                <span id="wiz-vol-label" style="font-weight: 700; color: var(--otis-primary);">${w.quietVolume || 25}%</span>
-              </div>
-              <input type="range" id="wiz-quiet-vol" min="5" max="100" value="${w.quietVolume || 25}" style="width: 100%; cursor: pointer;" />
-            </div>
-          </div>
-        `
-            : ""
-        }
-
-        <!-- Step 5: Review & Synthesize -->
-        ${
-          step === 5
-            ? `
-          <div style="display: flex; flex-direction: column; gap: 12px;">
-            <div style="font-size: 0.88rem; font-weight: 700; color: var(--otis-primary);">Step 5: Synthesized Household Instructions</div>
-            <div style="font-size: 0.75rem; color: var(--otis-text-muted);">Here is the structured markdown generated from your wizard responses. Clicking "Apply to Custom Instructions & Save" will store this directly in Otis's cognitive prompt context.</div>
-
-            <pre style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 8px; border: 1px solid var(--otis-surface-border); font-family: monospace; font-size: 0.74rem; white-space: pre-wrap; color: var(--otis-text); max-height: 240px; overflow-y: auto;">${this._escapeHtml(this._generateStructuredRulesText())}</pre>
-
-            <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; flex-wrap: wrap;">
-              <button type="button" class="subview-chip" id="wiz-btn-copy-instructions" style="padding: 6px 14px; font-size: 0.76rem;">
-                ✏️ Edit in Textarea
-              </button>
-              <button type="button" class="subview-chip" id="wiz-btn-apply-save" style="background: var(--otis-primary, #0ea5e9); color: #fff; font-weight: 700; padding: 6px 18px; border: none; font-size: 0.76rem; cursor: pointer;">
-                ✨ Apply to Custom Instructions & Save
-              </button>
-            </div>
-          </div>
-        `
-            : ""
-        }
-
-        <!-- Wizard Navigation Footer -->
-        <div style="display: flex; justify-content: space-between; align-items: center; padding-top: 10px; border-top: 1px solid var(--otis-surface-border); margin-top: 6px;">
-          <div>
-            ${
-              step > 1
-                ? `<button type="button" class="subview-chip" id="wiz-btn-prev" style="padding: 6px 14px; font-size: 0.76rem; cursor: pointer;">◀ Previous</button>`
-                : `<span></span>`
-            }
-          </div>
-          <div>
-            ${
-              step < 5
-                ? `<button type="button" class="subview-chip" id="wiz-btn-next" style="background: var(--otis-primary, #0ea5e9); color: #fff; font-weight: 600; padding: 6px 16px; border: none; font-size: 0.76rem; cursor: pointer;">${step === 4 ? "Generate & Review ▶" : "Next Step ▶"}</button>`
-                : ""
-            }
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  _renderRulesPeopleTab(rules) {
-    const profiles = { ...(this._userRules?.person_profiles || {}) };
-    const ignored = (this._userRules?.ignored_persons || []).map((x) => String(x).toLowerCase());
-    const availUsers = this._getAvailableUsers();
-
-    // Ensure registered person entities from Home Assistant are represented unless explicitly ignored
-    availUsers.forEach((u) => {
-      const pid = u.id.toLowerCase();
-      if (!ignored.includes(pid) && !profiles[pid]) {
-        profiles[pid] = {
-          person_id: pid,
-          label: u.name,
-          confidence: 0.50,
-          samples: 0,
-          entity_type: /dexter|charles|dog|cat|pet/i.test(u.name) ? "pet" : (/guest/i.test(u.name) ? "guest" : "resident"),
-          training_enabled: true,
-          tracks: [],
-          features: {},
-        };
-      }
-    });
-
-    const profileList = Object.values(profiles).filter((p) => !ignored.includes(String(p.person_id).toLowerCase()));
-
-    return `
-      <div style="display: flex; flex-direction: column; gap: 14px;">
-        <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;">
-          <div>
-            <div style="font-size: 0.88rem; font-weight: 700; color: var(--otis-primary);">👥 Recognized Household Members, Pets &amp; Guests</div>
-            <div style="font-size: 0.75rem; color: var(--otis-text-muted);">Manage who Otis identifies across cameras, presence sensors, security rules, room comfort, and spatial audio. Classify residents, pets, or guests, enable/disable recognition training, or remove profiles.</div>
-          </div>
-        </div>
-
-        <div style="display: flex; flex-direction: column; gap: 10px;">
-          ${profileList.map((p) => {
-            const pid = p.person_id;
-            const pType = p.entity_type || (/dexter|charles|pet|dog|cat/i.test(p.label || pid) ? "pet" : (/guest/i.test(p.label || pid) ? "guest" : "resident"));
-            const typeIcon = pType === "pet" ? "🐾" : (pType === "guest" ? "👥" : (pType === "ignored" ? "🚫" : "👤"));
-            const confPct = Math.round((p.confidence || 0.50) * 100);
-            const samples = Number(p.samples || 0);
-            const progPct = Math.min(100, Math.round(Math.max((samples / 5) * 100, confPct)));
-            const isTrained = samples >= 5 || confPct >= 85;
-            const isTraining = p.training_enabled !== false && pType !== "ignored";
-            const stageLabel = pType === "ignored" ? "🚫 Excluded" : (!isTraining ? "⏸️ Paused" : (isTrained ? "🟢 Trained" : (samples > 0 ? "🟡 Calibrating" : "🔵 Needs Samples")));
-            const barColor = isTrained ? "#10b981" : "#38bdf8";
-            const roomsVerified = Array.isArray(p.verified_rooms) && p.verified_rooms.length
-              ? p.verified_rooms.map((r) => String(r).replace(/_/g, " ")).join(", ")
-              : "None yet";
-
-            return `
-              <div class="rules-setting-row" style="padding: 10px 14px; border-radius: 8px; background: rgba(0,0,0,0.18); border: 1px solid var(--otis-surface-border); display: flex; flex-direction: column; gap: 8px;" data-profile-card="${this._escapeHtml(pid)}">
-                <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-wrap: wrap; gap: 8px;">
-                  <div style="display: flex; align-items: center; gap: 10px;">
-                    <span style="font-size: 1.3rem;">${typeIcon}</span>
-                    <div>
-                      <div style="font-weight: 700; font-size: 0.85rem; color: var(--otis-text);">${this._escapeHtml(p.label || pid)}</div>
-                      <div style="font-size: 0.70rem; color: var(--otis-text-muted); font-family: monospace;">${this._escapeHtml(pid)} • Verified Rooms: ${this._escapeHtml(roomsVerified)}</div>
-                    </div>
-                  </div>
-                  <div style="display: flex; align-items: center; gap: 8px;">
-                    <span style="font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; background: ${isTrained ? 'rgba(16,185,129,0.2)' : 'rgba(56,189,248,0.2)'}; color: ${isTrained ? '#10b981' : 'var(--otis-primary)'}; font-weight: 600;">
-                      ${stageLabel} • ${confPct}% Confidence (${samples}/5 camera samples)
-                    </span>
-                    ${samples > 0 ? `
-                      <button type="button" class="btn-reset-person-training" data-person-id="${this._escapeHtml(pid)}" data-person-label="${this._escapeHtml(p.label || pid)}" style="background: rgba(245,158,11,0.16); color: #f59e0b; border: 1px solid rgba(245,158,11,0.38); border-radius: 6px; padding: 2px 8px; font-size: 0.70rem; font-weight: 600; cursor: pointer;" title="Reset training samples and confidence back to baseline">
-                        ↺ Reset Training
-                      </button>
-                    ` : ""}
-                  </div>
-                </div>
-
-                ${pType !== "ignored" ? `
-                <div style="width: 100%; display: flex; flex-direction: column; gap: 3px;">
-                  <div style="width: 100%; height: 6px; background: rgba(255,255,255,0.08); border-radius: 4px; overflow: hidden;">
-                    <div style="width: ${progPct}%; height: 100%; background: ${barColor}; transition: width 0.3s ease;"></div>
-                  </div>
-                </div>
-                ` : ""}
-
-                <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 8px; gap: 12px; flex-wrap: wrap;">
-                  <div style="display: flex; align-items: center; gap: 8px;">
-                    <span style="font-size: 0.74rem; color: var(--otis-text-muted);">Classification:</span>
-                    <select class="profile-type-select" data-person-id="${this._escapeHtml(pid)}" style="background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); border-radius: 6px; padding: 3px 8px; font-size: 0.74rem;">
-                      <option value="resident" ${pType === "resident" ? "selected" : ""}>👤 Primary Resident</option>
-                      <option value="pet" ${pType === "pet" ? "selected" : ""}>🐾 Pet / Domestic Animal</option>
-                      <option value="guest" ${pType === "guest" ? "selected" : ""}>👥 Guest / Visitor</option>
-                      <option value="ignored" ${pType === "ignored" ? "selected" : ""}>🚫 Exclude / Do Not Track</option>
-                    </select>
-                  </div>
-
-                  <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin: 0;">
-                    <span style="font-size: 0.74rem; color: var(--otis-text-muted);">Recognition Training:</span>
-                    <input type="checkbox" class="profile-training-toggle" data-person-id="${this._escapeHtml(pid)}" ${isTraining ? "checked" : ""} style="width: 16px; height: 16px; cursor: pointer;" />
-                  </label>
-                </div>
-              </div>
-            `;
-          }).join("")}
-        </div>
-      </div>
-    `;
-  }
-
-  _renderRulesInstructionsTab(rules) {
-    const customInst = rules.custom_instructions || "";
-
-    return `
-      <div style="display: flex; flex-direction: column; gap: 12px;">
-        <!-- Wizard Launcher Banner -->
-        <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: rgba(14, 165, 233, 0.1); border: 1px solid rgba(14, 165, 233, 0.3); border-radius: 8px; gap: 10px; flex-wrap: wrap;">
-          <div>
-            <div style="font-weight: 700; font-size: 0.82rem; color: var(--otis-primary);">🧙‍♂️ Interactive Household Rules Wizard</div>
-            <div style="font-size: 0.74rem; color: var(--otis-text-muted);">Step-by-step guidance for household habits, guest mode, security, and matrix audio.</div>
-          </div>
-          <button type="button" class="subview-chip" id="btn-launch-rules-wizard" style="background: var(--otis-primary, #0ea5e9); color: #fff; font-size: 0.76rem; font-weight: 600; padding: 6px 14px; border: none; cursor: pointer;">
-            Launch Wizard ➔
-          </button>
-        </div>
-
-        <div>
-          <div style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">Custom Household Rules & Persona Guidelines:</div>
-          <div style="font-size: 0.74rem; color: var(--otis-text-muted); margin-top: 2px;">
-            Specify unique house rules, resident preferences, nicknames, or room guidelines. These instructions are injected directly into every conversation turn.
-          </div>
-        </div>
-
-        <textarea
-          id="rules-input-instructions"
-          rows="8"
-          placeholder="e.g.:
-- Primary resident works in the Study from 9:00 AM to 5:00 PM.
-- Always keep the Great Room cooler than the rest of the house.
-- When guests are staying over, never arm the guest room motion sensors.
-- Refer to the backyard patio as 'The Oasis'."
-          style="width: 100%; box-sizing: border-box; padding: 10px; border-radius: 8px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-family: monospace; font-size: 0.8rem; resize: vertical;"
-        >${this._escapeHtml(customInst)}</textarea>
-
-        <div style="font-size: 0.72rem; color: var(--otis-text-muted); line-height: 1.4; background: rgba(56, 189, 248, 0.08); padding: 8px 10px; border-radius: 6px; border-left: 3px solid var(--otis-primary);">
-          💡 <strong>Tip:</strong> You can also speak or chat naturally with Otis anytime (e.g. <em>\"Otis, remember that I like the theater temperature at 68 degrees\"</em>) and Otis will adapt.
-        </div>
-      </div>
-    `;
-  }
-
-  _renderFailoverModal() {
-    return `
-      <div class="modal-overlay" id="failover-modal-backdrop">
-        <div class="modal-card" style="max-width: 680px; max-height: calc(100vh - 48px); display: flex; flex-direction: column;">
-          <div class="modal-header">
-            <div>
-              <div class="modal-title">
-                <span>🛡️</span>
-                <span>AI Multi-Agent Routing &amp; Failover Guide</span>
-              </div>
-              <div class="modal-subtitle">
-                Paid-First Dynamic Priority • Live Health &amp; Latency Scoring • Continuous Self-Learning
-              </div>
-            </div>
-            <button type="button" class="modal-close-btn" id="failover-modal-close-btn">✕</button>
-          </div>
-
-          <div style="overflow-y: auto; display: flex; flex-direction: column; gap: 12px; padding-right: 4px;">
-            <!-- Explanation Box -->
-            <div class="guide-box" style="display: flex; flex-direction: column; gap: 8px;">
-              <div style="font-weight: 700; font-size: 0.86rem; color: var(--otis-primary); display: flex; align-items: center; gap: 6px;">
-                <span>⚡</span> How Otis Dynamically Orders &amp; Tunes Conversation Agents
-              </div>
-              <div style="font-size: 0.77rem; line-height: 1.5; color: var(--otis-text);">
-                Otis continuously monitors <strong>API tier status (Paid vs. Free)</strong>, <strong>response latency</strong>, <strong>429/503 availability</strong>, and <strong>YAML accuracy</strong> across all installed conversation integrations. Agents are automatically reordered in real time:
-              </div>
-              <div style="display: flex; align-items: center; justify-content: center; gap: 6px; padding: 10px; background: rgba(0,0,0,0.3); border-radius: 8px; font-size: 0.72rem; font-weight: 700; flex-wrap: wrap;">
-                <span style="padding: 4px 9px; border-radius: 6px; background: rgba(16, 185, 129, 0.2); border: 1px solid rgba(16, 185, 129, 0.45); color: #10b981;">1. Paid Cloud APIs</span>
-                <span>➔</span>
-                <span style="padding: 4px 9px; border-radius: 6px; background: rgba(56, 189, 248, 0.2); border: 1px solid rgba(56, 189, 248, 0.45); color: #38bdf8;">2. Healthy Standard Cloud</span>
-                <span>➔</span>
-                <span style="padding: 4px 9px; border-radius: 6px; background: rgba(168, 85, 247, 0.2); border: 1px solid rgba(168, 85, 247, 0.45); color: #c084fc;">3. Local LAN LLM (Ollama)</span>
-                <span>➔</span>
-                <span style="padding: 4px 9px; border-radius: 6px; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.35); color: #f87171;">4. Restricted Free Tiers (Last Resort)</span>
-              </div>
-            </div>
-
-            <!-- Tier 1: Paid & Local Providers (Recommended) -->
-            <div>
-              <div style="font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #10b981; margin-bottom: 8px;">
-                ✅ Priority 1 &amp; 2: Recommended Paid Cloud &amp; Local Offline Agents
-              </div>
-              <div style="display: flex; flex-direction: column; gap: 8px;">
-
-                <!-- Anthropic Claude -->
-                <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #10b981;">
-                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; flex-wrap: wrap; gap: 6px;">
-                    <span class="failover-agent-name" data-domain="anthropic" style="font-weight: 700; font-size: 0.84rem; color: #10b981; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add Anthropic integration">
-                      🏆 Anthropic Claude (Claude 3.7 / 3.5 Sonnet &amp; Haiku) ↗
-                    </span>
-                    <div style="display: flex; align-items: center; gap: 6px;">
-                      <span style="font-size: 0.66rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4);">PAID PRIORITY #1</span>
-                      <button type="button" class="btn-setup-agent" data-domain="anthropic" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4); cursor: pointer;">
-                        + Add in HA ↗
-                      </button>
-                    </div>
-                  </div>
-                  <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
-                    Best-in-class Home Assistant YAML synthesis, zero hallucination adherence, and 200K context window. Always routed first when configured.
-                  </div>
-                </div>
-
-                <!-- OpenAI -->
-                <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #a855f7;">
-                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; flex-wrap: wrap; gap: 6px;">
-                    <span class="failover-agent-name" data-domain="openai_conversation" style="font-weight: 700; font-size: 0.84rem; color: #c084fc; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add OpenAI Conversation integration">
-                      🤖 OpenAI (GPT-4o / GPT-4o-mini) ↗
-                    </span>
-                    <div style="display: flex; align-items: center; gap: 6px;">
-                      <span style="font-size: 0.66rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4);">PAID MICRO-COST</span>
-                      <button type="button" class="btn-setup-agent" data-domain="openai_conversation" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(168, 85, 247, 0.2); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.4); cursor: pointer;">
-                        + Add in HA ↗
-                      </button>
-                    </div>
-                  </div>
-                  <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
-                    High-reliability Paid API with fast tool execution and huge context window (~$0.15 / 1M tokens on <code>gpt-4o-mini</code>). Automatically prioritized ahead of free tiers.
-                  </div>
-                </div>
-
-                <!-- OpenRouter -->
-                <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #38bdf8;">
-                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; flex-wrap: wrap; gap: 6px;">
-                    <span class="failover-agent-name" data-domain="open_router" style="font-weight: 700; font-size: 0.84rem; color: #38bdf8; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add OpenRouter integration">
-                      🔀 OpenRouter (Paid Credits vs. Free Router) ↗
-                    </span>
-                    <div style="display: flex; align-items: center; gap: 6px;">
-                      <span style="font-size: 0.66rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4);">USE PAID MODELS ONLY</span>
-                      <button type="button" class="btn-setup-agent" data-domain="open_router" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); cursor: pointer;">
-                        + Add in HA ↗
-                      </button>
-                    </div>
-                  </div>
-                  <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
-                    <strong>Paid Models Recommended:</strong> Selecting paid models (e.g. <code>anthropic/claude-3.5-sonnet</code>, <code>openai/gpt-4o-mini</code>) gives you Priority 1 routing. <strong style="color: #f87171;">Avoid <code>openrouter/free</code> (Free Models Router):</strong> Free community models suffer from 20–45s queue delays, leaked DSML tags, and frequent rate limits (automatically demoted behind Local LLM).
-                  </div>
-                </div>
-
-                <!-- Google Generative AI (Gemini) -->
-                <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #f59e0b;">
-                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; flex-wrap: wrap; gap: 6px;">
-                    <span class="failover-agent-name" data-domain="google_generative_ai_conversation" style="font-weight: 700; font-size: 0.84rem; color: #fbbf24; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add Google Generative AI integration">
-                      🌟 Google Gemini (Paid Billing vs. Busy Free Tier) ↗
-                    </span>
-                    <div style="display: flex; align-items: center; gap: 6px;">
-                      <span style="font-size: 0.66rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4);">FREE TIER OFTEN BUSY (429/503)</span>
-                      <button type="button" class="btn-setup-agent" data-domain="google_generative_ai_conversation" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(245, 158, 11, 0.2); color: #fbbf24; border: 1px solid rgba(245, 158, 11, 0.4); cursor: pointer;">
-                        + Add in HA ↗
-                      </button>
-                    </div>
-                  </div>
-                  <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
-                    Fast and capable with large 1M token context, but the <strong>Google AI Studio Free Tier is frequently congested (<code>RESOURCE_EXHAUSTED</code> / HTTP 429 / 503)</strong>. Enable Pay-As-You-Go billing in Google AI Studio for reliable uptime, or Otis will automatically demote it whenever it hits 429s.
-                  </div>
-                </div>
-
-                <!-- xAI (Grok) -->
-                <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #38bdf8;">
-                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; flex-wrap: wrap; gap: 6px;">
-                    <span class="failover-agent-name" data-domain="extended_openai_conversation" style="font-weight: 700; font-size: 0.84rem; color: #38bdf8; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add via Extended OpenAI Conversation integration">
-                      🚀 xAI (Grok-2 / Grok-3 via Extended OpenAI) ↗
-                    </span>
-                    <div style="display: flex; align-items: center; gap: 6px;">
-                      <span style="font-size: 0.66rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4);">PAID API</span>
-                      <button type="button" class="btn-setup-agent" data-domain="extended_openai_conversation" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(56, 189, 248, 0.2); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); cursor: pointer;">
-                        + Add via Extended OpenAI ↗
-                      </button>
-                    </div>
-                  </div>
-                  <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
-                    Frontier reasoning via xAI API. Install <em>Extended OpenAI Conversation</em> from HACS and set Base URL to <code>https://api.x.ai/v1</code>.
-                  </div>
-                  <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 6px; padding: 4px 8px; background: rgba(0,0,0,0.35); border-radius: 5px; font-family: monospace; font-size: 0.7rem;">
-                    <span>Base URL: <strong>https://api.x.ai/v1</strong></span>
-                    <button type="button" class="btn-copy-base-url" data-url="https://api.x.ai/v1" style="font-size: 0.65rem; padding: 2px 7px; border-radius: 4px; background: rgba(56, 189, 248, 0.25); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.5); cursor: pointer;">
-                      📋 Copy URL
-                    </button>
-                  </div>
-                </div>
-
-                <!-- Ollama Local LLM -->
-                <div style="padding: 10px 14px; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 10px; border-left: 3px solid #10b981;">
-                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; flex-wrap: wrap; gap: 6px;">
-                    <span class="failover-agent-name" data-domain="ollama" style="font-weight: 700; font-size: 0.84rem; color: #10b981; cursor: pointer; text-decoration: underline; text-underline-offset: 3px;" title="Click to add Ollama integration">
-                      🏠 Ollama Local Edge AI (Qwen 2.5 / Llama 3.1 on LAN) ↗
-                    </span>
-                    <div style="display: flex; align-items: center; gap: 6px;">
-                      <span style="font-size: 0.66rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4);">100% FREE &amp; OFFLINE</span>
-                      <button type="button" class="btn-setup-agent" data-domain="ollama" style="font-size: 0.7rem; font-weight: 700; padding: 3px 8px; border-radius: 6px; background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.4); cursor: pointer;">
-                        + Add in HA ↗
-                      </button>
-                    </div>
-                  </div>
-                  <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
-                    Runs locally on your LAN GPU/CPU server with zero cloud rate limits, total privacy, and instant failover before any restricted free-tier cloud router.
-                  </div>
-                </div>
-
-                <!-- Groq Free Tier Warning -->
-                <div style="padding: 10px 14px; background: rgba(239, 68, 68, 0.06); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 10px; border-left: 3px solid #ef4444;">
-                  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; flex-wrap: wrap; gap: 6px;">
-                    <span style="font-weight: 700; font-size: 0.84rem; color: #f87171;">
-                      🚫 Groq Cloud Free Tier (Not Recommended for Otis)
-                    </span>
-                    <span style="font-size: 0.66rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4);">AUTO-DEMOTED ON FREE TIER</span>
-                  </div>
-                  <div style="font-size: 0.74rem; color: var(--otis-text-muted); line-height: 1.4;">
-                    Groq's Free Tier enforces a strict <strong>6,000–12,000 Tokens-Per-Minute (<code>protect_free_tier</code>) cap</strong>, which is too small for a complete smart home capability map and causes HTTP 413/429 rejections or severe context truncation. Otis automatically demotes Groq Free Tier below Paid APIs and Local Ollama.
-                  </div>
-                </div>
-
-              </div>
-            </div>
-
-            <!-- Step-by-Step Instructions -->
-            <div style="padding: 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--otis-surface-border); border-radius: 10px; font-size: 0.76rem; line-height: 1.5;">
-              <div style="font-weight: 700; color: var(--otis-primary); margin-bottom: 6px;">
-                🧠 Continuous Self-Learning &amp; Anti-Hallucination Active:
-              </div>
-              <ul style="margin: 0; padding-left: 18px; color: var(--otis-text-muted);">
-                <li><strong>Ask-Before-Guessing:</strong> If a command or room target is ambiguous, Otis asks you to clarify rather than guessing entity IDs.</li>
-                <li><strong>Autonomous Rule Tuning:</strong> When you correct Otis (e.g., <em>"Remember that..."</em>, <em>"Always use..."</em>, <em>"Never touch..."</em>), Otis automatically saves the rule into your Custom Instructions.</li>
-                <li><strong>Local HA Version Grounding:</strong> All generated YAML is verified against your live entity registry and upgraded to modern Home Assistant syntax (<code>triggers:</code>, <code>actions:</code>, <code>action:</code>).</li>
-              </ul>
-            </div>
-          </div>
-
-          <!-- Modal Actions -->
-          <div class="modal-actions" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px;">
-            <button type="button" class="btn-modal-secondary" id="btn-close-failover-modal">
-              Got It
-            </button>
-            <button type="button" class="btn-modal-primary" id="btn-open-ha-integrations">
-              ⚙️ Open Home Assistant Integrations
-            </button>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  async _generateThemeAi(prompt, presetKey = null) {
-    if (!this._hass) return;
-    this._generatingTheme = true;
-    this._render();
-
-    try {
-      const isSubview = this._isSubviewMode();
-      const isAll = !isSubview && this._themeApplyScope === "all";
-      const targetId = isSubview ? this._hass?.user?.id : (isAll ? null : this._themeApplyScope === "specific" ? this._selectedThemeUserId : this._hass?.user?.id);
-      const payload = {
-        prompt: prompt || (presetKey ? `Generate ${presetKey} theme` : "Otis Custom Theme"),
-        apply_immediately: true,
-        user_id: isAll ? "all" : targetId,
-      };
-      if (presetKey) {
-        payload.base_palette = presetKey;
-      }
-      const res = await this._hass.callService("otis_ai", "generate_theme", payload, undefined, true, true);
-      const data = res?.response || res || {};
-      if (data.success) {
-        this._draftThemePrompt = "";
-        this._showToast(`✨ Generated and applying "${data.title}"...`);
-        await this._fetchData();
-        if (data.theme_key) {
-          await this._applyThemeDirect(data.theme_key, targetId, isAll);
-        }
-      } else {
-        this._showToast(data.error || "Could not generate theme", true);
-      }
-    } catch (err) {
-      console.error("Error generating theme:", err);
-      this._showToast("Error generating theme. Check HA logs.", true);
-    } finally {
-      this._generatingTheme = false;
-      this._render();
-    }
-  }
-
-  async _applyThemeDirect(themeKey, targetUserId = null, applyAllUsers = false) {
-    if (!this._hass || !themeKey) return;
-    try {
-      const isSubview = this._isSubviewMode();
-      const curUserId = this._hass?.user?.id;
-      const isAll = !isSubview && Boolean(applyAllUsers || this._themeApplyScope === "all");
-      const targetId = isSubview ? curUserId : (targetUserId || curUserId);
-
-      // 1. Call backend services
-      try {
-        await this._hass.callService("frontend", "set_theme", { name: themeKey });
-      } catch (_) {}
-
-      try {
-        const payload = { name: themeKey, user_id: isAll ? "all" : targetId };
-        await this._hass.callService("otis_ai", "apply_theme", payload);
-      } catch (svcErr) {
-        console.warn("Could not call otis_ai.apply_theme:", svcErr);
-      }
-
-      // 2. Set user theme directly in Home Assistant per-user profile storage via WebSocket
-      if (this._hass.callWS) {
-        try {
-          await this._hass.callWS({
-            type: "frontend/set_user_data",
-            key: "theme",
-            value: { theme: themeKey },
-          });
-        } catch (wsErr) {
-          console.warn("Could not save theme to user profile via WebSocket:", wsErr);
-        }
-      }
-
-      // 3. Dispatch standard Home Assistant settheme events to update active browser session immediately
-      const setthemeEvent = new CustomEvent("settheme", {
-        detail: { theme: themeKey },
-        bubbles: true,
-        composed: true,
-      });
-      this.dispatchEvent(setthemeEvent);
-      window.dispatchEvent(setthemeEvent);
-      const ha = document.querySelector("home-assistant");
-      if (ha) {
-        ha.dispatchEvent(setthemeEvent);
-        ha.dispatchEvent(new CustomEvent("settheme", { detail: themeKey, bubbles: true, composed: true }));
-      }
-
-      // 4. Update localStorage if HA tracks selected theme
-      try {
-        const existing = JSON.parse(localStorage.getItem("selectedTheme") || "{}");
-        localStorage.setItem("selectedTheme", JSON.stringify({ ...existing, theme: themeKey }));
-      } catch (_) {}
-
-      const users = this._getAvailableUsers();
-      const targetUser = targetId ? users.find((u) => u.id === targetId) : null;
-      const scopeDesc = isAll ? "for all users (Global Sync)" : targetUser ? `for ${targetUser.name}` : "for your profile";
-      this._showToast(`🎨 Theme applied ${scopeDesc}: ${themeKey}`);
-    } catch (err) {
-      console.error("Error applying theme:", err);
-      this._showToast("Error applying theme", true);
-    }
-  }
-
-  async _deleteThemeDirect(themeKey) {
-    if (!this._hass || !themeKey) return;
-    try {
-      await this._hass.callService("otis_ai", "delete_theme", { name: themeKey }, undefined, true, true);
-      this._showToast(`Deleted theme ${themeKey}`);
-      await this._fetchData();
-    } catch (err) {
-      console.error("Error deleting theme:", err);
-      this._showToast("Error deleting theme", true);
-    }
-  }
-
-  async _postMediaStudioAction(payload) {
-    if (!this._hass) return null;
-    try {
-      const opts = {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      };
-      const resp =
-        typeof this._hass.fetchWithAuth === "function"
-          ? await this._hass.fetchWithAuth("/api/otis_ai/media_studio", opts)
-          : await fetch("/api/otis_ai/media_studio", opts);
-      if (!resp) return null;
-      let data = {};
-      const ct = resp.headers?.get?.("content-type") || "";
-      if (ct.includes("application/json")) {
-        data = await resp.json();
-      } else {
-        const text = await resp.text();
-        try {
-          data = JSON.parse(text);
-        } catch {
-          data = { error: text || `HTTP ${resp.status}` };
-        }
-      }
-      if (!resp.ok || data.error) {
-        this._showToast(data.error || `Media Studio error (${resp.status})`, true);
-        return null;
-      }
-      if (data.zones) {
-        this._mediaStudioData = data;
-      } else {
-        await this._fetchMediaStudioState();
-      }
-      this._render();
-      return data;
-    } catch (err) {
-      console.error("Media Studio API error:", err);
-      this._showToast(`Media Studio request failed: ${err.message || err}`, true);
-      return null;
-    }
-  }
-
-  async _fetchMediaLibrary(playerId = "", mediaType = "playlist") {
-    if (!this._hass) return;
-    this._mediaBrowseLoading = true;
-    this._mediaBrowseError = null;
-    this._mediaBrowseItems = [];
-    this._mediaBrowseType = mediaType;
-    this._mediaBrowsePlayerId = playerId;
-    this._mediaBrowseOpen = true;
-    this._render();
-
-    try {
-      const opts = {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "browse_library",
-          player_entity_id: playerId,
-          media_type: mediaType,
-          limit: 50,
-        }),
-      };
-      const resp =
-        typeof this._hass.fetchWithAuth === "function"
-          ? await this._hass.fetchWithAuth("/api/otis_ai/media_studio", opts)
-          : await fetch("/api/otis_ai/media_studio", opts);
-
-      if (!resp) throw new Error("No response from server");
-      let data = {};
-      const ct = resp.headers?.get?.("content-type") || "";
-      if (ct.includes("application/json")) {
-        data = await resp.json();
-      } else {
-        const text = await resp.text();
-        try {
-          data = JSON.parse(text);
-        } catch {
-          data = { error: text || `HTTP ${resp.status}` };
-        }
-      }
-      if (!resp.ok || !data.success) {
-        throw new Error(data.error || `HTTP ${resp.status}`);
-      }
-      this._mediaBrowseItems = Array.isArray(data.items) ? data.items : [];
-    } catch (err) {
-      console.warn("[Otis AI] Failed to browse media library:", err);
-      this._mediaBrowseError = err.message || String(err);
-    } finally {
-      this._mediaBrowseLoading = false;
-      this._render();
-    }
-  }
-
-  _getResolvedCandidatePlayers(studioData = {}, mediaTopo = {}) {
-    const rawCandidates = [
-      ...(studioData.candidate_players || []),
-      ...(mediaTopo.candidate_players || []),
-    ];
-    const candMap = new Map();
-    rawCandidates.forEach((c) => {
-      if (c && c.entity_id) candMap.set(c.entity_id, c);
-    });
-
-    const rawZones = studioData.zones || mediaTopo.matrix_zones || [];
-    const matrixZoneIds = new Set(
-      rawZones.map((z) => (typeof z === "string" ? z : z.entity_id)).filter(Boolean)
-    );
-
-    if (this._hass && this._hass.states) {
-      Object.keys(this._hass.states).forEach((eid) => {
-        if (eid.startsWith("media_player.") && !candMap.has(eid)) {
-          const st = this._hass.states[eid];
-          candMap.set(eid, {
-            entity_id: eid,
-            name: st?.attributes?.friendly_name || eid,
-            state: st?.state || "unknown",
-          });
-        }
-      });
-    }
-
-    return Array.from(candMap.values()).sort((a, b) =>
-      (a.name || a.entity_id).localeCompare(b.name || b.entity_id)
-    );
-  }
-
-  _renderGitHubIssueModal() {
-    const data = this._githubModalData || {};
-    const step = this._githubModalStep || "review";
-    const repo = data.repo || "OtisPresley/otis-ai-companion";
-    const title = data.title || "[Bug Report]";
-    const body = data.body || "";
-    const errorMsg = this._githubErrorMsg || "";
-    const dc = this._githubDeviceCode || {};
-
-    let contentHtml = "";
-
-    if (step === "review") {
-      contentHtml = `
-        <div class="modal-subtitle" style="margin-bottom: 12px;">
-          Otis AI detected an actionable integration bug in Home Assistant logs. Review the automatically sanitized bug report below before authorizing GitHub submission.
-        </div>
-        <div style="background: rgba(14, 165, 233, 0.08); border: 1px solid var(--otis-primary); border-radius: 8px; padding: 10px; margin-bottom: 12px; font-size: 0.76rem; color: #38bdf8; display: flex; gap: 8px; align-items: center;">
-          <span style="font-size: 1.1rem;">🔒</span>
-          <div><strong>Privacy Guard Active:</strong> All internal IP addresses, access tokens, and local filesystem paths have been stripped from this report.</div>
-        </div>
-        <div style="display: flex; flex-direction: column; gap: 10px;">
-          <div>
-            <label style="font-size: 0.74rem; font-weight: 600; color: var(--otis-text-muted); display: block; margin-bottom: 4px;">Target GitHub Repository:</label>
-            <input type="text" id="gh-modal-repo" value="${this._escapeHtml(repo)}" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.8rem; font-family: monospace;" />
-          </div>
-          <div>
-            <label style="font-size: 0.74rem; font-weight: 600; color: var(--otis-text-muted); display: block; margin-bottom: 4px;">Issue Title:</label>
-            <input type="text" id="gh-modal-title" value="${this._escapeHtml(title)}" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.8rem;" />
-          </div>
-          <div>
-            <label style="font-size: 0.74rem; font-weight: 600; color: var(--otis-text-muted); display: block; margin-bottom: 4px;">Sanitized Report Body (Markdown):</label>
-            <textarea id="gh-modal-body" rows="9" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem; font-family: monospace; resize: vertical;">${this._escapeHtml(body)}</textarea>
-          </div>
-        </div>
-        ${errorMsg ? `<div style="margin-top: 10px; color: #f87171; font-size: 0.76rem;">${this._escapeHtml(errorMsg)}</div>` : ""}
-        <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px;">
-          <button type="button" class="btn-toolbar" id="btn-cancel-github-modal">Cancel</button>
-          <button type="button" class="apply-btn" id="btn-proceed-github-auth" style="background: linear-gradient(135deg, #24292e 0%, #0ea5e9 100%);">
-            ⚡ Continue to GitHub Verification
-          </button>
-        </div>
-      `;
-    } else if (step === "device_code") {
-      const userCode = dc.user_code || "FETCHING...";
-      const uri = dc.verification_uri || "https://github.com/login/device";
-      contentHtml = `
-        <div class="modal-subtitle" style="margin-bottom: 14px;">
-          Authenticate with GitHub using the official Device Flow. No Personal Access Token or manual permissions setup needed!
-        </div>
-        <div style="background: rgba(0,0,0,0.35); border: 1px dashed var(--otis-primary); border-radius: 12px; padding: 18px; text-align: center; margin-bottom: 14px;">
-          <div style="font-size: 0.74rem; color: var(--otis-text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">Your One-Time Device Code:</div>
-          <div id="gh-user-code-display" style="font-family: monospace; font-size: 1.8rem; font-weight: 800; letter-spacing: 5px; color: #38bdf8; margin-bottom: 12px; user-select: all;">
-            ${this._escapeHtml(userCode)}
-          </div>
-          <div style="display: flex; justify-content: center; gap: 10px;">
-            <button type="button" class="btn-toolbar" id="btn-copy-gh-code" style="padding: 6px 14px; font-size: 0.76rem;">
-              📋 Copy Code
-            </button>
-            <a href="${this._escapeHtml(uri)}" target="_blank" rel="noopener noreferrer" class="apply-btn" style="text-decoration: none; padding: 6px 14px; font-size: 0.76rem; background: #0284c7; color: #fff;">
-              🌐 Open github.com/login/device ↗
-            </a>
-          </div>
-        </div>
-        <div style="display: flex; flex-direction: column; gap: 8px; font-size: 0.75rem; color: var(--otis-text-muted); background: rgba(255,255,255,0.03); padding: 12px; border-radius: 8px;">
-          <div>1. Click <strong>Copy Code</strong> above.</div>
-          <div>2. Click <strong>Open github.com/login/device</strong> to open GitHub in a new tab.</div>
-          <div>3. Paste the code and click <strong>Authorize</strong> on GitHub.</div>
-          <div style="margin-top: 4px; color: #38bdf8; display: flex; align-items: center; gap: 8px;">
-            <div class="spinner" style="width: 14px; height: 14px; border-width: 2px;"></div>
-            <span>Waiting for your authorization on GitHub... (polling automatically)</span>
-          </div>
-        </div>
-        ${errorMsg ? `<div style="margin-top: 10px; color: #f87171; font-size: 0.76rem;">${this._escapeHtml(errorMsg)}</div>` : ""}
-        <div style="display: flex; justify-content: flex-end; margin-top: 16px;">
-          <button type="button" class="btn-toolbar" id="btn-cancel-github-modal">Cancel</button>
-        </div>
-      `;
-    } else if (step === "submitting") {
-      contentHtml = `
-        <div style="text-align: center; padding: 32px 16px; display: flex; flex-direction: column; align-items: center; gap: 14px;">
-          <div class="spinner" style="width: 32px; height: 32px; border-width: 3px;"></div>
-          <div style="font-size: 0.95rem; font-weight: 600; color: var(--otis-text);">Submitting Sanitized Bug Report to GitHub...</div>
-          <div style="font-size: 0.76rem; color: var(--otis-text-muted);">Opening issue on ${this._escapeHtml(repo)} and registering tracking.</div>
-        </div>
-      `;
-    } else if (step === "success") {
-      const issue = this._githubCreatedIssue || {};
-      contentHtml = `
-        <div style="text-align: center; padding: 20px 10px; display: flex; flex-direction: column; align-items: center; gap: 12px;">
-          <div style="font-size: 2.4rem;">🎉</div>
-          <div style="font-size: 1.05rem; font-weight: 700; color: #34d399;">GitHub Issue Opened Successfully!</div>
-          <div style="font-size: 0.8rem; color: var(--otis-text);">
-            <strong>Issue #${this._escapeHtml(String(issue.number || ""))}</strong> on <code>${this._escapeHtml(repo)}</code>
-          </div>
-          <div style="font-size: 0.74rem; color: var(--otis-text-muted); max-width: 400px; line-height: 1.4;">
-            Otis AI will now track the status of this issue directly in your Proactive Feed and notify you when resolved by developers.
-          </div>
-          <div style="display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; justify-content: center;">
-            <a href="${this._escapeHtml(issue.html_url || '#')}" target="_blank" rel="noopener noreferrer" class="apply-btn" style="text-decoration: none; padding: 7px 16px; background: #0284c7; color: #fff;">
-              🔗 View on GitHub ↗
-            </a>
-            <button type="button" class="btn-toolbar" id="btn-close-github-success" style="padding: 7px 16px;">
-              Done &amp; Track in Feed
-            </button>
-          </div>
-        </div>
-      `;
-    } else if (step === "error") {
-      contentHtml = `
-        <div style="text-align: center; padding: 20px 10px; display: flex; flex-direction: column; align-items: center; gap: 12px;">
-          <div style="font-size: 2.2rem; color: #f87171;">❌</div>
-          <div style="font-size: 1.0rem; font-weight: 700; color: #f87171;">Submission Failed</div>
-          <div style="font-size: 0.76rem; color: var(--otis-text-muted); max-width: 400px; line-height: 1.4;">
-            ${this._escapeHtml(errorMsg || "An error occurred communicating with GitHub.")}
-          </div>
-          <div style="display: flex; gap: 10px; margin-top: 14px;">
-            <button type="button" class="apply-btn" id="btn-retry-github-flow">↺ Retry</button>
-            <button type="button" class="btn-toolbar" id="btn-cancel-github-modal">Cancel</button>
-          </div>
-        </div>
-      `;
-    }
-
-    return `
-      <div class="modal-overlay" id="github-modal-backdrop">
-        <div class="modal-card" style="max-width: 580px;">
-          <div class="modal-header">
-            <div class="modal-title">
-              <span>🐙</span>
-              <span>GitHub Issue Reporter</span>
-            </div>
-            <button type="button" class="modal-close-btn" id="btn-close-gh-modal-header" title="Close">✕</button>
-          </div>
-          ${contentHtml}
-        </div>
-      </div>
-    `;
-  }
-
-  async _startGitHubDeviceFlow() {
-    this._githubModalStep = "device_code";
-    this._githubErrorMsg = null;
-    this._render();
-
-    try {
-      const resp =
-        this._hass && typeof this._hass.fetchWithAuth === "function"
-          ? await this._hass.fetchWithAuth("/api/otis_ai/issue_reporter", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "request_device_code" }),
-            })
-          : await fetch("/api/otis_ai/issue_reporter", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "request_device_code" }),
-            });
-
-      if (!resp.ok) {
-        throw new Error(`Server returned HTTP ${resp.status}`);
-      }
-      const data = await resp.json();
-      if (!data.success || !data.device_code) {
-        throw new Error(data.error || "Failed to retrieve GitHub device code");
-      }
-
-      this._githubDeviceCode = data;
-      this._render();
-
-      if (this._githubPollTimer) {
-        clearInterval(this._githubPollTimer);
-        this._githubPollTimer = null;
-      }
-
-      const pollInterval = (data.interval || 5) * 1000;
-      const deviceCode = data.device_code;
-      const startTime = Date.now();
-      const maxDuration = (data.expires_in || 900) * 1000;
-
-      this._githubPollTimer = setInterval(async () => {
-        if (!this._githubModalOpen || this._githubModalStep !== "device_code") {
-          clearInterval(this._githubPollTimer);
-          this._githubPollTimer = null;
-          return;
-        }
-
-        if (Date.now() - startTime > maxDuration) {
-          clearInterval(this._githubPollTimer);
-          this._githubPollTimer = null;
-          this._githubModalStep = "error";
-          this._githubErrorMsg = "Device code expired. Please retry.";
-          this._render();
-          return;
-        }
-
-        try {
-          const chkResp =
-            this._hass && typeof this._hass.fetchWithAuth === "function"
-              ? await this._hass.fetchWithAuth("/api/otis_ai/issue_reporter", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ action: "check_device_token", device_code: deviceCode }),
-                })
-              : await fetch("/api/otis_ai/issue_reporter", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ action: "check_device_token", device_code: deviceCode }),
-                });
-
-          if (chkResp.ok) {
-            const chkData = await chkResp.json();
-            if (chkData.status === "success" && chkData.token) {
-              clearInterval(this._githubPollTimer);
-              this._githubPollTimer = null;
-              await this._submitGitHubIssueWithToken(chkData.token);
-            } else if (chkData.status === "expired" || chkData.status === "error") {
-              clearInterval(this._githubPollTimer);
-              this._githubPollTimer = null;
-              this._githubModalStep = "error";
-              this._githubErrorMsg = chkData.error || "GitHub authorization failed";
-              this._render();
-            }
-          }
-        } catch (_) {}
-      }, pollInterval);
-    } catch (err) {
-      this._githubModalStep = "error";
-      this._githubErrorMsg = err.message || String(err);
-      this._render();
-    }
-  }
-
-  async _submitGitHubIssueWithToken(token) {
-    this._githubModalStep = "submitting";
-    this._render();
-
-    const data = this._githubModalData || {};
-    try {
-      const payload = {
-        action: "submit_issue",
-        token: token,
-        repo: data.repo || "OtisPresley/otis-ai-companion",
-        title: data.title,
-        body: data.body,
-        error_id: data.error_id,
-      };
-
-      const resp =
-        this._hass && typeof this._hass.fetchWithAuth === "function"
-          ? await this._hass.fetchWithAuth("/api/otis_ai/issue_reporter", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(payload),
-            })
-          : await fetch("/api/otis_ai/issue_reporter", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(payload),
-            });
-
-      const resData = await resp.json();
-      if (resp.ok && resData.success && resData.issue) {
-        this._githubCreatedIssue = resData.issue;
-        this._githubModalStep = "success";
-        this._showToast(`🎉 GitHub Issue #${resData.issue.number} created!`);
-        await this._fetchData();
-      } else {
-        this._githubModalStep = "error";
-        this._githubErrorMsg = resData.error || "Failed to create issue on GitHub";
-      }
-    } catch (err) {
-      this._githubModalStep = "error";
-      this._githubErrorMsg = err.message || String(err);
-    }
-    this._render();
-  }
-
-  _renderMediaStudioTab() {
-    const mediaTopo = this._capabilityMap?.media_topology || {};
-    const studioData = this._mediaStudioData || {};
-    const rawZones =
-      (studioData.zones && studioData.zones.length > 0 ? studioData.zones : mediaTopo.matrix_zones) || [];
-    const candidatePlayers = this._getResolvedCandidatePlayers(studioData, mediaTopo);
-    const effectiveMappings = {
-      ...(mediaTopo.input_mappings || {}),
-      ...(studioData.effective_mappings || {}),
-      ...(this._userRules?.media_input_mappings || {}),
-    };
-    const unjoinInput =
-      studioData.unjoin_input || this._userRules?.media_unjoin_input || "None";
-    const userName = studioData.user_name || this._hass?.user?.name || "Resident";
-    const isAdmin = Boolean(this._hass?.user?.is_admin || this._hass?.user?.is_owner);
-
-    // Enrich zones with live Home Assistant states and optimistic overrides
-    const zones = rawZones.map((z) => {
-      const eid = z.entity_id;
-      const st = this._hass?.states?.[eid];
-      const liveSource =
-        this._mediaOptimisticSources[eid] !== undefined
-          ? this._mediaOptimisticSources[eid]
-          : st?.attributes?.source ?? z.source ?? "";
-      const liveVol =
-        this._mediaOptimisticVolumes[eid] !== undefined
-          ? this._mediaOptimisticVolumes[eid]
-          : st?.attributes?.volume_level !== undefined
-          ? Number(st.attributes.volume_level)
-          : z.volume_level !== undefined && z.volume_level !== null
-          ? Number(z.volume_level)
-          : 0.25;
-      const liveMuted =
-        this._mediaOptimisticMutes[eid] !== undefined
-          ? this._mediaOptimisticMutes[eid]
-          : Boolean(st?.attributes?.is_volume_muted ?? z.is_volume_muted);
-      const liveState = st?.state || z.state || "off";
-      const sourceList = st?.attributes?.source_list || z.source_list || studioData.shared_sources || mediaTopo.shared_sources || [];
-      return {
-        ...z,
-        entity_id: eid,
-        name: (st?.attributes?.friendly_name || z.name || eid).replace(/^Matrix Amp \d+\s+/i, ""),
-        full_name: st?.attributes?.friendly_name || z.name || eid,
-        state: liveState,
-        source: liveSource,
-        source_list: sourceList,
-        volume_level: liveVol,
-        is_volume_muted: liveMuted,
-      };
-    });
-
-    if (zones.length === 0) {
-      return `
-        <div style="padding: 28px; text-align: center; background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 14px; color: var(--otis-text-muted);">
-          <div style="font-size: 2rem; margin-bottom: 8px;">🎵</div>
-          <div style="font-weight: 700; color: var(--otis-text); font-size: 0.95rem;">No Multi-Zone Audio Amplifiers Discovered</div>
-          <div style="font-size: 0.8rem; margin-top: 4px;">Connect a matrix amplifier or multi-room speaker system (Control4, Sonos, Heos, Music Assistant) to enable Source-to-Zone routing.</div>
-        </div>
-      `;
-    }
-
-    let selectedZone =
-      zones.find((z) => z.entity_id === this._selectedMediaZoneId) ||
-      zones.find((z) => z.entity_id === studioData.default_zone) ||
-      zones[0];
-    if (selectedZone && this._selectedMediaZoneId !== selectedZone.entity_id) {
-      this._selectedMediaZoneId = selectedZone.entity_id;
-    }
-
-    const allInputs = Array.from(
-      new Set([
-        ...(selectedZone?.source_list || []),
-        ...(studioData.shared_sources || []),
-        ...(mediaTopo.shared_sources || []),
-      ])
-    ).filter(Boolean);
-
-    const activeInput =
-      this._selectedMediaInput ||
-      (selectedZone?.source && selectedZone.source !== unjoinInput ? selectedZone.source : "") ||
-      allInputs.find((inp) => inp !== unjoinInput && effectiveMappings[inp]) ||
-      allInputs.find((inp) => inp !== unjoinInput) ||
-      allInputs[0] ||
-      "";
-
-    const mappedPlayerId = activeInput ? effectiveMappings[activeInput] || "" : "";
-    const mappedSt = mappedPlayerId ? this._hass?.states?.[mappedPlayerId] : null;
-    const fallbackMappedInfo = (studioData.mapped_players_state || {})[activeInput] || {};
-    const serviceProfile =
-      fallbackMappedInfo.service_profile ||
-      candidatePlayers.find((c) => c.entity_id === mappedPlayerId)?.service_profile ||
-      {};
-    const serviceProvider = serviceProfile.display_name || serviceProfile.provider || "Media Player";
-    const supportsBrowse = Boolean(serviceProfile.supports_browse || serviceProfile.provider === "music_assistant");
-    const hasMassInHome =
-      supportsBrowse ||
-      candidatePlayers.some(
-        (c) =>
-          c.service_profile?.provider === "music_assistant" ||
-          (c.entity_id && (c.entity_id.includes("mass") || c.entity_id.includes("music_assistant")))
-      ) ||
-      Boolean(
-        this._hass &&
-          Object.keys(this._hass.states || {}).some(
-            (k) => k.startsWith("media_player.") && (k.includes("mass") || k.includes("music_assistant"))
-          )
-      );
-    const canBrowse = supportsBrowse || hasMassInHome;
-    const supportsVoice = Boolean(serviceProfile.supports_voice || serviceProfile.provider === "alexa_media");
-    const supportedTypes = serviceProfile.supported_media_types || ["custom", "music", "playlist", "radio"];
-    const playerState = mappedSt?.state || fallbackMappedInfo.state || selectedZone?.state || "idle";
-    const playerName =
-      mappedSt?.attributes?.friendly_name ||
-      fallbackMappedInfo.friendly_name ||
-      fallbackMappedInfo.name ||
-      (mappedPlayerId ? mappedPlayerId : "Unmapped Matrix Input");
-    const mediaTitle =
-      mappedSt?.attributes?.media_title ||
-      fallbackMappedInfo.media_title ||
-      (this._hass?.states?.[selectedZone.entity_id]?.attributes?.media_title) ||
-      (playerState === "playing" ? `Streaming on ${activeInput}` : `Ready on ${activeInput || "Matrix"}`);
-    const mediaArtist =
-      mappedSt?.attributes?.media_artist ||
-      mappedSt?.attributes?.media_album_name ||
-      fallbackMappedInfo.media_artist ||
-      (mappedPlayerId ? `${playerName} (${playerState})` : "Select an input or favorite to start playback");
-    const entityPic =
-      mappedSt?.attributes?.entity_picture ||
-      fallbackMappedInfo.entity_picture ||
-      this._hass?.states?.[selectedZone.entity_id]?.attributes?.entity_picture ||
-      "";
-
-    // Linked zones currently routed to the same activeInput (when activeInput != unjoinInput)
-    const isZoneLinked = (z) =>
-      Boolean(
-        activeInput &&
-          activeInput.toLowerCase() !== unjoinInput.toLowerCase() &&
-          z.state !== "off" &&
-          z.state !== "unavailable" &&
-          String(z.source || "").toLowerCase() === activeInput.toLowerCase()
-      );
-
-    const mixerZones = [
-      selectedZone,
-      ...zones.filter((z) => z.entity_id !== selectedZone.entity_id && isZoneLinked(z)),
-    ];
-
-    const favorites = studioData.favorites || [];
-    const isDefaultZone = studioData.default_zone === selectedZone.entity_id;
-    const isZoneOn =
-      selectedZone.state !== "off" &&
-      selectedZone.state !== "unavailable" &&
-      String(selectedZone.source || "").toLowerCase() !== unjoinInput.toLowerCase();
-
-    return `
-      <div class="media-studio-wrapper" style="display: flex; flex-direction: column; gap: 16px;">
-        ${
-          this._mediaBrowseOpen
-            ? `
-          <!-- Agnostic Media Provider Library Browser Panel -->
-          <div class="media-library-browser-panel" style="background: var(--otis-surface); border: 1px solid var(--otis-primary); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); box-shadow: 0 8px 32px rgba(0,0,0,0.35);">
-            <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
-              <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                <span style="font-size: 0.84rem; font-weight: 700; color: var(--otis-primary);">
-                  🎵 ${this._escapeHtml(serviceProvider)} Library
-                </span>
-                <div style="display: flex; gap: 4px;">
-                  ${["playlist", "radio", "artist", "album"]
-                    .map(
-                      (t) => `
-                    <button type="button" class="btn-toolbar btn-browse-type ${this._mediaBrowseType === t ? "active" : ""}" data-type="${t}" data-player-id="${this._escapeHtml(mappedPlayerId)}" style="padding: 2px 8px; font-size: 0.68rem; text-transform: capitalize; ${this._mediaBrowseType === t ? "background: var(--otis-primary); color: #fff; border-color: var(--otis-primary);" : ""}">
-                      ${t === "playlist" ? "🎵 Playlists" : t === "radio" ? "📻 Radio" : t === "artist" ? "🎤 Artists" : "💿 Albums"}
-                    </button>
-                  `
-                    )
-                    .join("")}
-                </div>
-              </div>
-              <button type="button" class="btn-toolbar" id="btn-media-browse-close" style="padding: 2px 8px; font-size: 0.72rem;">✕ Close</button>
-            </div>
-
-            ${
-              this._mediaBrowseLoading
-                ? `
-              <div style="padding: 20px; text-align: center; color: var(--otis-text-muted); font-size: 0.8rem;">
-                <span style="display: inline-block; animation: otis-spin 0.8s linear infinite; margin-right: 8px;">🔄</span>
-                Loading ${this._escapeHtml(this._mediaBrowseType)}s from ${this._escapeHtml(serviceProvider)}...
-              </div>
-            `
-                : this._mediaBrowseError
-                ? `
-              <div style="padding: 12px; border-radius: 8px; background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; font-size: 0.76rem;">
-                ⚠️ ${this._escapeHtml(this._mediaBrowseError)}
-              </div>
-            `
-                : this._mediaBrowseItems.length === 0
-                ? `
-              <div style="padding: 16px; text-align: center; color: var(--otis-text-muted); font-size: 0.76rem;">
-                No items found in ${this._escapeHtml(serviceProvider)} for category "${this._escapeHtml(this._mediaBrowseType)}".
-              </div>
-            `
-                : `
-              <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; max-height: 280px; overflow-y: auto; padding-right: 4px;">
-                ${this._mediaBrowseItems
-                  .map(
-                    (item) => `
-                  <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; border-radius: 8px; background: rgba(0,0,0,0.25); border: 1px solid rgba(255,255,255,0.06);">
-                    <div style="flex: 1; min-width: 0; display: flex; flex-direction: column;">
-                      <span style="font-size: 0.76rem; font-weight: 600; color: var(--otis-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${this._escapeHtml(item.name)}">
-                        ${this._escapeHtml(item.name)}
-                      </span>
-                      ${
-                        item.artist
-                          ? `
-                        <span style="font-size: 0.66rem; color: var(--otis-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                          ${this._escapeHtml(item.artist)}
-                        </span>
-                      `
-                          : ""
-                      }
-                    </div>
-                    <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
-                      <button type="button" class="btn-toolbar btn-play-library-item" data-id="${this._escapeHtml(item.id)}" data-name="${this._escapeHtml(item.name)}" data-type="${this._escapeHtml(item.media_type || this._mediaBrowseType)}" data-player-id="${this._escapeHtml(mappedPlayerId)}" data-zone-id="${this._escapeHtml(selectedZone.entity_id)}" data-input="${this._escapeHtml(activeInput)}" title="Play now in ${this._escapeHtml(selectedZone.name)}" style="padding: 3px 8px; font-size: 0.68rem; background: var(--otis-primary); color: #fff; border-color: var(--otis-primary);">
-                        ▶️ Play
-                      </button>
-                      <button type="button" class="btn-toolbar btn-fav-library-item" data-id="${this._escapeHtml(item.id)}" data-name="${this._escapeHtml(item.name)}" data-type="${this._escapeHtml(item.media_type || this._mediaBrowseType)}" data-input="${this._escapeHtml(activeInput)}" title="Save as favorite" style="padding: 3px 6px; font-size: 0.68rem;">
-                        ⭐
-                      </button>
-                    </div>
-                  </div>
-                `
-                  )
-                  .join("")}
-              </div>
-            `
-            }
-          </div>
-        `
-            : ""
-        }
-
-        <!-- Main 2-Column Media Studio Grid -->
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 16px; align-items: start;">
-          <!-- Left Column: Now Playing + Active Zone Volume Mixer -->
-          <div style="display: flex; flex-direction: column; gap: 14px;">
-            <!-- Now Playing & Streamer Transport Card -->
-            <div style="background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 14px; position: relative; overflow: hidden;">
-              <div style="display: flex; align-items: center; gap: 14px;">
-                <div style="width: 78px; height: 78px; border-radius: 12px; background: linear-gradient(135deg, rgba(14,165,233,0.22), rgba(168,85,247,0.22)); border: 1px solid rgba(56,189,248,0.35); display: flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0; box-shadow: 0 4px 14px rgba(0,0,0,0.3);">
-                  ${
-                    entityPic
-                      ? `<img src="${this._escapeHtml(entityPic)}" alt="Album Art" style="width: 100%; height: 100%; object-fit: cover;" onerror="this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='flex';" />`
-                      : ""
-                  }
-                  <span style="display: ${entityPic ? "none" : "flex"}; font-size: 2rem;">🎵</span>
-                </div>
-                <div style="flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px;">
-                  <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
-                    <span style="font-size: 0.68rem; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: rgba(56, 189, 248, 0.16); border: 1px solid rgba(56, 189, 248, 0.35); color: var(--otis-primary);">
-                      🔌 ${this._escapeHtml(activeInput || "No Input")} ➔ 🎵 ${this._escapeHtml(playerName)}
-                    </span>
-                    <span style="font-size: 0.65rem; font-weight: 700; padding: 2px 7px; border-radius: 6px; background: rgba(168, 85, 247, 0.18); border: 1px solid rgba(168, 85, 247, 0.4); color: #c084fc;">
-                      ${this._escapeHtml(serviceProvider)}
-                    </span>
-                    <span style="font-size: 0.66rem; font-weight: 700; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; background: ${playerState === "playing" ? "rgba(16,185,129,0.2)" : "rgba(255,255,255,0.07)"}; color: ${playerState === "playing" ? "#34d399" : "var(--otis-text-muted)"};">
-                      ${this._escapeHtml(playerState)}
-                    </span>
-                  </div>
-                  <div style="font-size: 1rem; font-weight: 700; color: var(--otis-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${this._escapeHtml(mediaTitle)}">
-                    ${this._escapeHtml(mediaTitle)}
-                  </div>
-                  <div style="font-size: 0.78rem; color: var(--otis-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${this._escapeHtml(mediaArtist)}">
-                    ${this._escapeHtml(mediaArtist)}
-                  </div>
-                </div>
-              </div>
-
-              <!-- Transport Controls Row -->
-              <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.07);">
-                <div style="display: flex; align-items: center; gap: 8px;">
-                  <button type="button" class="btn-toolbar btn-media-transport" data-transport="media_previous_track" data-player-id="${this._escapeHtml(mappedPlayerId || selectedZone.entity_id)}" title="Previous Track" style="padding: 6px 12px; font-size: 0.85rem;">
-                    ⏮️
-                  </button>
-                  <button type="button" class="btn-toolbar btn-media-transport" data-transport="media_play_pause" data-player-id="${this._escapeHtml(mappedPlayerId || selectedZone.entity_id)}" title="Play / Pause" style="padding: 6px 16px; font-size: 0.9rem; background: var(--otis-primary); color: #fff; border-color: var(--otis-primary);">
-                    ${playerState === "playing" ? "⏸️ Pause" : "▶️ Play"}
-                  </button>
-                  <button type="button" class="btn-toolbar btn-media-transport" data-transport="media_next_track" data-player-id="${this._escapeHtml(mappedPlayerId || selectedZone.entity_id)}" title="Next Track" style="padding: 6px 12px; font-size: 0.85rem;">
-                    ⏭️
-                  </button>
-                </div>
-                <div style="display: flex; align-items: center; gap: 6px;">
-                  <button type="button" class="btn-toolbar" id="btn-media-save-current-track" data-title="${this._escapeHtml(mediaTitle)}" data-artist="${this._escapeHtml(mediaArtist)}" data-input="${this._escapeHtml(activeInput)}" title="Save currently playing track or station to your personal favorites" style="padding: 5px 10px; font-size: 0.72rem;">
-                    ⭐ Save Track
-                  </button>
-                  <button type="button" class="btn-toolbar" id="btn-media-browse-player" data-player-id="${this._escapeHtml(mappedPlayerId || selectedZone.entity_id)}" title="Open Media Browser & Player Controls" style="padding: 5px 10px; font-size: 0.72rem;">
-                    📂 Controls
-                  </button>
-                </div>
-              </div>
-
-              <!-- Provider Capability Shortcuts Row -->
-              ${
-                supportsBrowse
-                  ? `
-                <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding-top: 8px; border-top: 1px dashed rgba(255,255,255,0.07);">
-                  <span style="font-size: 0.71rem; color: var(--otis-text-muted); font-weight: 600;">
-                    ${this._escapeHtml(serviceProvider)}:
-                  </span>
-                  <div style="display: flex; align-items: center; gap: 5px; flex-wrap: wrap;">
-                    <button type="button" class="btn-toolbar btn-browse-action" data-type="playlist" data-player-id="${this._escapeHtml(mappedPlayerId)}" style="padding: 3px 8px; font-size: 0.68rem;">
-                      🎵 Playlists
-                    </button>
-                    <button type="button" class="btn-toolbar btn-browse-action" data-type="radio" data-player-id="${this._escapeHtml(mappedPlayerId)}" style="padding: 3px 8px; font-size: 0.68rem;">
-                      📻 Radio
-                    </button>
-                    <button type="button" class="btn-toolbar btn-browse-action" data-type="artist" data-player-id="${this._escapeHtml(mappedPlayerId)}" style="padding: 3px 8px; font-size: 0.68rem;">
-                      🎤 Artists
-                    </button>
-                    <button type="button" class="btn-toolbar btn-browse-action" data-type="album" data-player-id="${this._escapeHtml(mappedPlayerId)}" style="padding: 3px 8px; font-size: 0.68rem;">
-                      💿 Albums
-                    </button>
-                  </div>
-                </div>
-              `
-                  : supportsVoice
-                  ? `
-                <div style="padding-top: 8px; border-top: 1px dashed rgba(255,255,255,0.07); font-size: 0.71rem; color: var(--otis-text-muted);">
-                  🗣️ <em>Accepts voice phrases via ${this._escapeHtml(serviceProvider)} (e.g. "play smooth jazz on Spotify", "play BBC news")</em>
-                </div>
-              `
-                  : ""
-              }
-            </div>
-
-            <!-- Active Zone & Linked Rooms Volume Mixer -->
-            <div style="background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;">
-              <div style="display: flex; align-items: center; justify-content: space-between;">
-                <span style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">🎚️ Active Zone &amp; Multi-Room Volume Mixer</span>
-                <span style="font-size: 0.7rem; color: var(--otis-text-muted);">${mixerZones.length} ${mixerZones.length === 1 ? "room" : "rooms"} active</span>
-              </div>
-              <div style="display: flex; flex-direction: column; gap: 10px;">
-                ${mixerZones
-                  .map((mz) => {
-                    const volPct = Math.round(Math.max(0, Math.min(1, Number(mz.volume_level || 0))) * 100);
-                    const isPrimary = mz.entity_id === selectedZone.entity_id;
-                    return `
-                      <div style="display: flex; flex-direction: column; gap: 5px; padding: 8px 10px; border-radius: 10px; background: rgba(0,0,0,0.2); border: 1px solid ${isPrimary ? "rgba(56,189,248,0.35)" : "rgba(255,255,255,0.06)"};">
-                        <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px;">
-                          <div style="display: flex; align-items: center; gap: 6px;">
-                            <span>${this._getRoomEmoji(mz.name)}</span>
-                            <span style="font-size: 0.8rem; font-weight: 700; color: var(--otis-text);">${this._escapeHtml(mz.name)}</span>
-                            <span style="font-size: 0.64rem; padding: 1px 6px; border-radius: 4px; background: ${isPrimary ? "rgba(56,189,248,0.18)" : "rgba(16,185,129,0.18)"}; color: ${isPrimary ? "var(--otis-primary)" : "#34d399"}; font-weight: 700;">
-                              ${isPrimary ? "PRIMARY" : "LINKED"}
-                            </span>
-                          </div>
-                          <div style="display: flex; align-items: center; gap: 8px;">
-                            <button type="button" class="btn-toolbar btn-media-mute-toggle" data-zone-id="${this._escapeHtml(mz.entity_id)}" data-muted="${mz.is_volume_muted ? "true" : "false"}" title="${mz.is_volume_muted ? "Unmute" : "Mute"}" style="padding: 2px 7px; font-size: 0.76rem; ${mz.is_volume_muted ? "background: rgba(239,68,68,0.22); border-color: rgba(239,68,68,0.5); color: #f87171;" : ""}">
-                              ${mz.is_volume_muted ? "🔇 Muted" : "🔊"}
-                            </button>
-                            <span class="media-vol-label" data-zone-vol-label="${this._escapeHtml(mz.entity_id)}" style="font-size: 0.76rem; font-weight: 700; color: var(--otis-primary); min-width: 34px; text-align: right;">
-                              ${volPct}%
-                            </span>
-                          </div>
-                        </div>
-                        <input type="range" class="media-zone-vol-slider" data-zone-id="${this._escapeHtml(mz.entity_id)}" min="0" max="100" value="${volPct}" style="width: 100%; cursor: pointer; accent-color: var(--otis-primary);" />
-                      </div>
-                    `;
-                  })
-                  .join("")}
-              </div>
-            </div>
-          </div>
-
-          <!-- Right Column: Zone & Input Routing + Multi-Room Link Grid + Per-User Favorites -->
-          <div style="display: flex; flex-direction: column; gap: 14px;">
-            <!-- Speaker Zone & Input Source Routing Card -->
-            <div style="background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;">
-              <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
-                <span style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">🔊 Speaker Zone &amp; Matrix Source Routing</span>
-                <div style="display: flex; align-items: center; gap: 6px;">
-                  <button type="button" class="btn-toolbar" id="btn-toggle-media-mappings" title="Configure matrix input-to-player mappings" style="padding: 3px 8px; font-size: 0.7rem; ${this._showMediaMappingsEditor ? "background: rgba(14,165,233,0.22); border-color: rgba(56,189,248,0.5); color: var(--otis-primary);" : ""}">
-                    ${this._showMediaMappingsEditor ? "✕ Close Mappings" : "⚙️ Input Mappings"}
-                  </button>
-                  <button type="button" class="btn-toolbar" id="btn-media-set-default-zone" data-zone-id="${this._escapeHtml(selectedZone.entity_id)}" title="Save this room as your personal default zone" style="padding: 3px 8px; font-size: 0.7rem; ${isDefaultZone ? "background: rgba(16,185,129,0.2); border-color: rgba(16,185,129,0.45); color: #34d399;" : ""}">
-                    ${isDefaultZone ? "✓ My Default Zone" : "📌 Set as My Default"}
-                  </button>
-                  <button type="button" class="btn-toolbar" id="btn-media-zone-power" data-zone-id="${this._escapeHtml(selectedZone.entity_id)}" data-is-on="${isZoneOn ? "true" : "false"}" style="padding: 3px 9px; font-size: 0.72rem; ${isZoneOn ? "background: rgba(16,185,129,0.22); border-color: rgba(16,185,129,0.5); color: #34d399;" : "background: rgba(239,68,68,0.15); border-color: rgba(239,68,68,0.35); color: #f87171;"}">
-                    ⏻ ${isZoneOn ? "Zone ON" : "Zone OFF"}
-                  </button>
-                </div>
-              </div>
-
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                <div style="display: flex; flex-direction: column; gap: 4px;">
-                  <label style="font-size: 0.72rem; color: var(--otis-text-muted); font-weight: 600;">Target Speaker Zone:</label>
-                  <select id="media-studio-zone-select" style="width: 100%; padding: 8px 10px; border-radius: 8px; background: rgba(0,0,0,0.3); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.8rem; font-weight: 600;">
-                    ${zones
-                      .map((z) => {
-                        const zOn = z.state !== "off" && z.state !== "unavailable" && String(z.source || "").toLowerCase() !== unjoinInput.toLowerCase();
-                        return `
-                          <option value="${this._escapeHtml(z.entity_id)}" ${z.entity_id === selectedZone.entity_id ? "selected" : ""}>
-                            ${this._getRoomEmoji(z.name)} ${this._escapeHtml(z.name)} ${zOn && z.source ? `(${this._escapeHtml(z.source)})` : "(Off)"}
-                          </option>
-                        `;
-                      })
-                      .join("")}
-                  </select>
-                </div>
-
-                <div style="display: flex; flex-direction: column; gap: 4px;">
-                  <label style="font-size: 0.72rem; color: var(--otis-text-muted); font-weight: 600;">Matrix Input Source:</label>
-                  <select id="media-studio-input-select" data-zone-id="${this._escapeHtml(selectedZone.entity_id)}" style="width: 100%; padding: 8px 10px; border-radius: 8px; background: rgba(0,0,0,0.3); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.8rem; font-weight: 600;">
-                    ${allInputs
-                      .map((inp) => {
-                        const mpId = effectiveMappings[inp];
-                        const mpName = mpId
-                          ? this._hass?.states?.[mpId]?.attributes?.friendly_name ||
-                            candidatePlayers.find((c) => c.entity_id === mpId)?.name ||
-                            mpId
-                          : "";
-                        return `
-                          <option value="${this._escapeHtml(inp)}" ${inp === activeInput ? "selected" : ""}>
-                            🔌 ${this._escapeHtml(inp)}${mpName ? ` ➔ ${this._escapeHtml(mpName)}` : ""}
-                          </option>
-                        `;
-                      })
-                      .join("")}
-                  </select>
-                </div>
-              </div>
-
-              <!-- Multi-Room Linked Zones Grid -->
-              <div style="display: flex; flex-direction: column; gap: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.06);">
-                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px;">
-                  <span style="font-size: 0.75rem; font-weight: 700; color: var(--otis-text-muted);">
-                    🔗 Link Additional Rooms to "${this._escapeHtml(activeInput || "Input")}":
-                  </span>
-                  <div style="display: flex; gap: 6px;">
-                    <button type="button" class="btn-toolbar" id="btn-media-link-all" data-input="${this._escapeHtml(activeInput)}" style="padding: 2px 8px; font-size: 0.68rem;">
-                      + Link All
-                    </button>
-                    <button type="button" class="btn-toolbar" id="btn-media-unlink-others" style="padding: 2px 8px; font-size: 0.68rem;">
-                      ✕ Unlink Others
-                    </button>
-                  </div>
-                </div>
-                <div style="display: flex; flex-wrap: wrap; gap: 6px;">
-                  ${zones
-                    .filter((z) => z.entity_id !== selectedZone.entity_id)
-                    .map((z) => {
-                      const linked = isZoneLinked(z);
-                      return `
-                        <button type="button" class="subview-chip btn-media-link-zone ${linked ? "active" : ""}" data-zone-id="${this._escapeHtml(z.entity_id)}" data-linked="${linked ? "true" : "false"}" data-input="${this._escapeHtml(activeInput)}" style="padding: 5px 10px; font-size: 0.74rem; border-radius: 8px; ${linked ? "background: rgba(16, 185, 129, 0.22); border-color: #10b981; color: #34d399; font-weight: 700;" : ""}">
-                          ${linked ? "✓ " : "+ "}${this._getRoomEmoji(z.name)} ${this._escapeHtml(z.name)}
-                        </button>
-                      `;
-                    })
-                    .join("")}
-                </div>
-              </div>
-            </div>
-
-            ${
-              this._showMediaMappingsEditor
-                ? `
-              <!-- Physical Matrix Input-to-Player Mapping Editor Card -->
-              <div style="background: var(--otis-surface); border: 1px solid var(--otis-primary); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
-                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
-                  <div>
-                    <div style="font-size: 0.84rem; font-weight: 700; color: var(--otis-primary);">
-                      🔗 Physical Matrix Input-to-Player Mappings
-                    </div>
-                    <div style="font-size: 0.72rem; color: var(--otis-text-muted);">
-                      Map physical matrix amplifier inputs to upstream streaming players (Music Assistant, Alexa, VLC, Plex, etc.).
-                    </div>
-                  </div>
-                  <button type="button" class="btn-toolbar" id="btn-save-media-mappings" style="background: var(--otis-primary); color: #fff; border-color: var(--otis-primary); font-weight: 700; padding: 5px 14px; font-size: 0.74rem;">
-                    💾 Save Mappings
-                  </button>
-                </div>
-
-                <div style="display: flex; flex-direction: column; gap: 8px; max-height: 280px; overflow-y: auto; padding-right: 4px;">
-                  ${allInputs
-                    .filter((inp) => inp.toLowerCase() !== unjoinInput.toLowerCase())
-                    .map((inpName) => {
-                      const mappedEid = effectiveMappings[inpName] || "";
-                      return `
-                        <div style="display: grid; grid-template-columns: minmax(130px, 1fr) 2fr; gap: 8px; align-items: center; background: rgba(0,0,0,0.22); padding: 8px 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.06);">
-                          <span style="font-size: 0.76rem; font-weight: 600; color: var(--otis-text);">🔌 ${this._escapeHtml(inpName)}</span>
-                          <select class="studio-media-mapping-select" data-input-name="${this._escapeHtml(inpName)}" style="width: 100%; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;">
-                            <option value="">-- Unmapped / Auto-Detect --</option>
-                            ${candidatePlayers
-                              .map(
-                                (p) => `
-                              <option value="${this._escapeHtml(p.entity_id)}" ${p.entity_id === mappedEid ? "selected" : ""}>
-                                ${this._escapeHtml(p.name)} (${this._escapeHtml(p.entity_id)}) [${this._escapeHtml(p.service_profile?.display_name || p.platform || "Player")}]
-                              </option>
-                            `
-                              )
-                              .join("")}
-                          </select>
-                        </div>
-                      `;
-                    })
-                    .join("")}
-                </div>
-
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.06);">
-                  <div style="display: flex; flex-direction: column; gap: 4px;">
-                    <label style="font-size: 0.7rem; color: var(--otis-text-muted); font-weight: 600;">Unjoin / Mute Input Source:</label>
-                    <select id="studio-media-unjoin-input" style="width: 100%; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;">
-                      <option value="None" ${unjoinInput === "None" ? "selected" : ""}>None</option>
-                      ${allInputs
-                        .map(
-                          (inp) => `
-                        <option value="${this._escapeHtml(inp)}" ${inp.toLowerCase() === unjoinInput.toLowerCase() ? "selected" : ""}>
-                          ${this._escapeHtml(inp)}
-                        </option>
-                      `
-                        )
-                        .join("")}
-                    </select>
-                  </div>
-
-                  <div style="display: flex; flex-direction: column; gap: 4px;">
-                    <label style="font-size: 0.7rem; color: var(--otis-text-muted); font-weight: 600;">Default Speaker Zone:</label>
-                    <select id="studio-media-default-zone" style="width: 100%; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;">
-                      <option value="">-- Auto-Select First Zone --</option>
-                      ${zones
-                        .map(
-                          (z) => `
-                        <option value="${this._escapeHtml(z.entity_id)}" ${z.entity_id === (studioData.default_zone || selectedZone.entity_id) ? "selected" : ""}>
-                          ${this._escapeHtml(z.name)} (${this._escapeHtml(z.entity_id)})
-                        </option>
-                      `
-                        )
-                        .join("")}
-                    </select>
-                  </div>
-                </div>
-              </div>
-            `
-                : ""
-            }
-
-            <!-- Per-User & Household Favorites Card -->
-            <div style="background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;">
-              <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
-                <div>
-                  <div style="display: flex; align-items: center; gap: 6px;">
-                    <span style="font-size: 0.84rem; font-weight: 700; color: var(--otis-primary);">⭐ ${this._escapeHtml(userName)}'s Favorites &amp; Stations</span>
-                    <span style="font-size: 0.64rem; padding: 1px 6px; border-radius: 999px; background: rgba(168,85,247,0.18); border: 1px solid rgba(168,85,247,0.4); color: #c084fc; font-weight: 700;">
-                      Per-User Synced
-                    </span>
-                  </div>
-                  <div style="font-size: 0.71rem; color: var(--otis-text-muted);">1-click routes "${this._escapeHtml(selectedZone.name)}" to the saved input &amp; starts your station or playlist.</div>
-                </div>
-                <button type="button" class="btn-toolbar" id="btn-media-toggle-add-fav" style="background: rgba(14,165,233,0.18); border-color: rgba(56,189,248,0.45); color: var(--otis-primary); font-size: 0.74rem; padding: 5px 10px;">
-                  ${this._showAddFavoriteForm ? "✕ Close" : "+ Add Favorite"}
-                </button>
-              </div>
-
-              ${
-                this._showAddFavoriteForm
-                  ? `
-                <!-- Inline Add Favorite Form (Non-Admin Safe & Agnostic Provider Types) -->
-                <div style="background: rgba(0,0,0,0.28); border: 1px solid rgba(56,189,248,0.35); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px;">
-                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-                    <div>
-                      <label style="font-size: 0.7rem; color: var(--otis-text-muted); display: block; margin-bottom: 3px;">Favorite Label *</label>
-                      <input type="text" id="fav-form-name" value="${this._escapeHtml(this._favFormName)}" placeholder="e.g. Smooth Jazz, NPR, 80s Rock" style="width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;" />
-                    </div>
-                    <div>
-                      <label style="font-size: 0.7rem; color: var(--otis-text-muted); display: block; margin-bottom: 3px;">Matrix Input Source *</label>
-                      <select id="fav-form-input" style="width: 100%; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;">
-                        ${allInputs
-                          .filter((inp) => inp.toLowerCase() !== unjoinInput.toLowerCase())
-                          .map(
-                            (inp) => `
-                          <option value="${this._escapeHtml(inp)}" ${(this._favFormInput || activeInput) === inp ? "selected" : ""}>
-                            🔌 ${this._escapeHtml(inp)}
-                          </option>
-                        `
-                          )
-                          .join("")}
-                      </select>
-                    </div>
-                  </div>
-                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-                    <div>
-                      <label style="font-size: 0.7rem; color: var(--otis-text-muted); display: block; margin-bottom: 3px;">Category / Media Type</label>
-                      <select id="fav-form-type" style="width: 100%; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;">
-                        ${supportedTypes
-                          .map(
-                            (t) => `
-                          <option value="${this._escapeHtml(t)}" ${(this._favFormType || "playlist") === t ? "selected" : ""}>
-                            ${
-                              t === "playlist"
-                                ? "🎵 Playlist"
-                                : t === "radio"
-                                ? "📻 Radio Station"
-                                : t === "artist"
-                                ? "🎤 Artist"
-                                : t === "album"
-                                ? "💿 Album"
-                                : t === "custom" || t === "phrase"
-                                ? "🗣️ Voice / TTS Phrase"
-                                : t.toUpperCase()
-                            }
-                          </option>
-                        `
-                          )
-                          .join("")}
-                      </select>
-                    </div>
-                    <div style="display: flex; flex-direction: column; justify-content: flex-end;">
-                      ${
-                        canBrowse
-                          ? `
-                        <button type="button" class="btn-toolbar" id="btn-fav-choose-library" data-player-id="${this._escapeHtml(mappedPlayerId)}" style="width: 100%; padding: 6px 8px; font-size: 0.74rem; background: rgba(56,189,248,0.15); border-color: rgba(56,189,248,0.35); color: var(--otis-primary);">
-                          📂 Choose from ${this._escapeHtml(supportsBrowse ? serviceProvider : "Music Assistant")}
-                        </button>
-                      `
-                          : ""
-                      }
-                    </div>
-                  </div>
-                  ${
-                    this._mediaBrowseOpen
-                      ? `
-                    <div class="fav-library-picker" style="background: rgba(0,0,0,0.45); border: 1px solid var(--otis-primary); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px;">
-                      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px;">
-                        <span style="font-size: 0.75rem; font-weight: 700; color: var(--otis-primary);">
-                          🎵 Choose from ${this._escapeHtml(supportsBrowse ? serviceProvider : "Music Assistant")}:
-                        </span>
-                        <div style="display: flex; gap: 4px; flex-wrap: wrap;">
-                          ${["playlist", "radio", "artist", "album"]
-                            .map(
-                              (t) => `
-                            <button type="button" class="btn-toolbar btn-fav-picker-type ${this._mediaBrowseType === t ? "active" : ""}" data-type="${t}" style="padding: 2px 7px; font-size: 0.65rem; text-transform: capitalize; ${this._mediaBrowseType === t ? "background: var(--otis-primary); color: #fff; border-color: var(--otis-primary);" : ""}">
-                              ${t === "playlist" ? "Playlists" : t === "radio" ? "Radio" : t === "artist" ? "Artists" : "Albums"}
-                            </button>
-                          `
-                            )
-                            .join("")}
-                          <button type="button" class="btn-toolbar" id="btn-fav-picker-close" style="padding: 2px 7px; font-size: 0.65rem;">✕ Close</button>
-                        </div>
-                      </div>
-
-                      ${
-                        this._mediaBrowseLoading
-                          ? `
-                        <div style="padding: 12px; text-align: center; color: var(--otis-text-muted); font-size: 0.74rem;">
-                          <span style="display: inline-block; animation: otis-spin 0.8s linear infinite; margin-right: 6px;">🔄</span>
-                          Loading ${this._escapeHtml(this._mediaBrowseType)}s...
-                        </div>
-                      `
-                          : this._mediaBrowseError
-                          ? `
-                        <div style="padding: 8px; border-radius: 6px; background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; font-size: 0.72rem;">
-                          ⚠️ ${this._escapeHtml(this._mediaBrowseError)}
-                        </div>
-                      `
-                          : this._mediaBrowseItems.length === 0
-                          ? `
-                        <div style="padding: 10px; text-align: center; color: var(--otis-text-muted); font-size: 0.72rem;">
-                          No items found for "${this._escapeHtml(this._mediaBrowseType)}".
-                        </div>
-                      `
-                          : `
-                        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px; max-height: 200px; overflow-y: auto; padding-right: 2px;">
-                          ${this._mediaBrowseItems
-                            .map(
-                              (item) => `
-                            <div class="fav-picker-item" data-id="${this._escapeHtml(item.id)}" data-name="${this._escapeHtml(item.name)}" data-type="${this._escapeHtml(item.media_type || this._mediaBrowseType)}" style="cursor: pointer; padding: 6px 8px; border-radius: 6px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); display: flex; flex-direction: column; gap: 2px; transition: background 0.15s ease;" title="Click to select ${this._escapeHtml(item.name)}">
-                              <span style="font-size: 0.74rem; font-weight: 600; color: var(--otis-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                                🎵 ${this._escapeHtml(item.name)}
-                              </span>
-                              ${
-                                item.artist
-                                  ? `<span style="font-size: 0.64rem; color: var(--otis-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${this._escapeHtml(item.artist)}</span>`
-                                  : ""
-                              }
-                            </div>
-                          `
-                            )
-                            .join("")}
-                        </div>
-                      `
-                      }
-                    </div>
-                  `
-                      : ""
-                  }
-                  <div>
-                    <label style="font-size: 0.7rem; color: var(--otis-text-muted); display: block; margin-bottom: 3px;">Station / Playlist / Voice Command</label>
-                    <input type="text" id="fav-form-command" value="${this._escapeHtml(this._favFormCommand)}" placeholder="${supportsVoice ? 'e.g. play smooth jazz on Spotify, NPR News' : 'e.g. Playlist or Station URI / Name'}" style="width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.76rem;" />
-                  </div>
-                  <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
-                    ${
-                      isAdmin
-                        ? `
-                      <label style="display: flex; align-items: center; gap: 6px; font-size: 0.73rem; color: var(--otis-text-muted); cursor: pointer;">
-                        <input type="checkbox" id="fav-form-shared" ${this._favFormShared ? "checked" : ""} style="cursor: pointer;" />
-                        <span>🏠 Share with all household users</span>
-                      </label>
-                    `
-                        : `<span></span>`
-                    }
-                    <div style="display: flex; gap: 6px;">
-                      <button type="button" class="btn-toolbar" id="btn-fav-form-cancel" style="padding: 5px 10px; font-size: 0.73rem;">Cancel</button>
-                      <button type="button" class="btn-toolbar" id="btn-fav-form-submit" style="background: var(--otis-primary); color: #fff; border-color: var(--otis-primary); font-weight: 700; padding: 5px 14px; font-size: 0.73rem;">
-                        ⭐ Save Favorite
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              `
-                  : ""
-              }
-
-              ${
-                favorites.length === 0
-                  ? `
-                <div style="padding: 16px; text-align: center; border-radius: 10px; background: rgba(0,0,0,0.16); border: 1px dashed rgba(255,255,255,0.12); font-size: 0.76rem; color: var(--otis-text-muted);">
-                  No favorites saved yet for ${this._escapeHtml(userName)}. Click <strong>+ Add Favorite</strong> or <strong>⭐ Save Track</strong> while music is playing!
-                </div>
-              `
-                  : `
-                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(155px, 1fr)); gap: 8px;">
-                  ${favorites
-                    .map((fav) => {
-                      const canDelete = fav.scope === "user" || isAdmin;
-                      return `
-                        <div class="media-fav-card" style="position: relative; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px 10px; border-radius: 10px; background: rgba(0,0,0,0.22); border: 1px solid var(--otis-surface-border); transition: all 0.15s ease;">
-                          <button type="button" class="btn-media-play-fav" data-fav-id="${this._escapeHtml(fav.id)}" data-zone-id="${this._escapeHtml(selectedZone.entity_id)}" title="Play ${this._escapeHtml(fav.name)} on ${this._escapeHtml(selectedZone.name)} (Input: ${this._escapeHtml(fav.input || activeInput)})" style="background: transparent; border: none; color: var(--otis-text); text-align: left; cursor: pointer; flex: 1; min-width: 0; padding: 0; display: flex; flex-direction: column; gap: 2px;">
-                            <div style="font-size: 0.78rem; font-weight: 700; color: var(--otis-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                              ▶️ ${this._escapeHtml(fav.name)}
-                            </div>
-                            <div style="font-size: 0.66rem; color: var(--otis-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                              🔌 ${this._escapeHtml(fav.input || "Auto")}${fav.scope === "shared" ? " • 🏠 Shared" : ""}
-                            </div>
-                          </button>
-                          ${
-                            canDelete
-                              ? `
-                            <button type="button" class="btn-media-delete-fav" data-fav-id="${this._escapeHtml(fav.id)}" data-fav-scope="${this._escapeHtml(fav.scope || "user")}" title="Remove favorite" style="background: transparent; border: none; color: var(--otis-text-muted); cursor: pointer; font-size: 0.75rem; padding: 2px 4px; border-radius: 4px;">
-                              ✕
-                            </button>
-                          `
-                              : ""
-                          }
-                        </div>
-                      `;
-                    })
-                    .join("")}
-                </div>
-              `
-              }
-            </div>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  _renderVisionTab() {
-    const fusedSensor = this._hass?.states?.["sensor.otis_fused_presence"];
-    const fusedAttrs = fusedSensor?.attributes || {};
-    const visionTopo = this._capabilityMap?.vision_topology || {};
-    const pres = fusedAttrs.rooms ? fusedAttrs : (visionTopo.presence || {});
-    const rooms = pres.rooms || {};
-    const cameras = visionTopo.cameras || [];
-    const recentAudits = visionTopo.recent_audits || [];
-    const occCount = pres.occupied_count ?? 0;
-    const microCount = pres.micro_presence_count ?? 0;
-    const likelyCount = pres.likely_count ?? 0;
-    const vacantCount = pres.vacant_count ?? 0;
-    const roomEntries = Object.values(rooms);
-
-    return `
-      <div class="vision-panel">
-        ${this._renderPreconditioningChip()}
-        ${
-          this._hass?.states?.["sensor.otis_perimeter_sentinel"]?.attributes?.last_voice_announcement
-            ? `
-            <div style="margin-bottom: 12px; padding: 10px 14px; border-radius: 10px; background: rgba(14, 165, 233, 0.12); border: 1px solid rgba(14, 165, 233, 0.35); font-size: 0.8rem; display: flex; align-items: center; justify-content: space-between; gap: 10px;">
-              <div style="display: flex; align-items: center; gap: 8px;">
-                <span style="font-size: 1.15rem;">🔊</span>
-                <div>
-                  <div style="font-weight: 700; color: var(--otis-primary, #38bdf8);">Latest Proactive Voice Alert:</div>
-                  <div style="color: var(--otis-text); margin-top: 2px;">
-                    "${this._escapeHtml(this._hass.states["sensor.otis_perimeter_sentinel"].attributes.last_voice_announcement)}"
-                  </div>
-                </div>
-              </div>
-              <button type="button" class="subview-chip btn-repeat-alert-voice" title="Re-broadcast announcement across household speakers" style="padding: 4px 10px; font-size: 0.72rem; white-space: nowrap; cursor: pointer; background: rgba(14, 165, 233, 0.25); border: 1px solid rgba(14, 165, 233, 0.45); color: #fff;">
-                📢 Re-announce
-              </button>
-            </div>
-            `
-            : ""
-        }
-        <div class="vision-overview-card">
-          <div class="vision-stats-row">
-            <span style="font-weight: 700; font-size: 0.88rem; color: var(--otis-primary);">👁️ Presence Status:</span>
-            <span class="vision-stat-chip ${pres.household_present !== false ? 'occupied' : 'vacant'}">
-              ${pres.household_present !== false ? "🏠 Household Present" : "🚪 Away Mode"}
-            </span>
-            <span class="vision-stat-chip occupied">🟢 ${occCount} Occupied</span>
-            ${microCount > 0 ? `<span class="vision-stat-chip micro_presence">🟣 ${microCount} Micro-Presence</span>` : ""}
-            ${likelyCount > 0 ? `<span class="vision-stat-chip likely">🟡 ${likelyCount} Likely</span>` : ""}
-            <span class="vision-stat-chip vacant">⚪ ${vacantCount} Vacant</span>
-          </div>
-          <button type="button" class="btn-toolbar" id="btn-refresh-vision" style="font-size: 0.76rem; padding: 4px 10px;">
-            🔄 Fuse Presence
-          </button>
-        </div>
-
-        <div class="vision-section-title">
-          <span>📡 Multimodal Presence Fusion (BLE Trilateration + mmWave Radar + Thermal + Acoustic)</span>
-        </div>
-
-        <div class="presence-grid">
-          ${
-            roomEntries.length === 0
-              ? `<div style="grid-column: 1/-1; padding: 20px; text-align: center; color: var(--otis-text-muted);">
-                  Scanning presence sensors and spatial areas...
-                </div>`
-              : roomEntries
-                  .map((r) => {
-                    const statusClass = r.status || "vacant";
-                    const pct = r.confidence_percent ?? 0;
-                    const s = r.modalities || r.sensors || {};
-                    const mmwave = s.mmwave || {};
-                    const thermal = s.thermal || {};
-                    const ble = s.ble || s.ble_beacon || {};
-                    const acoustic = s.acoustic || {};
-                    const pir = s.pir || {};
-                    const media = s.media || {};
-                    const lightsOn = s.lights_on || 0;
-
-                    let badgeText = "⚪ VACANT";
-                    if (statusClass === "micro_presence") {
-                      badgeText = "🟣 MICRO-PRESENCE";
-                    } else if (statusClass === "occupied") {
-                      badgeText = "🟢 OCCUPIED";
-                    } else if (statusClass === "likely_occupied" || statusClass === "likely") {
-                      badgeText = "🟡 LIKELY";
-                    }
-
-                    let pirText = pir.active ? "Motion Active" : pir.seconds_since_motion ? `${Math.round(pir.seconds_since_motion / 60) || 1}m ago` : "Idle";
-
-                    return `
-                    <div class="presence-card">
-                      <div class="presence-card-head">
-                        <span class="presence-room-name">
-                          ${this._escapeHtml(r.area_name)}
-                          ${r.attributed_user ? `<span style="font-size: 0.72rem; color: #38bdf8; margin-left: 6px; font-weight: 600;">👤 ${this._escapeHtml(r.attributed_user)}</span>` : ""}
-                        </span>
-                        <span class="presence-badge ${statusClass}">
-                          ${badgeText} • ${pct}%
-                        </span>
-                      </div>
-                      <div class="presence-bar-track">
-                        <div class="presence-bar-fill ${statusClass}" style="width: ${Math.max(4, pct)}%;"></div>
-                      </div>
-                      <div class="presence-sensors-row">
-                        <span class="presence-sensor-pill ${mmwave.active ? 'active' : ''}" title="mmWave Micro-movement Radar (breathing / stationary / moving targets)">
-                          📡 mmWave: ${mmwave.mode && mmwave.mode !== 'clear' ? mmwave.mode : (mmwave.active ? 'Active' : 'Idle')}
-                        </span>
-                        <span class="presence-sensor-pill ${thermal.detected ? 'active' : ''}" title="Thermal Infrared Heat Signature (human body vs pets/appliances)">
-                          🌡️ Thermal: ${thermal.detected ? `Body Heat (${thermal.delta_c ? '+' + thermal.delta_c + '°C' : 'Human'})` : (thermal.target_type === 'pet_or_appliance' ? 'Pet Filtered' : 'None')}
-                        </span>
-                        ${ble.active || r.attributed_user ? `
-                        <span class="presence-sensor-pill active" title="BLE Beacon Proximity &amp; Trilateration">
-                          📍 BLE: ${this._escapeHtml(r.attributed_user || ble.user || (ble.distance_m ? ble.distance_m + 'm' : 'Near'))}
-                        </span>` : ""}
-                        ${acoustic.detected ? `
-                        <span class="presence-sensor-pill active" title="Acoustic Footprinting (speech / footsteps / decibel spike)">
-                          🎙️ Sound: ${this._escapeHtml(acoustic.event_type || 'Active')}
-                        </span>` : ""}
-                        <span class="presence-sensor-pill ${pir.active ? 'active' : ''}" title="PIR Motion Sensor">
-                          🏃 PIR: ${pirText}
-                        </span>
-                        <span class="presence-sensor-pill ${media.playing || media.active ? 'active' : ''}" title="Audio/Video Playback Presence">
-                          🎵 Media: ${media.playing || media.active ? 'Playing' : 'Off'}
-                        </span>
-                        ${lightsOn > 0 ? `<span class="presence-sensor-pill active" title="Lights On">💡 ${lightsOn} On</span>` : ""}
-                      </div>
-                    </div>
-                  `;
-                  })
-                  .join("")
-          }
-        </div>
-
-        <div class="vision-section-title" style="margin-top: 10px;">
-          <span>📷 Security Cameras &amp; Gemini Vision Anomaly Analysis</span>
-        </div>
-
-        <div class="camera-grid">
-          ${
-            cameras.length === 0
-              ? `<div style="grid-column: 1/-1; padding: 20px; text-align: center; color: var(--otis-text-muted);">
-                  No security cameras discovered in Home Assistant.
-                </div>`
-              : cameras
-                  .map((cam) => {
-                    const audit = this._cameraAudits[cam.entity_id] || recentAudits.find((a) => a.camera === cam.entity_id);
-                    const isAnalyzing = this._analyzingCamera === cam.entity_id;
-                    const tagList = audit?.detected_objects || [];
-
-                    const camState = this._hass?.states?.[cam.entity_id];
-                    const token = camState?.attributes?.access_token || cam.access_token;
-                    const entityPic = camState?.attributes?.entity_picture || cam.entity_picture;
-                    let imgSrc = entityPic;
-                    if (!imgSrc && token) {
-                      imgSrc = `/api/camera_proxy/${cam.entity_id}?token=${token}&time=${Date.now()}`;
-                    }
-
-                    return `
-                    <div class="camera-card">
-                      <div class="camera-preview-container" data-cam-id="${this._escapeHtml(cam.entity_id)}" title="Click to view live stream" style="cursor: pointer;">
-                        ${
-                          imgSrc
-                            ? `<img class="camera-preview-img" 
-                                   src="${imgSrc}" 
-                                   alt="${this._escapeHtml(cam.name)}" 
-                                   loading="lazy" 
-                                   onerror="this.style.display='none'; if (this.nextElementSibling) this.nextElementSibling.style.display='flex';" />`
-                            : ""
-                        }
-                        <div class="camera-preview-fallback" style="display: ${imgSrc ? "none" : "flex"}; align-items: center; justify-content: center; height: 100%; min-height: 140px; background: #0f172a; color: var(--otis-text-muted);">
-                          <span>📹 Live Camera Ready</span>
-                        </div>
-                        <span class="camera-cam-badge">
-                          ${cam.is_doorbell ? "🔔 Doorbell" : cam.is_perimeter ? "🛡️ Perimeter" : "📹 Interior"}
-                        </span>
-                      </div>
-                      <div class="camera-card-body">
-                        <div class="camera-card-title">
-                          <span>${this._escapeHtml(cam.name)}</span>
-                          <span style="font-size: 0.72rem; color: var(--otis-text-muted);">${this._escapeHtml(cam.area_name || "")}</span>
-                        </div>
-                        <button type="button" 
-                                class="btn-analyze-camera" 
-                                data-camera="${this._escapeHtml(cam.entity_id)}" 
-                                ${isAnalyzing ? "disabled" : ""}>
-                          ${isAnalyzing ? "⏳ Analyzing Frame..." : "✨ Analyze with Gemini Vision"}
-                        </button>
-                        ${
-                          audit
-                            ? `
-                            <div class="vision-audit-result">
-                              <div style="display: flex; align-items: center; justify-content: space-between;">
-                                <strong style="color: ${audit.status === 'normal' ? '#34d399' : '#fbbf24'};">
-                                  ${this._escapeHtml(audit.status?.toUpperCase() || 'AUDIT')}
-                                </strong>
-                                <span style="font-size: 0.66rem; color: var(--otis-text-muted);">
-                                  ${new Date(audit.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                </span>
-                              </div>
-                              <div>${this._escapeHtml(audit.summary || audit.safety_assessment || '')}</div>
-                              ${
-                                tagList.length > 0
-                                  ? `<div style="display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px;">
-                                      ${tagList.map((t) => `<span class="tag-pill">${t === 'package' ? '📦 package' : t === 'person' ? '👤 person' : t === 'vehicle' ? '🚗 vehicle' : t}</span>`).join('')}
-                                    </div>`
-                                  : ''
-                              }
-                            </div>
-                          `
-                            : ""
-                        }
-                      </div>
-                    </div>
-                  `;
-                  })
-                  .join("")
-          }
         </div>
       </div>
     `;
@@ -12781,6 +4633,7 @@ class OtisCompanionCard extends HTMLElement {
         if (this._capabilityMap?.floorplan?.exists && !this._floorplanSvg && !this._loadingFloorplan) {
           this._loadFloorplanSvg(this._capabilityMap.floorplan.url);
         }
+        this._checkAndResumeRegenProgress();
       };
     }
 
@@ -12841,15 +4694,31 @@ class OtisCompanionCard extends HTMLElement {
       };
     }
 
+    const defaultReturnSelect = root.querySelector("#media-studio-default-return-input");
+    if (defaultReturnSelect) {
+      defaultReturnSelect.onchange = async (e) => {
+        const val = e.target.value || "None";
+        const res = await this._postMediaStudioAction({
+          action: "save_default_input",
+          unjoin_input: val,
+        });
+        if (res && res.success) {
+          if (this._mediaStudioData) this._mediaStudioData.unjoin_input = val;
+          if (this._userRules) this._userRules.media_unjoin_input = val;
+          this._showToast(`↩️ Default return input set to "${val}"`);
+          this._render();
+        }
+      };
+    }
+
     const mediaZoneSelect = root.querySelector("#media-studio-zone-select");
     if (mediaZoneSelect) {
       mediaZoneSelect.onchange = (e) => {
         const zId = e.target.value;
         this._selectedMediaZoneId = zId;
         const st = this._hass?.states?.[zId];
-        const unjoinInput = this._mediaStudioData?.unjoin_input || this._userRules?.media_unjoin_input || "None";
         const src = st?.attributes?.source || "";
-        if (src && src.toLowerCase() !== unjoinInput.toLowerCase()) {
+        if (src && src.toLowerCase() !== "none") {
           this._selectedMediaInput = src;
         }
         this._render();
@@ -12866,8 +4735,7 @@ class OtisCompanionCard extends HTMLElement {
           this._mediaOptimisticSources[zId] = newInput;
           this._render();
           try {
-            const unjoinInput = this._mediaStudioData?.unjoin_input || this._userRules?.media_unjoin_input || "None";
-            if (newInput.toLowerCase() !== unjoinInput.toLowerCase()) {
+            if (newInput.toLowerCase() !== "none") {
               await this._hass.callService("media_player", "turn_on", { entity_id: zId });
             }
             await this._hass.callService("media_player", "select_source", {
@@ -12918,17 +4786,17 @@ class OtisCompanionCard extends HTMLElement {
                 entity_id: zId,
                 source: unjoinInput,
               });
-            } catch (_) {}
+            } catch (_) { }
             try {
               await this._hass.callService("media_player", "turn_off", { entity_id: zId });
-            } catch (_) {}
+            } catch (_) { }
             this._showToast(`⏻ Turned off ${this._hass.states?.[zId]?.attributes?.friendly_name || zId}`);
           } else {
             const targetInp = this._selectedMediaInput || "Bridge";
             this._mediaOptimisticSources[zId] = targetInp;
             this._render();
             await this._hass.callService("media_player", "turn_on", { entity_id: zId });
-            if (targetInp && targetInp.toLowerCase() !== unjoinInput.toLowerCase()) {
+            if (targetInp && targetInp.toLowerCase() !== "none") {
               await this._hass.callService("media_player", "select_source", {
                 entity_id: zId,
                 source: targetInp,
@@ -13056,15 +4924,21 @@ class OtisCompanionCard extends HTMLElement {
           if (isLinked) {
             this._mediaOptimisticSources[zId] = unjoinInput;
             this._render();
-            try {
-              await this._hass.callService("media_player", "select_source", {
-                entity_id: zId,
-                source: unjoinInput,
-              });
-            } catch (_) {
-              await this._hass.callService("media_player", "turn_off", { entity_id: zId });
+            const unjoinRes = await this._postMediaStudioAction({
+              action: "unjoin_zones",
+              zone_entity_ids: [zId],
+            });
+            if (!unjoinRes || !unjoinRes.success) {
+              try {
+                await this._hass.callService("media_player", "select_source", {
+                  entity_id: zId,
+                  source: unjoinInput,
+                });
+              } catch (_) {
+                await this._hass.callService("media_player", "turn_off", { entity_id: zId });
+              }
             }
-            this._showToast(`Unlinked ${this._hass.states?.[zId]?.attributes?.friendly_name || zId}`);
+            this._showToast(`Unlinked ${this._hass.states?.[zId]?.attributes?.friendly_name || zId} (returned to ${unjoinInput})`);
           } else if (targetInp) {
             this._mediaOptimisticSources[zId] = targetInp;
             this._render();
@@ -13129,11 +5003,17 @@ class OtisCompanionCard extends HTMLElement {
         });
         this._render();
         try {
-          await this._hass.callService("media_player", "select_source", {
-            entity_id: otherEids,
-            source: unjoinInput,
+          const unjoinRes = await this._postMediaStudioAction({
+            action: "unjoin_zones",
+            zone_entity_ids: otherEids,
           });
-          this._showToast("Unlinked all other speaker rooms");
+          if (!unjoinRes || !unjoinRes.success) {
+            await this._hass.callService("media_player", "select_source", {
+              entity_id: otherEids,
+              source: unjoinInput,
+            });
+          }
+          this._showToast(`Unlinked all other speaker rooms (returned to ${unjoinInput})`);
         } catch (err) {
           this._showToast(`Failed to unlink rooms: ${err.message || err}`, true);
         } finally {
@@ -13426,6 +5306,24 @@ class OtisCompanionCard extends HTMLElement {
     root.querySelectorAll(".camera-preview-container").forEach((el) => {
       el.onclick = () => {
         const camId = el.getAttribute("data-cam-id");
+        const snapPic = el.getAttribute("data-snapshot-pic");
+        if (snapPic) {
+          let parsedBbox = null;
+          const rawBbox = el.getAttribute("data-snapshot-bbox");
+          if (rawBbox) {
+            try {
+              parsedBbox = JSON.parse(rawBbox);
+            } catch (_) { }
+          }
+          this._snapshotLightbox = {
+            pic: snapPic,
+            title: el.getAttribute("data-snapshot-title") || "Detection Snapshot",
+            bbox: parsedBbox,
+            camId: camId || null,
+          };
+          this._render();
+          return;
+        }
         if (camId) {
           const ev = new CustomEvent("hass-more-info", {
             detail: { entityId: camId },
@@ -13433,6 +5331,59 @@ class OtisCompanionCard extends HTMLElement {
             composed: true,
           });
           this.dispatchEvent(ev);
+        }
+      };
+    });
+
+    const lbBackdrop = root.querySelector("#snapshot-lightbox-backdrop");
+    if (lbBackdrop) {
+      lbBackdrop.onclick = () => {
+        this._snapshotLightbox = null;
+        this._render();
+      };
+    }
+    const btnCloseLb = root.querySelector("#btn-close-snapshot-lightbox");
+    if (btnCloseLb) {
+      btnCloseLb.onclick = () => {
+        this._snapshotLightbox = null;
+        this._render();
+      };
+    }
+    const btnLbMoreInfo = root.querySelector("#btn-lightbox-more-info");
+    if (btnLbMoreInfo && this._snapshotLightbox?.camId) {
+      const targetCamId = this._snapshotLightbox.camId;
+      btnLbMoreInfo.onclick = () => {
+        this._snapshotLightbox = null;
+        this._render();
+        this.dispatchEvent(new CustomEvent("hass-more-info", {
+          detail: { entityId: targetCamId },
+          bubbles: true,
+          composed: true,
+        }));
+      };
+    }
+
+    root.querySelectorAll(".btn-exclude-shed-load").forEach((btn) => {
+      btn.onclick = async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const eid = e.currentTarget.getAttribute("data-entity-id");
+        const ename = e.currentTarget.getAttribute("data-entity-name") || eid;
+        if (!eid || !this._hass) return;
+        try {
+          const currentExcluded = Array.isArray(this._userRules?.excluded_load_shed_entities)
+            ? [...this._userRules.excluded_load_shed_entities]
+            : [];
+          if (!currentExcluded.includes(eid.toLowerCase())) {
+            currentExcluded.push(eid.toLowerCase());
+          }
+          await this._hass.callService("otis_ai", "set_user_rules", {
+            rules: { excluded_load_shed_entities: currentExcluded },
+          });
+          this._showToast(`🚫 Excluded ${ename} from load shedding recommendations.`);
+          await this._fetchData();
+        } catch (err) {
+          this._showToast(`Failed to exclude load: ${err.message || err}`, true);
         }
       };
     });
@@ -13446,7 +5397,15 @@ class OtisCompanionCard extends HTMLElement {
       };
     });
 
-    // Dismiss buttons
+    // Session-only Dismiss (✕) buttons — remove from feed without adding to Ignored
+    root.querySelectorAll("[data-session-dismiss]").forEach((btn) => {
+      btn.onclick = (e) => {
+        const id = e.currentTarget.getAttribute("data-session-dismiss");
+        this._dismissCardFromFeed(id);
+      };
+    });
+
+    // Ignore buttons (add to Ignored list)
     root.querySelectorAll("[data-dismiss]").forEach((btn) => {
       btn.onclick = (e) => {
         const id = e.currentTarget.getAttribute("data-dismiss");
@@ -13490,6 +5449,56 @@ class OtisCompanionCard extends HTMLElement {
       };
     });
 
+    root.querySelectorAll(".btn-review-suggestion").forEach((btn) => {
+      btn.onclick = (e) => {
+        const id = e.currentTarget.getAttribute("data-review");
+        const suggestion = (this._suggestions || []).find((s) => s.id === id);
+        if (suggestion) {
+          this._reviewSuggestion = suggestion;
+          this._render();
+        }
+      };
+    });
+
+    const closeReviewBtn = root.querySelector("#btn-close-review-modal");
+    if (closeReviewBtn) {
+      closeReviewBtn.onclick = () => {
+        this._reviewSuggestion = null;
+        this._snapshotLightbox = null;
+        this._render();
+      };
+    }
+    const reviewBackdrop = root.querySelector("#review-suggestion-backdrop");
+    if (reviewBackdrop) {
+      reviewBackdrop.onclick = (e) => {
+        if (e.target === reviewBackdrop) {
+          this._reviewSuggestion = null;
+          this._snapshotLightbox = null;
+          this._render();
+        }
+      };
+    }
+    const copyReviewBtn = root.querySelector("#btn-copy-review-yaml");
+    if (copyReviewBtn) {
+      copyReviewBtn.onclick = () => {
+        if (this._reviewSuggestion) {
+          this._copyToClipboard(this._formatSuggestionYaml(this._reviewSuggestion), "YAML copied to clipboard!");
+        }
+      };
+    }
+    const applyReviewBtn = root.querySelector("#btn-apply-review-modal");
+    if (applyReviewBtn) {
+      applyReviewBtn.onclick = () => {
+        const suggestion = this._reviewSuggestion;
+        this._reviewSuggestion = null;
+        this._snapshotLightbox = null;
+        this._render();
+        if (suggestion) {
+          this._applySuggestion(suggestion);
+        }
+      };
+    }
+
     // GitHub Bug Reporter & Issue Tracker
     root.querySelectorAll(".btn-report-github").forEach((btn) => {
       btn.onclick = (e) => {
@@ -13524,18 +5533,18 @@ class OtisCompanionCard extends HTMLElement {
           const resp =
             this._hass && typeof this._hass.fetchWithAuth === "function"
               ? await this._hass.fetchWithAuth("/api/otis_ai/issue_reporter", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ action: "dismiss_issue", track_id: trackId }),
-                })
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "dismiss_issue", track_id: trackId }),
+              })
               : await fetch("/api/otis_ai/issue_reporter", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ action: "dismiss_issue", track_id: trackId }),
-                });
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "dismiss_issue", track_id: trackId }),
+              });
           this._showToast("Dismissed issue tracking from feed");
           await this._fetchData();
-        } catch (_) {}
+        } catch (_) { }
       };
     });
 
@@ -13545,6 +5554,8 @@ class OtisCompanionCard extends HTMLElement {
         this._githubPollTimer = null;
       }
       this._githubModalOpen = false;
+      this._reviewSuggestion = null;
+      this._snapshotLightbox = null;
       this._githubErrorMsg = null;
       this._render();
     };
@@ -13596,6 +5607,8 @@ class OtisCompanionCard extends HTMLElement {
     if (btnCloseGhSuccess) {
       btnCloseGhSuccess.onclick = () => {
         this._githubModalOpen = false;
+        this._reviewSuggestion = null;
+        this._snapshotLightbox = null;
         this._render();
         this._fetchData();
       };
@@ -13613,6 +5626,9 @@ class OtisCompanionCard extends HTMLElement {
         const sid = e.currentTarget.getAttribute("data-suggestion-id");
         if (!pid || !this._hass) return;
         const isNotPersonPet = pid === "not_person_pet";
+        const matchedSugg = sid ? (this._suggestions || []).find((item) => item.id === sid) : null;
+        const snapshotKey = matchedSugg?.action_payload?.snapshot_key || null;
+        const detImageEid = matchedSugg?.action_payload?.detection_image_entity_id || null;
         try {
           this._showToast(`👤 Recording ${label} for ${areaName}...`);
           await this._hass.callService("otis_ai", "confirm_person_identity", {
@@ -13623,11 +5639,17 @@ class OtisCompanionCard extends HTMLElement {
               area,
               area_name: areaName,
               classification: pid,
+              snapshot_key: snapshotKey,
+              detection_image_entity_id: detImageEid,
+              suggestion_id: sid,
             },
           });
           if (sid) {
-            this._dismissedIds.add(sid);
+            this._dismissedIds.delete(sid);
             this._saveDismissedIds();
+            this._hiddenIds.delete(sid);
+            this._suggestions = (this._suggestions || []).filter((item) => item.id !== sid);
+            this._render();
           }
           if (pid === "unknown_person") {
             this._showToast(`🕵️ Logged Unknown Person in ${areaName} for security & training calibration.`);
@@ -13660,8 +5682,10 @@ class OtisCompanionCard extends HTMLElement {
             suggestion_id: sid,
             selected_to_area: toArea,
           });
-          this._dismissedIds.add(sid);
+          this._dismissedIds.delete(sid);
           this._saveDismissedIds();
+          this._suggestions = (this._suggestions || []).filter((item) => item.id !== sid);
+          this._render();
           this._showToast(`✅ Confirmed room transition into ${toAreaName}.`);
           await this._fetchData();
         } catch (err) {
@@ -14290,7 +6314,7 @@ class OtisCompanionCard extends HTMLElement {
             p.style.transition = "none";
           });
         }
-        try { floorplanViewport.setPointerCapture(e.pointerId); } catch (_) {}
+        try { floorplanViewport.setPointerCapture(e.pointerId); } catch (_) { }
       };
 
       floorplanViewport.onpointermove = (e) => {
@@ -14314,11 +6338,11 @@ class OtisCompanionCard extends HTMLElement {
         if (!isOrbiting) return;
         isOrbiting = false;
         floorplanViewport.style.cursor = "";
-        try { floorplanViewport.releasePointerCapture(e.pointerId); } catch (_) {}
+        try { floorplanViewport.releasePointerCapture(e.pointerId); } catch (_) { }
         try {
           localStorage.setItem("otis_floorplan_orbit_azimuth", String(this._floorplanAzimuth));
           localStorage.setItem("otis_floorplan_pitch_incline", String(this._floorplanPitch));
-        } catch (_) {}
+        } catch (_) { }
 
         // Disambiguate Tap / Click from Orbit Drag:
         const moveDist = Math.hypot(e.clientX - startX, e.clientY - startY);
@@ -14328,8 +6352,8 @@ class OtisCompanionCard extends HTMLElement {
           if (roomGrp) {
             const shell = roomGrp.closest(".floorplan-3d-room-shell") || (roomGrp.classList.contains("floorplan-3d-room-shell") ? roomGrp : null);
             const areaId = (shell ? (shell.getAttribute("data-room-id") || shell.getAttribute("data-area-id")) : null) ||
-                           roomGrp.getAttribute("data-area-id") ||
-                           roomGrp.getAttribute("data-room-id");
+              roomGrp.getAttribute("data-area-id") ||
+              roomGrp.getAttribute("data-room-id");
             if (areaId) {
               const area = this._capabilityMap?.areas?.[areaId];
               const slug = areaId.toLowerCase().replace(/[^a-z0-9_]+/g, "_").replace(/^_+|_+$/g, "") || "room";
@@ -14356,7 +6380,7 @@ class OtisCompanionCard extends HTMLElement {
         const delta = e.deltaY < 0 ? 0.05 : -0.05;
         this._floorplanScale = Math.max(0.6, Math.min(1.8, (this._floorplanScale || 1.0) + delta));
         applyCanvas3dTransform(false);
-        try { localStorage.setItem("otis_floorplan_scale", String(this._floorplanScale)); } catch (_) {}
+        try { localStorage.setItem("otis_floorplan_scale", String(this._floorplanScale)); } catch (_) { }
       };
     }
 
@@ -14368,7 +6392,7 @@ class OtisCompanionCard extends HTMLElement {
         this._floorplanOrbitLocked = this._floorplanOrbitLocked === false ? true : false;
         try {
           localStorage.setItem("otis_floorplan_orbit_locked", String(this._floorplanOrbitLocked));
-        } catch (_) {}
+        } catch (_) { }
         this._render();
       };
     }
@@ -14380,7 +6404,7 @@ class OtisCompanionCard extends HTMLElement {
         applyCanvas3dTransform(false);
       };
       sliderAzimuth.onchange = () => {
-        try { localStorage.setItem("otis_floorplan_orbit_azimuth", String(this._floorplanAzimuth)); } catch (_) {}
+        try { localStorage.setItem("otis_floorplan_orbit_azimuth", String(this._floorplanAzimuth)); } catch (_) { }
       };
     }
 
@@ -14390,7 +6414,7 @@ class OtisCompanionCard extends HTMLElement {
         applyCanvas3dTransform(false);
       };
       sliderPitch.onchange = () => {
-        try { localStorage.setItem("otis_floorplan_pitch_incline", String(this._floorplanPitch)); } catch (_) {}
+        try { localStorage.setItem("otis_floorplan_pitch_incline", String(this._floorplanPitch)); } catch (_) { }
       };
     }
 
@@ -14399,7 +6423,7 @@ class OtisCompanionCard extends HTMLElement {
       btnAzMinus.onclick = () => {
         this._floorplanAzimuth = (this._floorplanAzimuth - 15 + 360) % 360;
         applyCanvas3dTransform(true);
-        try { localStorage.setItem("otis_floorplan_orbit_azimuth", String(this._floorplanAzimuth)); } catch (_) {}
+        try { localStorage.setItem("otis_floorplan_orbit_azimuth", String(this._floorplanAzimuth)); } catch (_) { }
       };
     }
 
@@ -14408,7 +6432,7 @@ class OtisCompanionCard extends HTMLElement {
       btnAzPlus.onclick = () => {
         this._floorplanAzimuth = (this._floorplanAzimuth + 15) % 360;
         applyCanvas3dTransform(true);
-        try { localStorage.setItem("otis_floorplan_orbit_azimuth", String(this._floorplanAzimuth)); } catch (_) {}
+        try { localStorage.setItem("otis_floorplan_orbit_azimuth", String(this._floorplanAzimuth)); } catch (_) { }
       };
     }
 
@@ -14417,7 +6441,7 @@ class OtisCompanionCard extends HTMLElement {
       btnPitchMinus.onclick = () => {
         this._floorplanPitch = Math.max(30, this._floorplanPitch - 5);
         applyCanvas3dTransform(true);
-        try { localStorage.setItem("otis_floorplan_pitch_incline", String(this._floorplanPitch)); } catch (_) {}
+        try { localStorage.setItem("otis_floorplan_pitch_incline", String(this._floorplanPitch)); } catch (_) { }
       };
     }
 
@@ -14426,7 +6450,7 @@ class OtisCompanionCard extends HTMLElement {
       btnPitchPlus.onclick = () => {
         this._floorplanPitch = Math.min(75, this._floorplanPitch + 5);
         applyCanvas3dTransform(true);
-        try { localStorage.setItem("otis_floorplan_pitch_incline", String(this._floorplanPitch)); } catch (_) {}
+        try { localStorage.setItem("otis_floorplan_pitch_incline", String(this._floorplanPitch)); } catch (_) { }
       };
     }
 
@@ -14441,7 +6465,7 @@ class OtisCompanionCard extends HTMLElement {
         try {
           localStorage.setItem("otis_floorplan_orbit_azimuth", String(this._floorplanAzimuth));
           localStorage.setItem("otis_floorplan_pitch_incline", String(this._floorplanPitch));
-        } catch (_) {}
+        } catch (_) { }
         root.querySelectorAll(".btn-preset-pill[data-azimuth]").forEach((p) => p.classList.toggle("active", p === e.currentTarget));
       };
     });
@@ -14456,7 +6480,7 @@ class OtisCompanionCard extends HTMLElement {
         try {
           localStorage.setItem("otis_floorplan_orbit_azimuth", "45");
           localStorage.setItem("otis_floorplan_pitch_incline", "58");
-        } catch (_) {}
+        } catch (_) { }
         root.querySelectorAll(".btn-preset-pill[data-azimuth]").forEach((p) => {
           p.classList.toggle("active", p.getAttribute("data-azimuth") === "45");
         });
@@ -14489,7 +6513,7 @@ class OtisCompanionCard extends HTMLElement {
             localStorage.setItem("otis_floorplan_wall_height", String(wallH));
             localStorage.setItem("otis_floorplan_selected_zone", String(zone));
             localStorage.setItem("otis_floorplan_scale", String(scale));
-          } catch (_) {}
+          } catch (_) { }
           await this._hass.callService("otis_ai", "set_user_rules", {
             rules: {
               floorplan_view_mode: "3d",
@@ -14519,7 +6543,7 @@ class OtisCompanionCard extends HTMLElement {
     if (btnToggleWalls) {
       btnToggleWalls.onclick = () => {
         this._floorplanWallsEnabled = this._floorplanWallsEnabled === false ? true : false;
-        try { localStorage.setItem("otis_floorplan_walls_enabled", String(this._floorplanWallsEnabled)); } catch (_) {}
+        try { localStorage.setItem("otis_floorplan_walls_enabled", String(this._floorplanWallsEnabled)); } catch (_) { }
         updateWallPositions();
         btnToggleWalls.classList.toggle("active", this._floorplanWallsEnabled);
         btnToggleWalls.textContent = this._floorplanWallsEnabled ? "🏢 Walls ON" : "🏢 Walls OFF";
@@ -14531,7 +6555,7 @@ class OtisCompanionCard extends HTMLElement {
     if (btnWallHMinus) {
       btnWallHMinus.onclick = () => {
         this._floorplanWallHeight = Math.max(10, (this._floorplanWallHeight || 28) - 4);
-        try { localStorage.setItem("otis_floorplan_wall_height", String(this._floorplanWallHeight)); } catch (_) {}
+        try { localStorage.setItem("otis_floorplan_wall_height", String(this._floorplanWallHeight)); } catch (_) { }
         if (floorplanCanvas) floorplanCanvas.style.setProperty("--wall-height", `${this._floorplanWallHeight}px`);
         if (valWallH) valWallH.textContent = `${this._floorplanWallHeight}px`;
       };
@@ -14541,7 +6565,7 @@ class OtisCompanionCard extends HTMLElement {
     if (btnWallHPlus) {
       btnWallHPlus.onclick = () => {
         this._floorplanWallHeight = Math.min(50, (this._floorplanWallHeight || 28) + 4);
-        try { localStorage.setItem("otis_floorplan_wall_height", String(this._floorplanWallHeight)); } catch (_) {}
+        try { localStorage.setItem("otis_floorplan_wall_height", String(this._floorplanWallHeight)); } catch (_) { }
         if (floorplanCanvas) floorplanCanvas.style.setProperty("--wall-height", `${this._floorplanWallHeight}px`);
         if (valWallH) valWallH.textContent = `${this._floorplanWallHeight}px`;
       };
@@ -14561,7 +6585,7 @@ class OtisCompanionCard extends HTMLElement {
         this._floorplanViewMode = mode;
         try {
           localStorage.setItem("otis_floorplan_view_mode", mode);
-        } catch (_) {}
+        } catch (_) { }
         root.querySelectorAll(".view-mode-pill").forEach((p) => p.classList.toggle("active", p === e.currentTarget));
         this._render();
       };
@@ -14573,7 +6597,7 @@ class OtisCompanionCard extends HTMLElement {
         this._selectedFloorZone = zone;
         try {
           localStorage.setItem("otis_floorplan_selected_zone", zone);
-        } catch (_) {}
+        } catch (_) { }
         root.querySelectorAll(".zone-pill").forEach((p) => p.classList.toggle("active", p === e.currentTarget));
         applyZoneFilterToSvg(zone);
         updateWallPositions();
@@ -14587,7 +6611,7 @@ class OtisCompanionCard extends HTMLElement {
       btnBackDash.onclick = () => {
         const path =
           window.location.pathname.startsWith("/command-center") ||
-          this._config.dashboard_url_path === "command-center"
+            this._config.dashboard_url_path === "command-center"
             ? "/command-center"
             : "/otis-ai";
         const event = new CustomEvent("hass-navigate", {
@@ -14620,7 +6644,7 @@ class OtisCompanionCard extends HTMLElement {
       svgViewport.addEventListener("scroll", updatePinPositions, { passive: true });
       if (typeof ResizeObserver !== "undefined") {
         if (this._viewportResizeObserver) {
-          try { this._viewportResizeObserver.disconnect(); } catch (_) {}
+          try { this._viewportResizeObserver.disconnect(); } catch (_) { }
         }
         this._viewportResizeObserver = new ResizeObserver(() => {
           updatePinPositions();
@@ -14654,7 +6678,7 @@ class OtisCompanionCard extends HTMLElement {
                 startClientY: e.clientY,
                 moved: false,
               };
-              try { pin.setPointerCapture(e.pointerId); } catch (_) {}
+              try { pin.setPointerCapture(e.pointerId); } catch (_) { }
             };
 
             pin.onpointermove = (e) => {
@@ -14692,7 +6716,7 @@ class OtisCompanionCard extends HTMLElement {
 
             pin.onpointerup = (e) => {
               if (this._draggingBadge && this._draggingBadge.el === pin) {
-                try { pin.releasePointerCapture(e.pointerId); } catch (_) {}
+                try { pin.releasePointerCapture(e.pointerId); } catch (_) { }
                 const wasMoved = this._draggingBadge.moved;
                 const curX = parseFloat(pin.getAttribute("data-x") || 300);
                 const curY = parseFloat(pin.getAttribute("data-y") || 300);
@@ -14711,7 +6735,7 @@ class OtisCompanionCard extends HTMLElement {
 
             pin.onpointercancel = (e) => {
               if (this._draggingBadge && this._draggingBadge.el === pin) {
-                try { pin.releasePointerCapture(e.pointerId); } catch (_) {}
+                try { pin.releasePointerCapture(e.pointerId); } catch (_) { }
                 this._draggingBadge = null;
               }
             };
@@ -14772,15 +6796,44 @@ class OtisCompanionCard extends HTMLElement {
               rBox.setAttribute("height", rData.height);
             }
             const rLbl = rGrp.querySelector(".room-header, .room-label");
+            const hasContainerBanner = Boolean(rGrp.querySelector(".container-shell, .container-banner"));
+            const hdrYOff = hasContainerBanner ? 34 : 22;
             if (rLbl) {
               rLbl.setAttribute("x", rData.x + 14);
-              rLbl.setAttribute("y", rData.y + 22);
+              rLbl.setAttribute("y", rData.y + hdrYOff);
               if (rData.name) rLbl.textContent = rData.name;
             }
-            rGrp.querySelectorAll(".subzone-pill").forEach((pill, sIdx) => {
-              pill.setAttribute("x", rData.x + 16);
-              pill.setAttribute("y", rData.y + 22 + 18 + sIdx * 16);
-            });
+            if (Array.isArray(rData.sub_zones)) {
+              rGrp.querySelectorAll(".subzone-pill").forEach((p) => p.remove());
+              rData.sub_zones.forEach((szTxt, sIdx) => {
+                const cleanSz = String(szTxt || "").trim();
+                if (!cleanSz) return;
+                const pillEl = document.createElementNS("http://www.w3.org/2000/svg", "text");
+                pillEl.setAttribute("x", rData.x + 16);
+                pillEl.setAttribute("y", rData.y + hdrYOff + 18 + sIdx * 16);
+                pillEl.setAttribute("class", "subzone-pill");
+                pillEl.textContent = `▪ ${cleanSz}`;
+                if (rLbl && rLbl.nextSibling) {
+                  rGrp.insertBefore(pillEl, rLbl.nextSibling);
+                } else {
+                  rGrp.appendChild(pillEl);
+                }
+              });
+            } else {
+              rGrp.querySelectorAll(".subzone-pill").forEach((pill, sIdx) => {
+                pill.setAttribute("x", rData.x + 16);
+                pill.setAttribute("y", rData.y + hdrYOff + 18 + sIdx * 16);
+              });
+            }
+            if (rData.features && typeof rData.features === "object") {
+              Object.entries(rData.features).forEach(([fKey, fPos]) => {
+                if (!fPos || fPos.x === undefined || fPos.y === undefined) return;
+                const fGrp = rGrp.querySelector(`.room-feature[data-feature="${fKey}"]`) || svgEl.querySelector(`.room-feature[data-area-id="${roomId}"][data-feature="${fKey}"]`);
+                if (fGrp) {
+                  this._positionRoomFeatureSvg(fGrp, fKey, Number(fPos.x), Number(fPos.y));
+                }
+              });
+            }
             rGrp.querySelectorAll(".entity-badge").forEach((badge, bIdx) => {
               badge.setAttribute("transform", `translate(${rData.x + 16 + bIdx * 24}, ${rData.y + rData.height - 18})`);
             });
@@ -14799,13 +6852,14 @@ class OtisCompanionCard extends HTMLElement {
         svgEl.querySelectorAll(".room-group").forEach((grp) => {
           grp.style.cursor = "pointer";
           grp.onclick = (e) => {
+            if (e.target && e.target.closest && e.target.closest(".room-feature")) return;
             e.stopPropagation();
             const areaId = grp.getAttribute("data-area-id");
             const roomZone = grp.getAttribute("data-zone") || "main";
             if (this._selectedFloorZone !== "all" && this._selectedFloorZone !== roomZone) {
               if (roomZone === "upper" || (roomZone === "main" && this._selectedFloorZone === "upper") || (roomZone === "outdoor" && this._selectedFloorZone === "upper")) {
                 this._selectedFloorZone = roomZone;
-                try { localStorage.setItem("otis_floorplan_selected_zone", roomZone); } catch (_) {}
+                try { localStorage.setItem("otis_floorplan_selected_zone", roomZone); } catch (_) { }
                 applyZoneFilterToSvg(roomZone);
                 updateWallPositions();
                 updatePinPositions();
@@ -14815,6 +6869,93 @@ class OtisCompanionCard extends HTMLElement {
             if (this._selectedEditorRoomId === areaId) return;
             this._selectedEditorRoomId = areaId;
             this._render();
+          };
+        });
+
+        // Promote .room-feature elements (Stairs, Pool & Patio, Covered Front Porch) above all rooms so neighbors never occlude them
+        svgEl.querySelectorAll(".room-feature").forEach((fGrp) => {
+          const parentRoom = fGrp.closest(".room-group");
+          if (parentRoom) {
+            const pRid = parentRoom.getAttribute("data-area-id");
+            const pZone = parentRoom.getAttribute("data-zone") || "main";
+            if (pRid) fGrp.setAttribute("data-area-id", pRid);
+            fGrp.setAttribute("data-zone", pZone);
+            const planContainer = parentRoom.closest("#plan-ground, #plan-upper") || parentRoom.parentElement;
+            if (planContainer) {
+              let overlay = planContainer.querySelector(":scope > .room-features-overlay");
+              if (!overlay) {
+                overlay = document.createElementNS("http://www.w3.org/2000/svg", "g");
+                overlay.setAttribute("class", "room-features-overlay");
+                planContainer.appendChild(overlay);
+              }
+              overlay.appendChild(fGrp);
+            }
+          }
+        });
+
+        // Bind draggable architectural features (Pool & Patio, Stairs, Covered Front Porch & Balcony)
+        svgEl.querySelectorAll(".room-feature").forEach((fGrp) => {
+          const roomId = fGrp.getAttribute("data-area-id") || fGrp.closest(".room-group")?.getAttribute("data-area-id");
+          const parentRoom = roomId ? svgEl.querySelector(`.room-group[data-area-id="${roomId}"]`) : fGrp.closest(".room-group");
+          const featKey = fGrp.getAttribute("data-feature");
+          if (!roomId || !featKey) return;
+          fGrp.style.pointerEvents = "all";
+          fGrp.style.cursor = "grab";
+          fGrp.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          };
+          fGrp.onpointerdown = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const fRect = fGrp.querySelector("rect");
+            const startFx = parseFloat(fGrp.getAttribute("data-x") || fRect?.getAttribute("x") || 0);
+            const startFy = parseFloat(fGrp.getAttribute("data-y") || fRect?.getAttribute("y") || 0);
+            const startPt = getSvgPoint(svgEl, e.clientX, e.clientY);
+            fGrp.style.cursor = "grabbing";
+            try { fGrp.setPointerCapture(e.pointerId); } catch (_) { }
+
+            const onFeatMove = (me) => {
+              const curPt = getSvgPoint(svgEl, me.clientX, me.clientY);
+              const nfx = Math.round((startFx + (curPt.x - startPt.x)) / 5) * 5;
+              const nfy = Math.round((startFy + (curPt.y - startPt.y)) / 5) * 5;
+              this._positionRoomFeatureSvg(fGrp, featKey, nfx, nfy);
+              if (coordsHud) {
+                coordsHud.style.display = "block";
+                coordsHud.textContent = `📐 ${featKey.replace("_", " ").toUpperCase()} X: ${nfx}, Y: ${nfy}`;
+              }
+            };
+
+            const onFeatUp = (ue) => {
+              window.removeEventListener("pointermove", onFeatMove);
+              window.removeEventListener("pointerup", onFeatUp);
+              try { if (ue && ue.pointerId !== undefined) fGrp.releasePointerCapture(ue.pointerId); } catch (_) { }
+              fGrp.style.cursor = "grab";
+              const finalFx = parseFloat(fGrp.getAttribute("data-x") || startFx);
+              const finalFy = parseFloat(fGrp.getAttribute("data-y") || startFy);
+              const rRect = parentRoom.querySelector(".room-box, .room-rect");
+              const rHdr = parentRoom.querySelector(".room-header, .room-label");
+              const prevDirty = this._dirtyRooms[roomId] || {};
+              this._dirtyRooms[roomId] = {
+                ...prevDirty,
+                id: roomId,
+                x: prevDirty.x ?? Math.round(parseFloat(rRect?.getAttribute("x") || 0)),
+                y: prevDirty.y ?? Math.round(parseFloat(rRect?.getAttribute("y") || 0)),
+                width: prevDirty.width ?? Math.round(parseFloat(rRect?.getAttribute("width") || 160)),
+                height: prevDirty.height ?? Math.round(parseFloat(rRect?.getAttribute("height") || 120)),
+                name: prevDirty.name || rHdr?.textContent?.trim() || this._capabilityMap?.areas?.[roomId]?.name || roomId,
+                features: {
+                  ...(prevDirty.features || {}),
+                  [featKey]: { x: Math.round(finalFx), y: Math.round(finalFy) },
+                },
+              };
+              this._hasUnsavedLayout = true;
+              const saveBtn = root.querySelector("#btn-save-layout");
+              if (saveBtn) saveBtn.textContent = "💾 Save Changes *";
+            };
+
+            window.addEventListener("pointermove", onFeatMove);
+            window.addEventListener("pointerup", onFeatUp);
           };
         });
 
@@ -14957,10 +7098,24 @@ class OtisCompanionCard extends HTMLElement {
               const inpY = root.querySelector("#inspector-room-y");
               const inpW = root.querySelector("#inspector-room-w");
               const inpH = root.querySelector("#inspector-room-h");
+              const inpName = root.querySelector("#inspector-room-name");
+              const inpSubzones = root.querySelector("#inspector-room-subzones");
               if (inpX) inpX.value = Math.round(rx);
               if (inpY) inpY.value = Math.round(ry);
               if (inpW) inpW.value = Math.round(rw);
               if (inpH) inpH.value = Math.round(rh);
+              if (inpName) {
+                const hdrEl = selGrp.querySelector(".room-header, .room-label");
+                inpName.value = dirty?.name || hdrEl?.textContent?.trim() || this._capabilityMap?.areas?.[this._selectedEditorRoomId]?.name || this._selectedEditorRoomId;
+              }
+              if (inpSubzones) {
+                const pillsList = Array.isArray(dirty?.sub_zones)
+                  ? dirty.sub_zones
+                  : Array.from(selGrp.querySelectorAll(".subzone-pill")).map((p) =>
+                    String(p.textContent || "").replace(/^\s*[▪•]\s*/, "").trim()
+                  ).filter(Boolean);
+                inpSubzones.value = pillsList.join("\n");
+              }
 
               // Render 8 handles overlay layer (corners + edges)
               let handleGrp = selGrp.querySelector(".handles-layer");
@@ -14988,21 +7143,21 @@ class OtisCompanionCard extends HTMLElement {
 
                 // Update all 8 handles
                 const hNw = handleGrp.querySelector('[data-handle="nw"]');
-                const hN  = handleGrp.querySelector('[data-handle="n"]');
+                const hN = handleGrp.querySelector('[data-handle="n"]');
                 const hNe = handleGrp.querySelector('[data-handle="ne"]');
-                const hE  = handleGrp.querySelector('[data-handle="e"]');
+                const hE = handleGrp.querySelector('[data-handle="e"]');
                 const hSe = handleGrp.querySelector('[data-handle="se"]');
-                const hS  = handleGrp.querySelector('[data-handle="s"]');
+                const hS = handleGrp.querySelector('[data-handle="s"]');
                 const hSw = handleGrp.querySelector('[data-handle="sw"]');
-                const hW  = handleGrp.querySelector('[data-handle="w"]');
+                const hW = handleGrp.querySelector('[data-handle="w"]');
                 if (hNw) { hNw.setAttribute("cx", nx); hNw.setAttribute("cy", ny); }
-                if (hN)  { hN.setAttribute("cx", nx + nw / 2); hN.setAttribute("cy", ny); }
+                if (hN) { hN.setAttribute("cx", nx + nw / 2); hN.setAttribute("cy", ny); }
                 if (hNe) { hNe.setAttribute("cx", nx + nw); hNe.setAttribute("cy", ny); }
-                if (hE)  { hE.setAttribute("cx", nx + nw); hE.setAttribute("cy", ny + nh / 2); }
+                if (hE) { hE.setAttribute("cx", nx + nw); hE.setAttribute("cy", ny + nh / 2); }
                 if (hSe) { hSe.setAttribute("cx", nx + nw); hSe.setAttribute("cy", ny + nh); }
-                if (hS)  { hS.setAttribute("cx", nx + nw / 2); hS.setAttribute("cy", ny + nh); }
+                if (hS) { hS.setAttribute("cx", nx + nw / 2); hS.setAttribute("cy", ny + nh); }
                 if (hSw) { hSw.setAttribute("cx", nx); hSw.setAttribute("cy", ny + nh); }
-                if (hW)  { hW.setAttribute("cx", nx); hW.setAttribute("cy", ny + nh / 2); }
+                if (hW) { hW.setAttribute("cx", nx); hW.setAttribute("cy", ny + nh / 2); }
 
                 // Resolve clean room title
                 const lbl = selGrp.querySelector(".room-header, .room-label");
@@ -15060,6 +7215,7 @@ class OtisCompanionCard extends HTMLElement {
                 if (inpH) inpH.value = Math.round(nh);
 
                 this._dirtyRooms[this._selectedEditorRoomId] = {
+                  ...(this._dirtyRooms[this._selectedEditorRoomId] || {}),
                   id: this._selectedEditorRoomId,
                   x: Math.round(nx),
                   y: Math.round(ny),
@@ -15075,6 +7231,7 @@ class OtisCompanionCard extends HTMLElement {
               // Make room body draggable (type: "move") with magnetic snapping
               rect.style.cursor = "move";
               rect.onpointerdown = (e) => {
+                if (e.target && e.target.closest && e.target.closest(".room-feature")) return;
                 e.preventDefault();
                 e.stopPropagation();
                 const p = getSvgPoint(svgEl, e.clientX, e.clientY);
@@ -15091,7 +7248,7 @@ class OtisCompanionCard extends HTMLElement {
                   initH: curH,
                   minX, maxX, minY, maxY,
                 };
-                try { rect.setPointerCapture(e.pointerId); } catch (_) {}
+                try { rect.setPointerCapture(e.pointerId); } catch (_) { }
               };
 
               rect.onpointermove = (e) => {
@@ -15111,14 +7268,14 @@ class OtisCompanionCard extends HTMLElement {
 
               rect.onpointerup = (e) => {
                 if (this._resizingHandle && this._resizingHandle.type === "move") {
-                  try { rect.releasePointerCapture(e.pointerId); } catch (_) {}
+                  try { rect.releasePointerCapture(e.pointerId); } catch (_) { }
                   this._resizingHandle = null;
                   clearSnapGuides();
                 }
               };
               rect.onpointercancel = (e) => {
                 if (this._resizingHandle && this._resizingHandle.type === "move") {
-                  try { rect.releasePointerCapture(e.pointerId); } catch (_) {}
+                  try { rect.releasePointerCapture(e.pointerId); } catch (_) { }
                   this._resizingHandle = null;
                   clearSnapGuides();
                 }
@@ -15144,7 +7301,7 @@ class OtisCompanionCard extends HTMLElement {
                     initH: curH,
                     minX, maxX, minY, maxY,
                   };
-                  try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+                  try { handle.setPointerCapture(e.pointerId); } catch (_) { }
                 };
 
                 handle.onpointermove = (e) => {
@@ -15210,14 +7367,14 @@ class OtisCompanionCard extends HTMLElement {
 
                 handle.onpointerup = (e) => {
                   if (this._resizingHandle && this._resizingHandle.type !== "move") {
-                    try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
+                    try { handle.releasePointerCapture(e.pointerId); } catch (_) { }
                     this._resizingHandle = null;
                     clearSnapGuides();
                   }
                 };
                 handle.onpointercancel = (e) => {
                   if (this._resizingHandle && this._resizingHandle.type !== "move") {
-                    try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
+                    try { handle.releasePointerCapture(e.pointerId); } catch (_) { }
                     this._resizingHandle = null;
                     clearSnapGuides();
                   }
@@ -15332,7 +7489,7 @@ class OtisCompanionCard extends HTMLElement {
           await this._hass.callService("otis_ai", "ignore_sentinel_alert", { anomaly_id: aId });
           this._showToast("Alert ignored");
           await this._fetchData();
-        } catch (_) {}
+        } catch (_) { }
       };
     });
 
@@ -15353,7 +7510,7 @@ class OtisCompanionCard extends HTMLElement {
           const catName = cat === "battery" ? "low battery" : cat === "offline_node" ? "offline node" : cat;
           this._showToast(`All ${catName} alerts ignored`);
           await this._fetchData();
-        } catch (_) {}
+        } catch (_) { }
       };
     });
     const btnCloseInspector = root.querySelector("#btn-close-inspector");
@@ -15385,7 +7542,7 @@ class OtisCompanionCard extends HTMLElement {
         const rect = inspectorEl.getBoundingClientRect();
         startLeft = rect.left - parentRect.left;
         startTop = rect.top - parentRect.top;
-        try { inspectorHeader.setPointerCapture(e.pointerId); } catch (_) {}
+        try { inspectorHeader.setPointerCapture(e.pointerId); } catch (_) { }
       };
 
       inspectorHeader.onpointermove = (e) => {
@@ -15409,7 +7566,7 @@ class OtisCompanionCard extends HTMLElement {
 
       const endDragInspector = (e) => {
         if (isDraggingInspector) {
-          try { inspectorHeader.releasePointerCapture(e.pointerId); } catch (_) {}
+          try { inspectorHeader.releasePointerCapture(e.pointerId); } catch (_) { }
           isDraggingInspector = false;
         }
       };
@@ -15474,21 +7631,21 @@ class OtisCompanionCard extends HTMLElement {
           const handleGrp = selGrp.querySelector(".handles-layer");
           if (handleGrp) {
             const hNw = handleGrp.querySelector('[data-handle="nw"]');
-            const hN  = handleGrp.querySelector('[data-handle="n"]');
+            const hN = handleGrp.querySelector('[data-handle="n"]');
             const hNe = handleGrp.querySelector('[data-handle="ne"]');
-            const hE  = handleGrp.querySelector('[data-handle="e"]');
+            const hE = handleGrp.querySelector('[data-handle="e"]');
             const hSe = handleGrp.querySelector('[data-handle="se"]');
-            const hS  = handleGrp.querySelector('[data-handle="s"]');
+            const hS = handleGrp.querySelector('[data-handle="s"]');
             const hSw = handleGrp.querySelector('[data-handle="sw"]');
-            const hW  = handleGrp.querySelector('[data-handle="w"]');
+            const hW = handleGrp.querySelector('[data-handle="w"]');
             if (hNw) { hNw.setAttribute("cx", nx); hNw.setAttribute("cy", ny); }
-            if (hN)  { hN.setAttribute("cx", nx + nw / 2); hN.setAttribute("cy", ny); }
+            if (hN) { hN.setAttribute("cx", nx + nw / 2); hN.setAttribute("cy", ny); }
             if (hNe) { hNe.setAttribute("cx", nx + nw); hNe.setAttribute("cy", ny); }
-            if (hE)  { hE.setAttribute("cx", nx + nw); hE.setAttribute("cy", ny + nh / 2); }
+            if (hE) { hE.setAttribute("cx", nx + nw); hE.setAttribute("cy", ny + nh / 2); }
             if (hSe) { hSe.setAttribute("cx", nx + nw); hSe.setAttribute("cy", ny + nh); }
-            if (hS)  { hS.setAttribute("cx", nx + nw / 2); hS.setAttribute("cy", ny + nh); }
+            if (hS) { hS.setAttribute("cx", nx + nw / 2); hS.setAttribute("cy", ny + nh); }
             if (hSw) { hSw.setAttribute("cx", nx); hSw.setAttribute("cy", ny + nh); }
-            if (hW)  { hW.setAttribute("cx", nx); hW.setAttribute("cy", ny + nh / 2); }
+            if (hW) { hW.setAttribute("cx", nx); hW.setAttribute("cy", ny + nh / 2); }
           }
 
           // Update subzone pills
@@ -15537,18 +7694,53 @@ class OtisCompanionCard extends HTMLElement {
         if (inpW) inpW.value = nw;
         if (inpH) inpH.value = nh;
 
+        const inpName = root.querySelector("#inspector-room-name");
+        const inpSubzones = root.querySelector("#inspector-room-subzones");
+        const newName = inpName ? inpName.value.trim() : areaName;
+        const newSubzones = inpSubzones
+          ? inpSubzones.value
+            .split("\n")
+            .map((s) => s.replace(/^\s*[▪•]\s*/, "").trim())
+            .filter(Boolean)
+          : undefined;
+
+        if (selGrp) {
+          const rLbl = selGrp.querySelector(".room-header, .room-label");
+          const hasContainerBanner = Boolean(selGrp.querySelector(".container-shell, .container-banner"));
+          const hdrYOff = hasContainerBanner ? 34 : 22;
+          if (rLbl && newName) rLbl.textContent = newName;
+          if (Array.isArray(newSubzones)) {
+            selGrp.querySelectorAll(".subzone-pill").forEach((p) => p.remove());
+            newSubzones.forEach((szTxt, sIdx) => {
+              const pillEl = document.createElementNS("http://www.w3.org/2000/svg", "text");
+              pillEl.setAttribute("x", nx + 16);
+              pillEl.setAttribute("y", ny + hdrYOff + 18 + sIdx * 16);
+              pillEl.setAttribute("class", "subzone-pill");
+              pillEl.textContent = `▪ ${szTxt}`;
+              if (rLbl && rLbl.nextSibling) {
+                selGrp.insertBefore(pillEl, rLbl.nextSibling);
+              } else {
+                selGrp.appendChild(pillEl);
+              }
+            });
+          }
+        }
+
+        const prevDirty = this._dirtyRooms[rid] || {};
         this._dirtyRooms[rid] = {
+          ...prevDirty,
           id: rid,
           x: nx,
           y: ny,
           width: nw,
           height: nh,
-          name: areaName,
+          name: newName || areaName,
+          ...(Array.isArray(newSubzones) ? { sub_zones: newSubzones } : {}),
         };
         this._hasUnsavedLayout = true;
         const saveBtn = root.querySelector("#btn-save-layout");
         if (saveBtn) saveBtn.textContent = "💾 Save Changes *";
-        this._showToast(`Boundary updated for ${areaName || rid}! Click Save Layout to persist.`);
+        this._showToast(`Updated ${newName || areaName || rid}! Click Save Layout to persist.`);
       };
     }
 
@@ -15582,6 +7774,65 @@ class OtisCompanionCard extends HTMLElement {
         } catch (err) {
           console.error("Failed to delete room:", err);
           this._showToast(`Failed to delete room: ${err.message || err}`, true);
+        }
+      };
+    }
+
+    // Recalculate Floor Plan entities & layout (Companion card Floor Plan tab only)
+    const btnRecalculateFloorplan = root.querySelector("#btn-recalculate-floorplan");
+    if (btnRecalculateFloorplan) {
+      btnRecalculateFloorplan.onclick = async () => {
+        if (this._recalculatingFloorplan) return;
+        this._recalculatingFloorplan = true;
+        this._render();
+        try {
+          await this._hass.callService("otis_ai", "recalculate_floorplan", {
+            preserve_custom_pins: true,
+          });
+          this._dirtyBadges = {};
+          this._hasUnsavedLayout = false;
+          this._floorplanSvg = null;
+          await this._fetchData(true);
+          await this._loadFloorplanSvg("/api/otis_ai/media/otis_floorplan.svg");
+          this._showToast("Floor plan entities and locations recalculated!");
+        } catch (err) {
+          console.error("Failed to recalculate floor plan:", err);
+          this._showToast(`Recalculate failed: ${err.message || err}`, true);
+        } finally {
+          this._recalculatingFloorplan = false;
+          this._render();
+        }
+      };
+    }
+
+    const btnRegenerateFloorplan = root.querySelector("#btn-regenerate-floorplan");
+    if (btnRegenerateFloorplan) {
+      btnRegenerateFloorplan.onclick = async () => {
+        if (this._regeneratingFloorplan) return;
+        this._regeneratingFloorplan = true;
+        this._regenProgressPercent = 5;
+        this._regenProgressText = "Clearing previous floor plan & starting walkthrough analysis...";
+        this._regenDiscoveredAreas = [];
+        this._render();
+
+        try {
+          const svcRes = await this._hass.callService(
+            "otis_ai",
+            "generate_floorplan",
+            { reset_layout: true, reanalyze_walkthrough: true, background: true },
+            undefined,
+            true,
+            true
+          );
+          const respData = svcRes?.response || svcRes || {};
+          if (!respData.background) {
+            await this._finishRegenProgress(null);
+            return;
+          }
+          this._startRegenPolling();
+        } catch (err) {
+          console.error("Failed to regenerate floor plan:", err);
+          await this._finishRegenProgress(err.message || String(err));
         }
       };
     }
@@ -15971,6 +8222,8 @@ class OtisCompanionCard extends HTMLElement {
 }
 
 // Visual Card Editor for Lovelace UI Dashboard Builder
+Object.assign(OtisCompanionCard.prototype, floorplanMixin, modalsMixin, tabsMixin);
+
 class OtisCompanionCardEditor extends HTMLElement {
   constructor() {
     super();

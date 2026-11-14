@@ -111,23 +111,18 @@ def async_update_entity_state(
     state_val: Any,
     attributes: dict[str, Any] | None = None,
 ) -> None:
-    """Update state on the backed platform entity, or fallback gracefully for testing environments."""
-    updated = False
-    if hasattr(hass, "data") and isinstance(hass.data, dict):
-        otis_data = hass.data.get(DOMAIN, {})
-        if isinstance(otis_data, dict):
-            for entry_data in otis_data.values():
-                if isinstance(entry_data, dict) and "entities" in entry_data:
-                    ent = entry_data["entities"].get(entity_id)
-                    if ent is not None and hasattr(ent, "async_set_state"):
-                        ent.async_set_state(state_val, attributes)
-                        updated = True
-                        break
-    if not updated and hasattr(hass, "states") and hasattr(hass.states, "async_set"):
-        try:
-            hass.states.async_set(entity_id, state_val, attributes or {})
-        except Exception:
-            pass
+    """Update state on the backed platform entity registered for this integration."""
+    if not (hasattr(hass, "data") and isinstance(hass.data, dict)):
+        return
+    otis_data = hass.data.get(DOMAIN, {})
+    if not isinstance(otis_data, dict):
+        return
+    for entry_data in otis_data.values():
+        if isinstance(entry_data, dict) and "entities" in entry_data:
+            ent = entry_data["entities"].get(entity_id)
+            if ent is not None and hasattr(ent, "async_set_state"):
+                ent.async_set_state(state_val, attributes)
+                return
 
 
 async def async_setup_entry(

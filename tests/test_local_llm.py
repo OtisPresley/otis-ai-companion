@@ -670,6 +670,59 @@ def test_inspect_backup_configuration_tool():
     assert results[0]["result"]["best_candidate"]["lines"] == 726
 
 
+def test_select_relevant_tools_extracts_user_request_from_compact_prompt():
+    """Ensure system instructions mentioning backup/floorplan/sentinel do not trigger tools."""
+    compact_prompt = (
+        "You are Otis AI, the smart home co-pilot.\n"
+        "Never tell the user to manually download, extract, or edit backups or YAML files.\n"
+        "System State:\n"
+        "- Notable Integrations: ['sentinel', 'floorplan', 'camera', 'battery']\n"
+        "\nUser Request: What is the temperature in the study?"
+    )
+    assert select_relevant_tools(compact_prompt) == []
+
+    action_prompt = (
+        "You are Otis AI.\n"
+        "Never tell the user to manually extract backups.\n"
+        "\nUser Request: Turn on the study lights"
+    )
+    tools = select_relevant_tools(action_prompt)
+    assert [t["function"]["name"] for t in tools] == ["call_ha_service"]
+
+
+def test_async_generate_empty_response_returns_error():
+    """HTTP 200 with empty content and no tool calls should fail with a clear error."""
+    hass = MagicMock()
+    mgr = LocalLLMManager(hass, url="http://127.0.0.1:11434", model="qwen2.5:3b")
+    mgr._detected_provider = "ollama"
+
+    fake_resp = AsyncMock()
+    fake_resp.status = 200
+    fake_resp.json = AsyncMock(return_value={
+        "message": {"role": "assistant", "content": ""},
+        "done": True,
+        "done_reason": "length",
+        "eval_count": 512,
+        "prompt_eval_count": 4593,
+    })
+
+    fake_ctx = AsyncMock()
+    fake_ctx.__aenter__ = AsyncMock(return_value=fake_resp)
+    fake_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    fake_session = MagicMock()
+    fake_session.post = MagicMock(return_value=fake_ctx)
+
+    with patch("custom_components.otis_ai.local_llm.async_get_clientsession", return_value=fake_session):
+        res = asyncio.run(mgr.async_generate(prompt="hello"))
+
+    assert res["success"] is False
+    assert "empty response" in res["error"].lower()
+    assert "done_reason=length" in res["error"]
+    assert "eval_count=512" in res["error"]
+
+
+
 
 
 

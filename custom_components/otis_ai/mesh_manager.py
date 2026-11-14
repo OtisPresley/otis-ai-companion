@@ -82,7 +82,7 @@ class MeshManager:
                 discovered_nodes[node["id"]] = node
 
         # Classify Dead vs Marginal vs Healthy Nodes
-        for nid, node in discovered_nodes.items():
+        for _nid, node in discovered_nodes.items():
             st = node.get("status", "unknown")
             lqi = node.get("lqi")
             rssi = node.get("rssi")

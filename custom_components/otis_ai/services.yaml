@@ -1,6 +1,21 @@
 get_capability_map:
   name: Get Capability Map
   description: Compile a complete capability map of the Home Assistant instance, including active integrations, areas, devices, active entities, orphaned entities, and proactive suggestions.
+  fields:
+    force_refresh:
+      name: Force Refresh
+      description: Bypass the short-lived server cache and re-scan registries.
+      required: false
+      default: false
+      selector:
+        boolean:
+    include_suggestions:
+      name: Include Proactive Suggestions
+      description: Set to false for lightweight Studio/Room card loads that skip Habit Mining, Sentinel, and HA News.
+      required: false
+      default: true
+      selector:
+        boolean:
 
 get_suggestions:
   name: Get Proactive Suggestions
@@ -98,6 +113,32 @@ generate_floorplan:
       required: false
       selector:
         text:
+    reset_layout:
+      name: Reset Existing Layout
+      description: Throw out custom room bounds, pins, and cached features before generating the floor plan from scratch.
+      required: false
+      default: false
+      selector:
+        boolean:
+    reanalyze_walkthrough:
+      name: Re-analyze Stored Walkthrough Videos
+      description: Re-run dense keyframe and audio analysis on stored walkthrough videos in .storage/otis_ai/media.
+      required: false
+      default: false
+      selector:
+        boolean:
+
+recalculate_floorplan:
+  name: Recalculate Floor Plan
+  description: Force recalculation of all floor plan room entities, center-outward pin placements, and vector SVG layout.
+  fields:
+    preserve_custom_pins:
+      name: Preserve Custom Pins
+      description: Keep explicitly user-customized pins while recalculating all auto-placed room entities and layout.
+      required: false
+      default: true
+      selector:
+        boolean:
 
 update_floorplan_layout:
   name: Update Floor Plan Layout
@@ -1019,6 +1060,18 @@ dismiss_recommendation:
       selector:
         text:
 
+hide_recommendation:
+  name: Hide Recommendation
+  description: Permanently hide a dismissed or completed recommendation from the Proactive Feed without adding it to the Ignored list.
+  fields:
+    recommendation_id:
+      name: Recommendation ID
+      description: The unique identifier of the recommendation or suggestion to hide.
+      required: true
+      example: "ha_news_release"
+      selector:
+        text:
+
 restore_recommendation:
   name: Restore Recommendation
   description: Unhide / restore a previously dismissed recommendation back to the active Proactive Feed.
@@ -1772,5 +1825,99 @@ manage_local_llm_addon:
       required: false
       selector:
         text:
+
+copilot_tune_rule:
+  name: Co-Pilot Tune Prompt Rule
+  description: Create or update a runtime-tunable Assist Co-Pilot prompt rule in .storage/otis_ai.copilot_config.
+  fields:
+    rule_key:
+      name: Rule Key
+      description: Identifier for the prompt rule (e.g. sun_elevation_grounding).
+      required: true
+      selector:
+        text:
+    rule_text:
+      name: Rule Text
+      description: Full instruction text injected into Co-Pilot system prompts.
+      required: true
+      selector:
+        text:
+    enabled:
+      name: Enabled
+      description: Whether this prompt rule is active.
+      required: false
+      default: true
+      selector:
+        boolean:
+
+copilot_set_alias:
+  name: Co-Pilot Set Entity Alias
+  description: Bind a natural-language phrase or alias to a canonical Home Assistant entity_id in .storage/otis_ai.copilot_config.
+  fields:
+    alias:
+      name: Alias
+      description: Natural-language phrase (e.g. "solar elevation").
+      required: true
+      selector:
+        text:
+    entity_id:
+      name: Entity ID
+      description: Canonical Home Assistant entity ID.
+      required: true
+      selector:
+        entity:
+
+copilot_set_condition_template:
+  name: Co-Pilot Set Condition Template
+  description: Store or update a reusable Home Assistant condition template in .storage/otis_ai.copilot_config.
+  fields:
+    template_key:
+      name: Template Key
+      description: Identifier for the condition template (e.g. sun_elevation_below).
+      required: true
+      selector:
+        text:
+    template:
+      name: Template Dictionary
+      description: Home Assistant condition dictionary.
+      required: true
+      selector:
+        object:
+
+copilot_manage_fact:
+  name: Co-Pilot Manage Learned Facts
+  description: List, add, or remove verified learned facts in .storage/otis_ai.copilot_memory.
+  fields:
+    action:
+      name: Action
+      description: Operation to perform (list, add, or remove).
+      required: false
+      default: list
+      selector:
+        select:
+          options:
+            - list
+            - add
+            - remove
+    fact:
+      name: Fact
+      description: Learned fact text (required when action is add).
+      required: false
+      selector:
+        text:
+    category:
+      name: Category
+      description: Fact category (user_correction, entity_status, entity_preference, yaml_preference).
+      required: false
+      default: user_correction
+      selector:
+        text:
+    fact_id:
+      name: Fact ID
+      description: Learned fact ID (required when action is remove).
+      required: false
+      selector:
+        text:
+
 
 

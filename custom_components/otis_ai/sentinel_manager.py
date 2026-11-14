@@ -415,13 +415,15 @@ class SentinelManager:
                 if "setup_error" in state_str or "setup_retry" in state_str or "failed" in state_str:
                     entry_title = getattr(entry, "title", "Integration") or getattr(entry, "domain", "Integration")
                     entry_id = getattr(entry, "entry_id", "")
+                    raw_state = getattr(entry.state, "value", None) or state_str.split(".")[-1]
+                    state_label = str(raw_state).replace("_", " ").strip().title()
                     anomalies.append({
                         "id": f"sentinel_integration_failed_{entry_id}",
                         "domain": "system",
                         "severity": "high",
                         "entity_id": entry_id,
                         "title": f"Integration Error: {entry_title}",
-                        "description": f"Integration entry '{entry_title}' is in failed state ({state_str}). Self-heal reload available.",
+                        "description": f"Integration entry '{entry_title}' is in {state_label} state. Self-heal reload available.",
                         "remediation_action": "reload_config_entry",
                         "remediation_payload": {"entry_id": entry_id, "title": entry_title},
                     })

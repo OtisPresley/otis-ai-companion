@@ -1,4 +1,6 @@
 """Constants for the Otis AI Companion integration."""
+from typing import Any
+
 try:
     from homeassistant.const import Platform
 except ImportError:
@@ -10,7 +12,7 @@ except ImportError:
         SWITCH = "switch"
 
 DOMAIN = "otis_ai"
-INTEGRATION_VERSION = "0.3.6"
+INTEGRATION_VERSION = "0.3.15"
 
 PLATFORMS: list[Platform] = [
     Platform.SENSOR,
@@ -64,6 +66,7 @@ SERVICE_CHAT = "chat"
 SERVICE_GET_SPATIAL_MAP = "get_spatial_map"
 SERVICE_UPDATE_SPATIAL_MAP = "update_spatial_map"
 SERVICE_GENERATE_FLOORPLAN = "generate_floorplan"
+SERVICE_RECALCULATE_FLOORPLAN = "recalculate_floorplan"
 SERVICE_UPDATE_FLOORPLAN_LAYOUT = "update_floorplan_layout"
 SERVICE_PIN_FLOORPLAN_ENTITY = "pin_floorplan_entity"
 SERVICE_UNPIN_FLOORPLAN_ENTITY = "unpin_floorplan_entity"
@@ -138,6 +141,7 @@ CLUSTER_STATUS_IDLE = "idle"
 SERVICE_GET_USER_RULES = "get_user_rules"
 SERVICE_SET_USER_RULES = "set_user_rules"
 SERVICE_DISMISS_RECOMMENDATION = "dismiss_recommendation"
+SERVICE_HIDE_RECOMMENDATION = "hide_recommendation"
 SERVICE_RESTORE_RECOMMENDATION = "restore_recommendation"
 SERVICE_RESET_DISMISSED_RECOMMENDATIONS = "reset_dismissed_recommendations"
 
@@ -180,6 +184,12 @@ SERVICE_ORCHESTRATE_MULTI_AGENT = "orchestrate_multi_agent"
 SERVICE_CONFIGURE_VOICE_SATELLITE = "configure_voice_satellite"
 SERVICE_ARBITRATE_SATELLITE_AUDIO = "arbitrate_satellite_audio"
 
+# Assist Co-Pilot Self-Optimization Services
+SERVICE_COPILOT_TUNE_RULE = "copilot_tune_rule"
+SERVICE_COPILOT_SET_ALIAS = "copilot_set_alias"
+SERVICE_COPILOT_SET_CONDITION_TEMPLATE = "copilot_set_condition_template"
+SERVICE_COPILOT_MANAGE_FACT = "copilot_manage_fact"
+
 # Dashboard Constants
 COMMAND_CENTER_DASHBOARD_ID = "command-center"
 COMMAND_CENTER_DASHBOARD_URL_PATH = "command-center"
@@ -197,3 +207,71 @@ try:
             return True
 except ImportError:
     SafeNoAliasDumper = None  # type: ignore[assignment,misc]
+
+
+NON_HUMAN_OCCUPANCY_TOKENS: tuple[str, ...] = (
+    "_all_occupancy",
+    "_dog_occupancy",
+    "_cat_occupancy",
+    "_bird_occupancy",
+    "_car_occupancy",
+    "_package_occupancy",
+    "_amazon_occupancy",
+    "_fedex_occupancy",
+    "_ups_occupancy",
+    "_pet",
+    "_animal",
+)
+
+
+def is_non_human_occupancy_entity(entity_id: str) -> bool:
+    """Return True if a binary_sensor is a non-human/aggregate camera occupancy sensor."""
+    eid_l = entity_id.lower()
+    return any(tok in eid_l for tok in NON_HUMAN_OCCUPANCY_TOKENS)
+
+
+def is_slow_thermostat_occupancy_entity(entity_id: str) -> bool:
+    """Return True if a binary_sensor is a slow-cooldown thermostat occupancy sensor (e.g. Ecobee)."""
+    eid_l = entity_id.lower()
+    return (
+        "temp_occupancy" in eid_l
+        or eid_l.endswith("downstairs_occupancy")
+        or eid_l.endswith("upstairs_occupancy")
+    )
+
+
+def is_otis_entity_id(entity_id: str | None, domain: str, key: str) -> bool:
+    """Return True if entity_id matches the canonical Otis entity or a suffixed variant (e.g. _2)."""
+    if not entity_id:
+        return False
+    base = f"{domain}.otis_{key}"
+    return entity_id == base or entity_id.startswith(f"{base}_")
+
+
+def resolve_otis_entity_id(hass: Any, domain: str, key: str) -> str:
+    """Resolve the actual registered entity_id for an Otis platform entity (handles _2 suffixes)."""
+    default_eid = f"{domain}.otis_{key}"
+    if not hass:
+        return default_eid
+    states = getattr(hass, "states", None)
+    if states and hasattr(states, "get") and states.get(default_eid) is not None:
+        return default_eid
+    hass_data = getattr(hass, "data", None)
+    if isinstance(hass_data, dict):
+        otis_data = hass_data.get(DOMAIN, {})
+        if isinstance(otis_data, dict):
+            for entry_data in otis_data.values():
+                if isinstance(entry_data, dict):
+                    for eid, ent in (entry_data.get("entities") or {}).items():
+                        actual_eid = getattr(ent, "entity_id", eid)
+                        if isinstance(actual_eid, str) and is_otis_entity_id(actual_eid, domain, key):
+                            return actual_eid
+    if states and hasattr(states, "async_all"):
+        try:
+            for st in states.async_all(domain):
+                if is_otis_entity_id(getattr(st, "entity_id", None), domain, key):
+                    return st.entity_id
+        except Exception:
+            pass
+    return default_eid
+

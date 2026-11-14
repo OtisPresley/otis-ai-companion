@@ -21,12 +21,15 @@ from homeassistant.helpers import area_registry as ar, device_registry as dr, en
 
 from .const import (
     DOMAIN,
+    CONF_GEMINI_API_KEY,
     CONF_CAMERA_STREAM_STRATEGY,
     CAMERA_STRATEGY_MANAGED_PROXY,
     CAMERA_STRATEGY_HIGH_EFFICIENCY,
     CAMERA_STRATEGY_HIGH_DEFINITION,
     DEFAULT_CAMERA_STREAM_STRATEGY,
     CAMERA_STRATEGY_ALIASES,
+    is_non_human_occupancy_entity,
+    is_slow_thermostat_occupancy_entity,
 )
 from .floorplan_parser import classify_area_zone
 from .presence_manager import resolve_media_player_playback
@@ -212,6 +215,7 @@ class VisionPresenceManager:
         self._sightlines_synced_ts: float = 0.0
         self._active_room_holds: dict[str, dict[str, Any]] = {}
         self._ambiguous_room_transitions: dict[str, dict[str, Any]] = {}
+        self._snapshot_bbox_cache: dict[str, dict[str, Any] | None] = {}
 
     def register_camera_sightline(self, source_area_or_cam: str, target_areas: list[str]) -> None:
         """Register adjacent rooms visible from a camera's doorway/corridor sightline."""
@@ -247,20 +251,55 @@ class VisionPresenceManager:
             cam_aname = areas_by_id.get(cam_area, cam_area)
             if classify_area_zone(cam_area, cam_aname) == "outdoor":
                 continue
-            try:
-                adj = list(self.spatial_manager.get_adjacent_areas(cam_area) or [])
-            except Exception:
-                adj = []
-            indoor_adj = [
-                a for a in adj
-                if classify_area_zone(a, areas_by_id.get(a, a)) != "outdoor"
-            ]
-            if indoor_adj:
-                auto_map[cam_area] = indoor_adj
+            adj = self._get_connected_indoor_ha_areas(cam_area, set(areas_by_id.keys()), areas_by_id)
+            if adj:
+                auto_map[cam_area] = adj
 
         self._auto_sightlines = auto_map
         self._sightlines_synced_ts = time.time()
         return self._auto_sightlines
+
+    def _get_connected_indoor_ha_areas(
+        self,
+        source_area: str,
+        known_ha_areas: set[str],
+        areas_by_id: dict[str, str] | None = None,
+    ) -> list[str]:
+        """Return connected indoor HA areas, traversing 1 hop through non-HA sub-zone nodes (e.g. kitchen)."""
+        if not self.spatial_manager or not hasattr(self.spatial_manager, "get_adjacent_areas"):
+            return []
+        names_map = areas_by_id or {}
+        try:
+            direct = list(self.spatial_manager.get_adjacent_areas(source_area) or [])
+        except Exception:
+            return []
+
+        result: list[str] = []
+        seen: set[str] = {source_area}
+
+        def _maybe_add(aid: str) -> None:
+            if aid in seen:
+                return
+            seen.add(aid)
+            if classify_area_zone(aid, names_map.get(aid, aid)) != "outdoor":
+                result.append(aid)
+
+        for adj_id in direct:
+            if not adj_id or adj_id in seen:
+                continue
+            if not known_ha_areas or adj_id in known_ha_areas:
+                _maybe_add(adj_id)
+            else:
+                # Pass-through sub-zone (e.g. great_room -> kitchen -> mudroom)
+                seen.add(adj_id)
+                try:
+                    sub_adj = list(self.spatial_manager.get_adjacent_areas(adj_id) or [])
+                except Exception:
+                    sub_adj = []
+                for sub_id in sub_adj:
+                    if sub_id and (sub_id in known_ha_areas) and sub_id != source_area:
+                        _maybe_add(sub_id)
+        return result
 
     def record_camera_sightline_event(
         self,
@@ -298,18 +337,21 @@ class VisionPresenceManager:
         candidate_areas: list[dict[str, str]],
         subject: str = "person",
         summary: str = "",
+        direction: str = "entering",
     ) -> None:
-        """Record an ambiguous camera-observed transition where the destination room is uncertain."""
+        """Record an ambiguous camera-observed transition where the source or destination room is uncertain."""
         from_k = str(from_area or "").lower().replace(" ", "_")
         if not from_k or len(candidate_areas) < 2:
             return
         now_ts = time.time()
+        clean_dir = "leaving" if str(direction or "").lower() == "leaving" else "entering"
         self._ambiguous_room_transitions[from_k] = {
             "from_area": from_k,
             "from_area_name": from_area_name or from_k.replace("_", " ").title(),
-            "candidate_areas": list(candidate_areas),
+            "candidate_areas": list(candidate_areas)[:10],
             "subject": subject or "person",
             "summary": summary,
+            "direction": clean_dir,
             "timestamp": now_ts,
             "expires_at": now_ts + 600.0,
         }
@@ -484,11 +526,14 @@ class VisionPresenceManager:
                 d_class = str(s.attributes.get("device_class") or "").lower()
                 eid_lower = eid.lower()
 
-                # 1. mmWave Radar / Micro-movement presence (exclude Ecobee slow-cooldown occupancy sensors)
-                is_slow_thermostat_occ = "temp_occupancy" in eid_lower or eid_lower.endswith("downstairs_occupancy") or eid_lower.endswith("upstairs_occupancy")
-                is_mmwave = not is_slow_thermostat_occ and (
+                # 1. mmWave Radar / Micro-movement presence (exclude Otis's own output sensors, Ecobee slow-cooldown & camera occupancy sensors)
+                if eid_lower.startswith("binary_sensor.otis_") or is_non_human_occupancy_entity(eid_lower):
+                    continue
+                is_slow_thermostat_occ = is_slow_thermostat_occupancy_entity(eid_lower)
+                is_camera_person_occ = "_person_occupancy" in eid_lower
+                is_mmwave = not is_slow_thermostat_occ and not is_camera_person_occ and (
                     d_class in ("occupancy", "presence")
-                    or any(k in eid_lower for k in ("mmwave", "radar", "ld2410", "fp1", "fp2", "screek", "presence", "_person_occupancy", "_all_occupancy"))
+                    or any(k in eid_lower for k in ("mmwave", "radar", "ld2410", "fp1", "fp2", "screek", "presence"))
                 )
                 if is_mmwave and eid.startswith("binary_sensor."):
                     mmwave_entities.append(eid)
@@ -500,30 +545,14 @@ class VisionPresenceManager:
                 is_pir = (
                     d_class == "motion"
                     or is_slow_thermostat_occ
-                    or any(k in eid_lower for k in ("motion", "pir", "_person", "_pet", "_animal"))
+                    or is_camera_person_occ
+                    or any(k in eid_lower for k in ("motion", "pir", "_person"))
                 )
                 if is_pir and eid.startswith("binary_sensor.") and not is_mmwave:
                     pir_entities.append(eid)
                     if s.state == "on":
-                        # Slow Ecobee occupancy sensors stay 'on' for 30+ mins after room exit;
-                        # only treat them as active motion if they turned 'on' within the last 180 seconds.
-                        if is_slow_thermostat_occ:
-                            last_changed = getattr(s, "last_changed", None)
-                            l_ts = now_ts
-                            if last_changed:
-                                try:
-                                    l_ts = last_changed.timestamp() if hasattr(last_changed, "timestamp") else float(last_changed)
-                                except Exception:
-                                    l_ts = now_ts
-                            if (now_ts - l_ts) <= 180.0:
-                                pir_active = True
-                                if l_ts > most_recent_motion_ts:
-                                    most_recent_motion_ts = l_ts
-                            elif l_ts > most_recent_motion_ts:
-                                most_recent_motion_ts = l_ts
-                        else:
-                            pir_active = True
-                            most_recent_motion_ts = now_ts
+                        pir_active = True
+                        most_recent_motion_ts = now_ts
                     else:
                         # Check last_changed
                         last_changed = getattr(s, "last_changed", None)
@@ -769,20 +798,40 @@ class VisionPresenceManager:
                 }
                 for t_id in targets
                 if t_id in room_results
+                and t_id != cam_area
                 and not room_results[t_id].get("is_outdoor")
-                and room_results[t_id].get("status") == "vacant"
-                and t_id not in self._active_room_holds
             ]
             if len(unresolved_targets) >= 2:
+                # Detect whether the active camera subject is a pet/dog vs person
+                subj = "person"
+                cam_has_person = False
+                cam_has_dog = False
+                cam_has_pet = False
+                for st_item in all_states:
+                    if entity_to_area.get(st_item.entity_id) != cam_area:
+                        continue
+                    eid_l = st_item.entity_id.lower()
+                    if st_item.state == "on":
+                        if "_person" in eid_l:
+                            cam_has_person = True
+                        elif "_dog" in eid_l:
+                            cam_has_dog = True
+                        elif "_cat" in eid_l or "_pet" in eid_l or "_animal" in eid_l:
+                            cam_has_pet = True
+                if not cam_has_person:
+                    if cam_has_dog:
+                        subj = "dog"
+                    elif cam_has_pet:
+                        subj = "pet"
                 self.record_ambiguous_room_transition(
                     from_area=cam_area,
                     from_area_name=cam_room["area_name"],
                     candidate_areas=unresolved_targets,
-                    subject="person",
+                    subject=subj,
                 )
 
         # Build summary lists (outdoor areas excluded from indoor room occupancy lists)
-        for a_id, r_info in room_results.items():
+        for r_info in room_results.values():
             a_name = r_info["area_name"]
             st = r_info["status"]
             if r_info["is_outdoor"]:
@@ -1125,7 +1174,14 @@ class VisionPresenceManager:
         if subject_match and cam_zone and self.spatial_manager and hasattr(self.spatial_manager, "get_adjacent_areas"):
             summary_l = str(audit_entry.get("summary") or "").lower()
             try:
-                adj_list = list(self.spatial_manager.get_adjacent_areas(cam_zone) or [])
+                area_reg = ar.async_get(self.hass) if hasattr(ar, "async_get") else None
+                known_areas = {a.id: a.name for a in area_reg.async_list_areas()} if area_reg and hasattr(area_reg, "async_list_areas") else {}
+                adj_list = self._get_connected_indoor_ha_areas(cam_zone, set(known_areas.keys()), known_areas)
+                if not adj_list:
+                    adj_list = [
+                        a for a in (self.spatial_manager.get_adjacent_areas(cam_zone) or [])
+                        if classify_area_zone(a, a) != "outdoor"
+                    ]
                 matched_adj = False
                 for adj_id in adj_list:
                     adj_label = adj_id.replace("_", " ")
@@ -1135,16 +1191,17 @@ class VisionPresenceManager:
                         )
                         matched_adj = True
                 if not matched_adj and len(adj_list) >= 2 and classify_area_zone(cam_zone, cam_zone) != "outdoor":
+                    is_leaving = any(k in summary_l for k in ("leav", "exit", "heading out", "walking out", "depart"))
                     self.record_ambiguous_room_transition(
                         from_area=cam_zone,
-                        from_area_name=cam_zone.replace("_", " ").title(),
+                        from_area_name=known_areas.get(cam_zone) or cam_zone.replace("_", " ").title(),
                         candidate_areas=[
-                            {"area_id": a, "area_name": a.replace("_", " ").title()}
-                            for a in adj_list
-                            if classify_area_zone(a, a) != "outdoor"
+                            {"area_id": a, "area_name": known_areas.get(a) or a.replace("_", " ").title()}
+                            for a in adj_list[:10]
                         ],
                         subject=subject_match,
                         summary=str(audit_entry.get("summary") or ""),
+                        direction="leaving" if is_leaving else "entering",
                     )
             except Exception:
                 pass
@@ -1161,6 +1218,205 @@ class VisionPresenceManager:
             "success": True,
             "audit": audit_entry,
         }
+
+    def _get_gemini_api_key(self) -> str | None:
+        """Retrieve Gemini API key from Otis AI's own config entry or options."""
+        if hasattr(self.hass, "data") and isinstance(self.hass.data, dict):
+            otis_data = self.hass.data.get(DOMAIN, {})
+            if isinstance(otis_data, dict):
+                for v in otis_data.values():
+                    if isinstance(v, dict) and "data" in v:
+                        entry_cfg = v.get("data", {})
+                        if isinstance(entry_cfg, dict) and entry_cfg.get(CONF_GEMINI_API_KEY):
+                            return str(entry_cfg[CONF_GEMINI_API_KEY])
+        if hasattr(self.hass, "config_entries") and hasattr(self.hass.config_entries, "async_entries"):
+            try:
+                for entry in self.hass.config_entries.async_entries(DOMAIN):
+                    key = entry.options.get(CONF_GEMINI_API_KEY) or entry.data.get(CONF_GEMINI_API_KEY)
+                    if key:
+                        return str(key)
+            except Exception:
+                pass
+        return None
+
+    async def async_detect_snapshot_bbox(
+        self,
+        image_entity_id: str | None,
+        detection_label: str | None = None,
+        snapshot_key: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Detect normalized [0..1000] bounding box for the referenced person/pet in a snapshot."""
+        cache_key = snapshot_key or image_entity_id
+        if cache_key and cache_key in self._snapshot_bbox_cache:
+            return self._snapshot_bbox_cache[cache_key]
+        if not image_entity_id or not self.hass:
+            return None
+
+        # 1. Check if entity attributes already expose a bounding box
+        if hasattr(self.hass, "states") and hasattr(self.hass.states, "get"):
+            st = self.hass.states.get(image_entity_id)
+            attrs = getattr(st, "attributes", {}) or {}
+            raw_box = attrs.get("box_2d") or attrs.get("bbox") or attrs.get("bounding_box")
+            if isinstance(raw_box, (list, tuple)) and len(raw_box) == 4:
+                try:
+                    ymin, xmin, ymax, xmax = [int(float(v)) for v in raw_box]
+                    if 0 <= ymin < ymax <= 1000 and 0 <= xmin < xmax <= 1000:
+                        res = {"ymin": ymin, "xmin": xmin, "ymax": ymax, "xmax": xmax, "label": detection_label or "Subject"}
+                        if cache_key:
+                            self._snapshot_bbox_cache[cache_key] = res
+                        return res
+                except (ValueError, TypeError):
+                    pass
+
+        # 2. Fetch snapshot image bytes via Home Assistant image/camera component
+        image_bytes: bytes | None = None
+        mime_type = "image/jpeg"
+        try:
+            if image_entity_id.startswith("image."):
+                from homeassistant.components import image as ha_image
+                if hasattr(ha_image, "async_get_image"):
+                    img_obj = await ha_image.async_get_image(self.hass, image_entity_id)
+                    if img_obj and getattr(img_obj, "content", None):
+                        image_bytes = img_obj.content
+                        mime_type = getattr(img_obj, "content_type", None) or "image/jpeg"
+            elif image_entity_id.startswith("camera."):
+                from homeassistant.components import camera as ha_camera
+                if hasattr(ha_camera, "async_get_image"):
+                    img_obj = await ha_camera.async_get_image(self.hass, image_entity_id)
+                    if img_obj and getattr(img_obj, "content", None):
+                        image_bytes = img_obj.content
+                        mime_type = getattr(img_obj, "content_type", None) or "image/jpeg"
+        except Exception as err:
+            _LOGGER.debug("Snapshot bbox fetch skipped for %s: %s", image_entity_id, err)
+            return None
+
+        if not image_bytes:
+            return None
+
+        target_lbl = str(detection_label or "person or pet").strip()
+        prompt = (
+            f"Locate the primary {target_lbl} in this camera snapshot. "
+            f"Return ONLY valid JSON with keys 'box_2d' (array of 4 integers [ymin, xmin, ymax, xmax] normalized 0 to 1000) "
+            f"and 'label' (short string, e.g. '{target_lbl}'). "
+            f"If there are multiple people or pets, box ONLY the most prominent {target_lbl} matching '{target_lbl}'. "
+            f"If none is visible, return {{\"box_2d\": null}}."
+        )
+
+        raw_text: str | None = None
+        # 2a. Prefer Home Assistant's configured ai_task.generate_data service (trying Google first, then other ai_task entities)
+        if hasattr(self.hass, "services") and hasattr(self.hass.services, "has_service") and self.hass.services.has_service("ai_task", "generate_data"):
+            ai_task_eids = sorted(
+                [
+                    st.entity_id
+                    for st in (self.hass.states.async_all() if hasattr(self.hass.states, "async_all") else [])
+                    if st.entity_id.startswith("ai_task.") and str(st.state or "").lower() != "unavailable"
+                ],
+                key=lambda e: 0 if "google" in e.lower() else 1,
+            )
+            domain_prefix = "image" if image_entity_id.startswith("image.") else "camera"
+            for ai_task_eid in ai_task_eids:
+                try:
+                    ai_resp = await self.hass.services.async_call(
+                        "ai_task",
+                        "generate_data",
+                        {
+                            "entity_id": ai_task_eid,
+                            "task_name": "Detect Subject Bounding Box",
+                            "instructions": prompt,
+                            "attachments": [
+                                {
+                                    "media_content_id": f"media-source://{domain_prefix}/{image_entity_id}",
+                                    "media_content_type": mime_type,
+                                }
+                            ],
+                        },
+                        blocking=True,
+                        return_response=True,
+                    )
+                    if isinstance(ai_resp, dict) and ai_resp.get("data") is not None:
+                        raw_text = str(ai_resp["data"])
+                        if raw_text.strip():
+                            break
+                except Exception as ai_err:
+                    _LOGGER.debug("ai_task snapshot bbox detection skipped for %s via %s: %s", image_entity_id, ai_task_eid, ai_err)
+
+        api_key = self._get_gemini_api_key() if not raw_text else None
+        if api_key:
+            try:
+                from homeassistant.helpers.aiohttp_client import async_get_clientsession
+                import json as _json
+
+                session = async_get_clientsession(self.hass)
+                b64_img = base64.b64encode(image_bytes).decode("utf-8")
+                payload = {
+                    "contents": [{
+                        "parts": [
+                            {"text": prompt},
+                            {"inline_data": {"mime_type": mime_type, "data": b64_img}},
+                        ]
+                    }],
+                    "generationConfig": {"temperature": 0.1, "maxOutputTokens": 128},
+                }
+                for model_name in ("gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-2.0-flash"):
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+                    async with session.post(url, json=payload, timeout=6) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            cands = data.get("candidates") or []
+                            if cands:
+                                parts = (cands[0].get("content") or {}).get("parts") or []
+                                raw_text = "".join(str(p.get("text") or "") for p in parts).strip()
+                                if raw_text:
+                                    break
+                        elif resp.status in (404, 400):
+                            continue
+                        else:
+                            break
+            except Exception as gem_err:
+                _LOGGER.debug("Gemini snapshot bbox detection failed: %s", gem_err)
+
+        if not raw_text and getattr(self, "local_llm_manager", None) and hasattr(self.local_llm_manager, "async_analyze_vision"):
+            try:
+                b64_data = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('utf-8')}"
+                v_res = await self.local_llm_manager.async_analyze_vision(
+                    image_base64=b64_data,
+                    prompt=prompt,
+                )
+                if isinstance(v_res, dict) and v_res.get("raw_response"):
+                    raw_text = str(v_res["raw_response"])
+            except Exception as llm_err:
+                _LOGGER.debug("Local LLM snapshot bbox detection failed: %s", llm_err)
+
+        parsed_bbox: dict[str, Any] | None = None
+        if raw_text:
+            try:
+                import json as _json
+                cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw_text.strip(), flags=re.IGNORECASE | re.DOTALL).strip()
+                m = re.search(r"\{.*\}", cleaned, re.DOTALL)
+                if m:
+                    obj = _json.loads(m.group(0))
+                    box = obj.get("box_2d")
+                    if isinstance(box, (list, tuple)) and len(box) == 4:
+                        ymin, xmin, ymax, xmax = [int(round(float(v))) for v in box]
+                        ymin = max(0, min(990, ymin))
+                        xmin = max(0, min(990, xmin))
+                        ymax = max(ymin + 10, min(1000, ymax))
+                        xmax = max(xmin + 10, min(1000, xmax))
+                        parsed_bbox = {
+                            "ymin": ymin,
+                            "xmin": xmin,
+                            "ymax": ymax,
+                            "xmax": xmax,
+                            "label": str(obj.get("label") or target_lbl).strip()[:32],
+                        }
+            except Exception as parse_err:
+                _LOGGER.debug("Failed to parse snapshot bbox JSON (%s): %s", raw_text[:120], parse_err)
+
+        if cache_key:
+            if len(self._snapshot_bbox_cache) > 100:
+                self._snapshot_bbox_cache.clear()
+            self._snapshot_bbox_cache[cache_key] = parsed_bbox
+        return parsed_bbox
 
     def publish_initial_perimeter_sentinel_state(self) -> None:
         """Publish initial baseline state for sensor.otis_perimeter_sentinel if not set."""
@@ -2345,11 +2601,31 @@ class VisionPresenceManager:
         import asyncio
 
         _debounce_task: asyncio.Task | None = None
+        _expiry_task: asyncio.Task | None = None
+
+        async def _expiry_republish(delay: float):
+            await asyncio.sleep(delay)
+            try:
+                await self.async_publish_fused_presence_states()
+                if getattr(self, "presence_fusion_manager", None):
+                    await self.presence_fusion_manager.async_fuse_presence(use_cache=False)
+            except Exception as e:
+                _LOGGER.debug("Error in expiry republish of fused presence: %s", e)
 
         async def _debounced_publish():
+            nonlocal _expiry_task
             await asyncio.sleep(0.5)
             try:
                 await self.async_publish_fused_presence_states()
+                pm = getattr(self, "presence_fusion_manager", None)
+                if pm:
+                    await pm.async_fuse_presence(use_cache=False)
+                    if getattr(pm, "_last_pir_motion_ts", None) and hasattr(self.hass, "async_create_task"):
+                        if _expiry_task and not _expiry_task.done():
+                            _expiry_task.cancel()
+                        _expiry_task = self.hass.async_create_task(
+                            _expiry_republish(float(getattr(pm, "_pir_hold_sec", 90.0)) + 1.0)
+                        )
             except Exception as e:
                 _LOGGER.debug("Error in auto-publishing fused presence: %s", e)
 

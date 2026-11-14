@@ -7,76 +7,24 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.6] - 2026-11-12
-
-### Assist Co-Pilot & Conversation Continuity Fixes
-- **Sun Elevation & Extra Condition Grounding**: Parsed `sun elevation` (`below`/`above`) conditions in room-lighting automation synthesis using `sensor.sun_solar_elevation` (if enabled) or `sun.sun` (`attribute: elevation`), added a guard so requests with unparsed constraints fall through to the full LLM pipeline instead of being dropped, and grounded all agents on HA's native `sun.sun` / `sensor.sun_solar_elevation` entities.
-- **Strict Confirmation Gate**: Prevented questions or critiques containing words like `"deploy"` (e.g. *"You are supposed to offer to deploy it for me..."*) from falsely auto-deploying stale drafts.
-- **Persistent Multi-Turn Conversation Context**: Persisted `this._conversationId` in `sessionStorage` until the user explicitly clicks **Clear**, preserving multi-prompt conversation history across tab switches and card re-renders.
-
-## [0.3.5] - 2026-11-12
-
-### Vision, Presence & Proactive Feed Enhancements
-- **Output-Zone vs. Input-Source Media Player Discovery**: Added `resolve_media_player_playback()` so always-on multi-room amp/Control4 output zones defer playback truth to their selected upstream input `media_player` instead of falsely marking rooms occupied when merely `on`.
-- **Outdoor False-Positive & Acoustic Suppression**: Excluded `outdoor` zones from indoor room occupancy lists and suppressed outdoor acoustic dBA and uncorroborated motion/light noise.
-- **Sensorless Room Inference & Auto-Derived Camera Sightlines**: Automatically derives indoor camera sightlines from `spatial_manager` adjacency, correlates fresh light/TV transitions (`last_changed`) in sensorless rooms, and engages hold-until-exit tracking.
-- **Ambiguous Room Transition Review Card**: Emits `confirm_room_transition` cards with live camera snapshot previews and room-selector buttons when a person or pet leaves a camera zone with multiple candidate connected rooms.
-- **100%-Confidence Profile Selection Fix**: Included all active person and pet profiles (including 100%-confidence / fully trained profiles) in `confirm_person_identity` candidate lists so users can always select the correct person or pet.
-
-## [0.3.4] - 2026-11-12
-
-### Security & Compliance Audit
-- **Exhaustive HACS & Home Assistant Core Compliance Pass**:
-  - **Storage Isolation (`dashboard_manager.py`)**: Removed fallback reads/writes to `.storage/lovelace_dashboards` via `Store`; dashboard lifecycle relies exclusively on official `DashboardsCollection`, `LovelaceStorage`, and in-memory managed registry.
-  - **Supervisor Token Decoupling (`local_llm.py`)**: Removed all remaining `SUPERVISOR_TOKEN` environment checks, `http://supervisor/addons` queries, and hardcoded internal supervisor IPs (`172.30.32.1`). Uses `hass.config.components` and direct HTTP reachability probes (`http://local-otis-ollama:11434`).
-  - **Platform Entity Purity**: Removed all 17 direct `hass.states.async_set(...)` fallback branches across all 10 manager modules (`agent_orchestrator`, `audio_manager`, `energy_manager`, `federation_manager`, `macro_manager`, `mesh_manager`, `presence_manager`, `rag_manager`, `rules_manager`, `vision_manager`), routing 100% of entity state updates through backed platform entities.
-  - **Alias-Free YAML Serialization**: Standardized `SafeNoAliasDumper` across all `yaml.dump(...)` calls in `__init__.py`, `automation_manager.py`, `floorplan_parser.py`, and `theme_manager.py`.
-  - **Complete Frontend XSS Escaping (`otis-companion-card.js`)**: Escaped all remaining dynamic text and HTML attributes (`title`, `room.path`, `weatherEid`, `subtitle`, `calendarEid`, `s.id`, `dismiss_single_label`, `dismiss_category_label`, federated node `n.name`/`n.host`/`n.port`/`n.role`/`n.status`, `eid`, `r.id`, `r.zone`, `a.id`, `query`, `friendlyName`, `stateVal`, `g.title`, `_spokenOrderOverride`).
-  - **Version Bump**: Bumped integration and card versions to `0.3.4`.
-
-## [0.3.3] - 2026-11-12
-
-### Fixed
-- **Complete Elimination of Residual Hardcoded Entity IDs & Fallbacks (HACS Item 18)**:
-  - **Macro Manager**: Removed fallback target `input_boolean.theater_precool` in `macro_manager.py:679`; removed personal entity checks for `fan.master`, `switch.sound_machine`, and `media_player.master` in favor of semantic keyword queries (`white_noise`, `sound_machine`).
-  - **Dashboard Manager**: Replaced hardcoded `weather.home` fallback in `dashboard_manager.py:612-617` with dynamic resolution of active `weather` entities; replaced hardcoded `switch.amp_power` and `switch.processor_power` with semantic amplifier power tokens.
-  - **Vision Manager & Service Handlers**: Replaced static fallback `camera.perimeter` in `handle_announce_visual_alert` with dynamic resolution of registered camera entities; replaced static fallback `alarm_control_panel.home` in intrusion alerts with dynamic queries against active `alarm_control_panel` entities; replaced `camera.unknown` with dynamic camera metadata.
-  - **Conversation Agent & Automation Calibration**: Replaced static fallback entities `binary_sensor.room_occupancy`, `binary_sensor.adjacent_occupancy`, and `light.room_light` in `__init__.py:5492-5494` with dynamic queries across all registered occupancy and lighting entities.
-  - **Energy Manager**: Replaced hardcoded tariff sensors (`sensor.electricity_tariff`, `sensor.grid_rate_period`, `sensor.utility_meter_tariff`), spot price integrations (`sensor.nordpool`, `sensor.amber`, `sensor.tibber`), and solar forecast sensors with dynamic queries inspecting sensor device classes, attributes, and available telemetry; resolved solar elevation directly from `sun.sun` attributes.
-  - **Audio Manager**: Replaced specific check for `media_player.vlc_telnet` with dynamic matching across available streamers; dynamic party mode resolution.
-  - **Lovelace Frontend Card**: Replaced `weather.home` fallback in `otis-companion-card.js:6531` with first discovered weather entity; removed `(input_boolean.guest_mode)` labels; replaced personal resident names in onboarding wizard placeholders with generic examples (`Alice, Bob`).
-  - **Local LLM Tool Descriptions**: Replaced example entity IDs in LLM tool schemas with generic canonical IDs.
-  - **Version Bump**: Bumped integration and card versions to `0.3.3`.
-
-## [0.3.2] - 2026-11-12
-
-### Added
-- **HACS Default Catalog PR 13059 Full Compliance (Phases 4, 5, 6)**:
-  - **Lovelace Dashboards API Architecture (Item 7)**: Replaced raw file mutations of `.storage/lovelace_dashboards` and `.storage/lovelace.<id>` with Home Assistant's canonical `DashboardsCollection` (`async_create_item`, `async_update_item`) and `LovelaceStorage.async_save`, isolating modifications exclusively to Otis AI companion dashboards.
-  - **Theme Storage & Runtime Registration (Items 8 & 11)**: Eliminated disk writes into `/config/themes/otis_*.yaml`. Custom themes are persisted in `.storage/otis_ai_themes` via Home Assistant's `Store` API and registered directly into `hass.data["frontend_themes"]` on boot. Frontend card updates active user profile via official WebSocket `frontend/set_user_data` and system default via `frontend.set_theme`.
-  - **Data Isolation & Integration Boundaries (Item 9)**: Removed raw disk reads of `.storage/backup` and `.storage/core.config_entries`. Grounded backup telemetry directly in `hass.config_entries` and core backup manager. Removed borrowing Google Generative AI API keys from `google_generative_ai_conversation`; added dedicated `CONF_GEMINI_API_KEY` to Otis AI options flow and entry storage.
-  - **User-Triggered Area Commissioning (Item 10)**: Removed automated startup entity area remediations from `__init__.py`. Commissioning is strictly user-triggered with interactive card preview.
-  - **SVG XSS Sanitization & Prevention (Item 14)**: Added quote and HTML attribute sanitization with `html.escape(..., quote=True)` and double-unescaping guards (`html.escape(html.unescape(...))`) across all vector floor plan renderers in `floorplan_parser.py` (`_render_iso_room`, `_render_room_svg`, `update_floorplan_layout`), neutralizing XSS breakout attempts.
-  - **Entity Platform Architecture (Item 15)**: Added official platform modules `sensor.py`, `binary_sensor.py`, and `switch.py` backed by `Platform.SENSOR`, `Platform.BINARY_SENSOR`, and `Platform.SWITCH`, tied to the config entry with canonical `DeviceInfo`. Eliminated unbacked phantom states across `macro_manager`, `presence_manager`, `agent_orchestrator`, `mesh_manager`, `rules_manager`, `vision_manager`, `rag_manager`, `audio_manager`, `energy_manager`, and `federation_manager` via `async_update_entity_state`.
-  - **Automation & Script Presentation (Item 16)**: Formatted automation, script, and blueprint code blocks with copy-to-clipboard instructions for standard Home Assistant GUI YAML editor import, while retaining managed draft versions in `.storage/otis_ai_automations`.
-  - **Live Security Telemetry Checks (Item 17)**: Replaced canned disarmed text with real dynamic entity queries against active `alarm_control_panel` and `lock` platform states.
-  - **Zero Hardcoded Personal Entities (Item 18)**: Stripped hardcoded environment-specific entities (`climate.downstairs`, `climate.upstairs`, `lock.front_door`, `input_boolean.guest_mode`, specific room or brand names) from shipped prompts and fallback code, resolving entities dynamically from the Home Assistant registry.
-  - **Non-Blocking Async I/O (Item 19)**: Offloaded all remaining filesystem stat calls in `habit_manager.py` (recorder SQLite path check) and `dashboard_manager.py` (floor plan SVG mtime/existence) to executor jobs via `hass.async_add_executor_job`.
-  - **Event Bus Secret Scrubbing (Item 20)**: Implemented recursive `scrub_sensitive_rules` to scrub lock codes, guest PINs, credentials, and access tokens before firing `otis_ai_rules_updated` on the event bus, preventing sensitive secrets from entering recorder database logs.
-  - **Frontend Card Version Sync**: Updated `otis-companion-card.js` version to `0.3.2`.
-
-## [0.3.1] - 2026-11-12
-
-### Changed
-- **HACS Default Catalog PR 13059 Compliance (Phase 2 & Phase 3)**:
-  - **Upload Size & Clip Count Caps**: Enforced an aggregate 3GB request size ceiling and a 5-clip limit in `OtisWalkthroughUploadView` across multipart streams to prevent unbounded uploads while supporting 4K walkthrough videos. Empty uploads return HTTP 400.
-  - **Floor Plan File Path Containment**: Confined all vector SVGs and generated layouts strictly to `/config/.storage/otis_ai/media/otis_floorplan.svg`. Removed user-supplied path parameters (`output_path`, `svg_path`) from floor plan services in `__init__.py`, `floorplan_parser.py`, and `services.yaml`.
-  - **Administrative Service Protection**: Registered administrative services using `async_register_admin_service` (with admin `call.context.user_id` verification fallback) for `apply_suggestion`, `register_federated_node`, `remove_federated_node`, `call_remote_service`, `broadcast_cluster_message`, `forward_remote_command`, `test_local_llm`, `benchmark_local_llm`, `pull_local_llm_model`, `manage_local_llm_addon`, `execute_tool_plan`, `set_user_rules`, `auto_commission_entities`, `generate_theme`, `apply_theme`, `delete_theme`, and all floor plan manipulation services.
-  - **Suggestion Execution Integrity**: Restricted `apply_suggestion` to only execute suggestion IDs generated and tracked by Otis, strictly deriving `action_type` and `action_payload` from tracked targets and rejecting arbitrary caller-supplied actions.
-  - **Local LLM Tool Plan Allowlist & Context Propagation**: Passed caller's `Context` through `async_chat_with_tools` and `async_execute_tool_plan` to `hass.services.async_call`. Enforced an explicit tool allowlist (`ALLOWED_TOOL_NAMES`) and domain allowlist (`ALLOWED_SERVICE_DOMAINS`), and removed the free-form `plan` service input parameter from `execute_tool_plan`.
-  - **Supervisor Token Add-on Decoupling**: Removed background `SUPERVISOR_TOKEN` API calls that installed, started, stopped, or uninstalled add-on containers. Replaced background add-on installation with a 1-click deep link to the Home Assistant Add-on Store (`/hassio/addon/local_otis_ollama`), while preserving local HTTP REST inference at `http://local-otis-ollama:11434`.
-  - **Admin Checks on Log Audits & Issue Reporting**: Enforced `request["hass_user"].is_admin` in `OtisIssueReporterView` for log diagnostics (`audit`) and issue reporting (`submit_issue` and `dismiss_issue`), returning HTTP 403 for non-admin callers.
-  - **Card Version Bump**: Synchronized Lovelace card version to `0.3.1` across manifest, card console log, and integration.
+## [0.4.0] - 2026-11-13
+### Summary of Changes Since v0.3.0
+- **100% HACS Default Catalog & IQS Compliance (PR #13059)**:
+  - Removed all `hass.states.async_set` fallbacks in `sensor.py` so every published state is backed by a registered platform entity (`sensor`, `switch`, `binary_sensor`).
+  - Eliminated all hardcoded personal rooms, house blueprints (`GROUND_AND_OUTDOOR_BLUEPRINT` / `UPPER_FLOOR_BLUEPRINT`), entity IDs, and device assumptions across `floorplan_parser.py` and backend managers; layouts now synthesize dynamically from Home Assistant areas and walkthrough features.
+  - Enforced admin-gated services/WebSocket commands, authenticated HTTP views with streaming upload size caps, `.storage`-isolated configuration/media, and non-blocking executor I/O everywhere.
+- **Interactive 2D/3D Floor Plan Editor & Walkthrough Reconstruction**:
+  - Added full-video dense keyframe sampling (`max_frames=24`), from-scratch background regeneration (`reset_layout`, `reanalyze_walkthrough`) with a live auto-resuming progress bar, and SVG cache-busting on Recalculate/Regenerate.
+  - Added editable Room Labels & Sub-Labels in the Room Inspector, center-outward default entity pins, and independent top-layer `.room-features-overlay` items (`Stairs`, `Pool`, `Front Porch`, and custom **🪜 + Stairs** / **⬜ + Box** additions) that drag, save, and delete cleanly across room boundaries.
+  - Wired automatic background `SpatialManager.async_reevaluate_from_floorplan()` on every floor plan mutation so the Capabilities Spatial Adjacency Graph stays synchronized.
+- **Frontend ES Module Architecture & Options Wiring**:
+  - Split the 17,190-line `otis-companion-card.js` into modular ES modules (`card-styles.js`, `floorplan-3d.js`, `card-modals.js`, `card-tabs.js`, and `otis-companion-card.js`) with versioned `?v=0.4.0` imports and QuickJS syntax validation across all modules.
+  - Wired `CONF_AUDIO_FOLLOW_ENABLED` and `CONF_LOCAL_MAX_TOKENS` into `_async_update_listener` for live options reload without restart.
+- **Co-Pilot Engine, Presence Fusion & Command Center Studios**:
+  - Extracted `copilot_engine.py` with room-scoped entity grounding, sun-elevation/condition parsing, strict confirmation gates, learned-fact capture, and a `👁️ Review` modal for proactive suggestions.
+  - Added 90s PIR/camera recency holds, outdoor false-positive suppression, sensorless spatial room inference, ambiguous transition review cards, dynamic `Climate & Pool` water-chemistry grouping, `Media Studio` output-zone vs. input-source discovery with default return routing, and separate `hidden_recommendation_ids` vs. `Ignored` persistence.
+- **Code Quality & Static Analysis**:
+  - Resolved all 89 `ruff` lint/bug/deprecation findings (`B023` closure bindings, `B007` unused loop variables, `B905` `zip(..., strict=...)`, `UP015`, `UP017`, `UP041`).
 
 ## [0.3.0] - 2026-11-08
 

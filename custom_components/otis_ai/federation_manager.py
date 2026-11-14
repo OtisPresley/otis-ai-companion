@@ -8,7 +8,7 @@ nodes (e.g. Guest House, Workshop, Camper / Marine, Remote Outbuilding).
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 import logging
 import time
 from typing import Any
@@ -215,7 +215,7 @@ class FederationManager:
                     else:
                         node["status"] = f"http_{resp.status}"
                         node["latency_ms"] = latency
-        except asyncio.TimeoutError:
+        except TimeoutError:
             node["status"] = "timeout"
             node["latency_ms"] = -1.0
         except Exception as err:
@@ -283,7 +283,7 @@ class FederationManager:
                         self._cached_node_states[node_id] = entity_states
                         node["status"] = "online"
                         node["latency_ms"] = latency
-                        node["last_synced"] = datetime.now(timezone.utc).isoformat()
+                        node["last_synced"] = datetime.now(UTC).isoformat()
                         node["entities_count"] = len(entity_states)
                         self._last_sync_timestamp = node["last_synced"]
                         await self.async_save()
@@ -305,7 +305,7 @@ class FederationManager:
                             "synced_count": 0,
                             "error": f"Remote node returned HTTP {resp.status}",
                         }
-        except asyncio.TimeoutError:
+        except TimeoutError:
             node["status"] = "timeout"
             self.publish_telemetry()
             return {"node_id": node_id, "status": "timeout", "synced_count": 0, "error": "Request timed out"}
@@ -334,7 +334,7 @@ class FederationManager:
         total_ents = 0
         successful_nodes = 0
 
-        for nid, res in zip(enabled_nodes, results):
+        for nid, res in zip(enabled_nodes, results, strict=True):
             if isinstance(res, Exception):
                 res_dict[nid] = {"status": "error", "error": str(res)}
             else:
@@ -343,7 +343,7 @@ class FederationManager:
                     successful_nodes += 1
                     total_ents += res.get("synced_count", 0)
 
-        self._last_sync_timestamp = datetime.now(timezone.utc).isoformat()
+        self._last_sync_timestamp = datetime.now(UTC).isoformat()
         self.publish_telemetry()
 
         return {
@@ -521,7 +521,7 @@ class FederationManager:
             "service": service,
             "success": success,
             "duration_ms": duration_ms,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             "error": error,
         }
         self._recent_remote_calls.insert(0, entry)
@@ -624,7 +624,7 @@ class FederationManager:
             "nodes": sanitized_nodes,
             "recent_remote_calls": list(self._recent_remote_calls[:10]),
             "last_sync_timestamp": self._last_sync_timestamp,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
         }
 
         try:
