@@ -8,24 +8,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.4.0] - 2026-11-13
-### Summary of Changes Since v0.3.0
-- **100% HACS Default Catalog & IQS Compliance (PR #13059)**:
-  - Removed all `hass.states.async_set` fallbacks in `sensor.py` so every published state is backed by a registered platform entity (`sensor`, `switch`, `binary_sensor`).
-  - Eliminated all hardcoded personal rooms, house blueprints (`GROUND_AND_OUTDOOR_BLUEPRINT` / `UPPER_FLOOR_BLUEPRINT`), entity IDs, and device assumptions across `floorplan_parser.py` and backend managers; layouts now synthesize dynamically from Home Assistant areas and walkthrough features.
-  - Enforced admin-gated services/WebSocket commands, authenticated HTTP views with streaming upload size caps, `.storage`-isolated configuration/media, and non-blocking executor I/O everywhere.
-- **Interactive 2D/3D Floor Plan Editor & Walkthrough Reconstruction**:
-  - Added full-video dense keyframe sampling (`max_frames=24`), from-scratch background regeneration (`reset_layout`, `reanalyze_walkthrough`) with a live auto-resuming progress bar, and SVG cache-busting on Recalculate/Regenerate.
-  - Added editable Room Labels & Sub-Labels in the Room Inspector, center-outward default entity pins, and independent top-layer `.room-features-overlay` items (`Stairs`, `Pool`, `Front Porch`, and custom **🪜 + Stairs** / **⬜ + Box** additions) that drag, save, and delete cleanly across room boundaries.
-  - Wired automatic background `SpatialManager.async_reevaluate_from_floorplan()` on every floor plan mutation so the Capabilities Spatial Adjacency Graph stays synchronized.
-- **Frontend ES Module Architecture & Options Wiring**:
-  - Split the 17,190-line `otis-companion-card.js` into modular ES modules (`card-styles.js`, `floorplan-3d.js`, `card-modals.js`, `card-tabs.js`, and `otis-companion-card.js`) with versioned `?v=0.4.0` imports and QuickJS syntax validation across all modules.
-  - Wired `CONF_AUDIO_FOLLOW_ENABLED` and `CONF_LOCAL_MAX_TOKENS` into `_async_update_listener` for live options reload without restart.
-  - Added full `strings.json` parity and 10-language UI translations (`en`, `de`, `es`, `fr`, `it`, `nl`, `pl`, `zh`, `zh-Hans`, `zh-Hant`).
-- **Co-Pilot Engine, Presence Fusion & Command Center Studios**:
-  - Extracted `copilot_engine.py` with room-scoped entity grounding, sun-elevation/condition parsing, strict confirmation gates, learned-fact capture, and a `👁️ Review` modal for proactive suggestions.
-  - Added 90s PIR/camera recency holds, outdoor false-positive suppression, sensorless spatial room inference, ambiguous transition review cards, dynamic `Climate & Pool` water-chemistry grouping, `Media Studio` output-zone vs. input-source discovery with default return routing, and separate `hidden_recommendation_ids` vs. `Ignored` persistence.
-- **Code Quality & Static Analysis**:
-  - Resolved all 89 `ruff` lint/bug/deprecation findings (`B023` closure bindings, `B007` unused loop variables, `B905` `zip(..., strict=...)`, `UP015`, `UP017`, `UP041`).
+
+### Major Release & Cumulative Summary (Since v0.3.0)
+Otis AI Companion `v0.4.0` delivers full HACS Default Catalog compliance, 10-language UI localization, a modular ES-module Lovelace card architecture, an interactive top-layer floor plan editor with live walkthrough progress tracking, and major Assist Co-Pilot & Presence Fusion upgrades.
+
+#### 1. 🛡️ HACS Default Catalog & IQS Compliance (PR #13059)
+- **Canonical Entity Platform Updates**: Removed all `hass.states.async_set` fallbacks in `sensor.py` so every published state is backed by a registered platform entity (`sensor`, `switch`, `binary_sensor`).
+- **Zero Hardcoded Personal Blueprints or Rooms**: Eliminated all hardcoded house blueprints (`GROUND_AND_OUTDOOR_BLUEPRINT` / `UPPER_FLOOR_BLUEPRINT`) and personal room assumptions across `floorplan_parser.py` and backend managers; floor plans now synthesize dynamically from Home Assistant areas and walkthrough features.
+- **Admin & Storage Isolation**: Enforced admin-gated services/WebSocket commands, authenticated HTTP views with streaming upload size caps, `.storage`-isolated configuration/media, and non-blocking executor I/O everywhere.
+
+#### 2. 📐 Interactive 2D/3D Floor Plan Editor & Walkthrough Reconstruction
+- **Dense Keyframe Sampling & From-Scratch Regeneration**: Added full-video keyframe sampling (`max_frames=24`), background `reset_layout` / `reanalyze_walkthrough` execution, SVG cache-busting on Recalculate/Regenerate, and a live auto-resuming regeneration progress bar when opening or returning to the Floor Plan tab.
+- **Editable Labels & Center-Outward Default Pins**: Added `Room Label` and `Sub-Labels` editing in the Room Inspector alongside center-outward default entity pin placement.
+- **Independent Top-Layer Architectural Features**: Promoted `Stairs`, `Pool`, `Front Porch`, and custom **🪜 + Stairs** / **⬜ + Box** additions into a top-level `.room-features-overlay` layer with full drag, save, and double-click delete support across room boundaries.
+- **Automatic Spatial Adjacency Synchronization**: Wired `SpatialManager.async_reevaluate_from_floorplan()` into all floor plan mutation services so the Capabilities Spatial Adjacency Graph stays synchronized with layout changes.
+
+#### 3. 🧩 Frontend ES Module Architecture, Translations & Options Wiring
+- **Modular ES Card Split**: Split the 17,190-line `otis-companion-card.js` into native ES modules under `frontend/` (`card-styles.js`, `floorplan-3d.js`, `card-modals.js`, `card-tabs.js`, and `otis-companion-card.js`) with `?v=0.4.0` cache-busting imports and QuickJS syntax validation across all modules.
+- **10-Language UI Translations**: Synced `strings.json` (`local_max_tokens`, `gemini_api_key`) and added complete translations for `en`, `de`, `es`, `fr`, `it`, `nl`, `pl`, `zh`, `zh-Hans`, and `zh-Hant`.
+- **Live Options Reload**: Wired `CONF_AUDIO_FOLLOW_ENABLED` and `CONF_LOCAL_MAX_TOKENS` into `_async_update_listener` for immediate runtime updates without restarting Home Assistant.
+- **Media Tab Layout Restoration**: Restored the `🔊 Speaker Zone & Matrix Source Routing` header and `🔗 Link Additional Rooms` chip grid inside `card-tabs.js`.
+
+#### 4. 🧠 Co-Pilot Engine, Presence Fusion & Command Center Studios
+- **Modular Co-Pilot Engine (`copilot_engine.py`)**: Extracted room-scoped entity grounding, sun-elevation/condition parsing, strict confirmation gates, learned-fact capture, and a `👁️ Review` code modal for proactive suggestions.
+- **Presence Fusion & Vision Precision**: Added 90-second PIR/camera recency holds, outdoor false-positive suppression, sensorless spatial room inference, and ambiguous room transition review cards.
+- **Studios & Feed Ergonomics**: Added dynamic `Climate & Pool` water-chemistry grouping, `Media Studio` output-zone vs. input-source discovery with default return routing, and separate `hidden_recommendation_ids` vs. `Ignored` persistence.
+
+#### 5. 🧹 Code Quality, Performance & Static Analysis
+- **Zero Static Analysis Warnings**: Resolved all 89 `ruff` lint, closure-binding, and deprecation findings (`B023`, `B007`, `B905`, `UP015`, `UP017`, `UP041`).
 
 ## [0.3.0] - 2026-11-08
 
