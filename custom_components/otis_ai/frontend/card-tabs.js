@@ -1405,9 +1405,14 @@ export const tabsMixin = {
               <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
                 <span style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">🔊 Speaker Zone &amp; Matrix Source Routing</span>
                 <div style="display: flex; align-items: center; gap: 6px;">
-                  <button type="button" class="btn-toolbar" id="btn-toggle-media-mappings" title="Configure matrix input-to-player mappings" style="padding: 3px 8px; font-size: 0.7rem; ${this._showMediaMappingsEditor ? "background: rgba(14,165,233,0.22); border-color: rgba(56,189,248,0.5); color: var(--otis-primary);" : ""}">
-                    ${this._showMediaMappingsEditor ? "✕ Close Mappings" : "⚙️ Input Mappings"}
-                  </button>
+                  ${isAdmin && this._config.mode !== "media_studio"
+        ? `
+                    <button type="button" class="btn-toolbar" id="btn-toggle-media-mappings" title="Configure matrix input-to-player mappings" style="padding: 3px 8px; font-size: 0.7rem; ${this._showMediaMappingsEditor ? "background: rgba(14,165,233,0.22); border-color: rgba(56,189,248,0.5); color: var(--otis-primary);" : ""}">
+                      ${this._showMediaMappingsEditor ? "✕ Close Mappings" : "⚙️ Input Mappings"}
+                    </button>
+                  `
+        : ""
+      }
                   <button type="button" class="btn-toolbar" id="btn-media-set-default-zone" data-zone-id="${this._escapeHtml(selectedZone.entity_id)}" title="Save this room as your personal default zone" style="padding: 3px 8px; font-size: 0.7rem; ${isDefaultZone ? "background: rgba(16,185,129,0.2); border-color: rgba(16,185,129,0.45); color: #34d399;" : ""}">
                     ${isDefaultZone ? "✓ My Default Zone" : "📌 Set as My Default"}
                   </button>
