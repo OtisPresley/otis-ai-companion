@@ -1474,10 +1474,11 @@ class DashboardManager:
             )
             for aid, ainfo in sorted_areas:
                 room_entities = list(entities_by_area.get(aid, []))
-                if not room_entities and ainfo.get("entities"):
-                    for eid in ainfo["entities"]:
-                        if eid in entities_by_id:
-                            room_entities.append(entities_by_id[eid])
+                seen_room_eids = {e.get("entity_id") for e in room_entities if e.get("entity_id")}
+                for eid in ainfo.get("entities") or []:
+                    if eid in entities_by_id and eid not in seen_room_eids:
+                        room_entities.append(entities_by_id[eid])
+                        seen_room_eids.add(eid)
 
                 room_view = self._build_room_subview(
                     aid,
@@ -2669,12 +2670,12 @@ class DashboardManager:
 
         # 1. Lighting & Semantic Switch Classification
         CAMERA_CONFIG_KEYWORDS = (
-            "detect", "motion", "recording", "snapshot", "audio_detection", "infrared",
+            "detect", "recordings", "snapshots", "audio_detection", "infrared",
             "siren", "email_on_event", "ftp_upload", "push_notification", "review_alert",
             "auto_track", "night_vision", "record_audio", "ptz", "hdr", "doorbell_ring",
-            "pir_", "smart_detection", "record", "push", "email", "ftp", "review",
-            "snapshots", "recordings",
+            "pir_", "smart_detection", "recording", "snapshot",
         )
+        AMBIGUOUS_CAM_KEYWORDS = ("motion", "record", "push", "email", "ftp", "review")
         NETWORK_INFRA_KEYWORDS = (
             "snmp", "switch-", "switch_", "port_", "poe_", "nat_", "filter_rule",
             "service_", "firewall", "router", "gateway", "vlan", "poe", "ethernet",
@@ -2689,7 +2690,7 @@ class DashboardManager:
             "heat_mode", "standby_mode", "hold_mode", "spa_temp", "pool_temp",
             "temperature_range", "spaclient",
         )
-        LED_KEYWORDS = ("_led", "ap_", "indicator", "keypad_light", "status_led")
+        LED_KEYWORDS = ("_led", "_ap_", "indicator", "keypad_light", "status_led")
         FAN_SWITCH_KEYWORDS = ("_fan", "fan_", " fan", "fan ", "exhaust", "vent", "ventilat", "blower_fan")
         LIGHT_SWITCH_KEYWORDS = (
             "_light", "light_", " light", "light ", "lamp", "flood", "sconce",
@@ -2711,8 +2712,16 @@ class DashboardManager:
                 continue
             eid = e.get("entity_id", "").lower()
             name = str(e.get("name") or "").lower()
-            if any(k in eid for k in ("_led", "ap_", "status_led", "indicator", "keypad_light", "button_light")) or any(k in name for k in ("led", "indicator")):
-                if any(x in eid for x in ("ap_", "poolio", "indicator", "status_led", "keypad")) or any(x in name for x in ("ap ", "poolio", "indicator")):
+            if (
+                any(k in eid for k in ("_led", "_ap_", "status_led", "indicator", "keypad_light", "button_light"))
+                or eid.startswith("light.ap_")
+                or any(k in name for k in ("led", "indicator"))
+            ):
+                if (
+                    eid.startswith("light.ap_")
+                    or any(x in eid for x in ("_ap_", "poolio", "indicator", "status_led", "keypad"))
+                    or any(x in name for x in ("ap ", "poolio", "indicator"))
+                ):
                     continue
             if "fan speed" in name or (name == "fan" and "light" not in name):
                 continue
@@ -2737,11 +2746,17 @@ class DashboardManager:
                 pool_switches.append(e["entity_id"])
                 continue
 
-            if any(k in combined for k in CAMERA_CONFIG_KEYWORDS):
+            cam_platforms = ("reolink", "frigate", "unifiprotect", "amcrest", "hikvision", "dahua", "ring", "blink", "arlo", "eufy_security", "wyze", "onvif")
+            is_camera_dev = str(e.get("platform") or "").lower() in cam_platforms or any(
+                c in combined for c in ("camera", "doorbell", "nvr", "ptz", "rtsp")
+            )
+            if any(k in combined for k in CAMERA_CONFIG_KEYWORDS) or (
+                is_camera_dev and any(k in combined for k in AMBIGUOUS_CAM_KEYWORDS)
+            ):
                 continue
             if any(k in combined for k in NETWORK_INFRA_KEYWORDS):
                 continue
-            if any(k in combined for k in LED_KEYWORDS):
+            if eid.startswith("switch.ap_") or any(k in combined for k in LED_KEYWORDS):
                 continue
 
             # Semantically classify fan/exhaust/ventilation switches
@@ -2819,7 +2834,7 @@ class DashboardManager:
             if not primary_player and media_players:
                 primary_player = media_players[0]
 
-            secondary_players = [m for m in media_players if m != primary_player][:4]
+            secondary_players = [m for m in media_players if m != primary_player][:8]
 
             # Primary prominent player card
             room_cards.append({
@@ -2905,7 +2920,7 @@ class DashboardManager:
                 "type": "entities",
                 "title": "Environmental Telemetry",
                 "state_color": True,
-                "entities": climate_sensors[:8],
+                "entities": climate_sensors[:12],
             })
 
         # 5. Access & Covers
@@ -2931,6 +2946,49 @@ class DashboardManager:
                 "columns": min(2, len(access_tiles)),
                 "square": False,
                 "cards": access_tiles,
+            })
+
+        # 5b. Appliances, Valves, Remotes & Room Controls
+        appliance_domains = ("vacuum", "lawn_mower", "water_heater", "valve", "siren", "remote")
+        appliances = [
+            e["entity_id"]
+            for e in active_entities
+            if e.get("domain") in appliance_domains
+            and e.get("entity_category") not in ("config", "diagnostic")
+        ]
+        if appliances:
+            app_tiles: list[dict[str, Any]] = []
+            for a_eid in appliances[:16]:
+                tile: dict[str, Any] = {"type": "tile", "entity": a_eid}
+                if a_eid.startswith("vacuum."):
+                    tile["features"] = [{"type": "vacuum-commands", "commands": ["start_pause", "return_home"]}]
+                elif a_eid.startswith("lawn_mower."):
+                    tile["features"] = [{"type": "lawn-mower-commands", "commands": ["start_pause", "dock"]}]
+                elif a_eid.startswith("valve."):
+                    tile["features"] = [{"type": "valve-open-close"}]
+                app_tiles.append(tile)
+            room_cards.append({
+                "type": "grid",
+                "title": "Appliances & Controls",
+                "columns": min(2, len(app_tiles)),
+                "square": False,
+                "cards": app_tiles,
+            })
+
+        preset_controls = [
+            e["entity_id"]
+            for e in active_entities
+            if e.get("domain") in ("scene", "script", "input_boolean")
+            and e.get("entity_category") not in ("config", "diagnostic")
+            and not any(k in e.get("entity_id", "").lower() for k in NETWORK_INFRA_KEYWORDS)
+        ]
+        if preset_controls:
+            room_cards.append({
+                "type": "grid",
+                "title": "Scenes & Room Presets",
+                "columns": min(2, len(preset_controls[:12])),
+                "square": False,
+                "cards": [{"type": "tile", "entity": eid} for eid in preset_controls[:12]],
             })
 
         # 6. Cameras (Filter out vacuum cleaning maps and deduplicate multi-stream RTSP cameras)
@@ -2989,7 +3047,7 @@ class DashboardManager:
             room_cards.append({
                 "type": "grid",
                 "title": "Cameras",
-                "columns": min(2, len(deduped_cameras[:4])),
+                "columns": min(2, len(deduped_cameras[:6])),
                 "square": False,
                 "cards": [
                     {
@@ -3001,7 +3059,7 @@ class DashboardManager:
                             "grid_rows": "auto",
                         },
                     }
-                    for c_eid in deduped_cameras[:4]
+                    for c_eid in deduped_cameras[:6]
                 ],
             })
 
@@ -3047,7 +3105,7 @@ class DashboardManager:
                 "type": "entities",
                 "title": "Occupancy & Sensors",
                 "state_color": True,
-                "entities": sec_sensors[:8],
+                "entities": sec_sensors[:12],
             })
 
         room_icon = self._get_room_icon(area_name, area_id)
@@ -3902,10 +3960,11 @@ class DashboardManager:
             )
             for aid, ainfo in sorted_areas:
                 room_entities = list(entities_by_area.get(aid, []))
-                if not room_entities and ainfo.get("entities"):
-                    for eid in ainfo["entities"]:
-                        if eid in entities_by_id:
-                            room_entities.append(entities_by_id[eid])
+                seen_room_eids = {e.get("entity_id") for e in room_entities if e.get("entity_id")}
+                for eid in ainfo.get("entities") or []:
+                    if eid in entities_by_id and eid not in seen_room_eids:
+                        room_entities.append(entities_by_id[eid])
+                        seen_room_eids.add(eid)
 
                 room_view = self._build_room_subview(
                     aid,

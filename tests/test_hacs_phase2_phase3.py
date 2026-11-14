@@ -401,3 +401,35 @@ def test_log_monitor_copilot_summary():
     assert "KeyError" in summary or "Failed updating sensor" in summary
     assert "homeassistant.components.automation" in summary
     assert "Template rendered invalid value" in summary
+
+
+def test_room_subview_includes_all_control_domains():
+    """Verify _build_room_subview includes appliances, valves, remotes, presets, and avoids false keyword drops."""
+    from custom_components.otis_ai.dashboard_manager import DashboardManager
+
+    hass = MagicMock()
+    dm = DashboardManager(hass)
+    room_entities = [
+        {"entity_id": "light.map_room", "domain": "light", "name": "Map Room", "state": "off"},
+        {"entity_id": "switch.record_player", "domain": "switch", "name": "Record Player", "state": "off", "platform": "tplink"},
+        {"entity_id": "vacuum.roborock", "domain": "vacuum", "name": "Roborock", "state": "docked"},
+        {"entity_id": "valve.main_water", "domain": "valve", "name": "Main Water Valve", "state": "open"},
+        {"entity_id": "water_heater.garage_tank", "domain": "water_heater", "name": "Water Heater", "state": "eco"},
+        {"entity_id": "remote.theater_apple_tv", "domain": "remote", "name": "Apple TV Remote", "state": "on"},
+        {"entity_id": "scene.movie_lights", "domain": "scene", "name": "Movie Lights", "state": "scening"},
+        {"entity_id": "input_boolean.room_guest_mode", "domain": "input_boolean", "name": "Room Override", "state": "off"},
+    ]
+    view = dm._build_room_subview("study", {"name": "Study"}, room_entities, layout_style="classic_grid")
+    assert view is not None
+    serialized = str(view)
+    for expected in (
+        "light.map_room",
+        "switch.record_player",
+        "vacuum.roborock",
+        "valve.main_water",
+        "water_heater.garage_tank",
+        "remote.theater_apple_tv",
+        "scene.movie_lights",
+        "input_boolean.room_guest_mode",
+    ):
+        assert expected in serialized, f"Missing {expected} in room subview"
