@@ -1348,6 +1348,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         presence_fusion_manager=presence_fusion_manager,
         agent_orchestrator=agent_orchestrator,
         copilot_engine=copilot_engine,
+        log_monitor=log_monitor,
     )
 
     if hasattr(conversation, "async_register_agent"):
@@ -3876,6 +3877,7 @@ class OtisAIConversationAgent(AbstractAgent):
         presence_fusion_manager: PresenceFusionManager | None = None,
         agent_orchestrator: MultiAgentOrchestrator | None = None,
         copilot_engine: CopilotEngine | None = None,
+        log_monitor: LogMonitor | None = None,
     ) -> None:
         """Initialize the agent."""
         self.hass = hass
@@ -3898,6 +3900,7 @@ class OtisAIConversationAgent(AbstractAgent):
         self.presence_fusion_manager = presence_fusion_manager
         self.agent_orchestrator = agent_orchestrator
         self.copilot_engine = copilot_engine or getattr(hass.data.get(DOMAIN, {}), "get", lambda k: None)("copilot_engine") or CopilotEngine(hass)
+        self.log_monitor = log_monitor or getattr(hass.data.get(DOMAIN, {}), "get", lambda k: None)("log_monitor") or LogMonitor(hass)
         self.dashboard_manager = dashboard_manager or getattr(hass.data.get(DOMAIN, {}), "get", lambda k: None)("dashboard_manager") or DashboardManager(hass)
         self.floorplan_parser = floorplan_parser or getattr(hass.data.get(DOMAIN, {}), "get", lambda k: None)("floorplan_parser") or FloorplanParser(hass)
 
@@ -5716,7 +5719,8 @@ class OtisAIConversationAgent(AbstractAgent):
             and any(p in user_lower for p in _log_target_phrases)
             and any(a in user_lower for a in _log_action_phrases)
         )
-        if is_ha_log_query and getattr(self, "log_monitor", None):
+        if is_ha_log_query:
+            lm = getattr(self, "log_monitor", None) or LogMonitor(self.hass)
             user_id = getattr(getattr(user_input, "context", None), "user_id", None)
             if user_id and hasattr(self.hass, "auth"):
                 ha_user = await self.hass.auth.async_get_user(user_id)
@@ -5726,52 +5730,11 @@ class OtisAIConversationAgent(AbstractAgent):
                         "Admin permission required for system logs",
                     )
             fire_progress("domain", "Live System Log Audit", "Inspecting Home Assistant system_log records and classifying issues")
-            speech = await self.log_monitor.async_summarize_logs_for_copilot()
+            speech = await lm.async_summarize_logs_for_copilot()
             return _finalize_fast_path(
                 speech,
                 f"Live Home Assistant system_log audit completed by {active_agent_display}",
             )
-
-        # B0b. Home Assistant System Log Audit (e.g. "Look at my current HA logs and let me know what items need to be addressed")
-        _log_target_phrases = (
-            "ha log", "ha logs", "home assistant log", "home assistant logs",
-            "system log", "system logs", "current log", "current logs",
-            "error log", "error logs", "recent log", "recent logs",
-        )
-        _log_action_phrases = (
-            "look at", "check", "analyze", "analyse", "audit", "review",
-            "inspect", "read", "show", "what", "any issue", "any error",
-            "need to be addressed", "need to be fixed", "errors", "warnings", "summarize",
-        )
-        is_ha_log_query = (
-            not is_create_auto_intent
-            and any(p in user_lower for p in _log_target_phrases)
-            and any(a in user_lower for a in _log_action_phrases)
-        )
-        if is_ha_log_query and getattr(self, "log_monitor", None):
-            user_id = getattr(getattr(user_input, "context", None), "user_id", None)
-            if user_id and hasattr(self.hass, "auth"):
-                ha_user = await self.hass.auth.async_get_user(user_id)
-                if ha_user is not None and not getattr(ha_user, "is_admin", False):
-                    speech = "🔒 Home Assistant system logs are restricted to administrator accounts."
-                    session_data["last_resolved_agent"] = active_agent_display
-                    session_data["last_resolved_agent_id"] = active_agent_id
-                    session_data["last_failover_occurred"] = False
-                    fire_progress("agent_resolution", f"Resolved by {active_agent_display}", "Admin permission required for system logs")
-                    self._record_turn(session_data, user_input.text, speech)
-                    return self._create_response(user_input, speech)
-            fire_progress("domain", "Live System Log Audit", "Inspecting Home Assistant system_log records and classifying issues")
-            speech = await self.log_monitor.async_summarize_logs_for_copilot()
-            session_data["last_resolved_agent"] = active_agent_display
-            session_data["last_resolved_agent_id"] = active_agent_id
-            session_data["last_failover_occurred"] = False
-            fire_progress(
-                "agent_resolution",
-                f"Resolved by {active_agent_display}",
-                f"Live Home Assistant system_log audit completed by {active_agent_display}",
-            )
-            self._record_turn(session_data, user_input.text, speech)
-            return self._create_response(user_input, speech)
 
         # B1. Step-by-Step Guidance Queries (e.g. "How do I Vision False-Positive Filter Calibrated (Great Room)? Give me step-by-step guidance.")
         is_guidance_query = (

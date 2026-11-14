@@ -440,3 +440,41 @@ def test_room_subview_includes_all_control_domains():
         "custom_actuator.shade_tilt",
     ):
         assert expected in serialized, f"Missing {expected} in room subview"
+
+
+def test_conversation_agent_ha_log_audit_fast_path():
+    """Verify OtisAIConversationAgent intercepts HA log analysis queries without falling through to LLM."""
+    from types import SimpleNamespace
+    from custom_components.otis_ai import OtisAIConversationAgent
+    from custom_components.otis_ai.log_monitor import LogMonitor
+
+    hass = MagicMock()
+    hass.data = {"otis_ai": {}}
+    hass.config.version = "2026.11"
+    hass.config.as_dict = MagicMock(return_value={"architecture": "x86_64"})
+    hass.states.async_all = MagicMock(return_value=[])
+    hass.services.async_call = AsyncMock()
+    hass.bus.async_fire = MagicMock()
+
+    entry = MagicMock()
+    entry.entry_id = "test_entry"
+    entry.options = {}
+    entry.data = {}
+
+    engine = MagicMock()
+    engine.async_build_capability_map = AsyncMock(return_value={"areas": {}, "entities": [], "proactive_suggestions": []})
+    auto_mgr = MagicMock()
+    lm = LogMonitor(hass)
+    lm.async_load = AsyncMock()
+    lm.get_system_log_records = MagicMock(return_value=[])
+
+    agent = OtisAIConversationAgent(hass, entry, engine, auto_mgr, log_monitor=lm)
+    agent._create_response = MagicMock(side_effect=lambda ui, sp: sp)
+    user_input = SimpleNamespace(
+        text="Analyze my home assistant logs for any issues that need to be fixed.",
+        conversation_id="conv_log_test",
+        context=SimpleNamespace(user_id=None),
+        language="en",
+    )
+    speech = asyncio.run(agent.async_process(user_input))
+    assert "Home Assistant System Log Audit" in speech
