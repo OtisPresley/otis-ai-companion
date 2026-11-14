@@ -408,6 +408,11 @@ def test_room_subview_includes_all_control_domains():
     from custom_components.otis_ai.dashboard_manager import DashboardManager
 
     hass = MagicMock()
+    hass.services.async_services = MagicMock(return_value={
+        "light": {"turn_on": {}},
+        "custom_actuator": {"activate": {}},
+        "sensor": {},
+    })
     dm = DashboardManager(hass)
     room_entities = [
         {"entity_id": "light.map_room", "domain": "light", "name": "Map Room", "state": "off"},
@@ -418,6 +423,7 @@ def test_room_subview_includes_all_control_domains():
         {"entity_id": "remote.theater_apple_tv", "domain": "remote", "name": "Apple TV Remote", "state": "on"},
         {"entity_id": "scene.movie_lights", "domain": "scene", "name": "Movie Lights", "state": "scening"},
         {"entity_id": "input_boolean.room_guest_mode", "domain": "input_boolean", "name": "Room Override", "state": "off"},
+        {"entity_id": "custom_actuator.shade_tilt", "domain": "custom_actuator", "name": "Shade Tilt", "state": "idle"},
     ]
     view = dm._build_room_subview("study", {"name": "Study"}, room_entities, layout_style="classic_grid")
     assert view is not None
@@ -431,5 +437,6 @@ def test_room_subview_includes_all_control_domains():
         "remote.theater_apple_tv",
         "scene.movie_lights",
         "input_boolean.room_guest_mode",
+        "custom_actuator.shade_tilt",
     ):
         assert expected in serialized, f"Missing {expected} in room subview"

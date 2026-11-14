@@ -2621,6 +2621,39 @@ class DashboardManager:
             }
         ]
 
+    _NON_ROOM_SERVICE_DOMAINS = frozenset({
+        "homeassistant", "system_log", "persistent_notification", "recorder",
+        "logger", "frontend", "lovelace", "tts", "stt", "conversation",
+        "assist_pipeline", "notify", "zone", "person", "sun", "update",
+        "automation", "backup", "cloud", "hassio", "repairs", "counter",
+        "timer", "schedule", "otis_ai", "sensor", "binary_sensor", "device_tracker",
+        "weather", "calendar", "image", "event", "tag", "todo",
+    })
+
+    def _get_controllable_domains(self) -> set[str]:
+        """Discover controllable domains dynamically from Home Assistant's live service registry."""
+        discovered: set[str] = set()
+        services_obj = getattr(getattr(self, "hass", None), "services", None)
+        if services_obj and hasattr(services_obj, "async_services"):
+            try:
+                svc_map = services_obj.async_services()
+                if isinstance(svc_map, dict):
+                    discovered.update(
+                        d for d, svcs in svc_map.items()
+                        if d not in self._NON_ROOM_SERVICE_DOMAINS and svcs
+                    )
+            except Exception:
+                pass
+        try:
+            from homeassistant.const import Platform
+            for plat in Platform:
+                val = str(getattr(plat, "value", plat))
+                if val not in self._NON_ROOM_SERVICE_DOMAINS:
+                    discovered.add(val)
+        except Exception:
+            pass
+        return discovered
+
     def _build_room_subview(
         self,
         area_id: str,
@@ -2989,6 +3022,30 @@ class DashboardManager:
                 "columns": min(2, len(preset_controls[:12])),
                 "square": False,
                 "cards": [{"type": "tile", "entity": eid} for eid in preset_controls[:12]],
+            })
+
+        # 5c. Dynamic Catch-All for any other HA controllable domains (via hass.services.async_services)
+        handled_domains = {
+            "light", "switch", "media_player", "climate", "fan", "humidifier",
+            "lock", "cover", "camera", "sensor", "binary_sensor",
+            *appliance_domains, "scene", "script", "input_boolean",
+        }
+        dynamic_domains = self._get_controllable_domains() - handled_domains
+        extra_controls = [
+            e["entity_id"]
+            for e in active_entities
+            if e.get("domain") in dynamic_domains
+            and e.get("entity_category") not in ("config", "diagnostic")
+            and not any(k in e.get("entity_id", "").lower() for k in NETWORK_INFRA_KEYWORDS)
+            and not any(k in e.get("entity_id", "").lower() for k in LED_KEYWORDS)
+        ]
+        if extra_controls:
+            room_cards.append({
+                "type": "grid",
+                "title": "Additional Controls",
+                "columns": min(2, len(extra_controls[:12])),
+                "square": False,
+                "cards": [{"type": "tile", "entity": eid} for eid in extra_controls[:12]],
             })
 
         # 6. Cameras (Filter out vacuum cleaning maps and deduplicate multi-stream RTSP cameras)
