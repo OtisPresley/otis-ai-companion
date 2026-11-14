@@ -1402,6 +1402,12 @@ export const tabsMixin = {
           <div style="display: flex; flex-direction: column; gap: 14px;">
             <!-- Speaker Zone & Input Source Routing Card -->
             <div style="background: var(--otis-surface); border: 1px solid var(--otis-surface-border); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap;">
+                <span style="font-size: 0.82rem; font-weight: 700; color: var(--otis-primary);">🔊 Speaker Zone &amp; Matrix Source Routing</span>
+                <div style="display: flex; align-items: center; gap: 6px;">
+                  <button type="button" class="btn-toolbar" id="btn-toggle-media-mappings" title="Configure matrix input-to-player mappings" style="padding: 3px 8px; font-size: 0.7rem; ${this._showMediaMappingsEditor ? "background: rgba(14,165,233,0.22); border-color: rgba(56,189,248,0.5); color: var(--otis-primary);" : ""}">
+                    ${this._showMediaMappingsEditor ? "✕ Close Mappings" : "⚙️ Input Mappings"}
+                  </button>
                   <button type="button" class="btn-toolbar" id="btn-media-set-default-zone" data-zone-id="${this._escapeHtml(selectedZone.entity_id)}" title="Save this room as your personal default zone" style="padding: 3px 8px; font-size: 0.7rem; ${isDefaultZone ? "background: rgba(16,185,129,0.2); border-color: rgba(16,185,129,0.45); color: #34d399;" : ""}">
                     ${isDefaultZone ? "✓ My Default Zone" : "📌 Set as My Default"}
                   </button>
@@ -1488,96 +1494,32 @@ export const tabsMixin = {
               <div style="display: flex; flex-direction: column; gap: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.06);">
                 <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px;">
                   <span style="font-size: 0.75rem; font-weight: 700; color: var(--otis-text-muted);">
-                  <button type="button" class="btn-toolbar" id="btn-media-set-default-zone" data-zone-id="${this._escapeHtml(selectedZone.entity_id)}" title="Save this room as your personal default zone" style="padding: 3px 8px; font-size: 0.7rem; ${isDefaultZone ? "background: rgba(16,185,129,0.2); border-color: rgba(16,185,129,0.45); color: #34d399;" : ""}">
-                    ${isDefaultZone ? "✓ My Default Zone" : "📌 Set as My Default"}
-                  </button>
-                  <button type="button" class="btn-toolbar" id="btn-media-zone-power" data-zone-id="${this._escapeHtml(selectedZone.entity_id)}" data-is-on="${isZoneOn ? "true" : "false"}" style="padding: 3px 9px; font-size: 0.72rem; ${isZoneOn ? "background: rgba(16,185,129,0.22); border-color: rgba(16,185,129,0.5); color: #34d399;" : "background: rgba(239,68,68,0.15); border-color: rgba(239,68,68,0.35); color: #f87171;"}">
-                    ⏻ ${isZoneOn ? "Zone ON" : "Zone OFF"}
-                  </button>
+                    🔗 Link Additional Rooms to "${this._escapeHtml(activeInput || "Input")}":
+                  </span>
+                  <div style="display: flex; gap: 6px;">
+                    <button type="button" class="btn-toolbar" id="btn-media-link-all" data-input="${this._escapeHtml(activeInput)}" style="padding: 2px 8px; font-size: 0.68rem;">
+                      + Link All
+                    </button>
+                    <button type="button" class="btn-toolbar" id="btn-media-unlink-others" style="padding: 2px 8px; font-size: 0.68rem;">
+                      ✕ Unlink Others
+                    </button>
+                  </div>
                 </div>
-              </div>
-
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                <div style="display: flex; flex-direction: column; gap: 4px;">
-                  <label style="font-size: 0.72rem; color: var(--otis-text-muted); font-weight: 600;">Target Speaker Zone:</label>
-                  <select id="media-studio-zone-select" style="width: 100%; padding: 8px 10px; border-radius: 8px; background: rgba(0,0,0,0.3); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.8rem; font-weight: 600;">
-                    ${zones
+                <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+                  ${zones
+        .filter((z) => z.entity_id !== selectedZone.entity_id)
         .map((z) => {
-          const zOn = z.state !== "off" && z.state !== "unavailable" && String(z.source || "").toLowerCase() !== unjoinInput.toLowerCase();
+          const linked = isZoneLinked(z);
           return `
-                          <option value="${this._escapeHtml(z.entity_id)}" ${z.entity_id === selectedZone.entity_id ? "selected" : ""}>
-                            ${this._getRoomEmoji(z.name)} ${this._escapeHtml(z.name)} ${zOn && z.source ? `(${this._escapeHtml(z.source)})` : "(Off)"}
-                          </option>
-                        `;
+                        <button type="button" class="subview-chip btn-media-link-zone ${linked ? "active" : ""}" data-zone-id="${this._escapeHtml(z.entity_id)}" data-linked="${linked ? "true" : "false"}" data-input="${this._escapeHtml(activeInput)}" style="padding: 5px 10px; font-size: 0.74rem; border-radius: 8px; ${linked ? "background: rgba(16, 185, 129, 0.22); border-color: #10b981; color: #34d399; font-weight: 700;" : ""}">
+                          ${linked ? "✓ " : "+ "}${this._getRoomEmoji(z.name)} ${this._escapeHtml(z.name)}
+                        </button>
+                      `;
         })
         .join("")}
-                  </select>
-                </div>
-
-                <div style="display: flex; flex-direction: column; gap: 4px;">
-                  <label style="font-size: 0.72rem; color: var(--otis-text-muted); font-weight: 600;">Matrix Input Source:</label>
-                  <select id="media-studio-input-select" data-zone-id="${this._escapeHtml(selectedZone.entity_id)}" style="width: 100%; padding: 8px 10px; border-radius: 8px; background: rgba(0,0,0,0.3); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.8rem; font-weight: 600;">
-                    ${allInputs
-        .map((inp) => {
-          const mpId = effectiveMappings[inp];
-          const mpName = mpId
-            ? this._hass?.states?.[mpId]?.attributes?.friendly_name ||
-            candidatePlayers.find((c) => c.entity_id === mpId)?.name ||
-            mpId
-            : "";
-          return `
-                          <option value="${this._escapeHtml(inp)}" ${inp === activeInput ? "selected" : ""}>
-                            🔌 ${this._escapeHtml(inp)}${mpName ? ` ➔ ${this._escapeHtml(mpName)}` : ""}
-                          </option>
-                        `;
-        })
-        .join("")}
-                  </select>
                 </div>
               </div>
-
-              <!-- Default / Return Input (used when unjoined or input playback stops) -->
-              <div style="display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.06);">
-                <div style="display: flex; flex-direction: column; gap: 1px;">
-                  <span style="font-size: 0.74rem; font-weight: 600; color: var(--otis-text-muted);">
-                    ↩️ Default / Return Input
-                  </span>
-                  <span style="font-size: 0.66rem; color: var(--otis-text-muted); opacity: 0.85;">
-                    Zones automatically return here when unjoined or when input playback stops.
-                  </span>
-                </div>
-                ${isAdmin
-        ? `
-                  <select id="media-studio-default-return-input" style="min-width: 150px; padding: 6px 10px; border-radius: 8px; background: rgba(0,0,0,0.3); color: var(--otis-text); border: 1px solid var(--otis-surface-border); font-size: 0.78rem; font-weight: 600;">
-                    <option value="None" ${unjoinInput.toLowerCase() === "none" ? "selected" : ""}>None (Off / Mute)</option>
-                    ${allInputs
-          .filter((inp) => inp.toLowerCase() !== "none")
-          .map(
-            (inp) => `
-                      <option value="${this._escapeHtml(inp)}" ${inp.toLowerCase() === unjoinInput.toLowerCase() ? "selected" : ""}>
-                        🔌 ${this._escapeHtml(inp)}
-                      </option>
-                    `
-          )
-          .join("")}
-                  </select>
-                `
-        : `
-                  <span style="font-size: 0.74rem; font-weight: 600; padding: 4px 10px; border-radius: 8px; background: rgba(0,0,0,0.24); border: 1px solid var(--otis-surface-border); color: var(--otis-text);">
-                    🔌 ${this._escapeHtml(unjoinInput)}
-                  </span>
-                `
-      }
-              </div>
-
-              <!-- Multi-Room Linked Zones Grid -->
-              <div style="display: flex; flex-direction: column; gap: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.06);">
-                <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px;">
-                  <span style="font-size: 0.75rem; font-weight: 700; color: var(--otis-text-muted);">
-                    🔗 Link Additional Rooms
-                  </span>
-                </div>
-              </div>
+            </div>
             ${isAdmin
         ? `
               <div style="background: var(--otis-surface); border: 1px solid var(--otis-primary); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
