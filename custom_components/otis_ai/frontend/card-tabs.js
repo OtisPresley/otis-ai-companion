@@ -1520,7 +1520,7 @@ export const tabsMixin = {
                 </div>
               </div>
             </div>
-            ${isAdmin
+            ${isAdmin && this._showMediaMappingsEditor
         ? `
               <div style="background: var(--otis-surface); border: 1px solid var(--otis-primary); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.3);">
                 <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;">
