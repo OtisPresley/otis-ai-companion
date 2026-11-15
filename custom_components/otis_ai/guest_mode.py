@@ -149,8 +149,20 @@ class GuestModeManager:
                 matched.append(eid)
         return matched
 
+    def _get_lock_platform(self, lock_eid: str) -> str | None:
+        """Return the integration platform for a lock entity from entity_registry."""
+        try:
+            ent_reg = er.async_get(self.hass)
+            entry = ent_reg.async_get(lock_eid)
+            plat = getattr(entry, "platform", None) if entry else None
+            if isinstance(plat, str) and plat.strip():
+                return plat.strip().lower()
+        except Exception:
+            pass
+        return None
+
     async def _async_program_lock_codes(self, guest_code: str) -> list[str]:
-        """Dynamically discover lock usercode services and program temporary guest code."""
+        """Dynamically discover lock usercode services by platform and program temporary guest code."""
         if not guest_code or not hasattr(self.hass, "services") or not hasattr(self.hass, "states"):
             return []
         services = self.hass.services.async_services()
@@ -164,8 +176,22 @@ class GuestModeManager:
 
         programmed: list[str] = []
         for lock_eid in locks:
+            platform = self._get_lock_platform(lock_eid)
             try:
-                if "set_lock_usercode" in services.get("zwave_js", {}):
+                if (platform == "schlage" or (platform is None and "add_code" in services.get("schlage", {}))) and "add_code" in services.get("schlage", {}):
+                    await self.hass.services.async_call(
+                        "schlage",
+                        "add_code",
+                        {
+                            "name": DEFAULT_GUEST_CODE_NAME,
+                            "code": guest_code,
+                            "notify_on_use": True,
+                        },
+                        target={"entity_id": lock_eid},
+                        blocking=False,
+                    )
+                    programmed.append(lock_eid)
+                elif (platform == "zwave_js" or (platform is None and "set_lock_usercode" in services.get("zwave_js", {}))) and "set_lock_usercode" in services.get("zwave_js", {}):
                     await self.hass.services.async_call(
                         "zwave_js",
                         "set_lock_usercode",
@@ -173,18 +199,6 @@ class GuestModeManager:
                             "entity_id": lock_eid,
                             "code_slot": DEFAULT_GUEST_LOCK_SLOT,
                             "usercode": guest_code,
-                        },
-                        blocking=False,
-                    )
-                    programmed.append(lock_eid)
-                elif "add_code" in services.get("schlage", {}):
-                    await self.hass.services.async_call(
-                        "schlage",
-                        "add_code",
-                        {
-                            "entity_id": lock_eid,
-                            "name": DEFAULT_GUEST_CODE_NAME,
-                            "code": guest_code,
                         },
                         blocking=False,
                     )
@@ -202,30 +216,32 @@ class GuestModeManager:
                     )
                     programmed.append(lock_eid)
             except Exception as err:
-                _LOGGER.debug("Failed programming guest code on %s: %s", lock_eid, err)
+                _LOGGER.debug("Failed programming guest code on %s (%s): %s", lock_eid, platform, err)
         return programmed
 
     async def _async_clear_lock_codes(self, lock_eids: list[str]) -> list[str]:
-        """Dynamically clear temporary guest code from programmed locks."""
+        """Dynamically clear temporary guest code from programmed locks by platform."""
         if not lock_eids or not hasattr(self.hass, "services"):
             return []
         services = self.hass.services.async_services()
         cleared: list[str] = []
         for lock_eid in lock_eids:
+            platform = self._get_lock_platform(lock_eid)
             try:
-                if "clear_lock_usercode" in services.get("zwave_js", {}):
+                if (platform == "schlage" or (platform is None and "delete_code" in services.get("schlage", {}))) and "delete_code" in services.get("schlage", {}):
+                    await self.hass.services.async_call(
+                        "schlage",
+                        "delete_code",
+                        {"name": DEFAULT_GUEST_CODE_NAME},
+                        target={"entity_id": lock_eid},
+                        blocking=False,
+                    )
+                    cleared.append(lock_eid)
+                elif (platform == "zwave_js" or (platform is None and "clear_lock_usercode" in services.get("zwave_js", {}))) and "clear_lock_usercode" in services.get("zwave_js", {}):
                     await self.hass.services.async_call(
                         "zwave_js",
                         "clear_lock_usercode",
                         {"entity_id": lock_eid, "code_slot": DEFAULT_GUEST_LOCK_SLOT},
-                        blocking=False,
-                    )
-                    cleared.append(lock_eid)
-                elif "delete_code" in services.get("schlage", {}):
-                    await self.hass.services.async_call(
-                        "schlage",
-                        "delete_code",
-                        {"entity_id": lock_eid, "name": DEFAULT_GUEST_CODE_NAME},
                         blocking=False,
                     )
                     cleared.append(lock_eid)
@@ -238,7 +254,7 @@ class GuestModeManager:
                     )
                     cleared.append(lock_eid)
             except Exception as err:
-                _LOGGER.debug("Failed clearing guest code on %s: %s", lock_eid, err)
+                _LOGGER.debug("Failed clearing guest code on %s (%s): %s", lock_eid, platform, err)
         return cleared
 
     async def _async_apply_guest_climate(self, existing_snapshot: dict[str, Any]) -> dict[str, Any]:

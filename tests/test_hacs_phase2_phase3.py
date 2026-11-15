@@ -638,3 +638,51 @@ def test_guest_mode_switch_and_lifecycle():
         off_calls = [(c.args[0], c.args[1], c.args[2]) for c in hass.services.async_call.call_args_list]
         assert ("zwave_js", "clear_lock_usercode", {"entity_id": "lock.front_door", "code_slot": 9}) in off_calls
         assert any(dom == "climate" and srv == "set_hvac_mode" and data["hvac_mode"] == "off" for dom, srv, data in off_calls)
+
+
+def test_guest_mode_schlage_platform_routing():
+    """Verify Schlage locks route to schlage.add_code / schlage.delete_code even when zwave_js is also present."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from custom_components.otis_ai.guest_mode import GuestModeManager
+
+    hass = MagicMock()
+    hass.data = {"otis_ai": {"entry1": {"entities": {}}}}
+    lock_state = SimpleNamespace(entity_id="lock.front_door", state="locked", attributes={})
+    hass.states.get = MagicMock(return_value=lock_state)
+    hass.states.async_all = MagicMock(side_effect=lambda dom=None: [lock_state] if dom in (None, "lock") else [])
+    hass.services.async_services = MagicMock(
+        return_value={
+            "zwave_js": {"set_lock_usercode": {}, "clear_lock_usercode": {}},
+            "schlage": {"add_code": {}, "delete_code": {}},
+        }
+    )
+    hass.services.async_call = AsyncMock()
+
+    rules_data = {
+        "guest_mode_enabled": False,
+        "guest_mode_auto_off_hours": 0,
+        "wizard_state": {"guestLockCode": "4411", "guestClimateComfort": False},
+    }
+    rules_mgr = MagicMock()
+    rules_mgr.async_load = AsyncMock(side_effect=lambda: dict(rules_data))
+    rules_mgr.async_save = AsyncMock(side_effect=lambda upd: rules_data.update(upd))
+
+    mock_ent_reg = MagicMock()
+    mock_ent_reg.async_get = MagicMock(return_value=SimpleNamespace(platform="schlage"))
+
+    gm = GuestModeManager(hass, "entry1", rules_mgr)
+    with patch("custom_components.otis_ai.guest_mode.er.async_get", return_value=mock_ent_reg):
+        asyncio.run(gm.async_handle_transition(True))
+        on_call = hass.services.async_call.call_args_list[0]
+        assert on_call.args[0] == "schlage"
+        assert on_call.args[1] == "add_code"
+        assert on_call.args[2]["code"] == "4411"
+        assert on_call.kwargs["target"] == {"entity_id": "lock.front_door"}
+
+        hass.services.async_call.reset_mock()
+        asyncio.run(gm.async_handle_transition(False))
+        off_call = hass.services.async_call.call_args_list[0]
+        assert off_call.args[0] == "schlage"
+        assert off_call.args[1] == "delete_code"
+        assert off_call.kwargs["target"] == {"entity_id": "lock.front_door"}
