@@ -1271,6 +1271,7 @@ export const modalsMixin = {
     if (w.guestLockCode) lines.push(`  * Add temporary code '${w.guestLockCode}' to exterior deadbolts for guest access.`);
     if (w.guestDelayedOff) lines.push(`  * Delay automatic bedtime lighting turn-off until ${w.guestDelayedOff}.`);
     if (w.guestClimateComfort) lines.push("  * Maintain comfortable ambient climate in guest suites.");
+    if (Number(w.guestAutoOffHours || 0) > 0) lines.push(`  * Automatically deactivate Guest Mode after ${Number(w.guestAutoOffHours)} hours.`);
     if (w.holidaySwitches) lines.push("  * Coordinate holiday lighting & seasonal outlets.");
     lines.push("- When Guest Mode is OFF:");
     if (w.guestLockCode) lines.push(`  * Delete temporary guest code '${w.guestLockCode}' from deadbolts.`);
@@ -1378,6 +1379,18 @@ export const modalsMixin = {
               <div class="rules-setting-label">Guest Bedtime Lighting Delayed Shutoff Time:</div>
               <div class="rules-setting-desc">Extends living area lighting past normal bedtime when guests are visiting.</div>
               <input type="time" step="1" id="wiz-guest-off" value="${this._escapeHtml(w.guestDelayedOff || "00:00:00")}" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+            </div>
+
+            <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
+              <div class="rules-setting-label">Guest Mode Auto-Off Timer:</div>
+              <div class="rules-setting-desc">Automatically turns Guest Mode off, clears temporary door codes, and restores guest climate after the stay ends.</div>
+              <select id="wiz-guest-auto-off" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);">
+                <option value="0" ${Number(w.guestAutoOffHours || 0) === 0 ? "selected" : ""}>Off (Manual Turn-Off)</option>
+                <option value="12" ${Number(w.guestAutoOffHours) === 12 ? "selected" : ""}>12 Hours (Evening Visit)</option>
+                <option value="24" ${Number(w.guestAutoOffHours) === 24 ? "selected" : ""}>24 Hours (Overnight)</option>
+                <option value="48" ${Number(w.guestAutoOffHours) === 48 ? "selected" : ""}>48 Hours (Weekend)</option>
+                <option value="72" ${Number(w.guestAutoOffHours) === 72 ? "selected" : ""}>72 Hours (Long Weekend)</option>
+              </select>
             </div>
 
             <label class="rules-setting-row" style="cursor: pointer;">

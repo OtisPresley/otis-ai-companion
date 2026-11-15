@@ -1,7 +1,7 @@
-import { CARD_STYLES } from "./card-styles.js?v=0.4.1";
-import { floorplanMixin } from "./floorplan-3d.js?v=0.4.1";
-import { modalsMixin } from "./card-modals.js?v=0.4.1";
-import { tabsMixin } from "./card-tabs.js?v=0.4.1";
+import { CARD_STYLES } from "./card-styles.js?v=0.4.2";
+import { floorplanMixin } from "./floorplan-3d.js?v=0.4.2";
+import { modalsMixin } from "./card-modals.js?v=0.4.2";
+import { tabsMixin } from "./card-tabs.js?v=0.4.2";
 
 /**
  * Otis AI Companion - Lovelace Dashboard Card
@@ -18,7 +18,7 @@ import { tabsMixin } from "./card-tabs.js?v=0.4.1";
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.4.1";
+const CARD_VERSION = "0.4.2";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -117,6 +117,7 @@ class OtisCompanionCard extends HTMLElement {
       sleepHabits: "",
       guestLockCode: "",
       guestDelayedOff: "00:00:00",
+      guestAutoOffHours: 0,
       guestClimateComfort: true,
       holidaySwitches: true,
       requireDeadboltConfirm: true,
@@ -3093,6 +3094,21 @@ class OtisCompanionCard extends HTMLElement {
               </div>
             </div>
             <div class="header-actions">
+              ${(() => {
+                if (!this._hass?.user?.is_admin) return "";
+                const guestModeOn =
+                  this._hass?.states?.["switch.otis_guest_mode"]?.state === "on" ||
+                  Object.values(this._hass?.states || {}).some(
+                    (s) =>
+                      s?.entity_id?.startsWith("input_boolean.") &&
+                      s.entity_id.toLowerCase().includes("guest_mode") &&
+                      s.state === "on"
+                  ) ||
+                  Boolean(this._userRules?.guest_mode_enabled);
+                return `<button type="button" class="icon-btn ${guestModeOn ? "active" : ""}" id="btn-guest-mode" title="${guestModeOn ? "Guest Mode Active — Click to Deactivate" : "Activate Guest Mode"}" style="${guestModeOn ? "background: rgba(16, 185, 129, 0.18); border-color: rgba(16, 185, 129, 0.55); color: #34d399;" : ""}">
+                  👥 ${guestModeOn ? "Guest Mode: ON" : "Guest Mode"}
+                </button>`;
+              })()}
               <button type="button" class="icon-btn" id="btn-open-rules" title="Otis Behavioral Rules & Configuration">
                 ⚙️ Rules
               </button>
@@ -3472,6 +3488,32 @@ class OtisCompanionCard extends HTMLElement {
         e.stopPropagation();
         this._themeModalOpen = true;
         this._render();
+      };
+    });
+    root.querySelectorAll("#btn-guest-mode").forEach((btn) => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        if (!this._hass || !this._hass.user?.is_admin) return;
+        const guestModeOn =
+          this._hass?.states?.["switch.otis_guest_mode"]?.state === "on" ||
+          Boolean(this._userRules?.guest_mode_enabled);
+        const targetOn = !guestModeOn;
+        try {
+          if (this._hass?.states?.["switch.otis_guest_mode"]) {
+            await this._hass.callService("switch", targetOn ? "turn_on" : "turn_off", {
+              entity_id: "switch.otis_guest_mode",
+            });
+          } else {
+            await this._hass.callService("otis_ai", "set_user_rules", {
+              guest_mode_enabled: targetOn,
+            });
+          }
+          this._userRules = { ...(this._userRules || {}), guest_mode_enabled: targetOn };
+          this._showToast(targetOn ? "Guest Mode activated" : "Guest Mode deactivated");
+          this._render();
+        } catch (err) {
+          this._showToast(`Failed to toggle Guest Mode: ${err?.message || err}`, true);
+        }
       };
     });
 
@@ -3900,6 +3942,8 @@ class OtisCompanionCard extends HTMLElement {
         if (codeInput) w.guestLockCode = codeInput.value.trim();
         const offInput = root.querySelector("#wiz-guest-off");
         if (offInput) w.guestDelayedOff = offInput.value.trim();
+        const autoOffSel = root.querySelector("#wiz-guest-auto-off");
+        if (autoOffSel) w.guestAutoOffHours = parseInt(autoOffSel.value, 10) || 0;
         const guestClimate = root.querySelector("#wiz-guest-climate");
         if (guestClimate) w.guestClimateComfort = guestClimate.checked;
         const guestHoliday = root.querySelector("#wiz-guest-holiday");

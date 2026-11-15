@@ -1,6 +1,7 @@
 """Switch platform for Otis AI Companion backed entities."""
 from __future__ import annotations
 
+import inspect
 import logging
 from typing import Any
 
@@ -36,6 +37,13 @@ SWITCH_DEFINITIONS: list[dict[str, Any]] = [
         "icon": "mdi:volume-high",
         "rule_key": "voice_announcements_enabled",
         "default": True,
+    },
+    {
+        "key": "guest_mode",
+        "name": "Otis Guest Mode",
+        "icon": "mdi:account-group",
+        "rule_key": "guest_mode_enabled",
+        "default": False,
     },
 ]
 
@@ -102,12 +110,27 @@ class OtisSwitchEntity(SwitchEntity):
         """Return true if switch is on."""
         return self._attr_is_on
 
+    async def _async_notify_handler(self, enabled: bool) -> None:
+        """Invoke registered state-transition handler if present."""
+        domain_data = self.hass.data.get(DOMAIN, {}) if hasattr(self.hass, "data") else {}
+        if not isinstance(domain_data, dict):
+            return
+        otis_data = domain_data.get(self._entry_id, {})
+        if not isinstance(otis_data, dict):
+            return
+        handler = otis_data.get(f"{self._key}_handler")
+        if callable(handler):
+            res = handler(enabled)
+            if inspect.isawaitable(res):
+                await res
+
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the switch on."""
         self._attr_is_on = True
         if self._rules_manager and hasattr(self._rules_manager, "async_save"):
             await self._rules_manager.async_save({self._rule_key: True})
         self.async_write_ha_state()
+        await self._async_notify_handler(True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the switch off."""
@@ -115,6 +138,7 @@ class OtisSwitchEntity(SwitchEntity):
         if self._rules_manager and hasattr(self._rules_manager, "async_save"):
             await self._rules_manager.async_save({self._rule_key: False})
         self.async_write_ha_state()
+        await self._async_notify_handler(False)
 
     @callback
     def async_set_state(self, new_state: Any, attributes: dict[str, Any] | None = None) -> None:

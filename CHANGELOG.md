@@ -7,6 +7,13 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-11-15
+
+### ✨ Added
+- **👥 Native Guest Mode Switch & Companion Card Toggle (`switch.py`, `otis-companion-card.js`)**: Added the platform-backed `switch.otis_guest_mode` entity synced with `BehavioralRulesManager` (`guest_mode_enabled`) and exposed an admin-only `👥 Guest Mode` toggle pill exclusively in the `custom:otis-companion-card` header (keeping shared Command Center and Security Center dashboards clean for non-admin users).
+- **🔐 Automated Guest Mode Lifecycle (`guest_mode.py`, `__init__.py`)**: Turning Guest Mode ON automatically discovers lock usercode services (`zwave_js`, `schlage`, `lock`) to program the configured temporary `guestLockCode`, snapshots and conditions guest-area `climate.*` thermostats when `guestClimateComfort` is enabled, and relaxes unfamiliar-person alerts for trained guest profiles; turning Guest Mode OFF clears temporary lock codes and restores snapshotted guest climate settings.
+- **⏱️ Guest Mode Auto-Off Timer (`card-modals.js`, `guest_mode.py`, `rules_manager.py`)**: Added a `Guest Mode Auto-Off Timer` selector (`Off`, `12h`, `24h`, `48h`, `72h`) in **Rules → Guided Setup (Step 2)** with persistent expiry tracking across Home Assistant restarts.
+
 ## [0.4.1] - 2026-11-14
 
 ### ✨ Added

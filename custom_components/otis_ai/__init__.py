@@ -183,6 +183,7 @@ from .matrix_presets import (
     is_tv_cinema_player,
 )
 from .rules_manager import BehavioralRulesManager, scrub_sensitive_rules
+from .guest_mode import GuestModeManager, is_guest_mode_active
 from .sentinel_manager import SentinelManager
 from .spatial_manager import (
     SpatialGraphManager,
@@ -1136,8 +1137,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     floorplan_parser = FloorplanParser(hass)
     automation_manager = AutomationManager(hass)
     rules_manager = BehavioralRulesManager(hass)
+    guest_mode_manager = GuestModeManager(hass, entry.entry_id, rules_manager)
     entry_store = hass.data.setdefault(DOMAIN, {}).setdefault(entry.entry_id, {})
     entry_store["rules_manager"] = rules_manager
+    entry_store["guest_mode_manager"] = guest_mode_manager
+    entry_store["guest_mode_handler"] = guest_mode_manager.async_handle_transition
 
     # Forward platform setups before managers start publishing states
     if hasattr(hass, "config_entries") and hasattr(hass.config_entries, "async_forward_entry_setups"):
@@ -1145,6 +1149,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         except Exception as plat_err:
             _LOGGER.debug("Could not forward platform setups: %s", plat_err)
+    _schedule_background_task(
+        hass,
+        guest_mode_manager.async_restore_timer_on_boot(),
+        "otis_ai_guest_mode_restore_timer",
+    )
 
     dashboard_manager = DashboardManager(hass, floorplan_parser=floorplan_parser, rules_manager=rules_manager)
     theme_manager = ThemeManager(hass)
@@ -3795,6 +3804,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.debug("Unloading Otis AI Companion entry: %s", entry.entry_id)
     if entry.entry_id in hass.data[DOMAIN]:
         entry_data = hass.data[DOMAIN].pop(entry.entry_id)
+        gm = entry_data.get("guest_mode_manager")
+        if gm and hasattr(gm, "cancel_auto_off_timer"):
+            gm.cancel_auto_off_timer()
         fm = entry_data.get("federation_manager")
         if fm and hasattr(fm, "async_stop_background_sync"):
             await fm.async_stop_background_sync()
@@ -11361,11 +11373,7 @@ class DiscoveryEngine:
                 ]
 
                 # Live Room Entry & Active Presence Identity Verification Prompts
-                guest_mode_on = any(
-                    str(getattr(st, "state", "") or "").lower() == "on"
-                    for st in (self.hass.states.async_all("input_boolean") if hasattr(self.hass, "states") else [])
-                    if "guest_mode" in st.entity_id.lower()
-                )
+                guest_mode_on = is_guest_mode_active(self.hass)
                 untrained_profiles = [
                     p for p in active_training_profiles
                     if (p["samples"] < 5 or p["confidence"] < 0.85)
@@ -11821,7 +11829,7 @@ class DiscoveryEngine:
                             for st in (self.hass.states.async_all("input_boolean") if hasattr(self.hass, "states") else [])
                             if "guest_mode" in st.entity_id.lower()
                         ),
-                        None,
+                        "switch.otis_guest_mode" if (hasattr(self.hass, "states") and self.hass.states.get("switch.otis_guest_mode")) else None,
                     )
                     if g_sensors and g_lights:
                         suggestions.append({

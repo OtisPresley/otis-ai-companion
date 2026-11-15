@@ -530,3 +530,111 @@ def test_conversation_agent_suggest_automations_grounded():
     speech = asyncio.run(agent.async_process(user_input))
     assert "Auto-Off Study Desk Light" in speech
     assert "Fake Device Automation" not in speech
+
+
+def test_guest_mode_switch_and_lifecycle():
+    """Verify switch.otis_guest_mode, lock code programming/clearing, climate snapshot/restore, and auto-off."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from custom_components.otis_ai.switch import SWITCH_DEFINITIONS, OtisSwitchEntity
+    from custom_components.otis_ai.guest_mode import GuestModeManager, is_guest_mode_active
+
+    # 1. Verify switch definition exists
+    guest_def = next((d for d in SWITCH_DEFINITIONS if d["key"] == "guest_mode"), None)
+    assert guest_def is not None
+    assert guest_def["rule_key"] == "guest_mode_enabled"
+    assert guest_def["default"] is False
+
+    # 2. Mock hass, rules_manager, lock & guest climate
+    hass = MagicMock()
+    hass.data = {"otis_ai": {"entry1": {"entities": {}}}}
+    hass.config.units.temperature_unit = "°F"
+
+    lock_state = SimpleNamespace(entity_id="lock.front_door", state="locked", attributes={})
+    climate_state = SimpleNamespace(
+        entity_id="climate.guest_suite",
+        state="off",
+        attributes={
+            "friendly_name": "Guest Suite Thermostat",
+            "temperature": 62.0,
+            "hvac_modes": ["off", "heat", "cool", "heat_cool"],
+            "preset_mode": "eco",
+            "preset_modes": ["none", "eco"],
+        },
+    )
+    switch_state = SimpleNamespace(entity_id="switch.otis_guest_mode", state="off", attributes={})
+
+    state_map = {
+        "lock.front_door": lock_state,
+        "climate.guest_suite": climate_state,
+        "switch.otis_guest_mode": switch_state,
+    }
+    hass.states.get = MagicMock(side_effect=lambda eid: state_map.get(eid))
+    hass.states.async_all = MagicMock(
+        side_effect=lambda dom=None: (
+            [s for s in state_map.values() if dom is None or s.entity_id.startswith(f"{dom}.")]
+        )
+    )
+    hass.services.async_services = MagicMock(
+        return_value={"zwave_js": {"set_lock_usercode": {}, "clear_lock_usercode": {}}}
+    )
+    hass.services.async_call = AsyncMock()
+
+    rules_data = {
+        "guest_mode_enabled": False,
+        "guest_mode_auto_off_hours": 24,
+        "wizard_state": {
+            "guestLockCode": "4411",
+            "guestClimateComfort": True,
+        },
+    }
+    rules_mgr = MagicMock()
+    rules_mgr.get_rules = MagicMock(return_value=rules_data)
+    rules_mgr.async_load = AsyncMock(side_effect=lambda: dict(rules_data))
+    rules_mgr.async_save = AsyncMock(side_effect=lambda upd: rules_data.update(upd))
+
+    entry = MagicMock()
+    entry.entry_id = "entry1"
+    gm = GuestModeManager(hass, "entry1", rules_mgr)
+    hass.data["otis_ai"]["entry1"]["guest_mode_handler"] = gm.async_handle_transition
+
+    sw = OtisSwitchEntity(hass, entry, guest_def, rules_mgr)
+    sw.async_write_ha_state = MagicMock()
+    hass.data["otis_ai"]["entry1"]["entities"][sw.entity_id] = sw
+
+    scheduled_timers = []
+
+    def _fake_call_later(_hass, delay, cb):
+        scheduled_timers.append((delay, cb))
+        return MagicMock()
+
+    with patch("custom_components.otis_ai.guest_mode.async_call_later", side_effect=_fake_call_later):
+        # Turn ON via switch entity
+        asyncio.run(sw.async_turn_on())
+        assert sw.is_on is True
+        assert rules_data["guest_mode_enabled"] is True
+        assert "lock.front_door" in rules_data["guest_mode_programmed_locks"]
+        assert "climate.guest_suite" in rules_data["guest_mode_climate_snapshot"]
+        assert len(scheduled_timers) == 1
+        assert scheduled_timers[0][0] == 24 * 3600.0
+
+        # Verify lock code & climate comfort service calls were dispatched
+        calls = [(c.args[0], c.args[1], c.args[2]) for c in hass.services.async_call.call_args_list]
+        assert ("zwave_js", "set_lock_usercode", {"entity_id": "lock.front_door", "code_slot": 9, "usercode": "4411"}) in calls
+        assert any(dom == "climate" and srv == "set_hvac_mode" and data["entity_id"] == "climate.guest_suite" for dom, srv, data in calls)
+
+        # is_guest_mode_active reflects switch.otis_guest_mode
+        switch_state.state = "on"
+        assert is_guest_mode_active(hass) is True
+
+        # Turn OFF via switch entity
+        hass.services.async_call.reset_mock()
+        asyncio.run(sw.async_turn_off())
+        assert sw.is_on is False
+        assert rules_data["guest_mode_enabled"] is False
+        assert rules_data["guest_mode_programmed_locks"] == []
+        assert rules_data["guest_mode_climate_snapshot"] == {}
+
+        off_calls = [(c.args[0], c.args[1], c.args[2]) for c in hass.services.async_call.call_args_list]
+        assert ("zwave_js", "clear_lock_usercode", {"entity_id": "lock.front_door", "code_slot": 9}) in off_calls
+        assert any(dom == "climate" and srv == "set_hvac_mode" and data["hvac_mode"] == "off" for dom, srv, data in off_calls)
