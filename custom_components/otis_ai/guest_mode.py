@@ -161,140 +161,142 @@ class GuestModeManager:
             pass
         return None
 
+    @staticmethod
+    def _find_matching_lock_service(plat_services: dict[str, Any], action: str) -> str | None:
+        """Find a matching add/delete lock code service in a domain's service map."""
+        if not isinstance(plat_services, dict):
+            return None
+        if action == "add":
+            preferred = (
+                "add_code",
+                "set_lock_usercode",
+                "set_usercode",
+                "set_code",
+                "add_usercode",
+                "create_pin",
+                "set_pin",
+                "add_pin",
+            )
+            verbs = ("add", "set", "create")
+        else:
+            preferred = (
+                "delete_code",
+                "clear_lock_usercode",
+                "clear_usercode",
+                "remove_code",
+                "delete_usercode",
+                "delete_pin",
+                "clear_pin",
+                "remove_pin",
+            )
+            verbs = ("delete", "clear", "remove")
+
+        for name in preferred:
+            if name in plat_services:
+                return name
+        for srv_name in plat_services:
+            s_low = str(srv_name).lower()
+            if any(v in s_low for v in verbs) and any(n in s_low for n in ("code", "pin", "usercode")):
+                return srv_name
+        return None
+
+    @staticmethod
+    def _extract_schema_keys(srv_obj: Any) -> set[str]:
+        """Extract top-level field names from a Home Assistant Service schema if available."""
+        schema = getattr(srv_obj, "schema", None)
+        raw = getattr(schema, "schema", None)
+        if isinstance(raw, dict):
+            return {str(getattr(k, "schema", k)) for k in raw}
+        return set()
+
+    def _build_lock_service_payload(
+        self,
+        lock_eid: str,
+        srv_name: str,
+        srv_obj: Any,
+        action: str,
+        guest_code: str,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        """Build (service_data, target) dynamically from service schema or naming conventions."""
+        keys = self._extract_schema_keys(srv_obj)
+        s_low = srv_name.lower()
+        data: dict[str, Any] = {}
+        target: dict[str, Any] | None = {"entity_id": lock_eid}
+
+        if keys:
+            if "entity_id" in keys:
+                data["entity_id"] = lock_eid
+                target = None
+            if "name" in keys:
+                data["name"] = DEFAULT_GUEST_CODE_NAME
+            if "code_slot" in keys:
+                data["code_slot"] = DEFAULT_GUEST_LOCK_SLOT
+            elif "slot" in keys:
+                data["slot"] = DEFAULT_GUEST_LOCK_SLOT
+            if action == "add":
+                if "usercode" in keys:
+                    data["usercode"] = guest_code
+                elif "pin" in keys:
+                    data["pin"] = guest_code
+                elif "code" in keys:
+                    data["code"] = guest_code
+                if "notify_on_use" in keys:
+                    data["notify_on_use"] = True
+            return data, target
+
+        if "usercode" in s_low:
+            data["entity_id"] = lock_eid
+            data["code_slot"] = DEFAULT_GUEST_LOCK_SLOT
+            if action == "add":
+                data["usercode"] = guest_code
+            return data, None
+
+        data["name"] = DEFAULT_GUEST_CODE_NAME
+        if action == "add":
+            if "pin" in s_low:
+                data["pin"] = guest_code
+            else:
+                data["code"] = guest_code
+                if srv_name == "add_code":
+                    data["notify_on_use"] = True
+        return data, target
+
     async def _async_dispatch_lock_code(
         self, lock_eid: str, services: dict[str, Any], action: str, guest_code: str = ""
     ) -> bool:
         """Dynamically discover and invoke the right lock usercode service for lock_eid's platform."""
         platform = self._get_lock_platform(lock_eid)
-        plat_services = services.get(platform, {}) if platform else {}
+        candidate_domains: list[str] = []
+        if platform:
+            candidate_domains.append(platform)
+        candidate_domains.append("lock")
+        if platform is None:
+            for dom in services:
+                if dom not in candidate_domains:
+                    candidate_domains.append(dom)
 
-        try:
-            if action == "add":
-                if "add_code" in plat_services:
-                    await self.hass.services.async_call(
-                        platform,
-                        "add_code",
-                        {"name": DEFAULT_GUEST_CODE_NAME, "code": guest_code, "notify_on_use": True},
-                        target={"entity_id": lock_eid},
-                        blocking=False,
-                    )
-                    return True
-                if "set_lock_usercode" in plat_services:
-                    await self.hass.services.async_call(
-                        platform,
-                        "set_lock_usercode",
-                        {"entity_id": lock_eid, "code_slot": DEFAULT_GUEST_LOCK_SLOT, "usercode": guest_code},
-                        blocking=False,
-                    )
-                    return True
-                if "set_usercode" in plat_services:
-                    await self.hass.services.async_call(
-                        platform,
-                        "set_usercode",
-                        {"entity_id": lock_eid, "code_slot": DEFAULT_GUEST_LOCK_SLOT, "usercode": guest_code},
-                        blocking=False,
-                    )
-                    return True
-                for pin_srv in ("create_pin", "set_pin", "add_pin"):
-                    if pin_srv in plat_services:
-                        await self.hass.services.async_call(
-                            platform,
-                            pin_srv,
-                            {"name": DEFAULT_GUEST_CODE_NAME, "pin": guest_code},
-                            target={"entity_id": lock_eid},
-                            blocking=False,
-                        )
-                        return True
-                if "set_usercode" in services.get("lock", {}):
-                    await self.hass.services.async_call(
-                        "lock",
-                        "set_usercode",
-                        {"entity_id": lock_eid, "code_slot": DEFAULT_GUEST_LOCK_SLOT, "usercode": guest_code},
-                        blocking=False,
-                    )
-                    return True
-                if platform is None:
-                    if "add_code" in services.get("schlage", {}):
-                        await self.hass.services.async_call(
-                            "schlage",
-                            "add_code",
-                            {"name": DEFAULT_GUEST_CODE_NAME, "code": guest_code, "notify_on_use": True},
-                            target={"entity_id": lock_eid},
-                            blocking=False,
-                        )
-                        return True
-                    if "set_lock_usercode" in services.get("zwave_js", {}):
-                        await self.hass.services.async_call(
-                            "zwave_js",
-                            "set_lock_usercode",
-                            {"entity_id": lock_eid, "code_slot": DEFAULT_GUEST_LOCK_SLOT, "usercode": guest_code},
-                            blocking=False,
-                        )
-                        return True
-            else:
-                if "delete_code" in plat_services:
-                    await self.hass.services.async_call(
-                        platform,
-                        "delete_code",
-                        {"name": DEFAULT_GUEST_CODE_NAME},
-                        target={"entity_id": lock_eid},
-                        blocking=False,
-                    )
-                    return True
-                if "clear_lock_usercode" in plat_services:
-                    await self.hass.services.async_call(
-                        platform,
-                        "clear_lock_usercode",
-                        {"entity_id": lock_eid, "code_slot": DEFAULT_GUEST_LOCK_SLOT},
-                        blocking=False,
-                    )
-                    return True
-                if "clear_usercode" in plat_services:
-                    await self.hass.services.async_call(
-                        platform,
-                        "clear_usercode",
-                        {"entity_id": lock_eid, "code_slot": DEFAULT_GUEST_LOCK_SLOT},
-                        blocking=False,
-                    )
-                    return True
-                for pin_srv in ("delete_pin", "clear_pin", "remove_pin"):
-                    if pin_srv in plat_services:
-                        await self.hass.services.async_call(
-                            platform,
-                            pin_srv,
-                            {"name": DEFAULT_GUEST_CODE_NAME},
-                            target={"entity_id": lock_eid},
-                            blocking=False,
-                        )
-                        return True
-                if "clear_usercode" in services.get("lock", {}):
-                    await self.hass.services.async_call(
-                        "lock",
-                        "clear_usercode",
-                        {"entity_id": lock_eid, "code_slot": DEFAULT_GUEST_LOCK_SLOT},
-                        blocking=False,
-                    )
-                    return True
-                if platform is None:
-                    if "delete_code" in services.get("schlage", {}):
-                        await self.hass.services.async_call(
-                            "schlage",
-                            "delete_code",
-                            {"name": DEFAULT_GUEST_CODE_NAME},
-                            target={"entity_id": lock_eid},
-                            blocking=False,
-                        )
-                        return True
-                    if "clear_lock_usercode" in services.get("zwave_js", {}):
-                        await self.hass.services.async_call(
-                            "zwave_js",
-                            "clear_lock_usercode",
-                            {"entity_id": lock_eid, "code_slot": DEFAULT_GUEST_LOCK_SLOT},
-                            blocking=False,
-                        )
-                        return True
-        except Exception as err:
-            _LOGGER.debug("Failed %s guest code on %s (%s): %s", action, lock_eid, platform, err)
+        for dom in candidate_domains:
+            dom_services = services.get(dom, {})
+            srv_name = self._find_matching_lock_service(dom_services, action)
+            if not srv_name:
+                continue
+            srv_obj = dom_services.get(srv_name)
+            data, target = self._build_lock_service_payload(lock_eid, srv_name, srv_obj, action, guest_code)
+            try:
+                kwargs: dict[str, Any] = {"blocking": False}
+                if target is not None:
+                    kwargs["target"] = target
+                await self.hass.services.async_call(dom, srv_name, data, **kwargs)
+                return True
+            except Exception as err:
+                _LOGGER.debug(
+                    "Failed %s guest code on %s via %s.%s: %s",
+                    action,
+                    lock_eid,
+                    dom,
+                    srv_name,
+                    err,
+                )
         return False
 
     async def _async_program_lock_codes(self, guest_code: str) -> list[str]:
