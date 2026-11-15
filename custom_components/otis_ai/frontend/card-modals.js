@@ -1364,16 +1364,20 @@ export const modalsMixin = {
 
         <!-- Step 2: Guest Mode & Entertaining -->
         ${step === 2
-        ? `
+        ? (() => {
+            const hasLocks = Object.keys(this._hass?.states || {}).some((eid) => eid.startsWith("lock."));
+            return `
           <div style="display: flex; flex-direction: column; gap: 12px;">
             <div style="font-size: 0.88rem; font-weight: 700; color: var(--otis-primary);">Step 2: Guest Mode & Entertaining</div>
             <div style="font-size: 0.75rem; color: var(--otis-text-muted);">Specify automated behaviors when guests or visitors are staying in the home.</div>
 
+            ${hasLocks ? `
             <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
               <div class="rules-setting-label">Temporary Guest Door Lock Code:</div>
               <div class="rules-setting-desc">Auto-programmed to exterior deadbolts when Guest Mode is turned ON, and auto-deleted when OFF.</div>
               <input type="text" id="wiz-guest-code" value="${this._escapeHtml(w.guestLockCode || "")}" placeholder="e.g. 4411" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
             </div>
+            ` : ""}
 
             <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
               <div class="rules-setting-label">Guest Bedtime Lighting Delayed Shutoff Time:</div>
@@ -1409,17 +1413,21 @@ export const modalsMixin = {
               <input type="checkbox" id="wiz-guest-holiday" ${w.holidaySwitches !== false ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
             </label>
           </div>
-        `
+        `;
+          })()
         : ""
       }
 
         <!-- Step 3: Security & Perimeter Safeguards -->
         ${step === 3
-        ? `
+        ? (() => {
+            const hasLocks = Object.keys(this._hass?.states || {}).some((eid) => eid.startsWith("lock."));
+            return `
           <div style="display: flex; flex-direction: column; gap: 12px;">
             <div style="font-size: 0.88rem; font-weight: 700; color: var(--otis-primary);">Step 3: Security & Perimeter Safeguards</div>
             <div style="font-size: 0.75rem; color: var(--otis-text-muted);">Set strict guardrails on physical access points, exterior deadbolts, and perimeter alarms.</div>
 
+            ${hasLocks ? `
             <label class="rules-setting-row" style="cursor: pointer;">
               <div>
                 <div class="rules-setting-label">Require Confirmation for Door Deadbolts</div>
@@ -1427,6 +1435,7 @@ export const modalsMixin = {
               </div>
               <input type="checkbox" id="wiz-deadbolt-confirm" ${w.requireDeadboltConfirm !== false ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
             </label>
+            ` : ""}
 
             <label class="rules-setting-row" style="cursor: pointer;">
               <div>
@@ -1450,7 +1459,8 @@ export const modalsMixin = {
               <input type="checkbox" id="wiz-perimeter-alerts" ${w.perimeterCameraAlerts !== false ? "checked" : ""} style="width: 18px; height: 18px; cursor: pointer;" />
             </label>
           </div>
-        `
+        `;
+          })()
         : ""
       }
 
