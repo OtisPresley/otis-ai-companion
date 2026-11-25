@@ -9,7 +9,6 @@ import re
 from typing import Any
 
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.storage import Store
 from homeassistant.helpers import (
     area_registry as ar,
     device_registry as dr,
@@ -195,14 +194,6 @@ class DashboardManager:
                             items = getattr(res_col, "data", [])
                     else:
                         items = getattr(res_col, "data", [])
-        if not items:
-            try:
-                store = Store(self.hass, 1, "lovelace_resources")
-                data = await store.async_load()
-                if isinstance(data, dict):
-                    items = data.get("items", []) or data.get("data", {}).get("items", [])
-            except Exception as err:
-                _LOGGER.debug("Could not inspect lovelace resources store: %s", err)
 
         if isinstance(items, (list, tuple)):
             for item in items:
@@ -1499,104 +1490,98 @@ class DashboardManager:
             "views": views,
         }
 
+    def _get_lovelace_data(self) -> Any | None:
+        """Return the active LovelaceData object from hass.data if loaded."""
+        if not hasattr(self.hass, "data") or not isinstance(self.hass.data, dict):
+            return None
+        for k, v in self.hass.data.items():
+            if str(k) == "lovelace" or getattr(v, "dashboards", None) is not None:
+                if hasattr(v, "dashboards") and isinstance(v.dashboards, dict):
+                    return v
+        return None
+
+    async def _async_load_dashboard_config(self, url_path: str) -> dict[str, Any] | None:
+        """Load an existing dashboard config strictly through Lovelace's own async_load API."""
+        lovelace_data = self._get_lovelace_data()
+        if lovelace_data is None:
+            return None
+        dash_obj = lovelace_data.dashboards.get(url_path)
+        if dash_obj is None or not hasattr(dash_obj, "async_load"):
+            return None
+        try:
+            cfg = await dash_obj.async_load(False)
+            return cfg if isinstance(cfg, dict) else None
+        except Exception as err:
+            _LOGGER.debug("Could not load Lovelace config for %s: %s", url_path, err)
+            return None
+
     async def _async_merge_dashboard_config_preserving_user_views(
         self,
         dash_id: str,
+        url_path: str,
         new_config: dict[str, Any],
         force_regenerate: bool = False,
     ) -> dict[str, Any]:
-        """Preserve user-customized Home view (view 0) and custom user subviews across updates via executor."""
-        storage_dir = self._storage_dir()
-        if not storage_dir:
-            return new_config
-        if hasattr(self.hass, "async_add_executor_job"):
-            try:
-                return await self.hass.async_add_executor_job(
-                    self._merge_dashboard_config_preserving_user_views,
-                    storage_dir,
-                    dash_id,
-                    new_config,
-                    force_regenerate,
-                )
-            except Exception:
-                pass
-        return self._merge_dashboard_config_preserving_user_views(
-            storage_dir, dash_id, new_config, force_regenerate
+        """Preserve user-customized Home view (view 0) and custom user subviews across updates via Lovelace APIs."""
+        existing_cfg = await self._async_load_dashboard_config(url_path)
+        existing_views: list[dict[str, Any]] = (
+            list(existing_cfg.get("views", [])) if isinstance(existing_cfg, dict) else []
         )
 
-    def _merge_dashboard_config_preserving_user_views(
-        self,
-        storage_dir: str | None,
-        dash_id: str,
-        new_config: dict[str, Any],
-        force_regenerate: bool = False,
-    ) -> dict[str, Any]:
-        """Preserve user-customized Home view (view 0) and custom user subviews across updates, while syncing studios and rooms."""
-        if not storage_dir:
-            return new_config
-
-        config_file = os.path.join(storage_dir, f"lovelace.{dash_id}")
-        existing_views: list[dict[str, Any]] = []
-        if os.path.exists(config_file):
-            try:
-                with open(config_file, encoding="utf-8") as f:
-                    content = f.read().strip()
-                if content:
-                    existing_data = json.loads(content)
-                    if isinstance(existing_data, dict):
-                        existing_cfg = existing_data.get("data", {}).get("config") or existing_data.get("config")
-                        if isinstance(existing_cfg, dict):
-                            existing_views = list(existing_cfg.get("views", []))
-            except Exception as err:
-                _LOGGER.debug("Could not read existing config for %s: %s", dash_id, err)
-
-        # 1. When updating Command Center, sync customized Studio and Room subviews from the Admin (lovelace.otis_ai) dashboard if present
+        # 1. When updating Command Center, sync customized Studio and Room subviews from the Admin dashboard if present
         if dash_id == COMMAND_CENTER_DASHBOARD_ID and not force_regenerate:
-            admin_file = os.path.join(storage_dir, f"lovelace.{OTIS_DASHBOARD_ID}")
-            if os.path.exists(admin_file):
+            admin_cfg = await self._async_load_dashboard_config(OTIS_DASHBOARD_URL_PATH)
+            if isinstance(admin_cfg, dict):
                 try:
-                    with open(admin_file, encoding="utf-8") as af:
-                        admin_content = af.read().strip()
-                    if admin_content:
-                        admin_data = json.loads(admin_content)
-                        admin_cfg = admin_data.get("data", {}).get("config", {}) or admin_data.get("config", {})
-                        admin_views = admin_cfg.get("views", [])
-                        admin_views_by_path = {
-                            v.get("path"): v
-                            for v in admin_views
-                            if v.get("path") and v.get("path") != "default_view"
-                        }
+                    admin_views = admin_cfg.get("views", [])
+                    admin_views_by_path = {
+                        v.get("path"): v
+                        for v in admin_views
+                        if v.get("path") and v.get("path") != "default_view"
+                    }
 
-                        def _rewrite_to_command_center(obj: Any) -> Any:
-                            if isinstance(obj, str):
-                                return obj.replace(
-                                    f"/{OTIS_DASHBOARD_URL_PATH}/",
-                                    f"/{COMMAND_CENTER_DASHBOARD_URL_PATH}/",
-                                )
-                            elif isinstance(obj, dict):
-                                return {k: _rewrite_to_command_center(v) for k, v in obj.items()}
-                            elif isinstance(obj, list):
-                                return [_rewrite_to_command_center(elem) for elem in obj]
-                            return obj
+                    def _rewrite_to_command_center(obj: Any) -> Any:
+                        if isinstance(obj, str):
+                            return obj.replace(
+                                f"/{OTIS_DASHBOARD_URL_PATH}/",
+                                f"/{COMMAND_CENTER_DASHBOARD_URL_PATH}/",
+                            )
+                        elif isinstance(obj, dict):
+                            return {k: _rewrite_to_command_center(v) for k, v in obj.items()}
+                        elif isinstance(obj, list):
+                            return [_rewrite_to_command_center(elem) for elem in obj]
+                        return obj
 
-                        synced_views = []
-                        for nv in new_config.get("views", []):
-                            vpath = nv.get("path")
-                            if vpath in admin_views_by_path:
-                                cloned_view = _rewrite_to_command_center(
-                                    copy.deepcopy(admin_views_by_path[vpath])
-                                )
-                                synced_views.append(cloned_view)
-                            else:
-                                synced_views.append(nv)
-                        new_config = dict(new_config)
-                        new_config["views"] = synced_views
+                    synced_views = []
+                    for nv in new_config.get("views", []):
+                        vpath = nv.get("path")
+                        if vpath in admin_views_by_path:
+                            cloned_view = _rewrite_to_command_center(
+                                copy.deepcopy(admin_views_by_path[vpath])
+                            )
+                            synced_views.append(cloned_view)
+                        else:
+                            synced_views.append(nv)
+                    new_config = dict(new_config)
+                    new_config["views"] = synced_views
                 except Exception as sync_err:
                     _LOGGER.debug(
                         "Could not inherit admin studio/room customizations for command-center: %s",
                         sync_err,
                     )
 
+        return self._merge_dashboard_config_preserving_user_views(
+            existing_views, dash_id, new_config, force_regenerate
+        )
+
+    def _merge_dashboard_config_preserving_user_views(
+        self,
+        existing_views: list[dict[str, Any]],
+        dash_id: str,
+        new_config: dict[str, Any],
+        force_regenerate: bool = False,
+    ) -> dict[str, Any]:
+        """Merge preserved user-customized Home view and custom subviews into new_config."""
         if not existing_views:
             return new_config
 
@@ -1813,10 +1798,10 @@ class DashboardManager:
 
         # Preserve user's card settings in view 0 before saving
         merged_dashboard_config = await self._async_merge_dashboard_config_preserving_user_views(
-            dash_id, dashboard_config, force_regenerate
+            dash_id, url_path, dashboard_config, force_regenerate
         )
 
-        # 1. Update or create dashboard in official DashboardsCollection
+        # 1. Update or create dashboard strictly through official DashboardsCollection API
         storage_col = self._get_dashboards_collection()
         if storage_col is not None:
             try:
@@ -1827,101 +1812,51 @@ class DashboardManager:
                         if k == dash_id or (isinstance(v, dict) and (v.get("id") == dash_id or v.get("url_path") == url_path)):
                             existing_key = k
                             break
-                if existing_key is not None:
-                    if hasattr(storage_col, "async_update_item"):
-                        await storage_col.async_update_item(existing_key, {
-                            "title": item.get("title", url_path),
-                            "icon": item.get("icon", "mdi:view-dashboard"),
-                            "require_admin": bool(item.get("require_admin", True)),
-                            "show_in_sidebar": bool(item.get("show_in_sidebar", True)),
-                        })
-                    elif hasattr(storage_col, "data") and isinstance(storage_col.data, dict):
-                        storage_col.data[existing_key] = {**storage_col.data[existing_key], **item}
-                        if hasattr(storage_col, "_async_schedule_save"):
-                            storage_col._async_schedule_save()
-                else:
-                    if hasattr(storage_col, "async_create_item"):
-                        await storage_col.async_create_item({
-                            "url_path": url_path,
-                            "title": item.get("title", url_path),
-                            "icon": item.get("icon", "mdi:view-dashboard"),
-                            "require_admin": bool(item.get("require_admin", True)),
-                            "show_in_sidebar": bool(item.get("show_in_sidebar", True)),
-                            "mode": "storage",
-                        })
-                    elif hasattr(storage_col, "data") and isinstance(storage_col.data, dict):
-                        storage_col.data[dash_id] = dict(item)
-                        if hasattr(storage_col, "_async_schedule_save"):
-                            storage_col._async_schedule_save()
+                if existing_key is not None and hasattr(storage_col, "async_update_item"):
+                    await storage_col.async_update_item(existing_key, {
+                        "title": item.get("title", url_path),
+                        "icon": item.get("icon", "mdi:view-dashboard"),
+                        "require_admin": bool(item.get("require_admin", True)),
+                        "show_in_sidebar": bool(item.get("show_in_sidebar", True)),
+                    })
+                elif existing_key is None and hasattr(storage_col, "async_create_item"):
+                    await storage_col.async_create_item({
+                        "url_path": url_path,
+                        "title": item.get("title", url_path),
+                        "icon": item.get("icon", "mdi:view-dashboard"),
+                        "require_admin": bool(item.get("require_admin", True)),
+                        "show_in_sidebar": bool(item.get("show_in_sidebar", True)),
+                        "mode": "storage",
+                    })
             except Exception as col_err:
                 _LOGGER.debug("DashboardsCollection update handled: %s", col_err)
 
-        # 2. Save dashboard configuration via LovelaceStorage or Store
-        saved_via_lovelace = False
+        # 2. Save dashboard configuration strictly via the dashboard's own async_save API
         try:
-            from homeassistant.components import frontend
-            from homeassistant.components.lovelace import dashboard as ll_dashboard
+            lovelace_data = self._get_lovelace_data()
+            if lovelace_data is not None and url_path in lovelace_data.dashboards and overwrite_config:
+                dash_obj = lovelace_data.dashboards[url_path]
+                current_cfg = getattr(dash_obj, "config", None)
+                is_changed = True
+                try:
+                    cur_str = json.dumps(current_cfg, sort_keys=True) if current_cfg else ""
+                    new_str = json.dumps(merged_dashboard_config, sort_keys=True)
+                    if cur_str and cur_str == new_str:
+                        is_changed = False
+                except Exception:
+                    pass
 
-            lovelace_data = None
-            if hasattr(self.hass, "data") and isinstance(self.hass.data, dict):
-                for k, v in self.hass.data.items():
-                    if str(k) == "lovelace" or getattr(v, "dashboards", None) is not None:
-                        if hasattr(v, "dashboards") and isinstance(v.dashboards, dict):
-                            lovelace_data = v
-                            break
-
-            if lovelace_data is not None:
-                if url_path not in lovelace_data.dashboards:
-                    lovelace_data.dashboards[url_path] = ll_dashboard.LovelaceStorage(
-                        self.hass, item
-                    )
-                else:
-                    lovelace_data.dashboards[url_path].config = item
-
-                if overwrite_config:
-                    current_cfg = getattr(lovelace_data.dashboards[url_path], "config", None)
-                    is_changed = True
+                if is_changed and hasattr(dash_obj, "async_save"):
                     try:
-                        cur_str = json.dumps(current_cfg, sort_keys=True) if current_cfg else ""
-                        new_str = json.dumps(merged_dashboard_config, sort_keys=True)
-                        if cur_str and cur_str == new_str:
-                            is_changed = False
+                        await dash_obj.async_save(merged_dashboard_config)
+                    except Exception as save_err:
+                        _LOGGER.debug("LovelaceStorage.async_save skipped: %s", save_err)
+                    try:
+                        self.hass.bus.async_fire("lovelace_updated", {"url_path": url_path})
                     except Exception:
                         pass
-
-                    if is_changed:
-                        try:
-                            await lovelace_data.dashboards[url_path].async_save(merged_dashboard_config)
-                            saved_via_lovelace = True
-                        except Exception as save_err:
-                            _LOGGER.debug("LovelaceStorage.async_save skipped: %s", save_err)
-                        try:
-                            self.hass.bus.async_fire("lovelace_updated", {"url_path": url_path})
-                        except Exception:
-                            pass
-
-            if hasattr(frontend, "async_register_built_in_panel"):
-                frontend.async_register_built_in_panel(
-                    self.hass,
-                    "lovelace",
-                    frontend_url_path=url_path,
-                    require_admin=bool(item.get("require_admin", True)),
-                    show_in_sidebar=bool(item.get("show_in_sidebar", True)),
-                    sidebar_title=item.get("title", url_path),
-                    sidebar_icon=item.get("icon", "mdi:view-dashboard"),
-                    config={"mode": "storage"},
-                    update=True,
-                )
         except Exception as err:
-            _LOGGER.debug("Live Lovelace panel registration handled: %s", err)
-
-        if not saved_via_lovelace and overwrite_config:
-            # Direct Store save fallback when Lovelace component is not in memory
-            try:
-                cfg_store = Store(self.hass, 1, f"lovelace.{dash_id}")
-                await cfg_store.async_save({"config": merged_dashboard_config})
-            except Exception as store_err:
-                _LOGGER.debug("Fallback Store save for lovelace.%s: %s", dash_id, store_err)
+            _LOGGER.debug("Live Lovelace dashboard save handled: %s", err)
 
         return {
             "success": True,

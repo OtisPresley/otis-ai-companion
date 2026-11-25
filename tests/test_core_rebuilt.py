@@ -716,18 +716,20 @@ class TestOtisAICore(unittest.TestCase):
         
         import asyncio
         result = asyncio.run(agent.async_process(user_input))
-        
-        # Verify automation manager was called
-        manager.async_write_automation.assert_called_once()
-        manager.async_reload_automations.assert_called_once()
-        
+
+        # Verify no raw store write or reload occurred; YAML is presented for UI import
+        manager.async_write_automation.assert_not_called()
+        manager.async_reload_automations.assert_not_called()
+
         # Verify pending_yaml was cleared
         sessions = self.hass.data[DOMAIN]["sessions"]
         self.assertNotIn("pending_yaml", sessions["test_conv_id"])
-        
-        # Verify speech response
+
+        # Verify speech response presents YAML and Edit in YAML instructions
         user_input.create_response.assert_called_once()
-        self.assertIn("successfully created and enabled the automation", user_input.create_response.call_args[1]["speech"])
+        speech = user_input.create_response.call_args[1]["speech"]
+        self.assertIn("Edit in YAML", speech)
+        self.assertIn("Turn on fan", speech)
 
     def test_conversation_agent_natural_deploy_confirmation(self):
         """Test that natural phrasing like 'I want you to deploy this automation' triggers deployment."""
@@ -762,10 +764,12 @@ class TestOtisAICore(unittest.TestCase):
         import asyncio
         result = asyncio.run(agent.async_process(user_input))
 
-        manager.async_write_automation.assert_called_once()
-        manager.async_reload_automations.assert_called_once()
+        manager.async_write_automation.assert_not_called()
+        manager.async_reload_automations.assert_not_called()
         self.assertNotIn("pending_items", self.hass.data[DOMAIN]["sessions"]["test_conv_id"])
-        self.assertIn("successfully created and enabled the automation 'Guest Mode PIN Alerts'", user_input.create_response.call_args[1]["speech"])
+        speech = user_input.create_response.call_args[1]["speech"]
+        self.assertIn("Edit in YAML", speech)
+        self.assertIn("Guest Mode PIN Alerts", speech)
 
     def test_conversation_agent_critique_does_not_auto_deploy(self):
         """Critiques or questions mentioning 'deploy' must NOT falsely confirm & execute pending drafts."""
@@ -894,9 +898,10 @@ class TestOtisAICore(unittest.TestCase):
         import asyncio
         result = asyncio.run(agent.async_process(user_input))
 
-        manager.async_write_automation.assert_called_once()
-        self.assertIn("Night Lights Off", manager.async_write_automation.call_args[0][0]["alias"])
-        self.assertIn("successfully created and enabled the automation 'Night Lights Off'", user_input.create_response.call_args[1]["speech"])
+        manager.async_write_automation.assert_not_called()
+        speech = user_input.create_response.call_args[1]["speech"]
+        self.assertIn("Night Lights Off", speech)
+        self.assertIn("Edit in YAML", speech)
 
     def test_conversation_agent_modern_gui_yaml_and_sanitization(self):
         """Test modern HA YAML keys (triggers/actions), list syntax (- id:), and speech sanitization."""
@@ -1014,11 +1019,12 @@ class TestOtisAICore(unittest.TestCase):
         confirm_input.create_response = MagicMock(return_value="confirmed")
 
         asyncio.run(agent.async_process(confirm_input))
-        manager.async_write_script.assert_called_once()
-        manager.async_write_automation.assert_called_once()
-        manager.async_reload_scripts.assert_called_once()
-        manager.async_reload_automations.assert_called_once()
-        self.assertIn("Applied successfully!", confirm_input.create_response.call_args[1]["speech"])
+        manager.async_write_script.assert_not_called()
+        manager.async_write_automation.assert_not_called()
+        speech = confirm_input.create_response.call_args[1]["speech"]
+        self.assertIn("Edit in YAML", speech)
+        self.assertIn("Media Matrix Zone Coordinator", speech)
+        self.assertIn("Media Keypad Trigger", speech)
 
     def test_conversation_agent_history_continuity(self):
         """Test that conversation history is preserved across turns and injected into prompt."""
@@ -1306,9 +1312,10 @@ class TestOtisAICore(unittest.TestCase):
         # Running apply_suggestion with our mock call
         res = asyncio.run(apply_handler(call))
         self.assertTrue(res["success"])
-        self.assertIn("auto_12345", res["id"])
-        auto_mgr.async_write_automation.assert_called_once()
-        auto_mgr.async_reload_automations.assert_called_once()
+        self.assertEqual(res["action"], "present_ha_automation_yaml")
+        self.assertIn("Motion Kitchen", res["yaml"])
+        auto_mgr.async_write_automation.assert_not_called()
+        auto_mgr.async_reload_automations.assert_not_called()
 
         # Test apply_suggestion handler for switch_local_llm_model
         llm_mgr = self.hass.data[DOMAIN][entry.entry_id]["local_llm_manager"]
@@ -2416,17 +2423,24 @@ class TestFloorplanParser(unittest.TestCase):
         dashboards_json = self.hass.config.path(".storage/lovelace_dashboards")
         self.assertFalse(os.path.exists(dashboards_json))
         self.assertIn("otis-ai", d_mgr._managed_dashboards)
-        otis_dash_json = self.hass.config.path(".storage/lovelace.otis_ai")
-        with open(otis_dash_json, "r", encoding="utf-8") as f:
-            otis_dash_data = f.read()
-            self.assertIn('"type": "panel"', otis_dash_data)
-            self.assertIn('"panel": true', otis_dash_data)
-            self.assertIn('"theme_preset": "ha_native"', otis_dash_data)
-            self.assertIn('"subview": true', otis_dash_data)
-            self.assertIn('"path": "media"', otis_dash_data)
-            self.assertIn('"path": "security"', otis_dash_data)
-            self.assertIn('"path": "climate"', otis_dash_data)
-            self.assertIn('"path": "floorplan"', otis_dash_data)
+        # Verify built dashboard config structure without touching raw .storage files
+        built_cfg = d_mgr._build_otis_companion_dashboard_config({
+            "areas": {},
+            "entities": [
+                {"entity_id": "media_player.tv", "domain": "media_player"},
+                {"entity_id": "lock.front", "domain": "lock"},
+                {"entity_id": "climate.main", "domain": "climate"},
+            ],
+            "media_topology": {"matrix_zones": [{"entity_id": "media_player.tv"}], "input_streamers": [], "tv_cinema_zones": []},
+            "security_topology": {"locks": ["lock.front"], "alarm_panels": [], "garage_covers": [], "cameras": [], "bed_occupancy_sensors": [], "persons": [], "perimeter_contact_sensors": []},
+        })
+        built_str = json.dumps(built_cfg)
+        self.assertIn('"type": "panel"', built_str)
+        self.assertIn('"panel": true', built_str)
+        self.assertIn('"theme_preset": "ha_native"', built_str)
+        self.assertIn('"subview": true', built_str)
+        self.assertIn('"path": "default_view"', built_str)
+        self.assertIn('"path": "floorplan"', built_str)
 
         parser = FloorplanParser(self.hass)
         engine = DiscoveryEngine(self.hass, floorplan_parser=parser, dashboard_manager=d_mgr)
@@ -2553,7 +2567,24 @@ class TestFloorplanParser(unittest.TestCase):
         self.assertIn("pro_dashboard_whole_home_hub", proposals)
         self.assertEqual(proposals["pro_dashboard_whole_home_hub"]["template"], "whole_home")
 
-        # 3. Test Standalone Hub-and-Spoke Dashboards
+        # 3. Test Standalone Hub-and-Spoke Dashboards via official Lovelace dashboard async_save
+        saved_dashboards = {}
+        def _make_mock_dash(url_path):
+            d = MagicMock()
+            d.config = None
+            d.async_load = AsyncMock(return_value=None)
+            async def _save(cfg):
+                saved_dashboards[url_path] = cfg
+            d.async_save = AsyncMock(side_effect=_save)
+            return d
+
+        mock_lovelace = MagicMock()
+        mock_lovelace.dashboards = {
+            "otis-media-studio": _make_mock_dash("otis-media-studio"),
+            "otis-whole-home": _make_mock_dash("otis-whole-home"),
+        }
+        self.hass.data["lovelace"] = mock_lovelace
+
         # Media Studio
         media_dash = asyncio.run(
             d_mgr.async_create_professional_dashboard(
@@ -2562,12 +2593,10 @@ class TestFloorplanParser(unittest.TestCase):
             )
         )
         self.assertTrue(media_dash["success"])
-        media_json = self.hass.config.path(".storage/lovelace.otis_media_studio")
-        with open(media_json, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            vpaths = [v["path"] for v in data["data"]["config"]["views"]]
-            self.assertEqual(vpaths, ["default_view", "zones", "streamers", "cinema"])
-            self.assertTrue(data["data"]["config"]["views"][1]["subview"])
+        data = saved_dashboards["otis-media-studio"]
+        vpaths = [v["path"] for v in data["views"]]
+        self.assertEqual(vpaths, ["default_view", "zones", "streamers", "cinema"])
+        self.assertTrue(data["views"][1]["subview"])
 
         # Whole-Home Hub
         whole_home_dash = asyncio.run(
@@ -2577,14 +2606,12 @@ class TestFloorplanParser(unittest.TestCase):
             )
         )
         self.assertTrue(whole_home_dash["success"])
-        wh_json = self.hass.config.path(".storage/lovelace.otis_whole_home")
-        with open(wh_json, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            vpaths = [v["path"] for v in data["data"]["config"]["views"]]
-            self.assertIn("default_view", vpaths)
-            self.assertIn("area_living_room", vpaths)
-            self.assertIn("area_master_bedroom", vpaths)
-            self.assertIn("area_study", vpaths)
+        data = saved_dashboards["otis-whole-home"]
+        vpaths = [v["path"] for v in data["views"]]
+        self.assertIn("default_view", vpaths)
+        self.assertIn("area_living_room", vpaths)
+        self.assertIn("area_master_bedroom", vpaths)
+        self.assertIn("area_study", vpaths)
 
         # Gap analysis after creation should no longer propose whole_home
         gaps_after = asyncio.run(d_mgr.async_analyze_dashboard_gaps(capability_map))
@@ -2974,7 +3001,9 @@ class TestSentinelManager(unittest.TestCase):
         self.assertEqual(new_config["views"][0]["cards"][0].get("title"), "Otis AI Companion")
 
         # 4. Merge preserving user views
-        merged = dm._merge_dashboard_config_preserving_user_views(storage_dir, "otis_ai", new_config)
+        merged = dm._merge_dashboard_config_preserving_user_views(
+            [user_custom_view, user_custom_subview], "otis_ai", new_config
+        )
 
         # Assert view 0 was preserved exactly as customized by user
         self.assertEqual(len(merged["views"][0]["cards"]), 2)
@@ -3222,77 +3251,73 @@ class TestSentinelManager(unittest.TestCase):
         from custom_components.otis_ai.dashboard_manager import DashboardManager
 
         dm = DashboardManager(self.hass)
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            # 1. Create mock lovelace.otis_ai with custom cards in Media Studio and a Room view
-            admin_data = {
-                "version": 1,
-                "data": {
-                    "config": {
-                        "views": [
-                            {"path": "default_view", "title": "AI Command Center", "cards": []},
-                            {
-                                "path": "media",
-                                "title": "Media Studio",
-                                "cards": [
-                                    {"type": "markdown", "content": "Custom Admin Media Studio"},
-                                    {"type": "button", "name": "Back", "tap_action": {"action": "navigate", "navigation_path": "/otis-ai/area_theater"}},
-                                ],
-                            },
-                            {
-                                "path": "area_theater",
-                                "title": "Home Theater",
-                                "cards": [
-                                    {"type": "media-control", "entity": "media_player.theater_avr"},
-                                    {"type": "button", "name": "Return", "tap_action": {"action": "navigate", "navigation_path": "/otis-ai/media"}},
-                                ],
-                            },
-                        ]
-                    }
-                }
-            }
-            with open(os.path.join(tmp_dir, "lovelace.otis_ai"), "w") as f:
-                json.dump(admin_data, f)
-
-            # 2. Command Center newly generated config
-            new_cc_config = {
-                "title": "Command Center",
-                "views": [
-                    {
-                        "path": "home",
-                        "title": "Home",
-                        "cards": [
-                            {"type": "markdown", "content": "Header"},
-                            {"type": "grid", "title": "Studios", "cards": [{"name": "Media Studio"}]},
-                            {"type": "grid", "title": "Rooms", "cards": [{"name": "Home Theater"}]},
-                        ],
-                    },
-                    {"path": "media", "title": "Media Studio", "cards": []},
-                    {"path": "area_theater", "title": "Home Theater", "cards": []},
+        admin_views = [
+            {"path": "default_view", "title": "AI Command Center", "cards": []},
+            {
+                "path": "media",
+                "title": "Media Studio",
+                "cards": [
+                    {"type": "markdown", "content": "Custom Admin Media Studio"},
+                    {"type": "button", "name": "Back", "tap_action": {"action": "navigate", "navigation_path": "/otis-ai/area_theater"}},
                 ],
-            }
+            },
+            {
+                "path": "area_theater",
+                "title": "Home Theater",
+                "cards": [
+                    {"type": "media-control", "entity": "media_player.theater_avr"},
+                    {"type": "button", "name": "Return", "tap_action": {"action": "navigate", "navigation_path": "/otis-ai/media"}},
+                ],
+            },
+        ]
+        admin_dash = MagicMock()
+        admin_dash.async_load = AsyncMock(return_value={"views": admin_views})
+        cc_dash = MagicMock()
+        cc_dash.async_load = AsyncMock(return_value=None)
+        mock_ll = MagicMock()
+        mock_ll.dashboards = {"otis-ai": admin_dash, "command-center": cc_dash}
+        self.hass.data["lovelace"] = mock_ll
 
-            merged = dm._merge_dashboard_config_preserving_user_views(
-                storage_dir=tmp_dir,
-                dash_id="command-center",
-                new_config=new_cc_config,
-            )
+        # 2. Command Center newly generated config
+        new_cc_config = {
+            "title": "Command Center",
+            "views": [
+                {
+                    "path": "home",
+                    "title": "Home",
+                    "cards": [
+                        {"type": "markdown", "content": "Header"},
+                        {"type": "grid", "title": "Studios", "cards": [{"name": "Media Studio"}]},
+                        {"type": "grid", "title": "Rooms", "cards": [{"name": "Home Theater"}]},
+                    ],
+                },
+                {"path": "media", "title": "Media Studio", "cards": []},
+                {"path": "area_theater", "title": "Home Theater", "cards": []},
+            ],
+        }
 
-            # Verify Media Studio inherited the admin cards and URL was rewritten to /command-center/
-            media_view = next(v for v in merged["views"] if v["path"] == "media")
-            self.assertEqual(len(media_view["cards"]), 2)
-            self.assertEqual(media_view["cards"][0]["content"], "Custom Admin Media Studio")
-            self.assertEqual(
-                media_view["cards"][1]["tap_action"]["navigation_path"],
-                "/command-center/area_theater",
-            )
+        merged = asyncio.run(dm._async_merge_dashboard_config_preserving_user_views(
+            dash_id="command-center",
+            url_path="command-center",
+            new_config=new_cc_config,
+        ))
 
-            # Verify Room subview inherited the admin cards and URL was rewritten
-            theater_view = next(v for v in merged["views"] if v["path"] == "area_theater")
-            self.assertEqual(len(theater_view["cards"]), 2)
-            self.assertEqual(
-                theater_view["cards"][1]["tap_action"]["navigation_path"],
-                "/command-center/media",
-            )
+        # Verify Media Studio inherited the admin cards and URL was rewritten to /command-center/
+        media_view = next(v for v in merged["views"] if v["path"] == "media")
+        self.assertEqual(len(media_view["cards"]), 2)
+        self.assertEqual(media_view["cards"][0]["content"], "Custom Admin Media Studio")
+        self.assertEqual(
+            media_view["cards"][1]["tap_action"]["navigation_path"],
+            "/command-center/area_theater",
+        )
+
+        # Verify Room subview inherited the admin cards and URL was rewritten
+        theater_view = next(v for v in merged["views"] if v["path"] == "area_theater")
+        self.assertEqual(len(theater_view["cards"]), 2)
+        self.assertEqual(
+            theater_view["cards"][1]["tap_action"]["navigation_path"],
+            "/command-center/media",
+        )
 
     def test_command_center_merge_glance_and_rooms_resilience(self):
         """Verify Glance & Schedule insertion and ensure rooms are never wiped out."""
@@ -3302,89 +3327,71 @@ class TestSentinelManager(unittest.TestCase):
         from custom_components.otis_ai.dashboard_manager import DashboardManager
 
         dm = DashboardManager(self.hass)
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            # Case 1: Existing home view only has Header and Studios (the user report state)
-            existing_cc = {
-                "data": {
-                    "config": {
-                        "title": "Command Center",
-                        "views": [
-                            {
-                                "path": "home",
-                                "title": "Home",
-                                "cards": [
-                                    {"type": "markdown", "content": "# 🏠 Home Command Center"},
-                                    {"type": "grid", "title": "Studios", "cards": [{"name": "Floor Plan"}]},
-                                ],
-                            },
-                        ],
-                    }
+        existing_views = [
+            {
+                "path": "home",
+                "title": "Home",
+                "cards": [
+                    {"type": "markdown", "content": "# 🏠 Home Command Center"},
+                    {"type": "grid", "title": "Studios", "cards": [{"name": "Floor Plan"}]},
+                ],
+            },
+        ]
+
+        new_cc = {
+            "title": "Command Center",
+            "views": [
+                {
+                    "path": "home",
+                    "title": "Home",
+                    "cards": [
+                        {"type": "markdown", "content": "# 🏠 Home Command Center"},
+                        {"type": "grid", "title": "Studios", "cards": [{"name": "Floor Plan"}]},
+                        {"type": "grid", "title": "Glance & Schedule", "cards": [{"type": "weather-forecast"}]},
+                        {"type": "grid", "title": "Rooms", "cards": [{"name": "Great Room"}]},
+                    ],
+                },
+                {"path": "area_great_room", "title": "Great Room", "cards": []},
+            ],
+        }
+
+        merged = dm._merge_dashboard_config_preserving_user_views(
+            existing_views=existing_views,
+            dash_id="command-center",
+            new_config=new_cc,
+        )
+
+        home_cards = merged["views"][0]["cards"]
+        titles = [c.get("title") for c in home_cards]
+        self.assertIn("Studios", titles)
+        self.assertIn("Glance & Schedule", titles)
+        self.assertIn("Rooms", titles)
+        self.assertLess(titles.index("Studios"), titles.index("Glance & Schedule"))
+        self.assertLess(titles.index("Glance & Schedule"), titles.index("Rooms"))
+
+        empty_new_cc = {
+            "title": "Command Center",
+            "views": [
+                {
+                    "path": "home",
+                    "title": "Home",
+                    "cards": [
+                        {"type": "markdown", "content": "# 🏠 Home Command Center"},
+                        {"type": "grid", "title": "Studios", "cards": [{"name": "Floor Plan"}]},
+                    ],
                 }
-            }
-            cc_path = os.path.join(tmp_dir, "lovelace.command-center")
-            with open(cc_path, "w", encoding="utf-8") as f:
-                json.dump(existing_cc, f)
+            ],
+        }
 
-            new_cc = {
-                "title": "Command Center",
-                "views": [
-                    {
-                        "path": "home",
-                        "title": "Home",
-                        "cards": [
-                            {"type": "markdown", "content": "# 🏠 Home Command Center"},
-                            {"type": "grid", "title": "Studios", "cards": [{"name": "Floor Plan"}]},
-                            {"type": "grid", "title": "Glance & Schedule", "cards": [{"type": "weather-forecast"}]},
-                            {"type": "grid", "title": "Rooms", "cards": [{"name": "Great Room"}]},
-                        ],
-                    },
-                    {"path": "area_great_room", "title": "Great Room", "cards": []},
-                ],
-            }
-
-            merged = dm._merge_dashboard_config_preserving_user_views(
-                storage_dir=tmp_dir,
-                dash_id="command-center",
-                new_config=new_cc,
-            )
-
-            home_cards = merged["views"][0]["cards"]
-            titles = [c.get("title") for c in home_cards]
-            self.assertIn("Studios", titles)
-            self.assertIn("Glance & Schedule", titles)
-            self.assertIn("Rooms", titles)
-            # Verify order: Studios before Glance, Glance before Rooms
-            self.assertLess(titles.index("Studios"), titles.index("Glance & Schedule"))
-            self.assertLess(titles.index("Glance & Schedule"), titles.index("Rooms"))
-
-            # Case 2: If new_config has empty rooms/glance (e.g. during offline startup), existing rooms must NOT be wiped out
-            with open(cc_path, "w", encoding="utf-8") as f:
-                json.dump({"data": {"config": merged}}, f)
-
-            empty_new_cc = {
-                "title": "Command Center",
-                "views": [
-                    {
-                        "path": "home",
-                        "title": "Home",
-                        "cards": [
-                            {"type": "markdown", "content": "# 🏠 Home Command Center"},
-                            {"type": "grid", "title": "Studios", "cards": [{"name": "Floor Plan"}]},
-                        ],
-                    }
-                ],
-            }
-
-            merged_after_empty = dm._merge_dashboard_config_preserving_user_views(
-                storage_dir=tmp_dir,
-                dash_id="command-center",
-                new_config=empty_new_cc,
-            )
-            titles_after_empty = [c.get("title") for c in merged_after_empty["views"][0]["cards"]]
-            self.assertIn("Glance & Schedule", titles_after_empty)
-            self.assertIn("Rooms", titles_after_empty)
-            # Area subviews must also be preserved
-            self.assertTrue(any(v.get("path") == "area_great_room" for v in merged_after_empty["views"]))
+        merged_after_empty = dm._merge_dashboard_config_preserving_user_views(
+            existing_views=merged["views"],
+            dash_id="command-center",
+            new_config=empty_new_cc,
+        )
+        titles_after_empty = [c.get("title") for c in merged_after_empty["views"][0]["cards"]]
+        self.assertIn("Glance & Schedule", titles_after_empty)
+        self.assertIn("Rooms", titles_after_empty)
+        self.assertTrue(any(v.get("path") == "area_great_room" for v in merged_after_empty["views"]))
 
     def tearDown(self):
         if hasattr(self, "temp_dir"):

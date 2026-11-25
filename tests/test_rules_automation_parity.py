@@ -199,12 +199,13 @@ class TestRulesAndAutomationParity(unittest.TestCase):
 
         asyncio.run(agent.async_process(user_input_apply))
         speech_apply = user_input_apply.create_response.call_args[1]["speech"]
-        self.assertIn("Automation Created and Enabled!", speech_apply)
+        self.assertIn("Automation YAML Ready to Import", speech_apply)
+        self.assertIn("Edit in YAML", speech_apply)
         self.assertIn("Cinema Mode Coordinator: Living Room TV", speech_apply)
 
-        # Verify exact same payload was passed to AutomationManager as card apply_suggestion
-        mock_auto_mgr.async_write_automation.assert_called_once_with(cinema_suggestion["action_payload"])
-        mock_auto_mgr.async_reload_automations.assert_called_once()
+        # Verify AutomationManager was NOT called to write raw store files
+        mock_auto_mgr.async_write_automation.assert_not_called()
+        mock_auto_mgr.async_reload_automations.assert_not_called()
         mock_rm.async_dismiss_recommendation.assert_called_once_with("cinema_lighting_shade_coordinator")
 
         # 3. Test balanced autonomy creates staging with exact YAML and asks for confirmation

@@ -701,7 +701,7 @@ export const tabsMixin = {
             <span>${stats.areas}</span>
           </div>
           <div>${Object.values(this._capabilityMap?.areas || {})
-        .map((a) => a.name)
+        .map((a) => this._escapeHtml(a.name))
         .join(", ") || "No areas configured"}</div>
         </div>
         <div class="cap-block">
@@ -716,9 +716,9 @@ export const tabsMixin = {
           .map(
             ([area, nbrs]) => `
                       <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); padding: 4px 8px; border-radius: 6px;">
-                        <strong style="color: var(--otis-primary);">${area}</strong>
+                        <strong style="color: var(--otis-primary);">${this._escapeHtml(area)}</strong>
                         <span style="color: var(--otis-text-muted); margin: 0 4px;">↔</span>
-                        <span style="color: var(--otis-text);">${nbrs.join(", ")}</span>
+                        <span style="color: var(--otis-text);">${nbrs.map((n) => this._escapeHtml(n)).join(", ")}</span>
                       </div>
                     `
           )
@@ -1961,7 +1961,7 @@ export const tabsMixin = {
                       <div class="camera-preview-container" data-cam-id="${this._escapeHtml(cam.entity_id)}" title="Click to view live stream" style="cursor: pointer;">
                         ${imgSrc
                 ? `<img class="camera-preview-img" 
-                                   src="${imgSrc}" 
+                                   src="${this._escapeHtml(imgSrc)}" 
                                    alt="${this._escapeHtml(cam.name)}" 
                                    loading="lazy" 
                                    onerror="this.style.display='none'; if (this.nextElementSibling) this.nextElementSibling.style.display='flex';" />`

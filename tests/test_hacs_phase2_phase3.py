@@ -238,6 +238,7 @@ def test_apply_suggestion_rejects_arbitrary_untracked_action():
 
     # Mock engine capability map with NO suggestions
     engine = MagicMock()
+    engine.async_build_capability_map = AsyncMock(return_value={"areas": {}, "entities": [], "orphaned_entities": [], "integrations": [], "proactive_suggestions": []})
     engine.get_cached_suggestion = MagicMock(return_value=None)
     engine.async_build_capability_map = AsyncMock(return_value={"proactive_suggestions": []})
     hass.data[DOMAIN][entry.entry_id]["engine"] = engine
@@ -462,6 +463,7 @@ def test_conversation_agent_ha_log_audit_fast_path():
     entry.data = {}
 
     engine = MagicMock()
+    engine.async_build_capability_map = AsyncMock(return_value={"areas": {}, "entities": [], "orphaned_entities": [], "integrations": [], "proactive_suggestions": []})
     engine.async_build_capability_map = AsyncMock(return_value={"areas": {}, "entities": [], "proactive_suggestions": []})
     auto_mgr = MagicMock()
     lm = LogMonitor(hass)
@@ -496,6 +498,7 @@ def test_conversation_agent_suggest_automations_grounded():
     entry.data = {}
 
     engine = MagicMock()
+    engine.async_build_capability_map = AsyncMock(return_value={"areas": {}, "entities": [], "orphaned_entities": [], "integrations": [], "proactive_suggestions": []})
     engine.async_build_capability_map = AsyncMock(return_value={
         "areas": {"study": {"name": "Study", "entities": ["light.study_desk"]}},
         "entities": [{"entity_id": "light.study_desk", "domain": "light", "area_id": "study", "state": "off"}],
@@ -585,6 +588,8 @@ def test_guest_mode_switch_and_lifecycle():
         "guest_mode_auto_off_hours": 24,
         "wizard_state": {
             "guestLockCode": "4411",
+            "guestLockEntities": ["lock.front_door"],
+            "guestLockSlot": 9,
             "guestClimateComfort": True,
         },
     }
@@ -608,7 +613,13 @@ def test_guest_mode_switch_and_lifecycle():
         scheduled_timers.append((delay, cb))
         return MagicMock()
 
-    with patch("custom_components.otis_ai.guest_mode.async_call_later", side_effect=_fake_call_later):
+    mock_zwave_reg = MagicMock()
+    mock_zwave_reg.async_get = MagicMock(return_value=SimpleNamespace(platform="zwave_js"))
+
+    with (
+        patch("custom_components.otis_ai.guest_mode.async_call_later", side_effect=_fake_call_later),
+        patch("custom_components.otis_ai.guest_mode.er.async_get", return_value=mock_zwave_reg),
+    ):
         # Turn ON via switch entity
         asyncio.run(sw.async_turn_on())
         assert sw.is_on is True
@@ -662,7 +673,12 @@ def test_guest_mode_schlage_platform_routing():
     rules_data = {
         "guest_mode_enabled": False,
         "guest_mode_auto_off_hours": 0,
-        "wizard_state": {"guestLockCode": "4411", "guestClimateComfort": False},
+        "wizard_state": {
+            "guestLockCode": "4411",
+            "guestLockEntities": ["lock.front_door"],
+            "guestLockSlot": 9,
+            "guestClimateComfort": False,
+        },
     }
     rules_mgr = MagicMock()
     rules_mgr.async_load = AsyncMock(side_effect=lambda: dict(rules_data))
@@ -686,3 +702,70 @@ def test_guest_mode_schlage_platform_routing():
         assert off_call.args[0] == "schlage"
         assert off_call.args[1] == "delete_code"
         assert off_call.kwargs["target"] == {"entity_id": "lock.front_door"}
+
+
+def test_conversation_agent_admin_gating_and_guest_code_scrubbing():
+    """Verify non-admin users cannot trigger admin actions via conversation agent and guest codes are scrubbed."""
+    from types import SimpleNamespace
+    from custom_components.otis_ai import OtisAIConversationAgent
+    from custom_components.otis_ai.rules_manager import scrub_sensitive_rules
+
+    hass = MagicMock()
+    hass.data = {}
+    non_admin_user = SimpleNamespace(is_admin=False)
+    hass.auth = MagicMock()
+    hass.auth.async_get_user = AsyncMock(return_value=non_admin_user)
+
+    entry = MagicMock()
+    entry.entry_id = "entry_admin_gate"
+    entry.options = {}
+    entry.data = {}
+
+    engine = MagicMock()
+    engine.async_build_capability_map = AsyncMock(return_value={"areas": {}, "entities": [], "orphaned_entities": [], "integrations": [], "proactive_suggestions": []})
+    theme_mgr = MagicMock()
+    theme_mgr.async_generate_and_save_theme = AsyncMock()
+    theme_mgr.async_apply_theme = AsyncMock()
+    dash_mgr = MagicMock()
+    dash_mgr.async_ensure_admin_companion_dashboard = AsyncMock()
+    comm_mgr = MagicMock()
+    comm_mgr.async_auto_commission = AsyncMock()
+
+    agent = OtisAIConversationAgent(
+        hass,
+        entry,
+        engine,
+        None,
+        dashboard_manager=dash_mgr,
+        theme_manager=theme_mgr,
+        commissioning_manager=comm_mgr,
+    )
+    agent.copilot_engine = None
+    agent._create_response = MagicMock(side_effect=lambda ui, sp: sp)
+
+    for prompt in (
+        "create theme neon",
+        "apply theme midnight",
+        "regenerate dashboards",
+        "commission and apply",
+    ):
+        user_input = SimpleNamespace(
+            text=prompt,
+            conversation_id="conv_non_admin",
+            context=SimpleNamespace(user_id="regular_user_1"),
+            language="en",
+        )
+        speech = asyncio.run(agent.async_process(user_input))
+        assert "administrators" in speech.lower()
+
+    theme_mgr.async_generate_and_save_theme.assert_not_called()
+    theme_mgr.async_apply_theme.assert_not_called()
+    dash_mgr.async_ensure_admin_companion_dashboard.assert_not_called()
+    comm_mgr.async_auto_commission.assert_not_called()
+
+    scrubbed = scrub_sensitive_rules({
+        "custom_instructions": "Program configured temporary guest code onto selected locks.",
+        "wizard_state": {"guestLockCode": "4411", "guestLockSlot": 9},
+    })
+    assert "4411" not in str(scrubbed)
+    assert scrubbed["wizard_state"]["guestLockCode"] == "[REDACTED]"

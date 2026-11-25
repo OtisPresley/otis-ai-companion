@@ -1,7 +1,7 @@
-import { CARD_STYLES } from "./card-styles.js?v=0.4.2";
-import { floorplanMixin } from "./floorplan-3d.js?v=0.4.2";
-import { modalsMixin } from "./card-modals.js?v=0.4.2";
-import { tabsMixin } from "./card-tabs.js?v=0.4.2";
+import { CARD_STYLES } from "./card-styles.js?v=0.4.3";
+import { floorplanMixin } from "./floorplan-3d.js?v=0.4.3";
+import { modalsMixin } from "./card-modals.js?v=0.4.3";
+import { tabsMixin } from "./card-tabs.js?v=0.4.3";
 
 /**
  * Otis AI Companion - Lovelace Dashboard Card
@@ -18,7 +18,7 @@ import { tabsMixin } from "./card-tabs.js?v=0.4.2";
  * - Phase 10 Autonomous Home Commissioning & Multi-Node Federation Hub
  */
 
-const CARD_VERSION = "0.4.2";
+const CARD_VERSION = "0.4.3";
 console.info(
   `%c OTIS AI COMPANION CARD %c v${CARD_VERSION} `,
   "background: #0ea5e9; color: #fff; font-weight: bold; border-radius: 4px 0 0 4px; padding: 2px 6px;",
@@ -116,6 +116,8 @@ class OtisCompanionCard extends HTMLElement {
       workHours: "",
       sleepHabits: "",
       guestLockCode: "",
+      guestLockSlot: 9,
+      guestLockEntities: [],
       guestDelayedOff: "00:00:00",
       guestAutoOffHours: 0,
       guestClimateComfort: true,
@@ -3940,6 +3942,14 @@ class OtisCompanionCard extends HTMLElement {
 
         const codeInput = root.querySelector("#wiz-guest-code");
         if (codeInput) w.guestLockCode = codeInput.value.trim();
+        const slotInput = root.querySelector("#wiz-guest-slot");
+        if (slotInput) w.guestLockSlot = Math.max(1, parseInt(slotInput.value, 10) || 9);
+        const lockChks = root.querySelectorAll(".wiz-guest-lock-chk");
+        if (lockChks.length > 0) {
+          w.guestLockEntities = Array.from(lockChks)
+            .filter((chk) => chk.checked)
+            .map((chk) => chk.value);
+        }
         const offInput = root.querySelector("#wiz-guest-off");
         if (offInput) w.guestDelayedOff = offInput.value.trim();
         const autoOffSel = root.querySelector("#wiz-guest-auto-off");

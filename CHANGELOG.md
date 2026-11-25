@@ -7,6 +7,19 @@ All notable changes to the Otis AI Companion integration are documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2026-11-25
+
+### 🔒 Security & HACS Compliance
+- **🛡️ Conversation Agent Admin Gating (`__init__.py`)**: Added `_async_is_admin_context()` checks before executing admin-level actions from the conversation agent (`create theme`, `apply theme`, `regenerate dashboards`, and `commission ... apply`), preventing non-admin users from bypassing admin service restrictions via chat.
+- **🔐 Secret Scrubbing in Rules & Instructions (`card-modals.js`, `__init__.py`)**: Removed literal `guestLockCode` text from generated `custom_instructions` so lock PINs never reach `otis_ai_rules_updated` event bus payloads, and scrubbed `handle_get_user_rules` responses with `scrub_sensitive_rules()`.
+- **🧼 Frontend XSS Escaping (`card-tabs.js`, `card-modals.js`)**: Escaped mapped area names, spatial adjacency graph labels, camera `entity_picture` `src` attributes, and guide modal `description`/`guide` fields with `_escapeHtml()`.
+
+### ⚡ Improved
+- **📊 Pure Lovelace Collection & Dashboard API (`dashboard_manager.py`)**: Removed all fallback `.storage/lovelace.<id>` disk reads, `lovelace_resources` store reads, `storage_col.data` / `_async_schedule_save()` mutations, `LovelaceStorage` manual instantiation, and `Store("lovelace.<id>")` fallback saves; dashboard loading and saving now use only `DashboardsCollection` and the dashboard's own `async_load` / `async_save`.
+- **🔌 Core Storage Isolation & Non-Blocking Snapshots (`config_flow.py`, `automation_manager.py`)**: Removed `.storage/ai_task` and `.storage/marketplace_backups` reads, and dispatched `_inspect_local_snapshots_sync` via `hass.async_add_executor_job`.
+- **📋 Honest YAML Import Workflow (`__init__.py`)**: Removed unused `otis_ai_automations` / `otis_ai_scripts` store writes and `automation.reload` calls, returning formatted YAML blocks with Home Assistant UI import instructions instead of claiming automations were created and enabled.
+- **🔐 Explicit Guest Lock & Slot Selection (`guest_mode.py`, `card-modals.js`, `otis-companion-card.js`)**: Restricted Guest Mode lock programming to user-selected `guestLockEntities`, user-configured `guestLockSlot`, and verified `schlage` / `zwave_js` service payloads only.
+
 ## [0.4.2] - 2026-11-15
 
 ### ✨ Added

@@ -81,14 +81,12 @@ def _inspect_local_snapshots_sync(
             os.path.join(config_dir, "scripts.yaml.bak*"),
             os.path.join(config_dir, "scripts.yaml_*"),
             os.path.join(config_dir, "scripts_backup*.yaml"),
-            os.path.join(config_dir, ".storage", "marketplace_backups", "*script*"),
         ])
     if item_type in ("automation", "any"):
         patterns.extend([
             os.path.join(config_dir, "automations.yaml.bak*"),
             os.path.join(config_dir, "automations.yaml_*"),
             os.path.join(config_dir, "automations_backup*.yaml"),
-            os.path.join(config_dir, ".storage", "marketplace_backups", "*automation*"),
         ])
 
     seen_files: set[str] = set()
@@ -697,7 +695,9 @@ class AutomationManager:
                 # If user indicates item is overwritten / missing / corrupt, inspect snapshots to avoid prompt poisoning
                 if any(k in text_lower for k in ("overwritten", "missing", "corrupt", "stub", "lost", "restore", "backup")) and len(lines) < 60:
                     config_dir = self.hass.config.config_dir if hasattr(self.hass, "config") else "/config"
-                    snaps = _inspect_local_snapshots_sync(config_dir, {auto_id.lower()}, {alias_lower}, "automation")
+                    snaps = await self.hass.async_add_executor_job(
+                        _inspect_local_snapshots_sync, config_dir, {auto_id.lower()}, {alias_lower}, "automation"
+                    )
                     if snaps and snaps[0]["lines"] > len(lines) * 1.5:
                         best_s = snaps[0]
                         dumped = (
@@ -786,7 +786,9 @@ class AutomationManager:
                 # If user indicates item is overwritten / missing / corrupt, inspect snapshots to avoid prompt poisoning
                 if any(k in text_lower for k in ("overwritten", "missing", "corrupt", "stub", "lost", "restore", "backup")) and len(lines) < 60:
                     config_dir = self.hass.config.config_dir if hasattr(self.hass, "config") else "/config"
-                    snaps = _inspect_local_snapshots_sync(config_dir, {s_key.lower()}, {alias_lower}, "script")
+                    snaps = await self.hass.async_add_executor_job(
+                        _inspect_local_snapshots_sync, config_dir, {s_key.lower()}, {alias_lower}, "script"
+                    )
                     if snaps and snaps[0]["lines"] > len(lines) * 1.5:
                         best_s = snaps[0]
                         dumped = (

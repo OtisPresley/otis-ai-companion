@@ -90,30 +90,7 @@ def _get_agents(hass) -> list:
 
 
 async def async_get_system_ai_preferred_agent(hass, agents: list) -> str | None:
-    """Inspect Settings > System > AI (.storage/ai_task) to auto-detect preferred primary AI agent."""
-    try:
-        from homeassistant.helpers.storage import Store
-        from homeassistant.helpers import entity_registry as er
-
-        store = Store(hass, 1, "ai_task")
-        data = await store.async_load()
-        if data and isinstance(data, dict):
-            gen_entity_id = data.get("gen_data_entity_id") or data.get("gen_image_entity_id")
-            if gen_entity_id:
-                ent_reg = er.async_get(hass)
-                entry = ent_reg.async_get(gen_entity_id)
-                if entry:
-                    target_config_entry_id = entry.config_entry_id
-                    target_platform = entry.platform
-
-                    for agent in agents:
-                        aid = getattr(agent, "id", str(agent))
-                        if aid == target_config_entry_id or getattr(agent, "config_entry_id", None) == target_config_entry_id:
-                            return aid
-                        if target_platform and target_platform != "conversation" and target_platform in str(aid).lower():
-                            return aid
-    except Exception as err:
-        _LOGGER.debug("Could not inspect System AI preferences: %s", err)
+    """Return None so the user explicitly selects their preferred AI agent in the config flow."""
     return None
 
 

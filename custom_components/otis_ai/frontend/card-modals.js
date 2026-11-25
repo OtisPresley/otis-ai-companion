@@ -318,7 +318,7 @@ export const modalsMixin = {
                 🎯 Objective &amp; Impact:
               </div>
               <div style="color: var(--otis-text); line-height: 1.45;">
-                ${g.description || ""}
+                ${this._escapeHtml(g.description || "")}
               </div>
             </div>
 
@@ -327,7 +327,7 @@ export const modalsMixin = {
                 📋 Step-by-Step Implementation Guide:
               </div>
               <div style="color: var(--otis-text-muted); background: rgba(0, 0, 0, 0.25); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--otis-surface-border); line-height: 1.5;">
-                ${g.guide || g.description || "Follow the recommendations to complete setup."}
+                ${this._escapeHtml(g.guide || g.description || "Follow the recommendations to complete setup.")}
               </div>
             </div>
           </div>
@@ -1268,13 +1268,13 @@ export const modalsMixin = {
 
     lines.push("\n### Guest Mode & Entertaining");
     lines.push("- When Guest Mode is ON:");
-    if (w.guestLockCode) lines.push(`  * Add temporary code '${w.guestLockCode}' to exterior deadbolts for guest access.`);
+    if (w.guestLockCode) lines.push("  * Program the configured temporary guest code onto the selected guest locks.");
     if (w.guestDelayedOff) lines.push(`  * Delay automatic bedtime lighting turn-off until ${w.guestDelayedOff}.`);
     if (w.guestClimateComfort) lines.push("  * Maintain comfortable ambient climate in guest suites.");
     if (Number(w.guestAutoOffHours || 0) > 0) lines.push(`  * Automatically deactivate Guest Mode after ${Number(w.guestAutoOffHours)} hours.`);
     if (w.holidaySwitches) lines.push("  * Coordinate holiday lighting & seasonal outlets.");
     lines.push("- When Guest Mode is OFF:");
-    if (w.guestLockCode) lines.push(`  * Delete temporary guest code '${w.guestLockCode}' from deadbolts.`);
+    if (w.guestLockCode) lines.push("  * Clear the temporary guest code from the selected guest locks.");
 
     lines.push("\n### Security & Perimeter Safeguards");
     if (w.requireDeadboltConfirm) lines.push("- Always require explicit spoken confirmation before unlocking exterior deadbolts.");
@@ -1374,8 +1374,27 @@ export const modalsMixin = {
             ${hasLocks ? `
             <div class="rules-setting-row" style="flex-direction: column; align-items: flex-start; gap: 6px;">
               <div class="rules-setting-label">Temporary Guest Door Lock Code:</div>
-              <div class="rules-setting-desc">Auto-programmed to exterior deadbolts when Guest Mode is turned ON, and auto-deleted when OFF.</div>
+              <div class="rules-setting-desc">Auto-programmed only to the locks and slot you select below when Guest Mode is turned ON, and cleared when OFF.</div>
               <input type="text" id="wiz-guest-code" value="${this._escapeHtml(w.guestLockCode || "")}" placeholder="e.g. 4411" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+              <div style="display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 4px;">
+                <span style="font-size: 0.78rem; color: var(--otis-text-muted); white-space: nowrap;">Usercode Slot (Z-Wave JS):</span>
+                <input type="number" id="wiz-guest-slot" min="1" max="250" value="${Number(w.guestLockSlot) || 9}" style="width: 90px; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; background: var(--otis-surface); color: var(--otis-text); border: 1px solid var(--otis-surface-border);" />
+              </div>
+              <div style="font-size: 0.78rem; color: var(--otis-text-muted); margin-top: 4px;">Select Guest Locks:</div>
+              <div style="display: flex; flex-direction: column; gap: 4px; width: 100%; max-height: 110px; overflow-y: auto;">
+                ${Object.values(this._hass?.states || {})
+                  .filter((st) => st?.entity_id?.startsWith("lock."))
+                  .map((st) => {
+                    const eid = st.entity_id;
+                    const fname = st.attributes?.friendly_name || eid;
+                    const checked = Array.isArray(w.guestLockEntities) && w.guestLockEntities.includes(eid);
+                    return `<label style="display: flex; align-items: center; gap: 8px; font-size: 0.78rem; cursor: pointer;">
+                      <input type="checkbox" class="wiz-guest-lock-chk" value="${this._escapeHtml(eid)}" ${checked ? "checked" : ""} />
+                      <span>${this._escapeHtml(fname)} <span style="color: var(--otis-text-muted);">(${this._escapeHtml(eid)})</span></span>
+                    </label>`;
+                  })
+                  .join("")}
+              </div>
             </div>
             ` : ""}
 

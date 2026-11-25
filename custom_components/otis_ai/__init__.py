@@ -532,6 +532,22 @@ def _register_admin_service(
     hass.services.async_register(domain, service, admin_handler, **kwargs)
 
 
+async def _async_is_admin_context(hass: HomeAssistant, context: Any) -> bool:
+    """Return True if the caller context belongs to a Home Assistant administrator."""
+    user_id = getattr(context, "user_id", None) if context else None
+    if not user_id:
+        return False
+    auth = getattr(hass, "auth", None)
+    if auth and hasattr(auth, "async_get_user"):
+        try:
+            res = auth.async_get_user(user_id)
+            user = await res if asyncio.iscoroutine(res) or hasattr(res, "__await__") else res
+            return bool(user is not None and getattr(user, "is_admin", False))
+        except Exception:
+            return False
+    return False
+
+
 
 MAX_UPLOAD_SIZE_BYTES = 3 * 1024 * 1024 * 1024  # 3 GB aggregate upload limit (streamed to disk, never buffered in RAM)
 MAX_UPLOAD_CLIPS = 5  # Maximum clips allowed per walkthrough upload
@@ -1646,9 +1662,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return {"success": True, "message": msg}
 
         if action_type == "create_automation":
-            auto_id = await mgr.async_write_automation(payload)
-            if hasattr(mgr, "async_reload_automations"):
-                await mgr.async_reload_automations()
             clean_cfg = clean_yaml_dict({k: v for k, v in payload.items() if not str(k).startswith("_")})
             clean_cfg.pop("id", None)
             yaml_str = yaml.dump(clean_cfg, Dumper=_NoAliasSafeDumper, sort_keys=False, default_flow_style=False)
@@ -1658,22 +1671,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _invalidate()
             return {
                 "success": True,
-                "action": "create_ha_automation",
-                "message": f"Created Home Assistant automation '{clean_cfg.get('alias', auto_id)}'",
-                "id": auto_id,
+                "action": "present_ha_automation_yaml",
+                "message": (
+                    f"Generated automation YAML for '{clean_cfg.get('alias', suggestion_id or 'automation')}'. "
+                    "Paste it in Settings → Automations & Scenes → Create Automation → Edit in YAML to enable it."
+                ),
                 "automation_config": clean_cfg,
                 "yaml": yaml_str,
             }
         elif action_type == "create_script":
             script_key = (target.get("id") if target else suggestion_id) or "custom_script"
-            await mgr.async_write_script(script_key, payload)
-            if hasattr(mgr, "async_reload_scripts"):
-                await mgr.async_reload_scripts()
             yaml_str = yaml.dump(clean_yaml_dict(payload), Dumper=_NoAliasSafeDumper, sort_keys=False, default_flow_style=False)
             _invalidate()
             return {
                 "success": True,
-                "message": f"Successfully created script '{payload.get('alias', script_key)}'",
+                "action": "present_ha_script_yaml",
+                "message": (
+                    f"Generated script YAML for '{payload.get('alias', script_key)}'. "
+                    "Paste it in Settings → Automations & Scenes → Scripts → Add Script → Edit in YAML to enable it."
+                ),
                 "id": script_key,
                 "yaml": yaml_str,
             }
@@ -3176,7 +3192,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Handle service call to retrieve user behavioral rules and persona guidelines."""
         _LOGGER.debug("Service 'get_user_rules' triggered")
         rm = _get_rules_manager()
-        return {"rules": rm.get_rules()}
+        return {"rules": scrub_sensitive_rules(rm.get_rules())}
 
     async def handle_set_user_rules(call) -> ServiceResponse:
         """Handle service call to update user behavioral rules and persona guidelines."""
@@ -4395,67 +4411,38 @@ class OtisAIConversationAgent(AbstractAgent):
                     session_data.pop("pending_yaml", None)
 
                 try:
-                    created_autos = []
-                    created_scripts = []
-                    created_blueprints = []
+                    rendered_blocks = []
                     for item in items:
-                        if item.get("type") == "automation":
-                            auto_id = await self.automation_manager.async_write_automation(item["yaml_data"])
-                            created_autos.append(item["yaml_data"].get("alias", auto_id))
-                        elif item.get("type") == "script":
-                            s_key = item.get("id") or re.sub(r"\W+", "_", item["yaml_data"].get("alias", "custom_script").lower()).strip("_")
-                            await self.automation_manager.async_write_script(s_key, item["yaml_data"])
-                            created_scripts.append(item["yaml_data"].get("alias", s_key))
-                        elif item.get("type") == "blueprint":
-                            bp_path = item.get("path") or "custom_blueprint.yaml"
-                            content_to_write = item.get("raw_yaml") or item["yaml_data"]
-                            await self.automation_manager.async_write_blueprint(bp_path, content_to_write)
-                            created_blueprints.append(f"{item.get('name', 'Blueprint')} (`{bp_path}`)")
-
-                    if created_autos:
-                        await self.automation_manager.async_reload_automations()
-                    if created_scripts:
-                        await self.automation_manager.async_reload_scripts()
-                    if created_blueprints:
-                        await self.automation_manager.async_reload_blueprints()
-                        await self.automation_manager.async_reload_automations()
-
-                    if hasattr(self.engine, "invalidate_cache") and callable(getattr(self.engine, "invalidate_cache", None)):
-                        self.engine.invalidate_cache()
-
-                    if len(items) == 1 and created_autos:
-                        yaml_content = items[0].get("raw_yaml") or yaml.dump(clean_yaml_dict(items[0]["yaml_data"]), Dumper=_NoAliasSafeDumper, sort_keys=False, default_flow_style=False)
-                        speech = (
-                            f"I have successfully created and enabled the automation '{created_autos[0]}'!\n\n"
-                            f"📋 **Configuration YAML (Ready to Apply in Home Assistant):**\n"
-                            f"```yaml\n{yaml_content}\n```"
+                        item_type = item.get("type", "automation")
+                        title = item.get("yaml_data", {}).get("alias") or item.get("name") or item.get("id") or item_type.title()
+                        yaml_content = item.get("raw_yaml") or (
+                            yaml.dump(clean_yaml_dict(item["yaml_data"]), Dumper=_NoAliasSafeDumper, sort_keys=False, default_flow_style=False)
+                            if isinstance(item.get("yaml_data"), dict)
+                            else str(item.get("yaml_data") or "")
                         )
-                    elif len(items) == 1 and created_scripts:
-                        yaml_content = items[0].get("raw_yaml") or yaml.dump(clean_yaml_dict(items[0]["yaml_data"]), Dumper=_NoAliasSafeDumper, sort_keys=False, default_flow_style=False)
-                        speech = (
-                            f"I have successfully created the script '{created_scripts[0]}'!\n\n"
-                            f"📋 **Configuration YAML (Ready to Apply in Home Assistant):**\n"
-                            f"```yaml\n{yaml_content}\n```"
+                        rendered_blocks.append((item_type, title, yaml_content))
+
+                    if len(rendered_blocks) == 1:
+                        item_type, title, yaml_content = rendered_blocks[0]
+                        editor_hint = (
+                            "**Settings → Automations & Scenes → Scripts → Add Script → ⋮ → Edit in YAML**"
+                            if item_type == "script"
+                            else "**Settings → Automations & Scenes → Create Automation → ⋮ → Edit in YAML**"
                         )
-                    elif len(items) == 1 and created_blueprints:
-                        yaml_content = items[0].get("raw_yaml") or (yaml.dump(clean_yaml_dict(items[0]["yaml_data"]), Dumper=_NoAliasSafeDumper, sort_keys=False, default_flow_style=False) if isinstance(items[0]["yaml_data"], dict) else str(items[0]["yaml_data"]))
                         speech = (
-                            f"I have successfully updated and deployed the blueprint '{created_blueprints[0]}'!\n\n"
-                            f"📋 **Configuration YAML:**\n"
+                            f"Here is the ready-to-import YAML for {item_type} **'{title}'**.\n\n"
+                            f"To add it to Home Assistant, copy the YAML below and paste it in {editor_hint}:\n\n"
                             f"```yaml\n{yaml_content}\n```"
                         )
                     else:
-                        parts = []
-                        if created_blueprints:
-                            parts.append(f"Blueprint(s): {', '.join(created_blueprints)}")
-                        if created_scripts:
-                            parts.append(f"Script(s): {', '.join(created_scripts)}")
-                        if created_autos:
-                            parts.append(f"Automation(s): {', '.join(created_autos)}")
+                        sections = [
+                            f"### {title} ({item_type})\n```yaml\n{yaml_content}\n```"
+                            for item_type, title, yaml_content in rendered_blocks
+                        ]
                         speech = (
-                            "I have successfully created and enabled the configuration! Applied successfully!\n• "
-                            + "\n• ".join(parts)
-                            + "\n\n📋 **Ready-to-Apply YAML configuration generated.**"
+                            "Here are the ready-to-import YAML configurations. "
+                            "Copy and paste each block in **Settings → Automations & Scenes → ⋮ → Edit in YAML**:\n\n"
+                            + "\n\n".join(sections)
                         )
 
                     self._record_turn(session_data, user_input.text, speech)
@@ -4685,7 +4672,7 @@ class OtisAIConversationAgent(AbstractAgent):
                 return self._create_response(user_input, speech)
 
         # Check for theme styling commands
-        if any(w in user_text for w in ("create theme", "generate theme", "new theme", "make theme", "build theme")):
+        if any(w in user_text for w in ("create theme", "create a theme", "generate theme", "generate a theme", "new theme", "make theme", "build theme")):
             clean_prompt = re.sub(
                 r"^(please\s+)?(can you\s+)?(create|generate|make|build)\s+(a\s+|an\s+)?(custom\s+)?theme\s*(called|named)?\s*",
                 "",
@@ -4693,6 +4680,8 @@ class OtisAIConversationAgent(AbstractAgent):
                 flags=re.IGNORECASE,
             ).strip()
             if clean_prompt and self.theme_manager:
+                if not await _async_is_admin_context(self.hass, user_input.context):
+                    return self._create_response(user_input, "🔒 Only Home Assistant administrators can generate or apply global themes.")
                 try:
                     res = await self.theme_manager.async_generate_and_save_theme(prompt=clean_prompt, apply_immediately=True)
                     if hasattr(self.engine, "invalidate_cache"):
@@ -4715,6 +4704,8 @@ class OtisAIConversationAgent(AbstractAgent):
                 flags=re.IGNORECASE,
             ).strip()
             if target and self.theme_manager:
+                if not await _async_is_admin_context(self.hass, user_input.context):
+                    return self._create_response(user_input, "🔒 Only Home Assistant administrators can switch global themes.")
                 slug = slugify_theme_name(target)
                 key = f"otis_{slug}" if not slug.startswith("otis_") else slug
                 ok = await self.theme_manager.async_apply_theme(key)
@@ -4736,6 +4727,8 @@ class OtisAIConversationAgent(AbstractAgent):
             )
         ):
             if self.dashboard_manager:
+                if not await _async_is_admin_context(self.hass, user_input.context):
+                    return self._create_response(user_input, "🔒 Only Home Assistant administrators can regenerate dashboards.")
                 try:
                     cap_map = (
                         await self.engine.async_build_capability_map(force_refresh=True)
@@ -5238,6 +5231,8 @@ class OtisAIConversationAgent(AbstractAgent):
             "commission", "unassigned entities", "orphaned entities", "assign rooms", "assign areas"
         )):
             if any(w in user_lower for w in ("auto", "apply", "execute", "yes")):
+                if not await _async_is_admin_context(self.hass, user_input.context):
+                    return self._create_response(user_input, "🔒 Only Home Assistant administrators can apply commissioning changes.")
                 fire_progress("domain", "Commissioning Entities", "Executing zero-config room assignments")
                 comm_res = await self.commissioning_manager.async_auto_commission(min_confidence=0.85)
                 resp = (
@@ -5431,20 +5426,13 @@ class OtisAIConversationAgent(AbstractAgent):
                 is_explicit_apply = is_apply_rec or any(w in user_lower for w in ("apply", "deploy", "install", "enable"))
 
                 if autonomy == "high" or is_explicit_apply:
-                    auto_id = await self.automation_manager.async_write_automation(auto_payload)
-                    await self.automation_manager.async_reload_automations()
-                    if hasattr(self.engine, "invalidate_cache"):
-                        self.engine.invalidate_cache()
                     if getattr(self, "rules_manager", None):
                         await self.rules_manager.async_dismiss_recommendation(target_sugg["id"])
                     yaml_str = yaml.dump(clean_yaml_dict(auto_payload), Dumper=_NoAliasSafeDumper, sort_keys=False, default_flow_style=False)
                     speech = (
-                        f"🚀 **Automation Created and Enabled!**\n\n"
-                        f"I have successfully created and enabled the automation '**{auto_payload.get('alias', auto_id)}**' in your Home Assistant.\n\n"
-                        f"• **Trigger:** {len(auto_payload.get('trigger', []))} condition/state trigger(s)\n"
-                        f"• **Actions:** {len(auto_payload.get('action', []))} action step(s)\n"
-                        f"• **Mode:** `{auto_payload.get('mode', 'single')}`\n\n"
-                        f"📋 **Ready-to-Apply YAML Block:**\n"
+                        f"📋 **Automation YAML Ready to Import**\n\n"
+                        f"Here is the YAML for '**{auto_payload.get('alias', target_sugg.get('title', 'automation'))}**'. "
+                        f"To enable it in Home Assistant, paste this block in **Settings → Automations & Scenes → Create Automation → ⋮ → Edit in YAML**:\n\n"
                         f"```yaml\n{yaml_str}\n```\n\n"
                         f"*(This matches the proactive recommendation in your Command Center card)*"
                     )
