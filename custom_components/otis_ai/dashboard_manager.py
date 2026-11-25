@@ -151,31 +151,21 @@ class DashboardManager:
         return None
 
     def _dashboard_file_exists(self, dash_id: str) -> bool:
-        """Check if dashboard storage file exists on disk."""
-        storage_dir = self._storage_dir()
-        if not storage_dir:
-            return False
-        return os.path.exists(os.path.join(storage_dir, f"lovelace.{dash_id}"))
-
-    async def _async_dashboard_file_exists(self, dash_id: str) -> bool:
-        """Check if dashboard storage file exists on disk non-blockingly."""
-        # 1. Check in memory lovelace data
+        """Check if dashboard exists in active Lovelace memory/collection (never raw .storage files)."""
         if hasattr(self.hass, "data") and isinstance(self.hass.data, dict):
             ll_data = self.hass.data.get("lovelace")
             if ll_data is not None and hasattr(ll_data, "dashboards") and isinstance(ll_data.dashboards, dict):
                 if dash_id in ll_data.dashboards or dash_id.replace("_", "-") in ll_data.dashboards:
                     return True
-        # 2. Check dashboards collection
         storage_col = self._get_dashboards_collection()
         if storage_col is not None and hasattr(storage_col, "data") and isinstance(storage_col.data, dict):
             for k, v in storage_col.data.items():
                 if k == dash_id or (isinstance(v, dict) and (v.get("id") == dash_id or v.get("url_path") == dash_id.replace("_", "-"))):
                     return True
-        if hasattr(self.hass, "async_add_executor_job"):
-            try:
-                return await self.hass.async_add_executor_job(self._dashboard_file_exists, dash_id)
-            except Exception:
-                return False
+        return False
+
+    async def _async_dashboard_file_exists(self, dash_id: str) -> bool:
+        """Check if dashboard exists in active Lovelace memory or DashboardsCollection."""
         return self._dashboard_file_exists(dash_id)
 
     async def _async_inspect_lovelace_resources(self) -> set[str]:

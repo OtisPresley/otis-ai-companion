@@ -1723,27 +1723,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             else:
                 script_items = []
 
+            yaml_sections: list[str] = []
             for s_key, s_data in script_items:
-                await mgr.async_write_script(s_key, s_data)
                 created_scripts.append(s_key)
-            if created_scripts:
-                await mgr.async_reload_scripts()
+                s_yaml = yaml.dump(clean_yaml_dict(s_data), Dumper=_NoAliasSafeDumper, sort_keys=False, default_flow_style=False)
+                yaml_sections.append(f"# Script: {s_key}\n{s_yaml}")
 
             for a_data in payload.get("automations") or []:
-                a_id = await mgr.async_write_automation(dict(a_data))
-                created_autos.append(a_id)
-            if created_autos:
-                await mgr.async_reload_automations()
+                a_alias = str(a_data.get("alias") or "automation")
+                created_autos.append(a_alias)
+                a_yaml = yaml.dump(clean_yaml_dict(dict(a_data)), Dumper=_NoAliasSafeDumper, sort_keys=False, default_flow_style=False)
+                yaml_sections.append(f"# Automation: {a_alias}\n{a_yaml}")
 
             _invalidate()
             return {
                 "success": True,
+                "action": "present_ha_package_yaml",
                 "message": (
-                    f"Deployed coordinator package ({len(created_scripts)} script(s), "
-                    f"{len(created_autos)} automation(s))"
+                    f"Generated coordinator package YAML ({len(created_scripts)} script(s), "
+                    f"{len(created_autos)} automation(s)). Paste each block in Settings → Automations & Scenes → Edit in YAML."
                 ),
                 "scripts": created_scripts,
                 "automations": created_autos,
+                "yaml": "\n\n".join(yaml_sections),
             }
         elif action_type == "auto_assign_areas":
             device_reg = dr.async_get(hass)

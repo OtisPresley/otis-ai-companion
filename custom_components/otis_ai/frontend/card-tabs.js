@@ -400,7 +400,7 @@ export const tabsMixin = {
                       ${m.attachments
                   .map((att) =>
                     att.isImage
-                      ? `<img src="${att.data}" class="bubble-attachment-img" alt="${this._escapeHtml(att.name)}" title="${this._escapeHtml(att.name)}" />`
+                      ? `<img src="${this._escapeHtml(att.data)}" class="bubble-attachment-img" alt="${this._escapeHtml(att.name)}" title="${this._escapeHtml(att.name)}" />`
                       : `<div class="bubble-attachment-file"><span>📄</span> ${this._escapeHtml(att.name)}</div>`
                   )
                   .join("")}
@@ -483,7 +483,7 @@ export const tabsMixin = {
             (att, i) => `
               <div class="chat-attachment-item">
                 ${att.isImage
-                ? `<img src="${att.data}" class="chat-attachment-thumb" alt="${this._escapeHtml(att.name)}" />`
+                ? `<img src="${this._escapeHtml(att.data)}" class="chat-attachment-thumb" alt="${this._escapeHtml(att.name)}" />`
                 : `<span>📄</span>`
               }
                 <span class="chat-attachment-name" title="${this._escapeHtml(att.name)}">${this._escapeHtml(att.name)}</span>
