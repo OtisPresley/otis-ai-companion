@@ -2494,7 +2494,6 @@ class TestFloorplanParser(unittest.TestCase):
     def test_hub_and_spoke_subviews_and_room_generation(self):
         """Test dynamic room subview generation and standalone Hub-and-Spoke dashboards."""
         import asyncio
-        import json
         from custom_components.otis_ai.dashboard_manager import DashboardManager
 
         d_mgr = DashboardManager(self.hass)
@@ -3245,9 +3244,6 @@ class TestSentinelManager(unittest.TestCase):
 
     def test_command_center_syncs_studios_and_rooms_from_otis_ai(self):
         """Verify Command Center automatically inherits Studio/Room edits and rewrites URLs."""
-        import json
-        import os
-        import tempfile
         from custom_components.otis_ai.dashboard_manager import DashboardManager
 
         dm = DashboardManager(self.hass)
@@ -3321,9 +3317,6 @@ class TestSentinelManager(unittest.TestCase):
 
     def test_command_center_merge_glance_and_rooms_resilience(self):
         """Verify Glance & Schedule insertion and ensure rooms are never wiped out."""
-        import json
-        import os
-        import tempfile
         from custom_components.otis_ai.dashboard_manager import DashboardManager
 
         dm = DashboardManager(self.hass)
